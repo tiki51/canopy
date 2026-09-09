@@ -70,6 +70,12 @@ defmodule Canopy.OpenCode.EventStream do
       {:ok, %Req.Response{status: 200} = resp} ->
         Logger.info("opencode event stream connected repository=#{state.repository_id}")
 
+        Phoenix.PubSub.broadcast(
+          state.pubsub,
+          repository_topic(state.repository_id),
+          {:opencode_stream, :connected, state.repository_id}
+        )
+
         {:noreply,
          %{state | resp: resp, buffer: "", connected?: true, backoff_ms: 1_000} |> arm_watchdog()}
 

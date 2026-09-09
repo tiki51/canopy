@@ -134,7 +134,13 @@ defmodule Canopy.Runtime.ChannelServerTest do
       part_id: "p1"
     })
 
-    emit(sid, :file_changed, %{path: "/repo/lib/a.ex"})
+    # file.edited has no session id on the wire; it must still land on the busy turn
+    Phoenix.PubSub.broadcast(
+      Canopy.PubSub,
+      EventStream.repository_topic(ctx.repository.id),
+      {:opencode_event, oc_event(nil, :file_changed, %{path: "/repo/lib/a.ex"})}
+    )
+
     emit(sid, :text_done, %{message_id: "m", part_id: "p2", text: "Step 1: looking."})
     emit(sid, :text_done, %{message_id: "m", part_id: "p3", text: "I found the bug in a.ex."})
     emit(sid, :turn_usage, %{message_id: "m", cost: 0.0025, tokens: %{}, finish: "stop"})
@@ -346,5 +352,148 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     assert_receive {:prompted, "ses_rev_2", _}, 2_000
     refute_receive {:prompted, _, _}, 200
+  end
+end
+
+defmodule Canopy.Runtime.ChannelServerReconcileTest do
+  use Canopy.DataCase, async: false
+
+  import Mox
+
+  alias Canopy.{AgentSessions, Fixtures, PermissionRequests, Runtime, Settings, Timeline}
+  alias Canopy.OpenCode.ClientMock, as: OC
+  alias Canopy.OpenCode.EventStream
+
+  setup :set_mox_global
+  setup :verify_on_exit!
+
+  setup do
+    scenario = Fixtures.scenario()
+    Timeline.subscribe(scenario.channel.id)
+    stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
+    {:ok, pid} = Runtime.ensure_channel(scenario.channel.id, start_stream: false)
+    on_exit(fn -> Runtime.stop_channel(scenario.channel.id) end)
+    {:ok, Map.put(scenario, :pid, pid)}
+  end
+
+  # the first connect after start is ignored (nothing to reconcile); a second one reconciles
+  defp reconnect(repo_id) do
+    for _ <- 1..2 do
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        EventStream.repository_topic(repo_id),
+        {:opencode_stream, :connected, repo_id}
+      )
+    end
+  end
+
+  test "a reconnect finishes turns OpenCode no longer reports as busy and records missed permissions",
+       ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+    sid = ctx.session.opencode_session_id
+
+    # OpenCode says: nothing busy, one permission pending for our session
+    # age the turn past the grace period so reconciliation may finish it
+    :sys.replace_state(ctx.pid, fn st ->
+      %{
+        st
+        | turns: Map.new(st.turns, fn {k, t} -> {k, %{t | started_at: t.started_at - 60_000}} end)
+      }
+    end)
+
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+
+    expect(OC, :pending_permissions, fn _dir, _opts ->
+      {:ok,
+       [
+         %{
+           "id" => "per_missed",
+           "sessionID" => sid,
+           "permission" => "edit",
+           "patterns" => ["x.ex"],
+           "metadata" => %{}
+         }
+       ]}
+    end)
+
+    reconnect(ctx.repository.id)
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+    assert_receive {:timeline, %{event_type: "permission_requested"}}, 2_000
+    assert %{status: "idle"} = AgentSessions.get!(ctx.session.id)
+
+    assert [%{opencode_permission_id: "per_missed", status: "pending"}] =
+             PermissionRequests.pending_for_channel(ctx.channel.id)
+
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :idle}
+  end
+
+  test "a reconnect leaves a turn alone when OpenCode still reports it busy and tolerates a 400 on permissions",
+       ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+    sid = ctx.session.opencode_session_id
+
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => %{"type" => "busy"}}} end)
+
+    expect(OC, :pending_permissions, fn _dir, _opts ->
+      {:error, {:http, 400, %{"name" => "BadRequest"}}}
+    end)
+
+    reconnect(ctx.repository.id)
+    Process.sleep(100)
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+  end
+
+  test "rotating the MCP token makes the next prompt re-register", ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, 2, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "one")
+    assert_receive :prompted, 2_000
+    emit_idle(ctx.session.opencode_session_id)
+
+    {:ok, _} = Settings.rotate_mcp_token()
+    new_token = Settings.mcp_token()
+    stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{}} end)
+
+    expect(OC, :add_mcp, fn _dir, "canopy", config, _opts ->
+      assert config.headers["Authorization"] == "Bearer " <> new_token
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "two")
+    assert_receive :prompted, 2_000
+  end
+
+  defp emit_idle(sid) do
+    Phoenix.PubSub.broadcast(
+      Canopy.PubSub,
+      EventStream.session_topic(sid),
+      {:opencode_event,
+       %Canopy.OpenCode.Event{type: :agent_completed, session_id: sid, data: %{}}}
+    )
+
+    Process.sleep(50)
   end
 end

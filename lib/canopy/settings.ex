@@ -46,10 +46,21 @@ defmodule Canopy.Settings do
 
   @doc "Replaces the MCP token. Callers must re-register the MCP entry with OpenCode."
   def rotate_mcp_token do
-    get()
-    |> Ecto.Changeset.change(mcp_token: generate_token())
-    |> Repo.update()
+    result =
+      get()
+      |> Ecto.Changeset.change(mcp_token: generate_token())
+      |> Repo.update()
+
+    with {:ok, _} <- result do
+      Phoenix.PubSub.broadcast(Canopy.PubSub, topic(), {:settings, :mcp_token_rotated})
+    end
+
+    result
   end
+
+  @doc "PubSub topic for settings changes (`{:settings, :mcp_token_rotated}`)."
+  def topic, do: "settings"
+  def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, topic())
 
   @doc "Returns the current MCP token."
   def mcp_token, do: get().mcp_token

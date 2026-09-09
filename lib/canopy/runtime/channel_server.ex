@@ -39,6 +39,7 @@ defmodule Canopy.Runtime.ChannelServer do
   alias Canopy.Runtime.{Prompts, Router}
 
   @telemetry_cap 200
+  @reconcile_grace_ms 15_000
 
   defstruct [
     :channel,
@@ -57,7 +58,8 @@ defmodule Canopy.Runtime.ChannelServer do
     # agent_id => [event] newest first
     telemetry: %{},
     mcp_registered?: false,
-    start_stream?: true
+    start_stream?: true,
+    stream_seen?: false
   ]
 
   # -- API --------------------------------------------------------------------
@@ -101,6 +103,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp attach(state) do
     :ok = Timeline.subscribe(state.channel.id)
+    :ok = OpenCode.Supervisor.subscribe_repository(state.repository.id)
+    :ok = Settings.subscribe()
     if state.start_stream?, do: ensure_stream(state)
 
     Enum.reduce(AgentSessions.list_for_channel(state.channel.id), state, fn session, acc ->
@@ -184,6 +188,23 @@ defmodule Canopy.Runtime.ChannelServer do
       {:noreply, state}
   end
 
+  # `file.edited` carries no session id; attribute it to every turn in flight in
+  # this channel (almost always exactly one agent is busy).
+  def handle_info(
+        {:opencode_event, %OpenCode.Event{type: :file_changed, session_id: nil} = event},
+        state
+      ) do
+    state =
+      Enum.reduce(state.turns, state, fn {sid, _turn}, acc ->
+        case Map.get(acc.index, sid) do
+          nil -> acc
+          who -> handle_execution(%{event | session_id: sid}, who, acc)
+        end
+      end)
+
+    {:noreply, state}
+  end
+
   def handle_info({:opencode_event, %OpenCode.Event{session_id: sid} = event}, state) do
     case Map.get(state.index, sid) do
       nil -> {:noreply, state}
@@ -191,7 +212,82 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # The event stream reconnected: events may have been missed, so reconcile
+  # against OpenCode's view of session status and pending permissions. The very
+  # first connect after start carries nothing to reconcile and races the first
+  # prompt, so it is skipped.
+  def handle_info({:opencode_stream, :connected, _repository_id}, %{stream_seen?: false} = state),
+    do: {:noreply, %{state | stream_seen?: true}}
+
+  def handle_info({:opencode_stream, :connected, _repository_id}, state),
+    do: {:noreply, reconcile(state)}
+
+  # The MCP token changed: the registration OpenCode holds is stale.
+  def handle_info({:settings, :mcp_token_rotated}, state),
+    do: {:noreply, %{state | mcp_registered?: false}}
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  @doc false
+  def reconcile(state) do
+    dir = state.repository.path
+
+    busy_ids =
+      case client().session_status(dir, state.client_opts) do
+        {:ok, statuses} when is_map(statuses) ->
+          statuses
+          |> Enum.reject(fn {_, st} -> st["type"] == "idle" end)
+          |> Enum.map(&elem(&1, 0))
+
+        _ ->
+          # unknown: leave turns alone
+          Map.keys(state.turns)
+      end
+
+    # turns we think are running but OpenCode reports idle: finish them. A turn
+    # younger than the grace period may not be marked busy yet; leave it alone.
+    now = System.monotonic_time(:millisecond)
+
+    state =
+      state.turns
+      |> Enum.reject(fn {sid, turn} ->
+        sid in busy_ids or now - turn.started_at < @reconcile_grace_ms
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.reduce(state, fn sid, acc ->
+        case Map.get(acc.index, sid) do
+          nil -> acc
+          who -> finish_turn(acc, sid, who, :ok)
+        end
+      end)
+
+    # permissions raised while we were disconnected (endpoint may 400: best effort)
+    case client().pending_permissions(dir, state.client_opts) do
+      {:ok, requests} when is_list(requests) ->
+        Enum.each(requests, fn req ->
+          case Map.get(state.index, req["sessionID"]) do
+            nil ->
+              :ok
+
+            who ->
+              handle_execution(
+                %OpenCode.Event{
+                  type: :approval_required,
+                  session_id: req["sessionID"],
+                  data: %{request: req}
+                },
+                who,
+                state
+              )
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.debug("permission reconciliation skipped: #{inspect(reason)}")
+    end
+
+    state
+  end
 
   # -- Waking agents ----------------------------------------------------------
 

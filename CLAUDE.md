@@ -20,3 +20,5 @@ Local-first Slack-like collaboration layer for AI coding agents, with OpenCode a
 - Agent identity in MCP tools comes from the `canopy_session_id` stamped by the OpenCode plugin, never from model-supplied values.
 - Keep OpenCode HTTP details inside `Canopy.OpenCode.*`; the rest of the app speaks normalized events.
 - Run `mix precommit` before declaring a phase done.
+- Routing rule to remember: a user message that mentions an agent wakes that agent, not the owner. Demo prompts should say "the researcher agent" unless the mention is intended.
+- `mix canopy.demo` builds the demo repository under `tmp/` (gitignored). Reset it with `git -C tmp/demo-repo checkout -- .` after agents edit it.
