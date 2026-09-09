@@ -30,3 +30,9 @@ npm-debug.log
 .idea/
 .vscode/
 .elixir_ls/
+
+# Scaffolding
+/_claude_docs/
+
+# Local planning docs, not part of the repo
+_claude_docs/
