@@ -28,7 +28,11 @@ export default defineConfig({
       url: `http://127.0.0.1:${canopyPort}/repositories`,
       reuseExistingServer: false,
       timeout: 240_000,
-      env: { CANOPY_E2E_PORT: String(canopyPort), FAKE_OPENCODE_PORT: String(fakePort) },
+      env: {
+        CANOPY_E2E_PORT: String(canopyPort),
+        FAKE_OPENCODE_PORT: String(fakePort),
+        ...(process.env.CANOPY_DB ? { CANOPY_DB: process.env.CANOPY_DB } : {}),
+      },
     },
   ],
 });

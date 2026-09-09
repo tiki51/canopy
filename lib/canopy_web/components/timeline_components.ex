@@ -173,11 +173,7 @@ defmodule CanopyWeb.TimelineComponents do
     assigns = assign(assigns, :segments, body_segments(assigns.body))
 
     ~H"""
-    <span :if={@inline} class="whitespace-pre-wrap break-words">
-      <%= for segment <- @segments do %>
-        <.text_segment segment={segment} />
-      <% end %>
-    </span>
+    <span :if={@inline} class="whitespace-pre-wrap break-words" phx-no-format><%= for segment <- @segments do %><.text_segment segment={segment} /><% end %></span>
     <div :if={!@inline} class="flex flex-col gap-1.5">
       <%= for segment <- @segments do %>
         <%= case segment do %>
@@ -187,9 +183,7 @@ defmodule CanopyWeb.TimelineComponents do
               data-lang={lang}
             ><code>{code}</code></pre>
           <% {:text, _} = text -> %>
-            <p class="whitespace-pre-wrap break-words">
-              <.text_segment segment={text} />
-            </p>
+            <p class="whitespace-pre-wrap break-words" phx-no-format><.text_segment segment={text} /></p>
         <% end %>
       <% end %>
     </div>

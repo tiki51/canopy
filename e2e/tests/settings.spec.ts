@@ -3,7 +3,8 @@ import { test, expect } from "@playwright/test";
 test.describe("settings", () => {
   test("checks the OpenCode connection and shows MCP install details", async ({ page }) => {
     await page.goto("/settings");
-    await expect(page.getByLabel("Server URL")).toHaveValue(/127\.0\.0\.1:4396/);
+    const fakePort = process.env.FAKE_OPENCODE_PORT || "4396";
+    await expect(page.getByLabel("Server URL")).toHaveValue(new RegExp(`127\\.0\\.0\\.1:${fakePort}`));
 
     await page.locator("#check-connection").click();
     await expect(page.locator("#health-result")).toContainText(/fake-1\.0/);

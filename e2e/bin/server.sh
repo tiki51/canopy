@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 
 export MIX_ENV=dev
 export PORT="${CANOPY_E2E_PORT:-4100}"
-export CANOPY_DB="$PWD/canopy_e2e.db"
+export CANOPY_DB="${CANOPY_DB:-$PWD/canopy_e2e.db}"
 export PHX_SERVER=true
 FAKE_URL="http://127.0.0.1:${FAKE_OPENCODE_PORT:-4396}"
 REPO="$PWD/tmp/e2e-repo"
