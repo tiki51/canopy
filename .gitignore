@@ -36,3 +36,6 @@ npm-debug.log
 
 # Local planning docs, not part of the repo
 _claude_docs/
+
+# Package tarball (mix hex.build)
+canopy-*.tar
