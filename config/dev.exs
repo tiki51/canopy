@@ -1,8 +1,9 @@
 import Config
 
 # Configure your database
+# CANOPY_DB lets the browser end-to-end suite (e2e/) run on its own database.
 config :canopy, Canopy.Repo,
-  database: Path.expand("../canopy_dev.db", __DIR__),
+  database: System.get_env("CANOPY_DB") || Path.expand("../canopy_dev.db", __DIR__),
   pool_size: 5,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true
@@ -16,7 +17,7 @@ config :canopy, Canopy.Repo,
 config :canopy, CanopyWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
