@@ -30,3 +30,10 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# The runtime talks to a Mox double in tests; the real client is exercised with Req.Test.
+config :canopy, :opencode,
+  base_url: "http://opencode.test",
+  client: Canopy.OpenCode.ClientMock,
+  req_options: [plug: {Req.Test, Canopy.OpenCode.Client}],
+  start_streams: false

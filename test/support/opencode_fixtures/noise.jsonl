@@ -1,0 +1,178 @@
+{"id": "evt_08503a10100107v45xWGWVXOka", "type": "server.connected", "properties": {}}
+{"id": "evt_08503c81b001JTBVevaHTvzX9i", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08503ef330014GzxCQqSpOkBU7", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085041655001HESPQjiK2EtXMG", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085043106001ob2BTlU1sVV2p6", "type": "plugin.added", "properties": {"id": "core/config-reference"}}
+{"id": "evt_085043107001G0LRgubv1nYBjK", "type": "plugin.added", "properties": {"id": "agent"}}
+{"id": "evt_085043107002f50kni4pWJu7KD", "type": "plugin.added", "properties": {"id": "command"}}
+{"id": "evt_0850431070037iOmhnwUjZRaBA", "type": "plugin.added", "properties": {"id": "skill"}}
+{"id": "evt_085043108001DpC49UVoZisLOq", "type": "plugin.added", "properties": {"id": "models-dev"}}
+{"id": "evt_085043109001ri6WZzfpUK7FjT", "type": "plugin.added", "properties": {"id": "config-agent"}}
+{"id": "evt_085043109002FNr6ZqKYmTH8wv", "type": "plugin.added", "properties": {"id": "config-command"}}
+{"id": "evt_0850431090031uHCYuNh6gA33s", "type": "plugin.added", "properties": {"id": "config-skill"}}
+{"id": "evt_085043109004YKrSxA2p18A2V7", "type": "plugin.added", "properties": {"id": "alibaba"}}
+{"id": "evt_08504310a001pJz7OZQ8LjHmDs", "type": "plugin.added", "properties": {"id": "amazon-bedrock"}}
+{"id": "evt_08504310a002aPdK7Ifr8k53ld", "type": "plugin.added", "properties": {"id": "anthropic"}}
+{"id": "evt_08504310a003eC0uveLR2ta4VC", "type": "plugin.added", "properties": {"id": "azure-cognitive-services"}}
+{"id": "evt_085043187001S4GtsGGFfvbsg5", "type": "plugin.added", "properties": {"id": "azure"}}
+{"id": "evt_085043187002IjJZHJA0FrSnRz", "type": "plugin.added", "properties": {"id": "cerebras"}}
+{"id": "evt_085043187003fxlao8MfuXmMfu", "type": "plugin.added", "properties": {"id": "cloudflare-ai-gateway"}}
+{"id": "evt_0850431870047JoyB7yGeAt1Ul", "type": "plugin.added", "properties": {"id": "cloudflare-workers-ai"}}
+{"id": "evt_0850431870059QqufE2iRw7EFE", "type": "plugin.added", "properties": {"id": "cohere"}}
+{"id": "evt_085043188001IbgvdYEjQMyuHL", "type": "plugin.added", "properties": {"id": "deepinfra"}}
+{"id": "evt_08504318800271q2F6SVJUKtt0", "type": "plugin.added", "properties": {"id": "gateway"}}
+{"id": "evt_0850431880037xHVt2pOH1L44V", "type": "plugin.added", "properties": {"id": "github-copilot"}}
+{"id": "evt_085043188004oPvf61EXuQudiI", "type": "plugin.added", "properties": {"id": "gitlab"}}
+{"id": "evt_085043188005JKv4UBPXUdU3qI", "type": "plugin.added", "properties": {"id": "google"}}
+{"id": "evt_085043189001FQ7xaizsAjnEXL", "type": "plugin.added", "properties": {"id": "google-vertex-anthropic"}}
+{"id": "evt_085043193001SzXx9ZR75sNVAQ", "type": "plugin.added", "properties": {"id": "google-vertex"}}
+{"id": "evt_085043194001xcd9omTd2VDc7H", "type": "plugin.added", "properties": {"id": "groq"}}
+{"id": "evt_085043194002fjRO1m9kScfCK1", "type": "plugin.added", "properties": {"id": "kilo"}}
+{"id": "evt_085043195001YuQ5FZke0yP1fC", "type": "plugin.added", "properties": {"id": "llmgateway"}}
+{"id": "evt_0850431960015cgPoJ4LcmiN4o", "type": "plugin.added", "properties": {"id": "mistral"}}
+{"id": "evt_085043196002oTPaEy5apHRPZ6", "type": "plugin.added", "properties": {"id": "nvidia"}}
+{"id": "evt_085043198001Bs6o4gbqlRmavR", "type": "plugin.added", "properties": {"id": "opencode"}}
+{"id": "evt_085043198002HX3288jTLB00m1", "type": "plugin.added", "properties": {"id": "snowflake-cortex"}}
+{"id": "evt_08504319800330LeLIDAs4fL1H", "type": "plugin.added", "properties": {"id": "openai-compatible"}}
+{"id": "evt_085043199001Wlg03GKjDtIFNz", "type": "plugin.added", "properties": {"id": "openai"}}
+{"id": "evt_08504319900203r6NGEVOPKJIV", "type": "plugin.added", "properties": {"id": "openrouter"}}
+{"id": "evt_0850431990034gf035nf3NFnGA", "type": "plugin.added", "properties": {"id": "perplexity"}}
+{"id": "evt_0850432140018QwEw8NsN9RPcY", "type": "catalog.updated", "properties": {}}
+{"id": "evt_085043215001JpKrkG7r3SAVPN", "type": "plugin.added", "properties": {"id": "sap-ai-core"}}
+{"id": "evt_0850432150025zO7TPMqIjVdGV", "type": "plugin.added", "properties": {"id": "togetherai"}}
+{"id": "evt_085043215003lwCr4DDNBdCnuq", "type": "plugin.added", "properties": {"id": "vercel"}}
+{"id": "evt_0850432150047DOFYK9P8jS7U4", "type": "plugin.added", "properties": {"id": "venice"}}
+{"id": "evt_0850432150052C6ClXdTWKvbxG", "type": "plugin.added", "properties": {"id": "xai"}}
+{"id": "evt_085043215006nVLBPAwGgVK3yF", "type": "plugin.added", "properties": {"id": "zenmux"}}
+{"id": "evt_085043216001rnLu2J9MxyKl8h", "type": "plugin.added", "properties": {"id": "dynamic-provider"}}
+{"id": "evt_085043217001rt76XChwKGFNVD", "type": "plugin.added", "properties": {"id": "config-plugin"}}
+{"id": "evt_085043217002tJgz0kTWEJ73b4", "type": "plugin.added", "properties": {"id": "config-provider"}}
+{"id": "evt_0850432170030l7UVx6NzZRzio", "type": "plugin.added", "properties": {"id": "variant"}}
+{"id": "evt_085043218001MUj3x0D0x6zVUM", "type": "reference.updated", "properties": {}}
+{"id": "evt_085043226001uEgCSz1bS1Xsai", "type": "integration.updated", "properties": {}}
+{"id": "evt_085043277001ejzjnhWMSYc1wp", "type": "catalog.updated", "properties": {}}
+{"id": "evt_085043d74001JX7Idlk9OthErt", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085046485001dGgashKp0HoWPh", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085048b970011oobaMD67dEl2w", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085049a180024Pezoz44kf9hn8", "type": "file.watcher.updated", "properties": {"file": "/private/tmp/claude-501/-Users-stevenbarber-devl-Canopy/cb272a23-0b6e-4c8c-943a-a830d1cbd10c/scratchpad/spikes/repo/notes.txt", "event": "add"}}
+{"id": "evt_08504b2b1001t3E19Cd1BbN7y6", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08504d9d0001c7TFHEEOF7x1HB", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850500ee001XupG808H08B6ti", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085052809001zX2W48sDWkaYud", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085054f29001zZ1MgdxCoqL93o", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08505763e0016NBzC15y2EbN2I", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085059d58001h2L0NzjfVeNRmB", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08505c47100165g0eZ8zL3TZPD", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08505eb900011kcH9oixsKUVCm", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850612a8001oD1skQG7XY4bjn", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850639be001yWQM1Iio3Kb41N", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850660d30016E837XDfr9FltM", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850687fb001cI1J95zlrR2qnM", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08506af1d001oES4O6fAk0C6ur", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08506d647001KzBuVt5rFxzyQx", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08506fd6b001AoRTcIaqxXt5F0", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08507248b001ylhgGJzXsfWAKu", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085074bad001iRa5Txaal7aU0X", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850772c20015JdHIFZYDE3hAN", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850799e500160rl3i2R7M3w0j", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08507c0f9001CQu0UgMlnVs58B", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08507e810001K6bjJjp6Xobxdd", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085080f31001e8N6Wo68isAAtD", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850836590013gGzsxRzfEnn4L", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085085d710016RAgFE0ZZ6b9gJ", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08508848c0019LmpXgHzsbCSO0", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08508aba9001QK7ZD1bgtfMfGo", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08508d2cd0011deWOvs4iTciVE", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08508f9fa001ppNrswGgRc6KBx", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085092121001kZh53h4hToq06w", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08509483e001QrPqRQHuG4WZ2q", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_085096f55001WKSMi4rz2r5xCv", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850996f8001r209IkNZXSCTgq", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08509be1b001w7NRId8hzwuXBc", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_08509e53d001TqNIv84usCTnxY", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850a0c52001gDnkNJ99ZBBWyX", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850a3367001NrQ7IydL0xr4Gm", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850a5a88001C2s0BPQjxiryAv", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850a81a6001RW8Qu5lLt1qS00", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850aa8ca001OHBy5Aqbs5Ox71", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850acfe8001qvBXwF7lShdoMm", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850af706001DMu54RsOqnqstg", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850b4bd100137larIP7gljWbw", "type": "server.connected", "properties": {}}
+{"id": "evt_0850b7315001MAlHibraAKdybx", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850b9a48001JwtCQqB74jkOy1", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850bc17e0017UjA9z8reYvh46", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850bd0fe001tDQSUzZkPs60Ru", "type": "plugin.added", "properties": {"id": "core/config-reference"}}
+{"id": "evt_0850bd0fe0028PE7sdgl9RwMeD", "type": "plugin.added", "properties": {"id": "agent"}}
+{"id": "evt_0850bd0ff0017UjU0uZQxhqGAt", "type": "plugin.added", "properties": {"id": "command"}}
+{"id": "evt_0850bd0ff002h1h5SXJk5TLH1R", "type": "plugin.added", "properties": {"id": "skill"}}
+{"id": "evt_0850bd1000011l98T1roXTz102", "type": "plugin.added", "properties": {"id": "models-dev"}}
+{"id": "evt_0850bd100002MRrzZkBydhrmgP", "type": "plugin.added", "properties": {"id": "config-agent"}}
+{"id": "evt_0850bd101001OEOh6GCS5XK06h", "type": "plugin.added", "properties": {"id": "config-command"}}
+{"id": "evt_0850bd1010021foSm5iHO07w6M", "type": "plugin.added", "properties": {"id": "config-skill"}}
+{"id": "evt_0850bd102001RiHr2SOEWFAsac", "type": "plugin.added", "properties": {"id": "alibaba"}}
+{"id": "evt_0850bd102002GMC60dR8Ph60kU", "type": "plugin.added", "properties": {"id": "amazon-bedrock"}}
+{"id": "evt_0850bd102003lZjCdGdKZALLit", "type": "plugin.added", "properties": {"id": "anthropic"}}
+{"id": "evt_0850bd102004I8A8PJmdx24NeY", "type": "plugin.added", "properties": {"id": "azure-cognitive-services"}}
+{"id": "evt_0850bd18f001ZhHHonliRCn52S", "type": "plugin.added", "properties": {"id": "azure"}}
+{"id": "evt_0850bd18f002U0Rvq4oW2myQZ7", "type": "plugin.added", "properties": {"id": "cerebras"}}
+{"id": "evt_0850bd190001ya4gFmnfbQUDjI", "type": "plugin.added", "properties": {"id": "cloudflare-ai-gateway"}}
+{"id": "evt_0850bd190002Bibw7yhL5RI9yc", "type": "plugin.added", "properties": {"id": "cloudflare-workers-ai"}}
+{"id": "evt_0850bd190003cpC1DQpWh1zUbx", "type": "plugin.added", "properties": {"id": "cohere"}}
+{"id": "evt_0850bd190004WS3UfCfMzw3C16", "type": "plugin.added", "properties": {"id": "deepinfra"}}
+{"id": "evt_0850bd191001hQiuy0b4lUr1n4", "type": "plugin.added", "properties": {"id": "gateway"}}
+{"id": "evt_0850bd1910020USOHnaC4ZJWOt", "type": "plugin.added", "properties": {"id": "github-copilot"}}
+{"id": "evt_0850bd1920013sQNkwyTvn42Nj", "type": "plugin.added", "properties": {"id": "gitlab"}}
+{"id": "evt_0850bd192002HnaLI4gemeVf77", "type": "plugin.added", "properties": {"id": "google"}}
+{"id": "evt_0850bd192003w9A7tA2VQDqIdu", "type": "plugin.added", "properties": {"id": "google-vertex-anthropic"}}
+{"id": "evt_0850bd193001aL42SJg2Yy0P7O", "type": "plugin.added", "properties": {"id": "google-vertex"}}
+{"id": "evt_0850bd1a3001a1Qm3rzLc4SHcm", "type": "plugin.added", "properties": {"id": "groq"}}
+{"id": "evt_0850bd1a30027s4KnGj0HLBC1f", "type": "plugin.added", "properties": {"id": "kilo"}}
+{"id": "evt_0850bd1a3003txIlg6UuFcy3zX", "type": "plugin.added", "properties": {"id": "llmgateway"}}
+{"id": "evt_0850bd1a4001D1KILTSHtM4X0q", "type": "plugin.added", "properties": {"id": "mistral"}}
+{"id": "evt_0850bd1a4002iDP4uAem7DIaUp", "type": "plugin.added", "properties": {"id": "nvidia"}}
+{"id": "evt_0850bd1a6001Rqv4Evgsy5Pjz7", "type": "plugin.added", "properties": {"id": "opencode"}}
+{"id": "evt_0850bd1a6002qVerBc72idDgYQ", "type": "plugin.added", "properties": {"id": "snowflake-cortex"}}
+{"id": "evt_0850bd1a7001B5QVOUezQ5DToh", "type": "plugin.added", "properties": {"id": "openai-compatible"}}
+{"id": "evt_0850bd1a7002Vzsds3Ospfs6t8", "type": "plugin.added", "properties": {"id": "openai"}}
+{"id": "evt_0850bd1a7003dP7r4g6r35csi2", "type": "plugin.added", "properties": {"id": "openrouter"}}
+{"id": "evt_0850bd1a7004Xwr8UcRs18sT4Y", "type": "plugin.added", "properties": {"id": "perplexity"}}
+{"id": "evt_0850bd1a8001mrsh3Cv43hen74", "type": "plugin.added", "properties": {"id": "sap-ai-core"}}
+{"id": "evt_0850bd217001C4HQhf1lWZm74p", "type": "catalog.updated", "properties": {}}
+{"id": "evt_0850bd218001ez6MQTzDo5k9Xp", "type": "plugin.added", "properties": {"id": "togetherai"}}
+{"id": "evt_0850bd218002okKNLB1EFhPU4m", "type": "plugin.added", "properties": {"id": "vercel"}}
+{"id": "evt_0850bd2180034VfUD11p2GaOaU", "type": "plugin.added", "properties": {"id": "venice"}}
+{"id": "evt_0850bd218004p1TmVngD1SCsA9", "type": "plugin.added", "properties": {"id": "xai"}}
+{"id": "evt_0850bd218005ZRt3J8406UL2gf", "type": "plugin.added", "properties": {"id": "zenmux"}}
+{"id": "evt_0850bd218006z84GuJqcxmjNIq", "type": "plugin.added", "properties": {"id": "dynamic-provider"}}
+{"id": "evt_0850bd219001PMTPx6xtj8bhNX", "type": "plugin.added", "properties": {"id": "config-plugin"}}
+{"id": "evt_0850bd21a00113zvGVfZZBvrsx", "type": "plugin.added", "properties": {"id": "config-provider"}}
+{"id": "evt_0850bd21a002sLcHvZG4E1OL7Q", "type": "plugin.added", "properties": {"id": "variant"}}
+{"id": "evt_0850bd21b001EjiKaNgjlMIXdC", "type": "reference.updated", "properties": {}}
+{"id": "evt_0850bd22d001Cimtip59o8mLGt", "type": "integration.updated", "properties": {}}
+{"id": "evt_0850bd27f0012vHdYanYcsmLdN", "type": "catalog.updated", "properties": {}}
+{"id": "evt_0850be891001k85Tpr98U2iyis", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850c0fa9001xbcP5iL2Rm3C30", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850c36bf001koIGp0pEaeCCcr", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850c5dd1001vCFSMZPgFglma3", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850c84e5001l7FMciwCW7Fw0f", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850cabf90017X8vpUAaQFfP19", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850cd30c001kXqNK50vtAH742", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850cfa1f001F3aNUgdGVCtK3G", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850d2134001P1EDAk5nDYD4C9", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850d4845001GJsvy9w2oF3D6V", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850d6f640015q5TSYI2OUmszb", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850d968500116WrxydxBM682w", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850dbd9a0014ExYTuTBYMvVI4", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850de4b1001RJhAT0T7HcC2eu", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850e0bce001Uz7G92SkYR1x4L", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850e32e1001C5P4V3ChPFsuGF", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850e3dcd0016UzdcDnymibe54", "type": "file.watcher.updated", "properties": {"file": "/private/tmp/claude-501/-Users-stevenbarber-devl-Canopy/cb272a23-0b6e-4c8c-943a-a830d1cbd10c/scratchpad/spikes/repo/notes.txt", "event": "change"}}
+{"id": "evt_0850e59f4001HF2HnDKRPk9WJu", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850e8108001ep9e4JUhvNewBc", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850ea81a001Mwb7tWTIDptgGg", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850ecf2c00141vE61wIMED3sF", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850ef63f001SmHYnIAJGcein6", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850f1d520015DlwpoDhrnZZss", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850f4465001uY133giCw25YXP", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850f6b8a0011DgiIzUCcwKj09", "type": "server.heartbeat", "properties": {}}
+{"id": "evt_0850f92aa001ssZ5pOBV4h8qk4", "type": "server.heartbeat", "properties": {}}

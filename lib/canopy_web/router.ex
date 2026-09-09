@@ -14,10 +14,23 @@ defmodule CanopyWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # The Canopy MCP endpoint: no session or CSRF, bearer token from settings.
+  # The Anubis plug enforces the JSON/SSE accept headers itself; agent identity
+  # is resolved inside the tools, not here.
+  pipeline :mcp do
+    plug Canopy.MCP.AuthPlug
+  end
+
   scope "/", CanopyWeb do
     pipe_through :browser
 
     get "/", PageController, :home
+  end
+
+  scope "/mcp" do
+    pipe_through :mcp
+
+    forward "/", Anubis.Server.Transport.StreamableHTTP.Plug, server: Canopy.MCP.Server
   end
 
   # Other scopes may use custom stacks.

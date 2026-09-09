@@ -11,6 +11,11 @@ config :canopy,
   ecto_repos: [Canopy.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# OpenCode integration defaults. The runtime overrides base_url from Settings.
+config :canopy, :opencode,
+  base_url: "http://127.0.0.1:4096",
+  client: Canopy.OpenCode.Client
+
 # Configure the endpoint
 config :canopy, CanopyWeb.Endpoint,
   url: [host: "localhost"],

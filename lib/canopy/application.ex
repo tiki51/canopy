@@ -14,6 +14,12 @@ defmodule Canopy.Application do
        repos: Application.fetch_env!(:canopy, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:canopy, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Canopy.PubSub},
+      # Per-repository SSE subscriptions to the OpenCode server
+      Canopy.OpenCode.Supervisor,
+      # One process per open channel owning agent sessions
+      Canopy.Runtime.Supervisor,
+      # MCP server for agents (Streamable HTTP, mounted at /mcp; transport starts only when the endpoint serves)
+      {Canopy.MCP.Server, transport: :streamable_http},
       # Start a worker by calling: Canopy.Worker.start_link(arg)
       # {Canopy.Worker, arg},
       # Start to serve requests, typically the last entry

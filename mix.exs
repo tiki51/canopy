@@ -73,7 +73,8 @@ defmodule Canopy.MixProject do
       {:bandit, "~> 1.5"},
       # Canopy additions
       {:req, "~> 0.5"},
-      {:anubis_mcp, "~> 2.0"}
+      {:anubis_mcp, "~> 2.0"},
+      {:mox, "~> 1.2", only: :test}
     ]
   end
 
