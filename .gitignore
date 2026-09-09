@@ -1,0 +1,32 @@
+# Build and deps (Phoenix app lands here in Phase 1)
+/_build/
+/deps/
+/cover/
+/doc/
+/.fetch
+*.ez
+*.beam
+erl_crash.dump
+/tmp/
+
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Assets
+/priv/static/assets/
+/priv/static/cache_manifest.json
+/assets/node_modules/
+npm-debug.log
+
+# Secrets and local env
+.env
+.env.*
+/config/*.secret.exs
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+.elixir_ls/
