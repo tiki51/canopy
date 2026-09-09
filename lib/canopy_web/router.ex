@@ -25,6 +25,14 @@ defmodule CanopyWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    live_session :default, on_mount: [CanopyWeb.Nav] do
+      live "/settings", SettingsLive
+      live "/repositories", RepositoriesLive
+      live "/agents", AgentsLive
+      live "/channels/new", ChannelLive.New
+      live "/channels/:id", ChannelLive
+    end
   end
 
   scope "/mcp" do

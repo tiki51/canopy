@@ -68,7 +68,7 @@ defmodule Canopy.MCP.Tools.TasksTest do
       assert message == "status must be one of open, working, blocked, completed"
     end
 
-    test "a delegate completing the task also completes its delegation", ctx do
+    test "a delegate reports on its delegation and never changes the channel task", ctx do
       {:ok, delegation} =
         Delegations.create(%{
           channel_id: ctx.channel.id,
@@ -80,10 +80,14 @@ defmodule Canopy.MCP.Tools.TasksTest do
         })
 
       Timeline.subscribe(ctx.channel.id)
+      task_before = Tasks.for_channel(ctx.channel.id)
 
       assert {:ok, text} = call(TaskUpdate, %{status: "working"}, ctx.delegate_session)
-      refute text =~ "Delegation"
+      assert text =~ "still working on delegation [#{delegation.id}]"
       assert Delegations.get!(delegation.id).status == "requested"
+
+      assert {:error, reason} = call(TaskUpdate, %{title: "New title"}, ctx.delegate_session)
+      assert reason =~ "Only the task owner"
 
       assert {:ok, text} =
                call(
@@ -93,20 +97,44 @@ defmodule Canopy.MCP.Tools.TasksTest do
                )
 
       assert text =~
-               "Delegation [#{delegation.id}] completed; @#{ctx.agent.name} will be notified."
+               "delegation [#{delegation.id}] completed; @#{ctx.agent.name} will be notified."
 
       delegation = Delegations.get!(delegation.id)
       assert delegation.status == "completed"
       assert delegation.result == "Index missing on invoice_id"
-      assert Tasks.for_channel(ctx.channel.id).status == "completed"
 
-      assert_receive {:timeline, %Timeline.Event{event_type: "task_updated"}}
-      assert_receive {:timeline, %Timeline.Event{event_type: "task_updated"}}
+      task_after = Tasks.for_channel(ctx.channel.id)
+      assert task_after.status == task_before.status
+      assert task_after.title == task_before.title
+
+      refute_received {:timeline, %Timeline.Event{event_type: "task_updated"}}
 
       assert_receive {:timeline,
                       %Timeline.Event{event_type: "delegation_completed", ref_id: ref_id}}
 
       assert ref_id == delegation.id
+    end
+
+    test "a delegate reporting blocked fails its delegation with the result as reason", ctx do
+      {:ok, delegation} =
+        Delegations.create(%{
+          channel_id: ctx.channel.id,
+          from_agent_id: ctx.agent.id,
+          to_agent_id: ctx.delegate.id,
+          description: "Check the index"
+        })
+
+      assert {:ok, text} =
+               call(
+                 TaskUpdate,
+                 %{status: "blocked", result: "No access to the staging db"},
+                 ctx.delegate_session
+               )
+
+      assert text =~ "delegation [#{delegation.id}] marked blocked"
+      delegation = Delegations.get!(delegation.id)
+      assert delegation.status == "failed"
+      assert delegation.result == "No access to the staging db"
     end
 
     test "a delegate reporting a bare result completes the delegation through its child session",
@@ -129,7 +157,7 @@ defmodule Canopy.MCP.Tools.TasksTest do
       {:ok, _} = Delegations.start(delegation, child.id)
 
       assert {:ok, text} = call(TaskUpdate, %{result: "Logs show a double enqueue"}, child)
-      assert text =~ "Delegation [#{delegation.id}] completed"
+      assert text =~ "delegation [#{delegation.id}] completed"
       assert Delegations.get!(delegation.id).result == "Logs show a double enqueue"
     end
 

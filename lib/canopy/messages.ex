@@ -27,6 +27,14 @@ defmodule Canopy.Messages do
     insert(%{channel_id: channel_id, agent_id: agent_id, body: body, kind: "post"}, opts)
   end
 
+  @doc """
+  Stores a note left by a user command such as `/handoff` (`kind: "system"`).
+  It carries no mentions and the runtime never wakes anyone for it.
+  """
+  def post_user_note(channel_id, user_id, body) do
+    insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "system"}, mentions: [])
+  end
+
   @doc "Stores the assistant's final text reply to a wake prompt (`kind: \"reply\"`)."
   def post_agent_reply(channel_id, agent_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, agent_id: agent_id, body: body, kind: "reply"}, opts)
@@ -186,7 +194,7 @@ defmodule Canopy.Messages do
   defp insert(attrs, opts) do
     attrs =
       attrs
-      |> Map.put(:mentions, extract_mentions(attrs.body))
+      |> Map.put(:mentions, Keyword.get(opts, :mentions) || extract_mentions(attrs.body))
       |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
 
     Multi.new()

@@ -11,10 +11,22 @@ defmodule Canopy.Runtime.Router do
   alias Canopy.Timeline.Event
 
   @doc """
-  `ctx` carries `channel`, `members` (agent ids), `owner_agent_id`, and a
-  `lookup` function `agent_id -> %Agent{} | nil` for display names.
+  `ctx` carries `channel`, `members` (agent ids), `owner_agent_id`, a `lookup`
+  function `agent_id -> %Agent{} | nil` for display names, and `thread_root`
+  (`message_id -> message | nil`). Targets without an agent (for example the
+  previous owner of a user-initiated handoff) are dropped.
   """
-  def wakeups(%Event{event_type: "message", message: message}, ctx) when not is_nil(message) do
+  def wakeups(event, ctx) do
+    event
+    |> do_wakeups(ctx)
+    |> Enum.reject(fn {{_kind, id}, _text} -> is_nil(id) end)
+  end
+
+  # Notes left by user commands never wake anyone; the command's own event does.
+  defp do_wakeups(%Event{event_type: "message", message: %{kind: "system"}}, _ctx), do: []
+
+  defp do_wakeups(%Event{event_type: "message", message: message}, ctx)
+       when not is_nil(message) do
     sender_agent_id = message.agent_id
     sender = sender_name(message, ctx)
 
@@ -41,9 +53,13 @@ defmodule Canopy.Runtime.Router do
     Enum.map(Enum.uniq(targets), &{{:root, &1}, text})
   end
 
-  def wakeups(%Event{event_type: "delegation_created", payload: p} = ev, ctx) do
+  defp do_wakeups(%Event{event_type: "delegation_created", payload: p} = ev, ctx) do
+    # A delegation from an agent runs in a child session under the delegator; one
+    # from the user (no delegator) runs in the delegate's own root session.
+    target = if p["from_agent_id"], do: {:child, ev.ref_id}, else: {:root, p["to_agent_id"]}
+
     [
-      {{:child, ev.ref_id},
+      {target,
        Prompts.delegation(%{
          channel: ctx.channel.name,
          from: name(ctx, p["from_agent_id"]),
@@ -53,8 +69,8 @@ defmodule Canopy.Runtime.Router do
     ]
   end
 
-  def wakeups(%Event{event_type: type, payload: p} = ev, ctx)
-      when type in ["delegation_completed", "delegation_failed"] do
+  defp do_wakeups(%Event{event_type: type, payload: p} = ev, ctx)
+       when type in ["delegation_completed", "delegation_failed"] do
     [
       {{:root, p["from_agent_id"]},
        Prompts.delegation_completed(%{
@@ -67,7 +83,7 @@ defmodule Canopy.Runtime.Router do
     ]
   end
 
-  def wakeups(%Event{event_type: "handoff_requested", payload: p} = ev, ctx) do
+  defp do_wakeups(%Event{event_type: "handoff_requested", payload: p} = ev, ctx) do
     [
       {{:root, p["to_agent_id"]},
        Prompts.handoff(%{
@@ -78,7 +94,7 @@ defmodule Canopy.Runtime.Router do
     ]
   end
 
-  def wakeups(%Event{event_type: "handoff_accepted", payload: p} = ev, ctx) do
+  defp do_wakeups(%Event{event_type: "handoff_accepted", payload: p} = ev, ctx) do
     [
       {{:root, p["from_agent_id"]},
        Prompts.handoff_accepted(%{
@@ -89,7 +105,7 @@ defmodule Canopy.Runtime.Router do
     ]
   end
 
-  def wakeups(%Event{event_type: "handoff_rejected", payload: p} = ev, ctx) do
+  defp do_wakeups(%Event{event_type: "handoff_rejected", payload: p} = ev, ctx) do
     [
       {{:root, p["from_agent_id"]},
        Prompts.handoff_rejected(%{
@@ -101,7 +117,7 @@ defmodule Canopy.Runtime.Router do
     ]
   end
 
-  def wakeups(_event, _ctx), do: []
+  defp do_wakeups(_event, _ctx), do: []
 
   defp thread_root_author(%{thread_id: nil}, _ctx, _sender), do: []
 
@@ -115,6 +131,9 @@ defmodule Canopy.Runtime.Router do
   defp sender_name(%{agent_id: nil, user: %{display_name: n}}, _ctx) when is_binary(n), do: n
   defp sender_name(%{agent_id: nil}, ctx), do: ctx.user_name
   defp sender_name(%{agent_id: id}, ctx), do: name(ctx, id)
+
+  # A nil agent id means the user did it (user-initiated handoff or delegation).
+  defp name(ctx, nil), do: ctx.user_name
 
   defp name(ctx, agent_id) do
     case ctx.lookup.(agent_id) do

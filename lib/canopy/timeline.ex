@@ -82,6 +82,14 @@ defmodule Canopy.Timeline do
   @doc "Fetches one event with preloads."
   def get!(id), do: Event |> Repo.get!(id) |> Repo.preload(@preloads)
 
+  @doc "The `message` event that refers to `message_id`, with preloads, or nil."
+  def for_message(message_id) when is_binary(message_id) do
+    Event
+    |> where([e], e.event_type == "message" and e.ref_id == ^message_id)
+    |> preload(^@preloads)
+    |> Repo.one()
+  end
+
   defp maybe_before(query, nil), do: query
   defp maybe_before(query, before), do: where(query, [e], e.id < ^before)
 

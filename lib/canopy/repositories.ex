@@ -9,6 +9,12 @@ defmodule Canopy.Repositories do
   alias Canopy.Repo
   alias Canopy.Repositories.Repository
 
+  @doc "Repositories with their open channels preloaded, for the sidebar."
+  def list_with_channels do
+    channels = Canopy.Channels.list() |> Enum.group_by(& &1.repository_id)
+    Enum.map(list(), &Map.put(&1, :channels, Map.get(channels, &1.id, [])))
+  end
+
   def list do
     Repo.all(from r in Repository, order_by: [asc: r.name, asc: r.id])
   end
@@ -32,6 +38,10 @@ defmodule Canopy.Repositories do
   end
 
   def delete(%Repository{} = repository), do: Repo.delete(repository)
+
+  @doc "Changeset for the repository form (path rules are applied by `create/2`)."
+  def change(%Repository{} = repository, attrs \\ %{}),
+    do: Repository.changeset(repository, attrs)
 
   @doc "Returns `{:ok, branch}` for the checked-out branch (or a short commit id when detached)."
   def current_branch(repo_or_path) do
@@ -64,6 +74,30 @@ defmodule Canopy.Repositories do
         |> Enum.reject(&(&1 == ""))
 
       {:ok, files}
+    end
+  end
+
+  @doc """
+  Returns `{:ok, patch}` for one file: the working tree against `HEAD` (staged
+  changes included). Untracked files, or files in a repository without commits,
+  are shown as additions against an empty file.
+  """
+  def file_diff(repo_or_path, file) when is_binary(file) do
+    path = path_of(repo_or_path)
+
+    case git(path, ["diff", "HEAD", "--", file]) do
+      {:ok, ""} -> untracked_diff(path, file)
+      {:ok, patch} -> {:ok, patch}
+      {:error, _} -> untracked_diff(path, file)
+    end
+  end
+
+  # `git diff --no-index` exits 1 when the files differ, so the patch arrives as an error.
+  defp untracked_diff(path, file) do
+    case git(path, ["diff", "--no-index", "--", "/dev/null", file]) do
+      {:ok, patch} -> {:ok, patch}
+      {:error, "diff --git" <> _ = patch} -> {:ok, patch}
+      {:error, reason} -> {:error, reason}
     end
   end
 

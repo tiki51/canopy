@@ -54,6 +54,9 @@ defmodule Canopy.Settings do
   @doc "Returns the current MCP token."
   def mcp_token, do: get().mcp_token
 
+  @doc "Changeset for the settings form."
+  def change(%Setting{} = setting, attrs \\ %{}), do: Setting.changeset(setting, attrs)
+
   defp generate_token do
     32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
   end

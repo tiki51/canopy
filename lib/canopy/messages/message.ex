@@ -11,7 +11,8 @@ defmodule Canopy.Messages.Message do
   @primary_key {:id, :string, autogenerate: {Canopy.ID, :generate, ["msg"]}}
   @foreign_key_type :string
 
-  @kinds ~w(post reply thread_reply)
+  # "system": a note the user's command left in the timeline; never wakes an agent
+  @kinds ~w(post reply thread_reply system)
 
   schema "messages" do
     field :kind, :string, default: "post"
