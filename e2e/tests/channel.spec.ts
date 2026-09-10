@@ -16,6 +16,9 @@ test.describe("channel collaboration", () => {
 
     // the agent posted through canopy_message_send, then its final reply was stored
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
+    // Agent messages are Markdown, rendered to real lists and code blocks.
+    await expect(timeline(page).locator(".message-body ol li").first()).toContainText("Read README.md");
+    await expect(timeline(page).locator(".message-body pre code")).toContainText("queue.add(invoice_id)");
     await expect(timeline(page)).toContainText("Reply from the fake agent.");
     await expect(timeline(page)).toContainText(/finished/);
     await expect(card).toBeHidden();

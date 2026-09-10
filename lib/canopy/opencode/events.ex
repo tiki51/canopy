@@ -157,6 +157,7 @@ defmodule Canopy.OpenCode.Events do
   defp part_event(%{"type" => "step-finish"} = part, sid) do
     event(:step_completed, sid, %{
       message_id: part["messageID"],
+      part_id: part["id"],
       reason: part["reason"],
       cost: part["cost"],
       tokens: Map.get(part, "tokens", %{}),
@@ -167,6 +168,7 @@ defmodule Canopy.OpenCode.Events do
   defp part_event(%{"type" => "patch"} = part, sid) do
     event(:patch, sid, %{
       message_id: part["messageID"],
+      part_id: part["id"],
       hash: part["hash"],
       files: Map.get(part, "files", [])
     })

@@ -5,7 +5,7 @@ defmodule CanopyWeb.PageController do
 
   @doc "Home: the first open channel, or the repositories screen when there is none."
   def home(conn, _params) do
-    case Channels.list() do
+    case Enum.reject(Channels.list(), &Channels.dm?/1) do
       [channel | _] -> redirect(conn, to: ~p"/channels/#{channel.id}")
       [] -> redirect(conn, to: ~p"/repositories")
     end

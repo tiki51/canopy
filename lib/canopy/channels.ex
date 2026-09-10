@@ -6,6 +6,7 @@ defmodule Canopy.Channels do
 
   import Ecto.Query, warn: false
 
+  alias Canopy.Agents
   alias Canopy.Agents.Agent
   alias Canopy.Channels.{Channel, ChannelAgent}
   alias Canopy.Repo
@@ -79,13 +80,118 @@ defmodule Canopy.Channels do
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{channel: channel}} -> {:ok, get!(channel.id)}
-      {:error, _step, changeset, _changes} -> {:error, changeset}
+      {:ok, %{channel: channel}} ->
+        notify()
+        {:ok, get!(channel.id)}
+
+      {:error, _step, changeset, _changes} ->
+        {:error, changeset}
     end
   end
 
-  def archive(%Channel{} = channel) do
-    with {:ok, channel} <- channel |> Ecto.Changeset.change(status: "archived") |> Repo.update() do
+  @topic "channels"
+
+  @doc "Subscribe to `{:channels, :changed}`, sent when a channel is created, archived, or reopened."
+  def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
+
+  defp notify, do: Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:channels, :changed})
+
+  @doc """
+  The direct-message channel between the user and one or more agents in a
+  repository, created on first use and found by its exact set of agents after
+  that. DMs are ordinary channels with `kind: "dm"`: the first agent given owns
+  it and all of them are members, so routing and the runtime treat a DM like any
+  other channel. The user is always in a DM; there is no agent-only DM.
+  """
+  def ensure_dm(repository_id, %Agent{} = agent), do: ensure_dm(repository_id, [agent])
+
+  def ensure_dm(repository_id, [%Agent{} | _] = agents) do
+    agents = Enum.uniq_by(agents, & &1.id)
+    wanted = agents |> Enum.map(& &1.id) |> Enum.sort()
+
+    repository_id
+    |> list_dms()
+    |> Enum.find(fn dm -> dm.agents |> Enum.map(& &1.id) |> Enum.sort() == wanted end)
+    |> case do
+      %Channel{} = channel -> {:ok, channel}
+      nil -> create_dm(repository_id, agents)
+    end
+  end
+
+  @doc "All DMs, newest first; scoped to a repository when given."
+  def list_dms(repository_id \\ nil) do
+    query = from c in Channel, where: c.kind == "dm", order_by: [desc: c.inserted_at]
+
+    query =
+      if repository_id, do: where(query, [c], c.repository_id == ^repository_id), else: query
+
+    Repo.all(from c in query, preload: ^@preloads)
+  end
+
+  @doc ~S|"@backend, @reviewer": the agents of a DM, for titles and the sidebar.|
+  def dm_label(%Channel{agents: agents}) when is_list(agents) and agents != [],
+    do: Enum.map_join(agents, ", ", &("@" <> &1.name))
+
+  def dm_label(%Channel{owner: %Agent{name: name}}), do: "@" <> name
+  def dm_label(%Channel{name: name}), do: name
+
+  defp create_dm(repository_id, [owner | _] = agents) do
+    names = agents |> Enum.map(& &1.name) |> Enum.sort()
+    base = String.slice("dm-" <> Enum.join(names, "-"), 0, 52)
+    label = Enum.map_join(names, ", ", &("@" <> &1))
+
+    name =
+      if Repo.exists?(
+           from c in Channel, where: c.repository_id == ^repository_id and c.name == ^base
+         ),
+         do:
+           base <>
+             "-" <> Base.encode32(:crypto.strong_rand_bytes(3), case: :lower, padding: false),
+         else: base
+
+    create(%{
+      repository_id: repository_id,
+      name: name,
+      kind: "dm",
+      owner_agent_id: owner.id,
+      agent_ids: Enum.map(agents, & &1.id),
+      topic: "Direct messages with #{label}",
+      task_title: "Direct messages with #{label}"
+    })
+  end
+
+  @doc "True for a direct-message channel."
+  def dm?(%Channel{kind: "dm"}), do: true
+  def dm?(_), do: false
+
+  @doc "The repository id of a channel, or nil when it does not exist."
+  def repository_id(id) when is_binary(id),
+    do: Repo.one(from c in Channel, where: c.id == ^id, select: c.repository_id)
+
+  @doc "Archives a channel and records `channel_archived`. Archiving twice is a no-op."
+  def archive(%Channel{status: "archived"} = channel), do: {:ok, Repo.preload(channel, @preloads)}
+
+  def archive(%Channel{} = channel), do: set_status(channel, "archived", "channel_archived")
+
+  @doc "Reopens an archived channel and records `channel_reopened`."
+  def reopen(%Channel{status: "open"} = channel), do: {:ok, Repo.preload(channel, @preloads)}
+
+  def reopen(%Channel{} = channel), do: set_status(channel, "open", "channel_reopened")
+
+  def archived?(%Channel{status: "archived"}), do: true
+  def archived?(_), do: false
+
+  defp set_status(channel, status, event_type) do
+    with {:ok, channel} <- channel |> Ecto.Changeset.change(status: status) |> Repo.update() do
+      {:ok, _} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          event_type: event_type,
+          ref_id: channel.id,
+          payload: %{}
+        })
+
+      notify()
       {:ok, Repo.preload(channel, @preloads, force: true)}
     end
   end
@@ -94,30 +200,72 @@ defmodule Canopy.Channels do
     attrs = Map.drop(Map.new(attrs), [:repository_id, "repository_id"])
 
     with {:ok, channel} <- channel |> Channel.changeset(attrs) |> Repo.update() do
+      notify()
       {:ok, Repo.preload(channel, @preloads, force: true)}
     end
   end
 
-  @doc "Adds an agent to a channel. Idempotent."
+  @doc """
+  Adds an agent to a channel and records `member_added` on the timeline.
+  Idempotent: adding a member again records nothing.
+  """
   def add_agent(channel, agent) do
+    channel_id = id_of(channel)
     agent_id = id_of(agent)
 
     with {:ok, _} <- check_agents_exist([agent_id]) do
-      insert_membership(id_of(channel), agent_id)
+      if member?(channel_id, agent_id) do
+        {:ok, :already_member}
+      else
+        with {:ok, membership} <- insert_membership(channel_id, agent_id) do
+          record_membership(channel_id, agent_id, "member_added")
+          {:ok, membership}
+        end
+      end
     end
   end
 
-  @doc "Removes an agent from a channel. Returns the number of rows removed."
+  @doc """
+  Removes an agent from a channel and records `member_removed`. The owner cannot
+  be removed; hand the task off first. Returns the number of rows removed.
+  """
   def remove_agent(channel, agent) do
     channel_id = id_of(channel)
     agent_id = id_of(agent)
 
-    {count, _} =
-      Repo.delete_all(
-        from m in ChannelAgent, where: m.channel_id == ^channel_id and m.agent_id == ^agent_id
-      )
+    if owner_id(channel) == agent_id do
+      {:error, :owner}
+    else
+      {count, _} =
+        Repo.delete_all(
+          from m in ChannelAgent, where: m.channel_id == ^channel_id and m.agent_id == ^agent_id
+        )
 
-    {:ok, count}
+      if count > 0, do: record_membership(channel_id, agent_id, "member_removed")
+      {:ok, count}
+    end
+  end
+
+  defp owner_id(%Channel{owner_agent_id: id}), do: id
+
+  defp owner_id(channel_id) when is_binary(channel_id),
+    do: Repo.one(from c in Channel, where: c.id == ^channel_id, select: c.owner_agent_id)
+
+  defp record_membership(channel_id, agent_id, type) do
+    {:ok, _} =
+      Timeline.record(%{
+        channel_id: channel_id,
+        agent_id: agent_id,
+        event_type: type,
+        ref_id: agent_id,
+        payload: %{"agent_id" => agent_id}
+      })
+  end
+
+  @doc "Agents that could be added to the channel: active ones not already members."
+  def addable_agents(channel) do
+    member_ids = channel |> members() |> MapSet.new(& &1.id)
+    Enum.reject(Agents.list_active(), &MapSet.member?(member_ids, &1.id))
   end
 
   def member?(channel, agent) do

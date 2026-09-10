@@ -29,6 +29,7 @@ defmodule Canopy.MCP.Tools.ChannelsList do
     markers =
       [
         channel.id == ctx.channel.id && "current",
+        Channels.dm?(channel) && "dm with the user",
         channel.status == "archived" && "archived"
       ]
       |> Enum.filter(& &1)

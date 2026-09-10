@@ -18,41 +18,43 @@
   themes: false;
 }
 
-/* daisyUI theme plugin.
-  We ship with two themes, a light one inspired on Phoenix colors and a dark one inspired
-  on Elixir colors. Build your own at: https://daisyui.com/theme-generator/ */
+/* Canopy's palette: "Blue Hour Jungle". Night-sky blue ground, tropical green
+   primary, sky-blue secondary. Tokens, from the palette guide:
+     ground (base-100) · surface (base-200) · line (base-300, text at 16% over surface)
+     primary = actions, active agent, success · secondary = links, telemetry, activity
+     neutral = the workspace rail, painted like the ground. */
 @plugin "daisyui/packages/bundle/daisyui-theme" {
   name: "dark";
   default: false;
   prefersdark: true;
   color-scheme: "dark";
-  --color-base-100: oklch(30.33% 0.016 252.42);
-  --color-base-200: oklch(25.26% 0.014 253.1);
-  --color-base-300: oklch(20.15% 0.012 254.09);
-  --color-base-content: oklch(97.807% 0.029 256.847);
-  --color-primary: oklch(58% 0.233 277.117);
-  --color-primary-content: oklch(96% 0.018 272.314);
-  --color-secondary: oklch(58% 0.233 277.117);
-  --color-secondary-content: oklch(96% 0.018 272.314);
-  --color-accent: oklch(60% 0.25 292.717);
-  --color-accent-content: oklch(96% 0.016 293.756);
-  --color-neutral: oklch(37% 0.044 257.287);
-  --color-neutral-content: oklch(98% 0.003 247.858);
-  --color-info: oklch(58% 0.158 241.966);
-  --color-info-content: oklch(97% 0.013 236.62);
-  --color-success: oklch(60% 0.118 184.704);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
+  --color-base-100: #0A1730;
+  --color-base-200: #122548;
+  --color-base-300: #364665;
+  --color-base-content: #F0F5FF;
+  --color-primary: #5BEA78;
+  --color-primary-content: #06120A;
+  --color-secondary: #58B7FF;
+  --color-secondary-content: #06120A;
+  --color-accent: #A98BEF;
+  --color-accent-content: #06120A;
+  --color-neutral: #0A1730;
+  --color-neutral-content: #F0F5FF;
+  --color-info: #58B7FF;
+  --color-info-content: #06120A;
+  --color-success: #5BEA78;
+  --color-success-content: #06120A;
+  --color-warning: #E2B75B;
+  --color-warning-content: #1A1200;
+  --color-error: #F06A72;
+  --color-error-content: #1A0507;
+  --radius-selector: 0.375rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.625rem;
   --size-selector: 0.21875rem;
   --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
+  --border: 1px;
+  --depth: 0;
   --noise: 0;
 }
 
@@ -61,34 +63,46 @@
   default: true;
   prefersdark: false;
   color-scheme: "light";
-  --color-base-100: oklch(98% 0 0);
-  --color-base-200: oklch(96% 0.001 286.375);
-  --color-base-300: oklch(92% 0.004 286.32);
-  --color-base-content: oklch(21% 0.006 285.885);
-  --color-primary: oklch(70% 0.213 47.604);
-  --color-primary-content: oklch(98% 0.016 73.684);
-  --color-secondary: oklch(55% 0.027 264.364);
-  --color-secondary-content: oklch(98% 0.002 247.839);
-  --color-accent: oklch(0% 0 0);
-  --color-accent-content: oklch(100% 0 0);
-  --color-neutral: oklch(44% 0.017 285.786);
-  --color-neutral-content: oklch(98% 0 0);
-  --color-info: oklch(62% 0.214 259.815);
-  --color-info-content: oklch(97% 0.014 254.604);
-  --color-success: oklch(70% 0.14 182.503);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
+  --color-base-100: #F3F6FD;
+  --color-base-200: #FFFFFF;
+  --color-base-300: #D8DADF;
+  --color-base-content: #0B1834;
+  --color-primary: #12793B;
+  --color-primary-content: #FFFFFF;
+  --color-secondary: #0F63B4;
+  --color-secondary-content: #FFFFFF;
+  --color-accent: #6841C4;
+  --color-accent-content: #FFFFFF;
+  --color-neutral: #F3F6FD;
+  --color-neutral-content: #0B1834;
+  --color-info: #0F63B4;
+  --color-info-content: #FFFFFF;
+  --color-success: #12793B;
+  --color-success-content: #FFFFFF;
+  --color-warning: #8A6410;
+  --color-warning-content: #FFFFFF;
+  --color-error: #C0353F;
+  --color-error-content: #FFFFFF;
+  --radius-selector: 0.375rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.625rem;
   --size-selector: 0.21875rem;
   --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
+  --border: 1px;
+  --depth: 0;
   --noise: 0;
+}
+
+/* Rare accents from the palette, for agent identity only (avatars, dots, markers). */
+:root {
+  --color-orchid: #6841C4;
+  --color-gold: #7E5A11;
+  --color-coral: #B34A31;
+}
+[data-theme="dark"] {
+  --color-orchid: #A98BEF;
+  --color-gold: #D6A85F;
+  --color-coral: #F28C78;
 }
 
 /* Add variants based on LiveView classes */
@@ -103,3 +117,44 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+/* Rendered Markdown in messages (see CanopyWeb.Markdown). Tailwind's preflight
+   strips list and heading styles, so they are restored here, scoped. */
+.message-body > * + * { margin-top: 0.5rem; }
+.message-body p { overflow-wrap: anywhere; }
+.message-body h1, .message-body h2, .message-body h3,
+.message-body h4, .message-body h5, .message-body h6 {
+  font-weight: 600; line-height: 1.3; margin-top: 0.75rem;
+}
+.message-body h1 { font-size: 1.125rem; }
+.message-body h2 { font-size: 1.0625rem; }
+.message-body h3 { font-size: 1rem; }
+.message-body ul, .message-body ol { padding-left: 1.5rem; }
+.message-body ul { list-style: disc; }
+.message-body ol { list-style: decimal; }
+.message-body li + li { margin-top: 0.125rem; }
+.message-body li > p { margin: 0; }
+.message-body li > ul, .message-body li > ol { margin-top: 0.125rem; }
+.message-body ul.contains-task-list, .message-body li.task-list-item { list-style: none; padding-left: 0; }
+.message-body li.task-list-item input { margin-right: 0.375rem; vertical-align: -0.1em; }
+.message-body a { color: var(--color-secondary); text-decoration: underline; text-underline-offset: 2px; }
+.message-body code {
+  font-family: var(--font-mono); font-size: 0.8125rem;
+  background: color-mix(in oklab, var(--color-base-300) 60%, transparent);
+  border-radius: 0.25rem; padding: 0 0.25rem;
+}
+.message-body pre {
+  overflow-x: auto; border-radius: 0.375rem; padding: 0.5rem 0.75rem;
+  background: color-mix(in oklab, var(--color-base-300) 60%, transparent);
+  font-size: 0.75rem; line-height: 1.6;
+}
+.message-body pre code { background: transparent; padding: 0; font-size: inherit; }
+.message-body blockquote {
+  border-left: 3px solid var(--color-base-300); padding-left: 0.75rem;
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+}
+.message-body table { border-collapse: collapse; font-size: 0.8125rem; display: block; overflow-x: auto; max-width: 100%; }
+.message-body th, .message-body td { border: 1px solid var(--color-base-300); padding: 0.25rem 0.5rem; text-align: left; }
+.message-body th { font-weight: 600; background: color-mix(in oklab, var(--color-base-200) 70%, transparent); }
+.message-body hr { border: 0; border-top: 1px solid var(--color-base-300); margin: 0.75rem 0; }
+.message-body img { max-width: 100%; border-radius: 0.375rem; }

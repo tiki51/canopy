@@ -29,11 +29,12 @@ defmodule Canopy.MCP.Server do
   component(Tools.HandoffGet, name: "handoff_get")
   component(Tools.HandoffAccept, name: "handoff_accept")
   component(Tools.HandoffReject, name: "handoff_reject")
+  component(Tools.DmStart, name: "dm_start")
 
   @tool_names ~w(
     channels_list channel_get messages_read messages_search message_send thread_reply
     task_get task_update agents_list delegate_task handoff_task handoff_get
-    handoff_accept handoff_reject
+    handoff_accept handoff_reject dm_start
   )
 
   @doc "The names of every tool this server exposes, in registration order."

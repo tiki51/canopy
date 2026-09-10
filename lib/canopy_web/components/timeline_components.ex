@@ -11,8 +11,8 @@ defmodule CanopyWeb.TimelineComponents do
 
   use CanopyWeb, :html
 
-  @fence_regex ~r/(```[^\n]*\n[\s\S]*?```)/
-  @mention_regex ~r/((?<![\w@])@[a-z0-9][a-z0-9_-]*)/i
+  alias Canopy.Runtime.Activity
+  alias CanopyWeb.Markdown
 
   # -- Timeline items ----------------------------------------------------------
 
@@ -33,6 +33,16 @@ defmodule CanopyWeb.TimelineComponents do
         replies={@replies}
         inline_reply={not is_nil(@event.message.thread_id)}
       />
+    </div>
+    """
+  end
+
+  def timeline_item(%{event: %{event_type: "agent_turn_completed"}} = assigns) do
+    assigns = assign(assigns, :entries, Activity.from_payload(assigns.event.payload["activity"]))
+
+    ~H"""
+    <div id={@id}>
+      <.turn_card event={@event} names={@names} user_name={@user_name} entries={@entries} />
     </div>
     """
   end
@@ -77,7 +87,7 @@ defmodule CanopyWeb.TimelineComponents do
     <article
       id={"message-#{@message.id}"}
       class={[
-        "group flex gap-3 px-6 py-2 transition-colors hover:bg-base-200/50",
+        "group flex gap-3 px-3 py-2 transition-colors sm:px-6 hover:bg-base-200/50",
         @message.kind == "reply" && "message-reply"
       ]}
       data-kind={@message.kind}
@@ -130,7 +140,7 @@ defmodule CanopyWeb.TimelineComponents do
             {ngettext("1 reply", "%{count} replies", length(@replies))}
           </button>
           <div id={"thread-#{@message.id}"} class="mt-2 hidden border-l-2 border-base-300 pl-3">
-            <div :for={reply <- @replies} class="-mx-6">
+            <div :for={reply <- @replies} class="-mx-3 sm:-mx-6">
               <.message_item message={reply} names={@names} user_name={@user_name} />
             </div>
           </div>
@@ -163,55 +173,26 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   @doc """
-  Renders a message body: whitespace preserved, fenced code blocks as
-  monospace blocks, and `@mentions` highlighted.
+  Renders a message body. Bodies are GitHub-flavoured Markdown, rendered by
+  `CanopyWeb.Markdown` with raw HTML escaped. The inline variant, used for
+  one-line system notes, keeps the text as written and only highlights mentions.
   """
   attr :body, :string, required: true
   attr :inline, :boolean, default: false
 
+  def message_text(%{inline: true} = assigns) do
+    assigns = assign(assigns, :parts, Markdown.mention_parts(assigns.body || ""))
+
+    ~H"""
+    <span class="whitespace-pre-wrap break-words" phx-no-format><%= for part <- @parts do %><%= case part do %><% {:mention, name} -> %><span class={Markdown.mention_class()}>{name}</span><% {:plain, text} -> %>{text}<% end %><% end %></span>
+    """
+  end
+
   def message_text(assigns) do
-    assigns = assign(assigns, :segments, body_segments(assigns.body))
+    assigns = assign(assigns, :html, Markdown.to_html(assigns.body))
 
     ~H"""
-    <span :if={@inline} class="whitespace-pre-wrap break-words" phx-no-format><%= for segment <- @segments do %><.text_segment segment={segment} /><% end %></span>
-    <div :if={!@inline} class="flex flex-col gap-1.5">
-      <%= for segment <- @segments do %>
-        <%= case segment do %>
-          <% {:code, lang, code} -> %>
-            <pre
-              class="overflow-x-auto rounded-md bg-base-300/60 px-3 py-2 font-mono text-xs leading-relaxed"
-              data-lang={lang}
-            ><code>{code}</code></pre>
-          <% {:text, _} = text -> %>
-            <p class="whitespace-pre-wrap break-words" phx-no-format><.text_segment segment={text} /></p>
-        <% end %>
-      <% end %>
-    </div>
-    """
-  end
-
-  attr :segment, :any, required: true
-
-  defp text_segment(%{segment: {:text, parts}} = assigns) do
-    assigns = assign(assigns, :parts, parts)
-
-    ~H"""
-    <%= for part <- @parts do %>
-      <%= case part do %>
-        <% {:mention, name} -> %>
-          <span class="rounded bg-primary/10 px-1 font-medium text-primary">{name}</span>
-        <% {:plain, text} -> %>
-          {text}
-      <% end %>
-    <% end %>
-    """
-  end
-
-  defp text_segment(%{segment: {:code, _lang, code}} = assigns) do
-    assigns = assign(assigns, :code, code)
-
-    ~H"""
-    <code class="rounded bg-base-300/60 px-1 font-mono text-xs">{@code}</code>
+    <div class="message-body break-words">{raw(@html)}</div>
     """
   end
 
@@ -224,7 +205,11 @@ defmodule CanopyWeb.TimelineComponents do
 
   def system_line(assigns) do
     ~H"""
-    <div id={@id} class="flex items-center justify-center gap-2 px-6 py-1 text-xs" data-tone={@tone}>
+    <div
+      id={@id}
+      class="flex items-center justify-center gap-2 px-3 py-1 text-xs sm:px-6"
+      data-tone={@tone}
+    >
       <span class="h-px flex-1 bg-base-300/70" />
       <span class={[
         "flex items-center gap-1.5 whitespace-pre-wrap text-center",
@@ -244,56 +229,41 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
-  # -- Live telemetry ----------------------------------------------------------
+  # -- Activity cards ----------------------------------------------------------
 
-  @doc "The collapsible card showing what a busy agent is doing right now."
+  @doc """
+  What a busy agent is doing right now. Closed by default; the header pulses
+  while the turn is in flight.
+  """
   attr :agent_id, :string, required: true
   attr :name, :string, required: true
   attr :card, :map, required: true
 
   def telemetry_card(assigns) do
     ~H"""
-    <section
+    <details
       id={"telemetry-#{@agent_id}"}
-      class="mx-6 my-2 overflow-hidden rounded-xl border border-success/30 bg-success/5 shadow-xs"
-      data-collapsed={to_string(@card.collapsed)}
+      class="group/card mx-3 my-2 overflow-hidden sm:mx-6 rounded-xl border border-secondary/40 bg-secondary/10 shadow-xs"
+      data-live="true"
     >
-      <button
-        type="button"
+      <summary
         id={"telemetry-toggle-#{@agent_id}"}
-        class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-success/10"
-        phx-click="toggle_telemetry"
-        phx-value-agent-id={@agent_id}
+        class="flex cursor-pointer select-none list-none items-center gap-2 px-4 py-2 text-sm transition hover:bg-secondary/15 [&::-webkit-details-marker]:hidden"
       >
         <Layouts.status_dot status={:busy} />
-        <span class="font-medium">@{@name} is working…</span>
+        <span class="font-medium text-secondary">@{@name} is working…</span>
         <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/50">
           <span :if={@card.tool_count > 0}>{@card.tool_count} tools</span>
           <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
-          <.icon
-            name={if(@card.collapsed, do: "hero-chevron-down-mini", else: "hero-chevron-up-mini")}
-            class="size-4"
-          />
+          <.chevron />
         </span>
-      </button>
-      <div :if={!@card.collapsed} class="border-t border-success/20 px-4 py-2">
-        <ol :if={@card.entries != []} class="flex flex-col gap-0.5 font-mono text-xs">
-          <li
-            :for={entry <- @card.entries}
-            id={"telemetry-#{@agent_id}-#{entry.key}"}
-            class="flex items-start gap-2 text-base-content/75"
-          >
-            <.icon name={entry_icon(entry)} class={["mt-0.5 size-3.5 shrink-0", entry_class(entry)]} />
-            <span class="min-w-0 truncate">
-              <span class="text-base-content">{entry.label}</span>
-              <span :if={entry.detail} class="text-base-content/50">— {entry.detail}</span>
-            </span>
-          </li>
-        </ol>
+      </summary>
+      <div class="border-t border-secondary/20 px-4 py-2">
+        <.activity_list id={"telemetry-#{@agent_id}"} entries={@card.entries} />
         <p :if={@card.entries == []} class="text-xs text-base-content/50">
           Waiting for the first tool call…
         </p>
-        <div :if={@card.preview != ""} class="mt-2 border-t border-dashed border-success/20 pt-2">
+        <div :if={@card.preview != ""} class="mt-2 border-t border-dashed border-secondary/20 pt-2">
           <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
             Streaming
           </p>
@@ -302,7 +272,105 @@ defmodule CanopyWeb.TimelineComponents do
           </p>
         </div>
       </div>
-    </section>
+    </details>
+    """
+  end
+
+  @doc """
+  A finished turn: the same summary line as before, reopenable to show the
+  activity the live card held. Falls back to a plain line when nothing was recorded.
+  """
+  attr :event, :map, required: true
+  attr :names, :map, required: true
+  attr :user_name, :string, required: true
+  attr :entries, :list, default: []
+
+  def turn_card(%{entries: []} = assigns) do
+    ~H"""
+    <.system_line
+      id={"line-#{@event.id}"}
+      icon={event_icon(@event.event_type)}
+      tone={event_tone(@event)}
+      at={@event.inserted_at}
+    >
+      {event_text(@event, @names, @user_name)}
+    </.system_line>
+    """
+  end
+
+  def turn_card(assigns) do
+    assigns = assign(assigns, :tone, event_tone(assigns.event))
+
+    ~H"""
+    <details
+      id={"turn-#{@event.id}"}
+      class={[
+        "group/card mx-3 my-1 overflow-hidden sm:mx-6 rounded-xl border transition",
+        @tone == "error" && "border-error/30 open:bg-error/5",
+        @tone != "error" && "border-transparent open:border-base-300 open:bg-base-200/40"
+      ]}
+      data-tone={@tone}
+    >
+      <summary
+        id={"turn-toggle-#{@event.id}"}
+        class="flex cursor-pointer select-none list-none items-center justify-center gap-2 px-4 py-1 text-xs [&::-webkit-details-marker]:hidden"
+        title="Show what the agent did"
+      >
+        <span class="h-px flex-1 bg-base-300/70" />
+        <span class={[
+          "flex items-center gap-1.5 whitespace-pre-wrap text-center",
+          @tone == "error" && "text-error",
+          @tone != "error" && "text-base-content/55"
+        ]}>
+          <.icon name={event_icon(@event.event_type)} class="size-3.5 shrink-0 opacity-70" />
+          <span>{event_text(@event, @names, @user_name)}</span>
+          <time
+            class="text-[10px] opacity-60"
+            title={DateTime.to_iso8601(@event.inserted_at)}
+          >
+            {short_time(@event.inserted_at)}
+          </time>
+          <.chevron />
+        </span>
+        <span class="h-px flex-1 bg-base-300/70" />
+      </summary>
+      <div class="px-4 pb-2 pt-1">
+        <.activity_list id={"turn-#{@event.id}"} entries={@entries} />
+      </div>
+    </details>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :entries, :list, required: true
+
+  defp activity_list(assigns) do
+    ~H"""
+    <ol :if={@entries != []} class="flex flex-col gap-0.5 font-mono text-xs">
+      <li
+        :for={entry <- @entries}
+        id={"#{@id}-#{dom_key(entry.key)}"}
+        class="flex items-start gap-2 text-base-content/75"
+      >
+        <.icon name={entry_icon(entry)} class={["mt-0.5 size-3.5 shrink-0", entry_class(entry)]} />
+        <span class="min-w-0 truncate">
+          <span class="text-base-content">{entry.label}</span>
+          <span :if={entry.detail} class="text-base-content/50">— {entry.detail}</span>
+        </span>
+      </li>
+    </ol>
+    """
+  end
+
+  # Entry keys carry paths; ids must stay selector-safe.
+  defp dom_key(key), do: Regex.replace(~r/[^A-Za-z0-9_-]+/, key, "-")
+
+  defp chevron(assigns) do
+    ~H"""
+    <.icon
+      name="hero-chevron-down-mini"
+      class="size-4 shrink-0 opacity-60 transition-transform group-open/card:rotate-180"
+    />
     """
   end
 
@@ -316,7 +384,7 @@ defmodule CanopyWeb.TimelineComponents do
     ~H"""
     <section
       id={"permission-#{@request.id}"}
-      class="mx-6 my-2 overflow-hidden rounded-xl border border-warning/40 bg-warning/5 shadow-xs"
+      class="mx-3 my-2 overflow-hidden rounded-xl border border-warning/40 bg-warning/5 shadow-xs sm:mx-6"
     >
       <div class="flex items-center gap-2 px-4 py-2.5">
         <.icon name="hero-shield-exclamation" class="size-5 text-warning" />
@@ -439,6 +507,7 @@ defmodule CanopyWeb.TimelineComponents do
     agent = agent_ref(names, event.agent_id, user_name)
     from = agent_ref(names, p["from_agent_id"], user_name)
     to = agent_ref(names, p["to_agent_id"], user_name)
+    user = user_name
 
     case type do
       "agent_started" ->
@@ -477,6 +546,18 @@ defmodule CanopyWeb.TimelineComponents do
           do: "#{to} now owns this task",
           else: "ownership moved from #{from} to #{to}"
 
+      "member_added" ->
+        "#{agent} joined the channel"
+
+      "member_removed" ->
+        "#{agent} was removed from the channel"
+
+      "channel_archived" ->
+        "#{user} archived this channel"
+
+      "channel_reopened" ->
+        "#{user} reopened this channel"
+
       "permission_requested" ->
         "#{agent} asked for #{p["permission"]} permission" <>
           suffix(Enum.join(List.wrap(p["patterns"]), ", "))
@@ -494,11 +575,7 @@ defmodule CanopyWeb.TimelineComponents do
   def agent_ref(names, id, _user_name), do: "@" <> Map.get(names, id, "unknown")
 
   @doc "Formats a dollar cost with enough precision for cents of a cent."
-  def format_cost(cost) when is_number(cost) do
-    "$" <> :erlang.float_to_binary(cost / 1, decimals: 4)
-  end
-
-  def format_cost(_), do: "$0.0000"
+  defdelegate format_cost(cost), to: Activity
 
   @doc "Formats milliseconds as seconds or minutes."
   def format_duration(ms) when is_integer(ms) and ms < 60_000,
@@ -515,42 +592,6 @@ defmodule CanopyWeb.TimelineComponents do
   @doc "The HH:MM of a datetime (UTC)."
   def short_time(%DateTime{} = at), do: Calendar.strftime(at, "%H:%M")
   def short_time(_), do: ""
-
-  # -- Body parsing ------------------------------------------------------------
-
-  @doc """
-  Splits a body into `{:code, lang, code}` and `{:text, parts}` segments, where
-  parts are `{:mention, "@name"}` or `{:plain, text}`.
-  """
-  def body_segments(body) when is_binary(body) do
-    @fence_regex
-    |> Regex.split(body, include_captures: true, trim: true)
-    |> Enum.map(fn
-      "```" <> _ = fenced -> fenced_segment(fenced)
-      text -> {:text, mention_parts(text)}
-    end)
-  end
-
-  def body_segments(_), do: []
-
-  defp fenced_segment(fenced) do
-    inner = fenced |> String.trim_leading("`") |> String.trim_trailing("`")
-
-    case String.split(inner, "\n", parts: 2) do
-      [lang, code] -> {:code, String.trim(lang), String.trim_trailing(code, "\n")}
-      [only] -> {:code, "", only}
-    end
-  end
-
-  defp mention_parts(text) do
-    @mention_regex
-    |> Regex.split(text, include_captures: true)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn
-      "@" <> _ = mention -> {:mention, mention}
-      plain -> {:plain, plain}
-    end)
-  end
 
   # -- Private helpers ---------------------------------------------------------
 
@@ -612,6 +653,10 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("handoff_" <> _), do: "hero-arrow-right-circle-mini"
   defp event_icon("task_updated"), do: "hero-clipboard-document-check-mini"
   defp event_icon("owner_changed"), do: "hero-user-circle-mini"
+  defp event_icon("member_added"), do: "hero-user-plus-mini"
+  defp event_icon("member_removed"), do: "hero-user-minus-mini"
+  defp event_icon("channel_archived"), do: "hero-archive-box-mini"
+  defp event_icon("channel_reopened"), do: "hero-archive-box-x-mark-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 

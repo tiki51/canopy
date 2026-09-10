@@ -36,7 +36,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   alias Canopy.OpenCode
   alias Canopy.OpenCode.Client
-  alias Canopy.Runtime.{Prompts, Router}
+  alias Canopy.Runtime.{Activity, Prompts, Router}
 
   @telemetry_cap 200
   @reconcile_grace_ms 15_000
@@ -513,6 +513,27 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # -- Execution events -------------------------------------------------------
 
+  @activity_types [
+    :tool_started,
+    :tool_completed,
+    :file_changed,
+    :step_completed,
+    :patch,
+    :diff,
+    :text_delta,
+    :text_done
+  ]
+
+  # OpenCode keeps emitting for a session after session.idle (session.diff,
+  # late part updates). Activity outside a turn must not reopen the working
+  # card, so it is dropped.
+  defp handle_execution(%{type: type, session_id: sid}, _who, %{turns: turns} = state)
+       when type in @activity_types and not is_map_key(turns, sid),
+       do: state
+
+  # session.diff is empty on every capture so far; an empty diff says nothing.
+  defp handle_execution(%{type: :diff, data: %{files: []}}, _who, state), do: state
+
   defp handle_execution(%{type: type} = event, %{agent_id: agent_id}, state)
        when type in [
               :tool_started,
@@ -590,6 +611,12 @@ defmodule Canopy.Runtime.ChannelServer do
   defp handle_execution(%{type: :agent_completed} = event, who, state),
     do: finish_turn(state, event.session_id, who, :ok)
 
+  # OpenCode can emit session.error several times for one failure (with and
+  # without a stack trace). Only the first one, while a turn is in flight, is recorded.
+  defp handle_execution(%{type: :agent_error, session_id: sid}, _who, %{turns: turns} = state)
+       when not is_map_key(turns, sid),
+       do: state
+
   defp handle_execution(%{type: :agent_error, data: %{error: error}} = event, who, state) do
     reason = error_message(error)
 
@@ -623,23 +650,33 @@ defmodule Canopy.Runtime.ChannelServer do
             {:error, reason} -> AgentSessions.set_status(session, "error", reason)
           end
 
-        reply_id = maybe_post_reply(state, turn, who)
+        # The summary goes in before the reply so its activity card sits above
+        # the message, where the live card was while the agent worked.
+        activity =
+          state.telemetry
+          |> Map.get(who.agent_id, [])
+          |> Enum.reverse()
+          |> Activity.fold_all()
+          |> Activity.to_payload()
 
         {:ok, _} =
           Timeline.record(%{
             channel_id: state.channel.id,
             agent_id: who.agent_id,
             event_type: "agent_turn_completed",
-            ref_id: reply_id,
+            ref_id: session.id,
             payload: %{
               "tools" => turn.tools,
               "files" => MapSet.to_list(turn.files),
               "cost" => turn.cost,
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => if(outcome == :ok, do: "ok", else: "error"),
-              "delegation_id" => who.delegation_id
+              "delegation_id" => who.delegation_id,
+              "activity" => activity
             }
           })
+
+        maybe_post_reply(state, turn, who)
 
         broadcast(
           state,
@@ -748,9 +785,24 @@ defmodule Canopy.Runtime.ChannelServer do
   defp reply_atom("always"), do: :always
   defp reply_atom(_), do: :reject
 
-  defp error_message(%{"data" => %{"message" => m}}) when is_binary(m), do: m
+  @error_max 300
+
+  defp error_message(%{"data" => %{"message" => m}} = error) when is_binary(m) do
+    m
+    |> String.split("\n", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.slice(0, @error_max)
+    |> add_hint(error)
+  end
+
   defp error_message(%{"name" => n}) when is_binary(n), do: n
-  defp error_message(other), do: inspect(other)
+  defp error_message(other), do: other |> inspect() |> String.slice(0, @error_max)
+
+  defp add_hint(message, %{"name" => "ProviderModelNotFoundError"}),
+    do: message <> " (check the agent's model provider and id on the Agents page)"
+
+  defp add_hint(message, _), do: message
 
   defp client, do: Client.impl()
 

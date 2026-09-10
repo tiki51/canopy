@@ -32,9 +32,12 @@ defmodule CanopyWeb.Layouts do
     doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
 
   attr :repositories, :list, default: [], doc: "repositories with :channels, from CanopyWeb.Nav"
+  attr :dms, :list, default: [], doc: "direct-message channels, from CanopyWeb.Nav"
   attr :agents, :list, default: [], doc: "active agents, from CanopyWeb.Nav"
   attr :current_path, :string, default: "/"
   attr :current_channel_id, :string, default: nil
+  attr :current_repository_id, :string, default: nil, doc: "repository of the open channel"
+  attr :current_dm_agent_id, :string, default: nil, doc: "agent when the open channel is a DM"
   attr :agent_statuses, :map, default: %{}, doc: "agent_id => :idle | :busy | :error"
 
   slot :inner_block, required: true
@@ -43,141 +46,205 @@ defmodule CanopyWeb.Layouts do
   # main column. Every LiveView renders inside it; sidebar data comes from CanopyWeb.Nav.
   def app(assigns) do
     ~H"""
-    <div class="flex h-screen overflow-hidden bg-base-100 text-base-content">
-      <nav
-        id="rail"
-        class="flex w-14 shrink-0 flex-col items-center gap-1 bg-neutral py-3 text-neutral-content"
-        aria-label="Workspace"
+    <div class="flex h-dvh overflow-hidden bg-base-100 text-base-content">
+      <%!-- Below lg the rail and sidebar slide in over the page; this checkbox
+      is their open state, toggled by <.menu_button> and the overlay. --%>
+      <input id="app-drawer" type="checkbox" class="peer sr-only" aria-hidden="true" tabindex="-1" />
+      <label
+        for="app-drawer"
+        id="app-drawer-overlay"
+        class="fixed inset-0 z-30 hidden bg-black/40 peer-checked:block lg:hidden"
+        aria-label="Close the menu"
+      ></label>
+      <div
+        id="app-nav"
+        class="fixed inset-y-0 left-0 z-40 flex -translate-x-full shadow-xl transition-transform duration-200 peer-checked:translate-x-0 lg:static lg:translate-x-0 lg:shadow-none"
       >
-        <.link
-          navigate={~p"/"}
-          class="mb-3 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-content font-black text-lg shadow-sm transition hover:scale-105"
-          title="Canopy"
+        <nav
+          id="rail"
+          class="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-base-300/60 bg-neutral py-3 text-neutral-content"
+          aria-label="Workspace"
         >
-          C
-        </.link>
-        <.rail_link
-          navigate={~p"/repositories"}
-          icon="hero-folder"
-          title="Repositories"
-          active={@current_path == "/repositories"}
-        />
-        <.rail_link
-          navigate={~p"/agents"}
-          icon="hero-cpu-chip"
-          title="Agents"
-          active={@current_path == "/agents"}
-        />
-        <.rail_link
-          navigate={~p"/settings"}
-          icon="hero-cog-6-tooth"
-          title="Settings"
-          active={@current_path == "/settings"}
-        />
-        <div class="mt-auto">
-          <.theme_toggle />
-        </div>
-      </nav>
-
-      <aside
-        id="sidebar"
-        class="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
-        aria-label="Channels and agents"
-      >
-        <div class="flex items-center justify-between px-4 pt-4 pb-2">
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
-            Channels
-          </span>
           <.link
-            navigate={~p"/channels/new"}
-            class={[
-              "flex size-6 items-center justify-center rounded-md text-base-content/60 transition",
-              "hover:bg-base-300 hover:text-base-content",
-              @current_path == "/channels/new" && "bg-base-300 text-base-content"
-            ]}
-            title="New channel"
-            id="sidebar-new-channel"
+            navigate={~p"/"}
+            class="mb-3 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-content font-black text-lg shadow-sm transition hover:scale-105"
+            title="Canopy"
           >
-            <.icon name="hero-plus" class="size-4" />
+            C
           </.link>
-        </div>
-
-        <div
-          :if={@repositories == []}
-          class="mx-3 mb-3 rounded-lg border border-dashed border-base-300 p-3 text-xs text-base-content/60"
-        >
-          No repositories yet.
-          <.link navigate={~p"/repositories"} class="link link-primary">Add one</.link>
-          to create channels.
-        </div>
-
-        <div :for={repository <- @repositories} class="px-2 pb-2" id={"sidebar-repo-#{repository.id}"}>
-          <div
-            class="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-base-content/70"
-            title={repository.path}
-          >
-            <.icon name="hero-folder-mini" class="size-3.5 text-base-content/40" />
-            <span class="truncate">{repository.name}</span>
+          <.rail_link
+            navigate={~p"/repositories"}
+            icon="hero-folder"
+            title="Repositories"
+            active={@current_path == "/repositories"}
+          />
+          <.rail_link
+            navigate={~p"/agents"}
+            icon="hero-cpu-chip"
+            title="Agents"
+            active={@current_path == "/agents"}
+          />
+          <.rail_link
+            navigate={~p"/settings"}
+            icon="hero-cog-6-tooth"
+            title="Settings"
+            active={@current_path == "/settings"}
+          />
+          <div class="mt-auto">
+            <.theme_toggle />
           </div>
-          <ul class="flex flex-col gap-px">
-            <li :for={channel <- repository.channels}>
+        </nav>
+
+        <aside
+          id="sidebar"
+          class="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
+          aria-label="Channels and agents"
+        >
+          <div class="flex items-center justify-between px-4 pt-4 pb-2">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+              Channels
+            </span>
+            <.link
+              navigate={~p"/channels/new"}
+              class={[
+                "flex size-6 items-center justify-center rounded-md text-base-content/60 transition",
+                "hover:bg-base-300 hover:text-base-content",
+                @current_path == "/channels/new" && "bg-base-300 text-base-content"
+              ]}
+              title="New channel"
+              id="sidebar-new-channel"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </.link>
+          </div>
+
+          <div
+            :if={@repositories == []}
+            class="mx-3 mb-3 rounded-lg border border-dashed border-base-300 p-3 text-xs text-base-content/60"
+          >
+            No repositories yet.
+            <.link navigate={~p"/repositories"} class="link link-primary">Add one</.link>
+            to create channels.
+          </div>
+
+          <div
+            :for={repository <- @repositories}
+            class="px-2 pb-2"
+            id={"sidebar-repo-#{repository.id}"}
+          >
+            <div
+              class="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-base-content/70"
+              title={repository.path}
+            >
+              <.icon name="hero-folder-mini" class="size-3.5 text-base-content/40" />
+              <span class="truncate">{repository.name}</span>
+            </div>
+            <ul class="flex flex-col gap-px">
+              <li :for={channel <- repository.channels}>
+                <.link
+                  navigate={~p"/channels/#{channel.id}"}
+                  id={"sidebar-channel-#{channel.id}"}
+                  data-active={channel.id == @current_channel_id}
+                  class={[
+                    "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition",
+                    channel.id == @current_channel_id && "bg-primary/15 text-primary font-medium",
+                    channel.id != @current_channel_id &&
+                      "text-base-content/80 hover:bg-base-300 hover:text-base-content",
+                    channel.status == "archived" && "opacity-50"
+                  ]}
+                  title={channel.topic}
+                >
+                  <span class="opacity-60">#</span>
+                  <span class="truncate">{channel.name}</span>
+                  <.icon
+                    :if={channel.status == "archived"}
+                    name="hero-archive-box-mini"
+                    class="ml-auto size-3.5 opacity-60"
+                  />
+                </.link>
+              </li>
+              <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/40">
+                no channels
+              </li>
+            </ul>
+          </div>
+
+          <div class="mt-2 flex items-center justify-between px-4 pt-2 pb-2">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+              Direct messages
+            </span>
+          </div>
+          <ul id="sidebar-dms" class="flex flex-col gap-px px-2 pb-2">
+            <li :for={dm <- @dms}>
               <.link
-                navigate={~p"/channels/#{channel.id}"}
-                id={"sidebar-channel-#{channel.id}"}
+                navigate={~p"/channels/#{dm.id}"}
+                id={"sidebar-dm-#{dm.id}"}
+                data-active={dm.id == @current_channel_id}
+                title={"#{Canopy.Channels.dm_label(dm)} · #{dm.repository.name}"}
                 class={[
                   "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition",
-                  channel.id == @current_channel_id && "bg-primary text-primary-content font-medium",
-                  channel.id != @current_channel_id &&
+                  dm.id == @current_channel_id && "bg-primary/15 text-primary font-medium",
+                  dm.id != @current_channel_id &&
                     "text-base-content/80 hover:bg-base-300 hover:text-base-content",
-                  channel.status == "archived" && "opacity-50"
+                  dm.status == "archived" && "opacity-50"
                 ]}
-                title={channel.topic}
               >
-                <span class="opacity-60">#</span>
-                <span class="truncate">{channel.name}</span>
-                <.icon
-                  :if={channel.status == "archived"}
-                  name="hero-archive-box-mini"
-                  class="ml-auto size-3.5 opacity-60"
-                />
+                <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5 shrink-0 opacity-60" />
+                <span class="truncate">{Canopy.Channels.dm_label(dm)}</span>
+                <span :if={length(@repositories) > 1} class="ml-auto truncate text-[10px] opacity-50">
+                  {dm.repository.name}
+                </span>
               </.link>
             </li>
-            <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/40">
-              no channels
+            <li :if={@dms == []} class="px-2 text-xs text-base-content/40">
+              Click an agent below to start one
             </li>
           </ul>
-        </div>
 
-        <div class="mt-2 flex items-center justify-between px-4 pt-2 pb-2">
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
-            Agents
-          </span>
-          <.link
-            navigate={~p"/agents"}
-            class="flex size-6 items-center justify-center rounded-md text-base-content/60 transition hover:bg-base-300 hover:text-base-content"
-            title="Manage agents"
-          >
-            <.icon name="hero-adjustments-horizontal" class="size-4" />
-          </.link>
-        </div>
-        <ul class="flex flex-col gap-px px-2 pb-4">
-          <li :for={agent <- @agents}>
+          <div class="flex items-center justify-between px-4 pt-2 pb-2">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+              Agents
+            </span>
             <.link
               navigate={~p"/agents"}
-              id={"sidebar-agent-#{agent.id}"}
-              title={agent.role}
-              class="flex items-center gap-2 rounded-md px-2 py-1 text-sm text-base-content/80 transition hover:bg-base-300 hover:text-base-content"
+              class="flex size-6 items-center justify-center rounded-md text-base-content/60 transition hover:bg-base-300 hover:text-base-content"
+              title="Manage agents"
             >
-              <.status_dot status={Map.get(@agent_statuses, agent.id, :idle)} />
-              <span class="truncate">@{agent.name}</span>
-              <span :if={agent.role} class="ml-auto truncate text-[11px] text-base-content/40">
-                {agent.role}
-              </span>
+              <.icon name="hero-adjustments-horizontal" class="size-4" />
             </.link>
-          </li>
-          <li :if={@agents == []} class="px-2 text-xs text-base-content/40">no agents</li>
-        </ul>
-      </aside>
+          </div>
+          <ul class="flex flex-col gap-px px-2 pb-4">
+            <li :for={agent <- @agents}>
+              <.link
+                href={dm_path(agent, @current_repository_id)}
+                id={"sidebar-agent-#{agent.id}"}
+                data-active={agent.id == @current_dm_agent_id}
+                title={"Message @#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
+                class={[
+                  "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition",
+                  agent.id == @current_dm_agent_id && "bg-primary/15 text-primary font-medium",
+                  agent.id != @current_dm_agent_id &&
+                    "text-base-content/80 hover:bg-base-300 hover:text-base-content"
+                ]}
+              >
+                <.status_dot status={Map.get(@agent_statuses, agent.id, :idle)} />
+                <span class="shrink-0">@{agent.name}</span>
+                <span
+                  :if={agent.role}
+                  class={[
+                    "min-w-0 truncate text-[11px]",
+                    agent.id == @current_dm_agent_id && "text-primary/70",
+                    agent.id != @current_dm_agent_id && "text-base-content/40"
+                  ]}
+                >
+                  {agent.role}
+                </span>
+              </.link>
+            </li>
+            <li :if={@agents == []} class="px-2 text-xs text-base-content/40">no agents</li>
+          </ul>
+        </aside>
+      </div>
 
       <main class="flex min-w-0 flex-1 flex-col overflow-hidden">
         {render_slot(@inner_block)}
@@ -216,17 +283,39 @@ defmodule CanopyWeb.Layouts do
 
   attr :status, :atom, default: :idle
 
-  @doc "A small coloured dot for agent status."
+  @doc "Opens the rail and sidebar on small screens; hidden from lg up where they are always shown."
+  def menu_button(assigns) do
+    ~H"""
+    <label
+      for="app-drawer"
+      class="btn btn-ghost btn-sm btn-square -ml-1 shrink-0 lg:hidden"
+      aria-label="Open the menu"
+      title="Menu"
+    >
+      <.icon name="hero-bars-3" class="size-5" />
+    </label>
+    """
+  end
+
+  @doc "A small coloured dot for agent status; it pings while the agent is busy."
+  def status_dot(%{status: :busy} = assigns) do
+    ~H"""
+    <span class="relative inline-flex size-2 shrink-0" data-status="busy">
+      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+      <span class="relative inline-flex size-2 rounded-full bg-success" />
+    </span>
+    """
+  end
+
   def status_dot(assigns) do
     ~H"""
     <span
       class={[
         "inline-block size-2 shrink-0 rounded-full",
-        @status == :busy && "bg-success animate-pulse",
         @status == :error && "bg-error",
-        @status == :idle && "bg-base-content/30"
+        @status not in [:busy, :error] && "bg-base-content/25"
       ]}
-      title={to_string(@status)}
+      data-status={@status}
     />
     """
   end
@@ -244,8 +333,9 @@ defmodule CanopyWeb.Layouts do
 
   def page(assigns) do
     ~H"""
-    <header class="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-base-300 px-6">
-      <div class="flex min-w-0 items-baseline gap-3">
+    <header class="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-base-300 px-3 sm:px-6">
+      <div class="flex min-w-0 items-center gap-3">
+        <.menu_button />
         <h1 class="truncate text-base font-semibold">{@title}</h1>
         <p :if={@subtitle} class="truncate text-xs text-base-content/60">{@subtitle}</p>
       </div>
@@ -254,7 +344,7 @@ defmodule CanopyWeb.Layouts do
       </div>
     </header>
     <div class="flex-1 overflow-y-auto">
-      <div class={["mx-auto flex flex-col gap-6 px-6 py-6", @max_width]}>
+      <div class={["mx-auto flex flex-col gap-6 px-3 py-4 sm:px-6 sm:py-6", @max_width]}>
         {render_slot(@inner_block)}
       </div>
     </div>
@@ -271,7 +361,7 @@ defmodule CanopyWeb.Layouts do
 
   def panel(assigns) do
     ~H"""
-    <section id={@id} class={["rounded-xl border border-base-300 bg-base-100 shadow-xs", @class]}>
+    <section id={@id} class={["rounded-xl border border-base-300 bg-base-200 shadow-xs", @class]}>
       <div class="flex items-start justify-between gap-4 border-b border-base-300 px-5 py-3">
         <div class="min-w-0">
           <h2 class="text-sm font-semibold">{@title}</h2>
@@ -395,4 +485,7 @@ defmodule CanopyWeb.Layouts do
     </div>
     """
   end
+
+  defp dm_path(agent, nil), do: ~p"/dm/#{agent.id}"
+  defp dm_path(agent, repository_id), do: ~p"/dm/#{agent.id}?repository=#{repository_id}"
 end

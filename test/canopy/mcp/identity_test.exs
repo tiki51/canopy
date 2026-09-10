@@ -41,7 +41,7 @@ defmodule Canopy.MCP.IdentityTest do
   test "every tool declares the optional canopy_session_id field" do
     tools = Canopy.MCP.Server.__components__(:tool)
     assert Enum.sort(Enum.map(tools, & &1.name)) == Enum.sort(Canopy.MCP.Server.tool_names())
-    assert length(tools) == 14
+    assert length(tools) == length(Canopy.MCP.Server.tool_names())
 
     for tool <- tools do
       assert %{"properties" => %{"canopy_session_id" => field}} = tool.input_schema

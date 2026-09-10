@@ -35,9 +35,12 @@ defmodule Canopy.Runtime.Router do
       |> Enum.reject(&(&1 == sender_agent_id))
       |> Enum.filter(&(&1 in ctx.members))
 
+    # In a DM the user is talking to everyone in it, so an unaddressed user
+    # message wakes all agents rather than just the owner.
     targets =
       cond do
         targets != [] -> targets
+        is_nil(sender_agent_id) and dm?(ctx) -> ctx.members
         is_nil(sender_agent_id) and ctx.owner_agent_id -> [ctx.owner_agent_id]
         true -> thread_root_author(message, ctx, sender_agent_id)
       end
@@ -127,6 +130,8 @@ defmodule Canopy.Runtime.Router do
       _ -> []
     end
   end
+
+  defp dm?(%{channel: channel}), do: Map.get(channel, :kind) == "dm"
 
   defp sender_name(%{agent_id: nil, user: %{display_name: n}}, _ctx) when is_binary(n), do: n
   defp sender_name(%{agent_id: nil}, ctx), do: ctx.user_name

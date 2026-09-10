@@ -16,6 +16,7 @@ defmodule Canopy.OpenCode.ClientBehaviour do
 
   @callback health(opts) :: result
   @callback agents(directory, opts) :: result
+  @callback providers(opts) :: result
   @callback create_session(directory, map(), opts) :: result
   @callback get_session(directory, session_id, opts) :: result
   @callback delete_session(directory, session_id, opts) :: result

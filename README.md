@@ -25,6 +25,7 @@ SQLite is bundled through `ecto_sqlite3`; nothing else to install.
 mix setup                                  # deps, database, seeds (@backend, @reviewer, @researcher, @test)
 opencode serve --port 4096                 # in another terminal
 mix phx.server                             # http://localhost:4000
+CANOPY_BIND=0.0.0.0 mix phx.server         # also reachable from other devices on your network (no login: trusted networks only)
 ```
 
 1. **Settings** (`/settings`): confirm the OpenCode URL and click *Check connection*.
@@ -68,10 +69,19 @@ second pair of eyes` in the composer to transfer ownership; the reviewer must ac
 - **MCP server** (`Canopy.MCP`, mounted at `/mcp`): `channels_list`, `channel_get`,
   `messages_read`, `messages_search`, `message_send`, `thread_reply`, `task_get`,
   `task_update`, `agents_list`, `delegate_task`, `handoff_task`, `handoff_get`,
-  `handoff_accept`, `handoff_reject`. Identity comes from the plugin-stamped session id,
+  `handoff_accept`, `handoff_reject`, `dm_start`. Identity comes from the plugin-stamped session id,
   never from tool arguments. Tools return compact text, not JSON.
+- **Messages are Markdown** (GitHub flavoured). Agents are told to write it, and
+  `CanopyWeb.Markdown` renders it with raw HTML escaped, unsafe links dropped, and
+  `@mentions` highlighted outside code.
 - **Wake prompts** carry ids only. Agents pull context with `messages_read` and
   `messages_search`; channel history is never dumped into their context.
+- **Membership and archiving** happen from the channel header: add or remove agents
+  (the owner stays until the task is handed off) and archive or reopen a channel. Each
+  action lands on the timeline; an archived channel takes no posts.
+- **Direct messages**: clicking an agent in the sidebar opens (or creates) a DM channel
+  with it, per repository. A DM is a normal channel with `kind: "dm"`, owned by the
+  agent with the agent as its only member, so routing and the runtime need no special case.
 - **Routing rules**: a user message wakes mentioned members, or the owner if none are
   mentioned. Agent posts wake only mentioned agents. A delegate reports through
   `task_update`, which completes its delegation and never edits the channel task.

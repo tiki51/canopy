@@ -26,21 +26,12 @@ defmodule CanopyWeb.ChannelLive do
   }
 
   alias Canopy.OpenCode.Event
-  alias Canopy.Runtime.Commands
+  alias Canopy.Runtime.{Activity, Commands}
+  alias CanopyWeb.Nav
   alias Canopy.Tasks.Task
 
   @page_size 100
   @branch_interval 15_000
-  @card_entries 80
-  @preview_chars 1_500
-
-  @empty_card %{
-    entries: [],
-    preview: "",
-    collapsed: false,
-    tool_count: 0,
-    cost: 0.0
-  }
 
   # -- Lifecycle ---------------------------------------------------------------
 
@@ -83,11 +74,11 @@ defmodule CanopyWeb.ChannelLive do
 
     telemetry =
       for {agent_id, :busy} <- agent_statuses, into: %{} do
-        {agent_id, Enum.reduce(Runtime.telemetry(id, agent_id), @empty_card, &fold_telemetry/2)}
+        {agent_id, Activity.fold_all(Runtime.telemetry(id, agent_id))}
       end
 
     socket
-    |> assign(:page_title, "##{channel.name}")
+    |> assign(:page_title, channel_title(channel))
     |> assign(:channel, channel)
     |> assign(:members, members)
     |> assign(:member_names, Enum.map(members, & &1.name))
@@ -102,6 +93,8 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
     |> assign(:editing_task?, false)
+    |> assign(:editing_members?, false)
+    |> assign(:addable_agents, [])
     |> assign(:changes, nil)
     |> assign_task(Tasks.for_channel(id))
     |> assign_composer("")
@@ -178,7 +171,7 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   def handle_info({:telemetry, agent_id, %Event{} = event}, socket) do
-    card = fold_telemetry(event, Map.get(socket.assigns.telemetry, agent_id, @empty_card))
+    card = Activity.fold(event, Map.get(socket.assigns.telemetry, agent_id, Activity.new()))
 
     {:noreply,
      socket
@@ -240,6 +233,12 @@ defmodule CanopyWeb.ChannelLive do
   defp react_to(socket, %{event_type: type}) when type in ~w(handoff_requested handoff_rejected),
     do: refresh_handoffs(socket)
 
+  defp react_to(socket, %{event_type: type}) when type in ~w(member_added member_removed),
+    do: refresh_members(socket)
+
+  defp react_to(socket, %{event_type: type}) when type in ~w(channel_archived channel_reopened),
+    do: socket |> refresh_channel() |> Nav.refresh_nav()
+
   defp react_to(socket, %{event_type: "task_updated"}),
     do: assign_task(socket, Tasks.for_channel(cid(socket)))
 
@@ -251,6 +250,15 @@ defmodule CanopyWeb.ChannelLive do
     assign(socket, :channel, channel)
   end
 
+  defp refresh_members(socket) do
+    members = Channels.members(cid(socket))
+
+    socket
+    |> assign(:members, members)
+    |> assign(:member_names, Enum.map(members, & &1.name))
+    |> assign(:addable_agents, Channels.addable_agents(cid(socket)))
+  end
+
   defp refresh_handoffs(socket),
     do: assign(socket, :pending_handoffs, Handoffs.pending_for_channel(cid(socket)))
 
@@ -258,157 +266,6 @@ defmodule CanopyWeb.ChannelLive do
     do: assign(socket, :pending_permissions, PermissionRequests.pending_for_channel(cid(socket)))
 
   defp cid(socket), do: socket.assigns.channel.id
-
-  # -- Telemetry folding -------------------------------------------------------
-
-  defp fold_telemetry(%Event{type: :tool_started, data: data}, card) do
-    put_entry(card, %{
-      key: data[:call_id] || data[:part_id] || unique_key(),
-      kind: :tool,
-      status: :running,
-      label: data[:title] || data[:tool] || "tool",
-      detail: short_input(data[:input])
-    })
-  end
-
-  defp fold_telemetry(%Event{type: :tool_completed, data: data}, card) do
-    entry = %{
-      key: data[:call_id] || data[:part_id] || unique_key(),
-      kind: :tool,
-      status: if(data[:status] == :error, do: :error, else: :ok),
-      label: data[:title] || data[:tool] || "tool",
-      detail: data[:error] || short_input(data[:input])
-    }
-
-    card = put_entry(card, entry)
-    %{card | tool_count: card.tool_count + 1}
-  end
-
-  defp fold_telemetry(%Event{type: :file_changed, data: %{path: path}}, card) do
-    put_entry(card, %{
-      key: "file-" <> path,
-      kind: :file,
-      status: :ok,
-      label: Path.basename(path),
-      detail: path
-    })
-  end
-
-  defp fold_telemetry(%Event{type: :step_completed, data: data}, card) do
-    cost = if is_number(data[:cost]), do: data[:cost], else: 0.0
-
-    card =
-      put_entry(card, %{
-        key: "step-" <> unique_key(),
-        kind: :step,
-        status: :ok,
-        label: "step #{data[:reason] || "completed"}",
-        detail: step_detail(data[:tokens], cost)
-      })
-
-    %{card | cost: card.cost + cost}
-  end
-
-  defp fold_telemetry(%Event{type: :text_delta, data: %{delta: delta}}, card)
-       when is_binary(delta) do
-    %{card | preview: tail(card.preview <> delta, @preview_chars)}
-  end
-
-  defp fold_telemetry(%Event{type: :text_done, data: %{text: text}}, card) when is_binary(text) do
-    %{card | preview: tail(text, @preview_chars)}
-  end
-
-  defp fold_telemetry(%Event{type: :diff, data: %{files: files}}, card) when is_list(files) do
-    put_entry(card, %{
-      key: "diff-" <> unique_key(),
-      kind: :diff,
-      status: :ok,
-      label: "#{length(files)} changed #{if(length(files) == 1, do: "file", else: "files")}",
-      detail: Enum.map_join(files, ", ", &diff_file/1)
-    })
-  end
-
-  defp fold_telemetry(%Event{type: :patch, data: data}, card) do
-    files = List.wrap(data[:files])
-
-    put_entry(card, %{
-      key: "patch-" <> unique_key(),
-      kind: :diff,
-      status: :ok,
-      label: "patch",
-      detail: Enum.map_join(files, ", ", &diff_file/1)
-    })
-  end
-
-  defp fold_telemetry(_event, card), do: card
-
-  defp put_entry(card, %{key: key} = entry) do
-    entries =
-      if Enum.any?(card.entries, &(&1.key == key)),
-        do: Enum.map(card.entries, fn e -> if e.key == key, do: entry, else: e end),
-        else: Enum.take(card.entries ++ [entry], -@card_entries)
-
-    %{card | entries: entries}
-  end
-
-  defp short_input(input) when is_map(input) do
-    value =
-      Enum.find_value(~w(filePath path command pattern description query url), fn key ->
-        case Map.get(input, key) do
-          v when is_binary(v) and v != "" -> v
-          _ -> nil
-        end
-      end) ||
-        case Map.values(input) do
-          [v | _] when is_binary(v) -> v
-          _ -> nil
-        end
-
-    value && truncate(value, 80)
-  end
-
-  defp short_input(_), do: nil
-
-  defp step_detail(tokens, cost) do
-    total =
-      case tokens do
-        %{} -> tokens |> Map.values() |> Enum.filter(&is_number/1) |> Enum.sum()
-        _ -> 0
-      end
-
-    [
-      if(total > 0, do: "#{total} tokens"),
-      if(cost > 0, do: format_cost(cost))
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(" · ")
-    |> case do
-      "" -> nil
-      detail -> detail
-    end
-  end
-
-  defp diff_file(%{} = file) do
-    name = file["file"] || file["path"] || file[:file] || file[:path] || "?"
-    adds = file["additions"] || file[:additions]
-    dels = file["deletions"] || file[:deletions]
-
-    if is_integer(adds) or is_integer(dels),
-      do: "#{name} (+#{adds || 0}/-#{dels || 0})",
-      else: to_string(name)
-  end
-
-  defp diff_file(other), do: to_string(other)
-
-  defp tail(text, max) do
-    if String.length(text) > max, do: "…" <> String.slice(text, -max, max), else: text
-  end
-
-  defp truncate(text, max) do
-    if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
-  end
-
-  defp unique_key, do: System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
 
   # -- Events ------------------------------------------------------------------
 
@@ -441,15 +298,6 @@ defmodule CanopyWeb.ChannelLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Abort failed: #{inspect(reason)}")}
     end
-  end
-
-  def handle_event("toggle_telemetry", %{"agent-id" => agent_id}, socket) do
-    telemetry =
-      Map.update(socket.assigns.telemetry, agent_id, @empty_card, fn card ->
-        %{card | collapsed: not card.collapsed}
-      end)
-
-    {:noreply, assign(socket, :telemetry, telemetry)}
   end
 
   def handle_event("respond_permission", %{"id" => id, "reply" => reply}, socket)
@@ -508,6 +356,52 @@ defmodule CanopyWeb.ChannelLive do
      socket
      |> assign(:editing_task?, not socket.assigns.editing_task?)
      |> assign_task(socket.assigns.task)}
+  end
+
+  def handle_event("toggle_members", _params, socket) do
+    socket = assign(socket, :editing_members?, not socket.assigns.editing_members?)
+    {:noreply, if(socket.assigns.editing_members?, do: refresh_members(socket), else: socket)}
+  end
+
+  def handle_event("add_member", %{"agent_id" => ""}, socket), do: {:noreply, socket}
+
+  def handle_event("add_member", %{"agent_id" => agent_id}, socket) do
+    case Channels.add_agent(socket.assigns.channel, agent_id) do
+      {:ok, _} -> {:noreply, refresh_members(socket)}
+      {:error, _} -> {:noreply, put_flash(socket, :error, "Could not add that agent.")}
+    end
+  end
+
+  def handle_event("remove_member", %{"agent-id" => agent_id}, socket) do
+    case Channels.remove_agent(socket.assigns.channel, agent_id) do
+      {:ok, _} ->
+        {:noreply, refresh_members(socket)}
+
+      {:error, :owner} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "The owner cannot be removed. Hand the task off first with /handoff @agent."
+         )}
+    end
+  end
+
+  def handle_event("archive_channel", _params, socket) do
+    {:ok, channel} = Channels.archive(socket.assigns.channel)
+
+    {:noreply,
+     socket
+     |> assign(:channel, channel)
+     |> assign(:editing_members?, false)
+     |> assign(:editing_task?, false)
+     |> Nav.refresh_nav()
+     |> put_flash(:info, "##{channel.name} archived. Reopen it any time from its header.")}
+  end
+
+  def handle_event("reopen_channel", _params, socket) do
+    {:ok, channel} = Channels.reopen(socket.assigns.channel)
+    {:noreply, socket |> assign(:channel, channel) |> Nav.refresh_nav()}
   end
 
   def handle_event("validate_task", %{"task" => params}, socket) do
@@ -595,8 +489,11 @@ defmodule CanopyWeb.ChannelLive do
       flash={@flash}
       repositories={@repositories}
       agents={@agents}
+      dms={@dms}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
+      current_repository_id={@current_repository_id}
+      current_dm_agent_id={@current_dm_agent_id}
       agent_statuses={@agent_statuses}
     >
       <.channel_header
@@ -606,6 +503,7 @@ defmodule CanopyWeb.ChannelLive do
         members={@members}
         agent_statuses={@agent_statuses}
         editing_task?={@editing_task?}
+        editing_members?={@editing_members?}
       />
 
       <.handoff_banner
@@ -616,6 +514,14 @@ defmodule CanopyWeb.ChannelLive do
       />
 
       <.task_panel :if={@editing_task? and @task_form} form={@task_form} />
+
+      <.members_panel
+        :if={@editing_members?}
+        channel={@channel}
+        members={@members}
+        addable={@addable_agents}
+        agent_statuses={@agent_statuses}
+      />
 
       <div
         id="timeline-scroll"
@@ -636,7 +542,7 @@ defmodule CanopyWeb.ChannelLive do
         <div id="timeline" phx-update="stream" class="flex flex-col py-2">
           <div
             id="timeline-empty"
-            class="hidden only:flex flex-col items-center gap-1 px-6 py-16 text-center text-sm text-base-content/50"
+            class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/50"
           >
             <.icon name="hero-chat-bubble-oval-left-ellipsis" class="size-8 opacity-40" />
             Nothing here yet. Say something to wake the owner, or mention an agent.
@@ -661,12 +567,16 @@ defmodule CanopyWeb.ChannelLive do
         <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
       </div>
 
-      <.composer form={@composer} member_names={@member_names} />
+      <.composer :if={!Channels.archived?(@channel)} form={@composer} member_names={@member_names} />
+      <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
 
       <.changes_modal :if={@changes} changes={@changes} repository={@channel.repository} />
     </Layouts.app>
     """
   end
+
+  defp channel_title(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
+  defp channel_title(channel), do: "#" <> channel.name
 
   defp thread_replies(threads, %{event_type: "message", message: %{id: id, thread_id: nil}}),
     do: Map.get(threads, id, [])
@@ -679,28 +589,64 @@ defmodule CanopyWeb.ChannelLive do
   attr :members, :list, required: true
   attr :agent_statuses, :map, required: true
   attr :editing_task?, :boolean, default: false
+  attr :editing_members?, :boolean, default: false
 
   defp channel_header(assigns) do
     ~H"""
     <header
       id="channel-header"
-      class="flex shrink-0 flex-col gap-1.5 border-b border-base-300 px-6 py-3"
+      class="flex shrink-0 flex-col gap-1.5 border-b border-base-300 px-3 py-2 sm:px-6 sm:py-3"
     >
-      <div class="flex min-w-0 items-center gap-3">
+      <div class="flex min-w-0 items-center gap-2 sm:gap-3">
+        <Layouts.menu_button />
         <h1 id="channel-name" class="flex items-baseline gap-1 truncate text-base font-semibold">
-          <span class="text-base-content/40">#</span>{@channel.name}
+          <%= if Channels.dm?(@channel) do %>
+            {Channels.dm_label(@channel)}
+            <span
+              class="ml-1 rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/50"
+              title="A direct message: only this agent is in the channel"
+            >
+              dm
+            </span>
+          <% else %>
+            <span class="text-base-content/40">#</span>{@channel.name}
+          <% end %>
         </h1>
-        <p :if={@channel.topic} class="truncate text-sm text-base-content/60" id="channel-topic">
+        <p
+          :if={@channel.topic && !Channels.dm?(@channel)}
+          class="truncate text-sm text-base-content/60"
+          id="channel-topic"
+        >
           {@channel.topic}
         </p>
-        <div class="ml-auto flex shrink-0 items-center gap-2">
+        <div class="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+          <span
+            :if={Channels.archived?(@channel)}
+            id="archived-badge"
+            class="badge badge-sm badge-ghost gap-1"
+            title="No one can post here until it is reopened"
+          >
+            <.icon name="hero-archive-box-mini" class="size-3" /> archived
+          </span>
+          <button
+            :if={!Channels.dm?(@channel)}
+            type="button"
+            id="edit-members"
+            class={["btn btn-xs btn-ghost", @editing_members? && "btn-active"]}
+            phx-click="toggle_members"
+            title="Add or remove agents"
+          >
+            <.icon name="hero-users-mini" class="size-4" />
+            <span class="hidden sm:inline">Members</span>
+          </button>
           <button
             type="button"
             id="edit-task"
             class={["btn btn-xs btn-ghost", @editing_task? && "btn-active"]}
             phx-click="toggle_task_form"
           >
-            <.icon name="hero-clipboard-document-list-mini" class="size-4" /> Task
+            <.icon name="hero-clipboard-document-list-mini" class="size-4" />
+            <span class="hidden sm:inline">Task</span>
           </button>
           <button
             type="button"
@@ -708,7 +654,31 @@ defmodule CanopyWeb.ChannelLive do
             class="btn btn-xs btn-ghost"
             phx-click="open_changes"
           >
-            <.icon name="hero-document-plus-mini" class="size-4" /> Changes
+            <.icon name="hero-document-plus-mini" class="size-4" />
+            <span class="hidden sm:inline">Changes</span>
+          </button>
+          <button
+            :if={!Channels.archived?(@channel)}
+            type="button"
+            id="archive-channel"
+            class="btn btn-xs btn-ghost text-base-content/60"
+            phx-click="archive_channel"
+            data-confirm={"Archive ##{@channel.name}? Nobody can post until it is reopened."}
+            title="Archive this channel"
+          >
+            <.icon name="hero-archive-box-arrow-down-mini" class="size-4" />
+            <span class="hidden sm:inline">Archive</span>
+          </button>
+          <button
+            :if={Channels.archived?(@channel)}
+            type="button"
+            id="reopen-channel"
+            class="btn btn-xs btn-ghost"
+            phx-click="reopen_channel"
+            title="Reopen this channel"
+          >
+            <.icon name="hero-archive-box-x-mark-mini" class="size-4" />
+            <span class="hidden sm:inline">Reopen</span>
           </button>
         </div>
       </div>
@@ -774,11 +744,93 @@ defmodule CanopyWeb.ChannelLive do
   defp task_badge("completed"), do: "badge-success badge-soft"
   defp task_badge(_), do: "badge-ghost"
 
+  attr :channel, :map, required: true
+  attr :members, :list, required: true
+  attr :addable, :list, required: true
+  attr :agent_statuses, :map, required: true
+
+  defp members_panel(assigns) do
+    ~H"""
+    <section
+      id="members-panel"
+      class="flex flex-col gap-3 border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          Members
+        </span>
+        <span
+          :for={member <- @members}
+          id={"member-row-#{member.id}"}
+          class="flex items-center gap-1.5 rounded-full border border-base-300 bg-base-200 py-0.5 pl-2 pr-1 text-xs"
+          title={member.role}
+        >
+          <Layouts.status_dot status={Map.get(@agent_statuses, member.id, :idle)} />
+          <span>@{member.name}</span>
+          <span
+            :if={member.id == @channel.owner_agent_id}
+            class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+            title="The owner cannot be removed; hand the task off first"
+          >
+            owner
+          </span>
+          <button
+            :if={member.id != @channel.owner_agent_id}
+            type="button"
+            id={"remove-member-#{member.id}"}
+            class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/50 hover:text-error"
+            phx-click="remove_member"
+            phx-value-agent-id={member.id}
+            title={"Remove @#{member.name} from this channel"}
+          >
+            <.icon name="hero-x-mark-mini" class="size-3.5" />
+          </button>
+          <span :if={member.id == @channel.owner_agent_id} class="w-1" />
+        </span>
+      </div>
+      <form
+        :if={@addable != []}
+        id="add-member-form"
+        phx-submit="add_member"
+        class="flex flex-wrap items-center gap-2"
+      >
+        <select id="add-member-select" name="agent_id" class="select select-sm w-56 min-w-0">
+          <option value="">Add an agent…</option>
+          <option :for={agent <- @addable} value={agent.id}>
+            @{agent.name}{if agent.role, do: " · " <> agent.role, else: ""}
+          </option>
+        </select>
+        <button type="submit" id="add-member" class="btn btn-sm btn-primary">Add</button>
+      </form>
+      <p :if={@addable == []} class="text-xs text-base-content/50">
+        Every active agent is already here. Create more on the Agents page.
+      </p>
+    </section>
+    """
+  end
+
+  attr :channel, :map, required: true
+
+  defp archived_bar(assigns) do
+    ~H"""
+    <div
+      id="archived-bar"
+      class="flex shrink-0 flex-wrap items-center justify-center gap-3 border-t border-base-300 bg-base-200/60 px-3 py-3 text-sm text-base-content/60"
+    >
+      <.icon name="hero-archive-box-mini" class="size-4" />
+      <span>This channel is archived. Nobody can post here.</span>
+      <button type="button" class="btn btn-xs btn-outline" phx-click="reopen_channel">
+        Reopen
+      </button>
+    </div>
+    """
+  end
+
   attr :form, :map, required: true
 
   defp task_panel(assigns) do
     ~H"""
-    <section id="task-panel" class="border-b border-base-300 bg-base-200/60 px-6 py-3">
+    <section id="task-panel" class="border-b border-base-300 bg-base-200/60 px-3 sm:px-6 py-3">
       <.form for={@form} id="task-form" phx-change="validate_task" phx-submit="save_task">
         <div class="grid grid-cols-1 gap-x-4 md:grid-cols-[1fr_12rem]">
           <.input field={@form[:title]} type="text" label="Title" />
@@ -804,7 +856,7 @@ defmodule CanopyWeb.ChannelLive do
 
   defp composer(assigns) do
     ~H"""
-    <div class="shrink-0 border-t border-base-300 bg-base-100 px-6 pb-3 pt-2">
+    <div class="shrink-0 border-t border-base-300 bg-base-100 px-3 pb-2 pt-2 sm:px-6 sm:pb-3">
       <.form
         for={@form}
         id="composer-form"
@@ -815,10 +867,10 @@ defmodule CanopyWeb.ChannelLive do
         <div
           id="composer-suggestions"
           phx-update="ignore"
-          class="absolute bottom-full left-0 z-10 mb-1 hidden w-64 overflow-hidden rounded-lg border border-base-300 bg-base-100 shadow-lg"
+          class="absolute bottom-full left-0 z-10 mb-1 hidden w-64 overflow-hidden rounded-lg border border-base-300 bg-base-200 shadow-lg"
         >
         </div>
-        <div class="flex items-end gap-2 rounded-xl border border-base-300 bg-base-100 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+        <div class="flex items-end gap-2 rounded-xl border border-base-300 bg-base-200 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
           <textarea
             id="composer-input"
             name={@form[:body].name}
@@ -839,7 +891,7 @@ defmodule CanopyWeb.ChannelLive do
             <.icon name="hero-paper-airplane-mini" class="size-4" />
           </button>
         </div>
-        <p class="mt-1.5 px-1 text-[11px] text-base-content/45">
+        <p class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
           Enter to send · Shift+Enter for a new line · {Commands.help()}
         </p>
       </.form>
@@ -860,7 +912,7 @@ defmodule CanopyWeb.ChannelLive do
     >
       <div
         id="changes-dialog"
-        class="flex h-[80vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
+        class="flex h-[80vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-base-300 bg-base-200 shadow-2xl"
         phx-click-away="close_changes"
       >
         <aside class="flex w-72 shrink-0 flex-col border-r border-base-300">

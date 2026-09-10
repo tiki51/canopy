@@ -109,7 +109,7 @@ async function runTurn(sessionID, text) {
     await mcpCall("message_send", { canopy_session_id: sessionID, text: "Delegation result received; wrapping up." });
     reply = "Continuing after the delegation.";
   } else if (/new Canopy message/i.test(text)) {
-    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now." });
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
   }
 
   const textID = nextId("prt");
@@ -128,6 +128,8 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
   try {
     if (req.method === "GET" && (p === "/global/health" || p === "/api/health")) return json(res, 200, { healthy: true, version: "fake-1.0" });
+    if (req.method === "GET" && p === "/config/providers")
+      return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": {}, "claude-haiku-4-5": {} } }], default: {} });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
     if (req.method === "GET" && p === "/mcp") return json(res, 200, mcp ? { canopy: { status: "connected" } } : {});
     if (req.method === "POST" && p === "/mcp") {

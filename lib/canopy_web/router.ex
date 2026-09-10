@@ -26,6 +26,8 @@ defmodule CanopyWeb.Router do
 
     get "/", PageController, :home
 
+    get "/dm/:agent_id", DmController, :show
+
     live_session :default, on_mount: [CanopyWeb.Nav] do
       live "/settings", SettingsLive
       live "/repositories", RepositoriesLive

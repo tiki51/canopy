@@ -166,6 +166,18 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
     assert payload["tools"] == 1
     assert payload["files"] == ["/repo/lib/a.ex"]
+
+    assert [
+             %{"kind" => "tool", "status" => "ok", "label" => "README.md"},
+             %{"kind" => "file", "label" => "a.ex", "detail" => "/repo/lib/a.ex"}
+           ] = payload["activity"]
+
+    # the summary is recorded before the reply so its card sits above the message
+    [summary, reply] =
+      Timeline.list(ctx.channel.id, types: ["agent_turn_completed", "message"]) |> Enum.take(-2)
+
+    assert summary.event_type == "agent_turn_completed"
+    assert reply.event_type == "message"
     assert_in_delta payload["cost"], 0.0025, 0.00001
     assert payload["outcome"] == "ok"
     assert_receive {:agent_status, _, :idle}, 1_000
@@ -495,5 +507,108 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
     )
 
     Process.sleep(50)
+  end
+end
+
+defmodule Canopy.Runtime.ChannelServerErrorsTest do
+  use Canopy.DataCase, async: false
+
+  import Mox
+
+  alias Canopy.{Fixtures, Runtime, Timeline}
+  alias Canopy.OpenCode.ClientMock, as: OC
+  alias Canopy.OpenCode.{Event, EventStream}
+
+  setup :set_mox_global
+  setup :verify_on_exit!
+
+  setup do
+    scenario = Fixtures.scenario()
+    Timeline.subscribe(scenario.channel.id)
+    stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
+    {:ok, _} = Runtime.ensure_channel(scenario.channel.id, start_stream: false)
+    on_exit(fn -> Runtime.stop_channel(scenario.channel.id) end)
+    {:ok, scenario}
+  end
+
+  defp emit(session_id, type, data) do
+    Phoenix.PubSub.broadcast(
+      Canopy.PubSub,
+      EventStream.session_topic(session_id),
+      {:opencode_event, %Event{type: type, session_id: session_id, data: data, raw_type: "test"}}
+    )
+  end
+
+  test "activity after session.idle and empty diffs do not reopen telemetry", ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+    sid = ctx.session.opencode_session_id
+    # An empty session.diff during the turn is noise, not a telemetry entry.
+    emit(sid, :diff, %{files: []})
+    emit(sid, :tool_started, %{call_id: "c1", tool: "read", status: :running, input: %{}})
+    assert_receive {:telemetry, _, %Event{type: :tool_started}}, 1_000
+    refute_received {:telemetry, _, %Event{type: :diff}}
+
+    emit(sid, :agent_completed, %{})
+    assert_receive {:agent_status, agent_id, :idle}, 2_000
+
+    # OpenCode keeps talking after idle: none of it may resurrect the working card.
+    emit(sid, :diff, %{files: [%{"file" => "a.ex"}]})
+    emit(sid, :tool_completed, %{call_id: "c2", tool: "read", status: :ok, input: %{}})
+    emit(sid, :text_delta, %{delta: "late", message_id: "m", part_id: "p"})
+
+    refute_receive {:telemetry, _, _}, 300
+    assert Runtime.telemetry(ctx.channel.id, agent_id) == []
+  end
+
+  test "repeated session errors record one concise agent_error per turn", ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+    sid = ctx.session.opencode_session_id
+
+    error = %{
+      "name" => "ProviderModelNotFoundError",
+      "data" => %{
+        "message" =>
+          "Model not found: anthropic/claude-sonnet-4-5. Did you mean: claude-sonnet-4-5?\n    at SessionPrompt.getModel (/chunk.js:1085:11482)\n    at more (/chunk.js:1)"
+      }
+    }
+
+    for _ <- 1..4 do
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        EventStream.session_topic(sid),
+        {:opencode_event, %Event{type: :agent_error, session_id: sid, data: %{error: error}}}
+      )
+    end
+
+    assert_receive {:timeline, %{event_type: "agent_error", payload: %{"reason" => reason}}},
+                   2_000
+
+    assert reason ==
+             "Model not found: anthropic/claude-sonnet-4-5. Did you mean: claude-sonnet-4-5? (check the agent's model provider and id on the Agents page)"
+
+    refute reason =~ "at SessionPrompt"
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
+                   2_000
+
+    refute_receive {:timeline, %{event_type: "agent_error"}}, 300
+    refute_receive {:timeline, %{event_type: "agent_turn_completed"}}, 100
   end
 end

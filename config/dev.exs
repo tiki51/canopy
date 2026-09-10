@@ -14,10 +14,23 @@ config :canopy, Canopy.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
+# Canopy listens on loopback unless CANOPY_BIND says otherwise. There is no
+# login, so `CANOPY_BIND=0.0.0.0 mix phx.server` hands the whole workspace to
+# anyone on the network: use it on a network you trust, for a session.
+bind_ip =
+  case System.get_env("CANOPY_BIND") do
+    nil ->
+      {127, 0, 0, 1}
+
+    value ->
+      case :inet.parse_address(String.to_charlist(value)) do
+        {:ok, ip} -> ip
+        {:error, _} -> raise "CANOPY_BIND must be an IP address such as 0.0.0.0, got: #{value}"
+      end
+  end
+
 config :canopy, CanopyWeb.Endpoint,
-  # Binding to loopback ipv4 address prevents access from other machines.
-  # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
+  http: [ip: bind_ip, port: String.to_integer(System.get_env("PORT") || "4000")],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

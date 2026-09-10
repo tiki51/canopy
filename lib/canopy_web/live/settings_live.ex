@@ -161,8 +161,11 @@ defmodule CanopyWeb.SettingsLive do
       flash={@flash}
       repositories={@repositories}
       agents={@agents}
+      dms={@dms}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
+      current_repository_id={@current_repository_id}
+      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page title="Settings" subtitle="OpenCode connection, your name, and the MCP bridge">
         <Layouts.panel

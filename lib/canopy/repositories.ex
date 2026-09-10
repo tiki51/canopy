@@ -11,7 +11,11 @@ defmodule Canopy.Repositories do
 
   @doc "Repositories with their open channels preloaded, for the sidebar."
   def list_with_channels do
-    channels = Canopy.Channels.list() |> Enum.group_by(& &1.repository_id)
+    channels =
+      Canopy.Channels.list()
+      |> Enum.reject(&Canopy.Channels.dm?/1)
+      |> Enum.group_by(& &1.repository_id)
+
     Enum.map(list(), &Map.put(&1, :channels, Map.get(channels, &1.id, [])))
   end
 

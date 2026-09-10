@@ -68,15 +68,18 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
 ![Agent working](screenshots/06-agent-working.png)
 
 - [ ] `@backend started working` line, owner dot turns green, an *Abort* button appears next to it.
-- [ ] The **is working…** card lists tools as they run (`read — payments.py`, `grep`, …) and
-      streams the agent's text. It collapses with the chevron.
+- [ ] The **is working…** card appears closed, with a pulsing green dot. Open it with the
+      chevron: it lists tools as they run (`read — payments.py`, `grep`, …) and streams
+      the agent's text.
 - [ ] While busy, post a second message: nothing new starts (it queues) until the turn ends.
 
 ![Agent replied](screenshots/07-agent-replied.png)
 
 - [ ] A normal post from @backend (sent through `canopy_message_send`) and a muted **REPLY**
       (the turn's final text).
-- [ ] `@backend finished · N tools · $cost · duration` line; the card disappears; dot back to grey.
+- [ ] `@backend finished · N tools · $cost · duration` line sits above the reply and the
+      dot is back to grey. Click that line: it opens to show the same activity the live
+      card held. Each step and patch appears once.
 - [ ] The queued second message now runs.
 - [ ] Refresh the page: everything above is still there (it is durable, not a transcript view).
 
@@ -145,6 +148,16 @@ to: researcher …" as in the README demo prompt.
 - [ ] Ask an agent for something slow ("run the test suite 20 times") and press *Abort* next to
       it → the turn ends with an error line and the dot goes red until the next prompt.
 
+## 9b. Members and archiving
+
+- [ ] **Members** in the channel header opens a panel: each member is a pill, the owner is
+      marked and has no remove button. Pick an agent in the dropdown and **Add** → it appears
+      in the header and the timeline says it joined. Click the × on another member → it is
+      gone and the timeline says so. `@` in the composer only suggests current members.
+- [ ] **Archive** (confirm the prompt) → an **archived** badge, the composer is replaced by a
+      notice with a **Reopen** button, the sidebar entry is dimmed with a box icon, and
+      agents' `channels_list` shows it as archived. **Reopen** brings the composer back.
+
 ## 10. Threads and mentions
 
 ![Composer autocomplete](screenshots/12-composer-autocomplete.png)
@@ -153,6 +166,17 @@ to: researcher …" as in the README demo prompt.
 - [ ] Mention `@reviewer` in a message → the reviewer wakes instead of the owner.
 - [ ] When an agent answers inside a thread, the reply nests under the parent with an
       "N replies" toggle.
+- [ ] The sidebar has a **Direct messages** section between Channels and Agents. It lists
+      every DM, including ones agents open; it updates without a reload.
+- [ ] Ask an agent to "start a DM with me and @reviewer about X" → it calls
+      `canopy_dm_start`; a DM titled `@agent, @reviewer` appears in the section, with the
+      first message posted. A plain message from you in a group DM wakes every agent in it.
+      Agents cannot open a DM that leaves you out.
+- [ ] Click an agent in the sidebar's **Agents** list → a direct message opens, titled
+      `@name` with a **DM** pill. The agent is its owner and only member, so a plain
+      message wakes it. The row is highlighted while you are in it, and the DM never
+      shows up under **Channels**. The DM belongs to the repository of the channel you
+      came from (or the first repository).
 
 ## 11. Resilience
 
@@ -169,5 +193,6 @@ to: researcher …" as in the README demo prompt.
 | Agent replies but never posts via Canopy tools; tool errors mention "unknown Canopy session" | Plugin not installed for that repository, or OpenCode not restarted after installing it |
 | No agent wakes | Channel has no owner and the message mentions nobody, or the mentioned agent is not a member |
 | "no expectation" / 401 in the OpenCode log for `/mcp` | Token rotated: prompt once more so Canopy re-registers |
+| `hit an error: Model not found: <provider>/<model>` | The agent's model override names a provider OpenCode has no credentials for. Use a provider from `opencode providers` (or the OpenCode TUI's model list), or clear the override on the Agents page |
 | Permission card never appears | The agent's OpenCode rules allow the action; see section 6 |
 | `GET /permission` 400 in logs | Known OpenCode 1.18 bug for patch permissions; the card still works from the event |

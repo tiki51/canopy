@@ -16,7 +16,8 @@ Local-first Slack-like collaboration layer for AI coding agents, with OpenCode a
 ## Working agreements
 
 - Never commit or push unless the user explicitly asks in the current request.
-- Bind only to `127.0.0.1`. No remote access in v0.
+- Bind to `127.0.0.1` by default. `CANOPY_BIND=0.0.0.0` (dev only) is the user's opt-in for
+  showing it on a trusted network; there is no login yet, so never make it the default.
 - Agent identity in MCP tools comes from the `canopy_session_id` stamped by the OpenCode plugin, never from model-supplied values.
 - Keep OpenCode HTTP details inside `Canopy.OpenCode.*`; the rest of the app speaks normalized events.
 - Run `mix precommit` before declaring a phase done.

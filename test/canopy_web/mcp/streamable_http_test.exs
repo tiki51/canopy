@@ -82,7 +82,7 @@ defmodule CanopyWeb.MCP.StreamableHTTPTest do
     assert conn.status == 200
     %{"result" => %{"tools" => tools}} = decode_body(conn.resp_body)
     assert Enum.sort(Enum.map(tools, & &1["name"])) == Enum.sort(Canopy.MCP.Server.tool_names())
-    assert length(tools) == 14
+    assert length(tools) == length(Canopy.MCP.Server.tool_names())
 
     for tool <- tools do
       assert tool["inputSchema"]["properties"]["canopy_session_id"]["type"] == "string"
@@ -130,7 +130,7 @@ defmodule CanopyWeb.MCP.StreamableHTTPTest do
     assert [content_type] = get_resp_header(conn, "content-type")
     assert content_type =~ "text/event-stream"
     assert %{"result" => %{"tools" => tools}} = decode_body(conn.resp_body)
-    assert length(tools) == 14
+    assert length(tools) == length(Canopy.MCP.Server.tool_names())
   end
 
   test "a bad or missing bearer token is rejected with 401 before reaching the server", ctx do

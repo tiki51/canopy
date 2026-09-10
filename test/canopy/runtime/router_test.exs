@@ -51,6 +51,16 @@ defmodule Canopy.Runtime.RouterTest do
     refute text =~ "thread"
   end
 
+  test "in a DM an unaddressed user message wakes every agent, agent posts still need mentions" do
+    dm = ctx(%{channel: %{name: "dm-backend-reviewer", kind: "dm"}})
+
+    assert [{{:root, @backend}, _}, {{:root, @reviewer}, _}] =
+             Router.wakeups(message_event(%{}), dm)
+
+    assert [{{:root, @reviewer}, _}] = Router.wakeups(message_event(%{mentions: [@reviewer]}), dm)
+    assert [] = Router.wakeups(message_event(%{agent_id: @backend}), dm)
+  end
+
   test "mentions win over the owner and exclude non-members" do
     ev = message_event(%{mentions: [@reviewer, @outsider]})
     assert [{{:root, @reviewer}, _}] = Router.wakeups(ev, ctx())

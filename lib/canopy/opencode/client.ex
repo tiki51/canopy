@@ -26,6 +26,10 @@ defmodule Canopy.OpenCode.Client do
   @impl true
   def agents(directory, opts \\ []), do: request(:get, "/agent", dir(directory, opts))
 
+  @doc "Configured providers and their models: `%{\"providers\" => [%{\"id\", \"name\", \"models\" => %{id => ...}}], \"default\" => %{provider => model}}`."
+  @impl true
+  def providers(opts \\ []), do: request(:get, "/config/providers", opts)
+
   @impl true
   def create_session(directory, body, opts \\ []) when is_map(body),
     do: request(:post, "/session", dir(directory, opts) |> Keyword.put(:json, body))

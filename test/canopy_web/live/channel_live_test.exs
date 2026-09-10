@@ -97,9 +97,112 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#composer-form #composer-input")
     end
 
+    test "a finished turn is a reopenable card with its activity, or a plain line without", ctx do
+      %{channel: channel, agent: agent} = ctx
+
+      {:ok, with_activity} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{
+            "tools" => 2,
+            "files" => ["lib/a.ex"],
+            "cost" => 0.01,
+            "duration_ms" => 4_200,
+            "outcome" => "ok",
+            "activity" => [
+              %{
+                "key" => "c1",
+                "kind" => "tool",
+                "status" => "ok",
+                "label" => "Read lib/a.ex",
+                "detail" => "lib/a.ex"
+              },
+              %{
+                "key" => "file-lib/a.ex",
+                "kind" => "file",
+                "status" => "ok",
+                "label" => "a.ex",
+                "detail" => "lib/a.ex"
+              }
+            ]
+          }
+        })
+
+      {:ok, without} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{
+            "tools" => 0,
+            "files" => [],
+            "cost" => 0,
+            "duration_ms" => 10,
+            "outcome" => "ok"
+          }
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      assert has_element?(view, "details#turn-#{with_activity.id}:not([open])")
+      assert has_element?(view, "#turn-toggle-#{with_activity.id}", "@#{agent.name} finished")
+      assert has_element?(view, "#turn-toggle-#{with_activity.id}", "2 tools")
+      assert has_element?(view, "#turn-#{with_activity.id}-c1", "Read lib/a.ex")
+      assert has_element?(view, "#turn-#{with_activity.id}-file-lib-a-ex", "a.ex")
+
+      refute has_element?(view, "#turn-#{without.id}")
+      assert has_element?(view, "#line-#{without.id}", "@#{agent.name} finished")
+    end
+
     test "shows an empty state when there are no events", ctx do
       {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
       assert has_element?(view, "#timeline", "Nothing here yet")
+    end
+  end
+
+  describe "direct messages" do
+    test "a DM shows the agent as its title, marks the sidebar row, and hides itself from channels",
+         ctx do
+      %{channel: channel, agent: agent, repository: repository} = ctx
+      {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, agent)
+
+      {:ok, view, html} = open(conn_of(ctx), dm)
+      assert page_title(view) =~ "@" <> agent.name
+      assert has_element?(view, "#channel-name", "@" <> agent.name)
+      assert has_element?(view, "#channel-name", "dm")
+      refute has_element?(view, "#channel-topic")
+      assert has_element?(view, "#owner-badge", "@" <> agent.name)
+
+      # The sidebar links every agent to its DM in this repository and marks this one.
+      assert html =~ ~s(href="/dm/#{agent.id}?repository=#{repository.id}")
+      assert has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+      refute has_element?(view, "#sidebar-channel-#{dm.id}")
+      assert has_element?(view, "#sidebar-channel-#{channel.id}")
+
+      # A normal channel is unmarked in the agent list but still links to the DM.
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+      assert has_element?(view, "#sidebar-agent-#{agent.id}[href*='/dm/#{agent.id}']")
+    end
+
+    test "the sidebar lists DMs, including ones agents open while you watch", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer, repository: repository} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#sidebar-dms", "Click an agent below to start one")
+
+      {:ok, group} = Canopy.Channels.ensure_dm(repository.id, [agent, reviewer])
+      label = "@#{agent.name}, @#{reviewer.name}"
+      assert has_element?(view, "#sidebar-dm-#{group.id}", label)
+      refute has_element?(view, "#sidebar-channel-#{group.id}")
+
+      {:ok, view, _html} = open(conn_of(ctx), group)
+      assert has_element?(view, "#channel-name", label)
+      assert has_element?(view, "#sidebar-dm-#{group.id}[data-active]")
+      # a group DM does not light up a single agent's row
+      refute has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+      assert page_title(view) =~ label
     end
   end
 
@@ -221,10 +324,9 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#telemetry-#{agent.id}", "Done looking.")
       refute has_element?(view, "#telemetry-#{agent.id}", "Looking closer.")
 
-      # collapsing keeps the header and hides the entries
-      view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
-      assert has_element?(view, "#telemetry-#{agent.id}[data-collapsed=true]")
-      refute has_element?(view, "#telemetry-#{agent.id}-c1")
+      # closed by default (a <details> without `open`), with a pulsing dot in the header
+      assert has_element?(view, "details#telemetry-#{agent.id}:not([open])")
+      assert has_element?(view, "#telemetry-toggle-#{agent.id} [data-status=busy] .animate-ping")
 
       broadcast_status(channel.id, agent.id, :idle)
       refute has_element?(view, "#telemetry-#{agent.id}")
@@ -346,6 +448,66 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#task-status", "working")
       assert has_element?(view, "#task-title", "Ship retries")
       refute has_element?(view, "#task-form")
+    end
+  end
+
+  describe "members and archiving" do
+    test "agents can be added and removed from the members panel; the owner cannot", ctx do
+      %{channel: channel, agent: owner, reviewer: reviewer} = ctx
+      newcomer = Fixtures.agent_fixture(%{name: "newcomer#{Fixtures.unique_suffix()}"})
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#members-panel")
+
+      view |> element("#edit-members") |> render_click()
+      assert has_element?(view, "#member-row-#{owner.id}", "owner")
+      refute has_element?(view, "#remove-member-#{owner.id}")
+      assert has_element?(view, "#remove-member-#{reviewer.id}")
+      assert has_element?(view, "#add-member-select option[value='#{newcomer.id}']")
+
+      view |> form("#add-member-form", agent_id: newcomer.id) |> render_submit()
+      assert has_element?(view, "#member-row-#{newcomer.id}", "@#{newcomer.name}")
+      assert has_element?(view, "#member-#{newcomer.id}", "@#{newcomer.name}")
+      refute has_element?(view, "#add-member-select option[value='#{newcomer.id}']")
+      assert render(view) =~ "@#{newcomer.name} joined the channel"
+
+      view |> element("#remove-member-#{reviewer.id}") |> render_click()
+      refute has_element?(view, "#member-row-#{reviewer.id}")
+      refute has_element?(view, "#member-#{reviewer.id}")
+      assert render(view) =~ "@#{reviewer.name} was removed from the channel"
+      assert has_element?(view, "#add-member-select option[value='#{reviewer.id}']")
+
+      # the composer's mention list follows the membership
+      assert has_element?(view, "#composer-input[data-members*='#{newcomer.name}']")
+      refute has_element?(view, "#composer-input[data-members*='#{reviewer.name}']")
+    end
+
+    test "archiving hides the composer, marks the sidebar, and reopening restores it", ctx do
+      %{channel: channel} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view |> element("#archive-channel") |> render_click()
+      assert has_element?(view, "#archived-badge")
+      assert has_element?(view, "#archived-bar", "This channel is archived")
+      refute has_element?(view, "#composer-form")
+      refute has_element?(view, "#archive-channel")
+      assert has_element?(view, "#sidebar-channel-#{channel.id} .hero-archive-box-mini")
+      assert render(view) =~ "archived this channel"
+      assert Canopy.Channels.get!(channel.id).status == "archived"
+
+      view |> element("#reopen-channel") |> render_click()
+      assert has_element?(view, "#composer-form")
+      refute has_element?(view, "#archived-bar")
+      assert has_element?(view, "#archive-channel")
+      assert render(view) =~ "reopened this channel"
+    end
+
+    test "a DM has no members button", ctx do
+      %{agent: agent, repository: repository} = ctx
+      {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, agent)
+      {:ok, view, _html} = open(conn_of(ctx), dm)
+      refute has_element?(view, "#edit-members")
+      assert has_element?(view, "#archive-channel")
     end
   end
 

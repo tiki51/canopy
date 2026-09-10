@@ -9,7 +9,7 @@ defmodule Canopy.MCP.Tools.ThreadReply do
   schema do
     field :canopy_session_id, :string, description: Tool.identity_description()
     field :message_id, {:required, :string}, description: "Id of the message to reply to."
-    field :text, {:required, :string}, description: "Reply body."
+    field :text, {:required, :string}, description: "Reply body in GitHub-flavoured Markdown."
   end
 
   @impl true

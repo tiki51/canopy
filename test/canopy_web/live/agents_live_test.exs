@@ -11,6 +11,23 @@ defmodule CanopyWeb.AgentsLiveTest do
   setup :set_mox_global
   setup :verify_on_exit!
 
+  @providers %{
+    "providers" => [
+      %{
+        "id" => "opencode",
+        "name" => "OpenCode Zen",
+        "models" => %{"claude-haiku-4-5" => %{}, "gpt-5-nano" => %{}}
+      },
+      %{"id" => "openai", "name" => "OpenAI", "models" => %{"gpt-5.4" => %{}}}
+    ],
+    "default" => %{}
+  }
+
+  setup do
+    stub(OC, :providers, fn _opts -> {:ok, @providers} end)
+    :ok
+  end
+
   test "renders the empty state and the new-agent form", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/agents")
 
@@ -30,9 +47,7 @@ defmodule CanopyWeb.AgentsLiveTest do
         display_name: "Backend engineer",
         role: "Owns the Phoenix backend",
         system_prompt: "You are the backend engineer.",
-        opencode_agent: "build",
-        model_provider: "",
-        model_id: ""
+        opencode_agent: "build"
       }
     )
     |> render_submit()
@@ -65,19 +80,22 @@ defmodule CanopyWeb.AgentsLiveTest do
     assert has_element?(view, "#agent-form-panel", "Edit @reviewer")
     assert has_element?(view, "#agent-form input[name='agent[name]'][value='reviewer']")
 
+    # picking a provider enables the model select, as in the browser
+    view |> form("#agent-form", agent: %{model_provider: "opencode"}) |> render_change()
+
     view
     |> form("#agent-form",
       agent: %{
         role: "Reviews every diff",
-        model_provider: "anthropic",
-        model_id: "claude-sonnet-4"
+        model_provider: "opencode",
+        model_id: "gpt-5-nano"
       }
     )
     |> render_submit()
 
-    assert %{role: "Reviews every diff", model_provider: "anthropic"} = Agents.get!(agent.id)
+    assert %{role: "Reviews every diff", model_provider: "opencode"} = Agents.get!(agent.id)
     assert has_element?(view, "#agent-#{agent.id}", "Reviews every diff")
-    assert has_element?(view, "#agent-#{agent.id}", "anthropic/claude-sonnet-4")
+    assert has_element?(view, "#agent-#{agent.id}", "opencode/gpt-5-nano")
     # Back to the create form afterwards.
     assert has_element?(view, "#agent-form-panel", "New agent")
   end
@@ -144,5 +162,94 @@ defmodule CanopyWeb.AgentsLiveTest do
 
     refute has_element?(view, "#opencode-agents")
     assert has_element?(view, "#agent-form input[name='agent[opencode_agent]']")
+  end
+
+  describe "model override" do
+    test "offers providers and models from OpenCode and validates the pair", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#agent-form select[name='agent[model_provider]'] option[value='opencode']"
+             )
+
+      assert has_element?(
+               view,
+               "#agent-form select[name='agent[model_provider]'] option[value='openai']"
+             )
+
+      # picking a provider fills the model list
+      html =
+        view
+        |> form("#agent-form",
+          agent: %{name: "picky", display_name: "Picky", model_provider: "opencode"}
+        )
+        |> render_change()
+
+      assert html =~ "claude-haiku-4-5"
+      assert html =~ "gpt-5-nano"
+      refute html =~ "gpt-5.4</option>"
+
+      # saving with a provider but no model is refused
+      html =
+        view
+        |> form("#agent-form",
+          agent: %{name: "picky", display_name: "Picky", model_provider: "opencode", model_id: ""}
+        )
+        |> render_submit()
+
+      assert html =~ "pick a model from opencode"
+      assert Agents.get_by_name("picky") == nil
+
+      # a valid pair saves
+      view
+      |> form("#agent-form",
+        agent: %{
+          name: "picky",
+          display_name: "Picky",
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        }
+      )
+      |> render_submit()
+
+      assert %{model_provider: "opencode", model_id: "gpt-5-nano"} = Agents.get_by_name("picky")
+    end
+
+    test "an existing override for an unconfigured provider is shown and flagged", %{conn: conn} do
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "legacy",
+          model_provider: "anthropic",
+          model_id: "claude-sonnet-4-5"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      render_async(view)
+
+      view |> element("#edit-agent-#{agent.id}") |> render_click()
+      html = render(view)
+      assert html =~ "anthropic (not configured)"
+
+      html =
+        view
+        |> form("#agent-form",
+          agent: %{model_provider: "anthropic", model_id: "claude-sonnet-4-5"}
+        )
+        |> render_submit()
+
+      assert html =~ "is not configured in OpenCode"
+      assert Agents.get!(agent.id).model_provider == "anthropic"
+    end
+
+    test "falls back to text inputs when the provider list is unavailable", %{conn: conn} do
+      stub(OC, :providers, fn _opts -> {:error, {:transport, %{reason: :econnrefused}}} end)
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      render_async(view)
+
+      assert has_element?(view, "#agent-form input[name='agent[model_provider]']")
+      assert has_element?(view, "#agent-form input[name='agent[model_id]']")
+    end
   end
 end

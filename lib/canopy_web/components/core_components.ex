@@ -214,8 +214,8 @@ defmodule CanopyWeb.CoreComponents do
       end)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label for={@id}>
+    <div class="fieldset mb-2 min-w-0">
+      <label for={@id} class="min-w-0">
         <input
           type="hidden"
           name={@name}
@@ -242,8 +242,8 @@ defmodule CanopyWeb.CoreComponents do
 
   def input(%{type: "select"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
-      <label for={@id}>
+    <div class="fieldset mb-2 min-w-0">
+      <label for={@id} class="min-w-0">
         <span :if={@label} class="label mb-1">{@label}</span>
         <select
           id={@id}
@@ -263,8 +263,8 @@ defmodule CanopyWeb.CoreComponents do
 
   def input(%{type: "textarea"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
-      <label for={@id}>
+    <div class="fieldset mb-2 min-w-0">
+      <label for={@id} class="min-w-0">
         <span :if={@label} class="label mb-1">{@label}</span>
         <textarea
           id={@id}
@@ -284,8 +284,8 @@ defmodule CanopyWeb.CoreComponents do
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
     ~H"""
-    <div class="fieldset mb-2">
-      <label for={@id}>
+    <div class="fieldset mb-2 min-w-0">
+      <label for={@id} class="min-w-0">
         <span :if={@label} class="label mb-1">{@label}</span>
         <input
           type={@type}

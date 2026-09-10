@@ -113,8 +113,11 @@ defmodule CanopyWeb.RepositoriesLive do
       flash={@flash}
       repositories={@repositories}
       agents={@agents}
+      dms={@dms}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
+      current_repository_id={@current_repository_id}
+      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page title="Repositories" subtitle="Local git repositories that channels work in">
         <Layouts.panel

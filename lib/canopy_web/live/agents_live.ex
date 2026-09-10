@@ -22,13 +22,16 @@ defmodule CanopyWeb.AgentsLive do
       socket
       |> assign(:page_title, "Agents")
       |> assign(:opencode_agents, [])
+      |> assign(:providers, [])
       |> assign(:show_inactive, false)
       |> start_new()
       |> load_agents()
 
     socket =
       if connected?(socket) do
-        fetch_opencode_agents(socket)
+        socket
+        |> fetch_opencode_agents()
+        |> start_async(:providers, fn -> Client.impl().providers([]) end)
       else
         socket
       end
@@ -58,6 +61,7 @@ defmodule CanopyWeb.AgentsLive do
     changeset =
       socket.assigns.editing
       |> Agents.change(blank_to_nil(params))
+      |> validate_model(socket.assigns.providers)
       |> Map.put(:action, :validate)
 
     {:noreply, assign_form(socket, changeset)}
@@ -66,11 +70,14 @@ defmodule CanopyWeb.AgentsLive do
   def handle_event("save", %{"agent" => params}, socket) do
     params = blank_to_nil(params)
     editing = socket.assigns.editing
+    checked = editing |> Agents.change(params) |> validate_model(socket.assigns.providers)
 
     result =
-      if editing.id,
-        do: Agents.update(editing, params),
-        else: Agents.create(params)
+      cond do
+        checked.errors != [] -> {:error, Map.put(checked, :action, :insert)}
+        editing.id -> Agents.update(editing, params)
+        true -> Agents.create(params)
+      end
 
     case result do
       {:ok, agent} ->
@@ -146,6 +153,84 @@ defmodule CanopyWeb.AgentsLive do
     {:noreply, assign(socket, :opencode_agents, [])}
   end
 
+  def handle_async(:providers, {:ok, {:ok, %{"providers" => list}}}, socket) when is_list(list) do
+    providers =
+      list
+      |> Enum.flat_map(fn
+        %{"id" => id} = p when is_binary(id) ->
+          models = p |> Map.get("models", %{}) |> Map.keys() |> Enum.sort()
+          [%{id: id, name: Map.get(p, "name") || id, models: models}]
+
+        _ ->
+          []
+      end)
+      |> Enum.sort_by(& &1.id)
+
+    {:noreply, assign(socket, :providers, providers)}
+  end
+
+  def handle_async(:providers, _other, socket), do: {:noreply, assign(socket, :providers, [])}
+
+  # With the provider list known, a model override must name a configured provider
+  # and one of its models; otherwise OpenCode rejects every prompt at run time.
+  defp validate_model(changeset, []), do: changeset
+
+  defp validate_model(changeset, providers) do
+    provider = Ecto.Changeset.get_field(changeset, :model_provider)
+    model = Ecto.Changeset.get_field(changeset, :model_id)
+
+    case {provider, model, Enum.find(providers, &(&1.id == provider))} do
+      {nil, nil, _} ->
+        changeset
+
+      {nil, _model, _} ->
+        Ecto.Changeset.add_error(changeset, :model_provider, "pick a provider for this model")
+
+      {_provider, _model, nil} ->
+        Ecto.Changeset.add_error(changeset, :model_provider, "is not configured in OpenCode")
+
+      {_provider, nil, _} ->
+        Ecto.Changeset.add_error(changeset, :model_id, "pick a model from #{provider}")
+
+      {_provider, model, %{models: models}} ->
+        if model in models,
+          do: changeset,
+          else:
+            Ecto.Changeset.add_error(changeset, :model_id, "is not available from #{provider}")
+    end
+  end
+
+  defp provider_options(providers, current) do
+    known = Enum.map(providers, &{provider_label(&1), &1.id})
+
+    if current && not Enum.any?(providers, &(&1.id == current)),
+      do: known ++ [{"#{current} (not configured)", current}],
+      else: known
+  end
+
+  # "OpenAI" reads better than "OpenAI (openai)"; the id is shown only when it
+  # is not obvious from the name.
+  defp provider_label(%{id: id, name: name}) do
+    if String.downcase(name) |> String.replace(~r/[^a-z0-9]/, "") ==
+         String.replace(id, ~r/[^a-z0-9]/, ""),
+       do: name,
+       else: "#{name} (#{id})"
+  end
+
+  defp model_options(providers, provider, current) do
+    models =
+      case Enum.find(providers, &(&1.id == provider)) do
+        %{models: models} -> models
+        nil -> []
+      end
+
+    options = Enum.map(models, &{&1, &1})
+
+    if current && current not in models,
+      do: options ++ [{"#{current} (not available)", current}],
+      else: options
+  end
+
   defp fetch_opencode_agents(socket) do
     case Repositories.list() do
       [%{path: dir} | _] ->
@@ -202,8 +287,11 @@ defmodule CanopyWeb.AgentsLive do
       flash={@flash}
       repositories={@repositories}
       agents={@agents}
+      dms={@dms}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
+      current_repository_id={@current_repository_id}
+      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page
         title="Agents"
@@ -400,29 +488,55 @@ defmodule CanopyWeb.AgentsLive do
                   autocomplete="off"
                   spellcheck="false"
                 />
-                <.input
-                  field={@form[:model_provider]}
-                  type="text"
-                  label="Model provider (optional)"
-                  placeholder="anthropic"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <.input
-                  field={@form[:model_id]}
-                  type="text"
-                  label="Model id (optional)"
-                  placeholder="claude-sonnet-4"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
+                <%= if @providers != [] do %>
+                  <.input
+                    field={@form[:model_provider]}
+                    type="select"
+                    label="Model provider (optional)"
+                    prompt="OpenCode default"
+                    options={provider_options(@providers, @form[:model_provider].value)}
+                  />
+                  <.input
+                    field={@form[:model_id]}
+                    type="select"
+                    label="Model (optional)"
+                    prompt={
+                      if @form[:model_provider].value,
+                        do: "Pick a model",
+                        else: "Pick a provider first"
+                    }
+                    options={
+                      model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
+                    }
+                    disabled={
+                      is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
+                    }
+                  />
+                <% else %>
+                  <.input
+                    field={@form[:model_provider]}
+                    type="text"
+                    label="Model provider (optional)"
+                    placeholder="opencode"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <.input
+                    field={@form[:model_id]}
+                    type="text"
+                    label="Model id (optional)"
+                    placeholder="claude-haiku-4-5"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                <% end %>
               </div>
               <datalist :if={@opencode_agents != []} id="opencode-agents">
                 <option :for={name <- @opencode_agents} value={name} />
               </datalist>
               <p class="text-xs text-base-content/60">
-                <%= if @opencode_agents != [] do %>
-                  Suggestions come from your OpenCode server. Leave the model blank to use that agent's default.
+                <%= if @opencode_agents != [] or @providers != [] do %>
+                  Suggestions and the provider/model lists come from your OpenCode server. Leave the model blank to use that agent's default.
                 <% else %>
                   Add a repository and start <code class="font-mono">opencode serve</code>
                   to get agent name suggestions. Leave the model blank to use OpenCode's default.

@@ -14,7 +14,7 @@ defmodule Canopy.MCP.Tools.MessageSend do
     field :channel, :string, description: "Channel name or id. Defaults to your own channel."
 
     field :text, {:required, :string},
-      description: "Message body. @name mentions wake that agent."
+      description: "Message body in GitHub-flavoured Markdown. @name mentions wake that agent."
   end
 
   @impl true

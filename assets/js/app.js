@@ -39,6 +39,12 @@ topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
+// The mobile drawer (rail + sidebar) closes when navigation lands somewhere.
+window.addEventListener("phx:page-loading-stop", _info => {
+  const drawer = document.getElementById("app-drawer")
+  if (drawer) drawer.checked = false
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

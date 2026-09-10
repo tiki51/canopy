@@ -22,6 +22,14 @@ defmodule Canopy.Runtime do
   `{:error, reason}` with a one-line reason; nothing is written in that case.
   """
   def post_user_message(channel_id, body, opts \\ []) do
+    if Channels.archived?(Channels.get!(channel_id)) do
+      {:error, "this channel is archived; reopen it to post"}
+    else
+      do_post_user_message(channel_id, body, opts)
+    end
+  end
+
+  defp do_post_user_message(channel_id, body, opts) do
     {:ok, _pid} = ensure_channel(channel_id)
 
     case Commands.parse(body) do
