@@ -416,6 +416,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp send_prompt(state, session, agent_id, text) do
     agent = Agents.get!(agent_id)
+    Canopy.Notes.ensure_agent_notes(state.repository.path, agent)
     state = ensure_mcp(state)
     body = prompt_body(agent, state, text)
 
@@ -842,8 +843,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp turn_stats(turn, %{type: :tool_completed}), do: %{turn | tools: turn.tools + 1}
 
-  defp turn_stats(turn, %{type: :file_changed, data: %{path: path}}),
-    do: %{turn | files: MapSet.put(turn.files, path)}
+  # Notes are memory, not work: edits under .canopy/ do not count as changed files.
+  defp turn_stats(turn, %{type: :file_changed, data: %{path: path}}) do
+    if String.contains?(path, "/.canopy/"),
+      do: turn,
+      else: %{turn | files: MapSet.put(turn.files, path)}
+  end
 
   defp turn_stats(turn, _), do: turn
 

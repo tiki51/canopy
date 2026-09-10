@@ -16,8 +16,13 @@ defmodule Canopy.RepositoriesTest do
     File.mkdir_p!(plain_dir)
     on_exit(fn -> File.rm_rf!(plain_dir) end)
 
-    assert {:error, changeset} = Repositories.create(%{path: plain_dir}, allow_outside_home: true)
-    assert %{path: ["is not a git repository"]} = errors_on(changeset)
+    # a plain directory is initialised rather than rejected
+    assert Repositories.needs_init?(plain_dir)
+    assert {:ok, repository} = Repositories.create(%{path: plain_dir}, allow_outside_home: true)
+    assert File.dir?(Path.join(plain_dir, ".git"))
+    refute Repositories.needs_init?(plain_dir)
+    assert {:ok, branch} = Repositories.current_branch(repository)
+    assert branch in ["main", "master"]
   end
 
   test "create/1 rejects paths outside the home directory unless allowed" do

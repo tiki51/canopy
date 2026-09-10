@@ -39,15 +39,22 @@ defmodule CanopyWeb.RepositoriesLive do
     repository_params = Map.get(params, "repository", %{})
     allow_outside_home = truthy?(params["allow_outside_home"])
 
+    initialised? = Repositories.needs_init?(repository_params["path"])
+
     case Repositories.create(repository_params, allow_outside_home: allow_outside_home) do
       {:ok, repository} ->
+        note =
+          if initialised?,
+            do: " It was not a git repository yet, so one was initialised.",
+            else: ""
+
         {:noreply,
          socket
          |> assign(:allow_outside_home, false)
          |> assign_form(Repositories.change(%Repository{}))
          |> load_rows()
          |> Nav.refresh_nav()
-         |> put_flash(:info, "Added #{repository.name}.")}
+         |> put_flash(:info, "Added #{repository.name}.#{note}")}
 
       {:error, changeset} ->
         {:noreply,
@@ -131,7 +138,7 @@ defmodule CanopyWeb.RepositoriesLive do
             icon="hero-folder-open"
             title="No repositories yet"
           >
-            Add the absolute path of a git checkout below to get started.
+            Add the absolute path of a project folder below to get started.
           </Layouts.empty_state>
 
           <ul :if={@rows != []} id="repositories" class="divide-y divide-base-300">
@@ -194,7 +201,7 @@ defmodule CanopyWeb.RepositoriesLive do
         <Layouts.panel
           id="add-repository-panel"
           title="Add a repository"
-          description="The path must be absolute and contain a .git directory. Canopy never modifies it directly."
+          description="An absolute path to a project folder. If it is not a git repository yet, Canopy runs git init there; otherwise it never modifies it directly."
         >
           <.form
             for={@form}

@@ -62,7 +62,7 @@ defmodule CanopyWeb.RepositoriesLiveTest do
     assert Repositories.list() == []
   end
 
-  test "rejects a directory that is not a git repository", %{conn: conn} do
+  test "initialises a directory that is not a git repository yet", %{conn: conn} do
     path = Path.join(System.tmp_dir!(), "canopy-plain-" <> Fixtures.unique_suffix())
     File.mkdir_p!(path)
     on_exit(fn -> File.rm_rf!(path) end)
@@ -73,8 +73,9 @@ defmodule CanopyWeb.RepositoriesLiveTest do
     |> form("#repository-form", repository: %{path: path}, allow_outside_home: "true")
     |> render_submit()
 
-    assert has_element?(view, "#repository-form", "is not a git repository")
-    assert Repositories.list() == []
+    assert render(view) =~ "so one was initialised"
+    assert File.dir?(Path.join(path, ".git"))
+    assert [%{path: ^path}] = Repositories.list()
   end
 
   test "rejects a path outside the home directory unless allowed", %{conn: conn} do

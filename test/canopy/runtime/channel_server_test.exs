@@ -177,6 +177,10 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     sid = ctx.session.opencode_session_id
     assert_receive {:prompted, ^sid, body}, 2_000
+
+    # the agent's notes file exists before its first prompt
+    notes = Canopy.Notes.agent_path(ctx.repository.path, ctx.agent)
+    assert File.read!(notes) =~ "# @#{ctx.agent.name} notes"
     assert [%{type: "text", text: text}] = body.parts
     assert text =~ "Message ID: #{message.id}"
     refute text =~ "please look at the retries"

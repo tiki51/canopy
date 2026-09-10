@@ -16,7 +16,10 @@ defmodule Canopy.Runtime.Prompts do
       "name" => agent.name,
       "role" => agent.role || "",
       "channel" => channel.name,
-      "repository_path" => repository.path
+      "repository_path" => repository.path,
+      "notes_path" => Canopy.Notes.agent_path(repository.path, agent),
+      "shared_notes_path" => Canopy.Notes.shared_path(repository.path),
+      "now" => now()
     }
 
     preamble =
@@ -27,6 +30,11 @@ defmodule Canopy.Runtime.Prompts do
       "" -> preamble
       role_prompt -> preamble <> "\n\n" <> String.trim(role_prompt)
     end
+  end
+
+  # Local wall-clock time, so agents can date their notes and read timestamps.
+  defp now do
+    NaiveDateTime.local_now() |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_string()
   end
 
   def new_message(

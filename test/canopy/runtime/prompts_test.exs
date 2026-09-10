@@ -16,6 +16,9 @@ defmodule Canopy.Runtime.PromptsTest do
     assert text =~ "channel #payments"
     assert text =~ "/repo"
     assert text =~ "Role: Primary implementation"
+    assert text =~ "/repo/.canopy/notes/backend.md"
+    assert text =~ "/repo/.canopy/NOTES.md"
+    assert text =~ ~r/The time now is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\./
     assert String.ends_with?(text, "Prefer small diffs.")
     refute text =~ "{{"
   end

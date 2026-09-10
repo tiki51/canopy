@@ -35,7 +35,8 @@ CANOPY_BIND=0.0.0.0 mix phx.server         # also reachable from other devices o
    `~/.config/opencode/plugins/canopy.js` and restart `opencode serve`. The plugin stamps
    the OpenCode session id into every Canopy tool call so Canopy knows which agent is
    speaking; without it, Canopy tools reject calls.
-3. **Repositories** (`/repositories`): add a local git repository.
+3. **Repositories** (`/repositories`): add a local project folder. If it is not a git
+   repository yet, Canopy initialises one.
 4. **New channel**: pick the repository, members, and an owner. Post a message. The owner
    wakes up, works in its own OpenCode session, and posts back through Canopy tools.
 
@@ -82,6 +83,10 @@ second pair of eyes` in the composer to transfer ownership; the reviewer must ac
   `@mentions` highlighted outside code.
 - **Wake prompts** carry ids only. Agents pull context with `messages_read` and
   `messages_search`; channel history is never dumped into their context.
+- **Agent notes**: each repository gets a `.canopy/` workspace with `NOTES.md` (shared) and
+  `notes/<agent>.md` (per agent). Agents are told to read their notes at the start of a turn
+  and update them before finishing, with dated entries. Canopy lists `.canopy/` in
+  `.git/info/exclude`, so the notes stay local and never appear as changes.
 - **Unread marks**: a channel or DM with agent messages you have not seen shows its name in
   bold with a dot; if any of them mention you by name (`@Steven`), a filled count badge
   instead. Having a channel open counts as reading it.

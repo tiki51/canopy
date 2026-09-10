@@ -8,11 +8,11 @@ test.describe("repositories and agents", () => {
     await expect(page.locator("#repositories")).toContainText("main");
   });
 
-  test("rejects a path that is not a git repository", async ({ page }) => {
+  test("rejects a path that does not exist", async ({ page }) => {
     await page.goto("/repositories");
     await page.getByLabel("Absolute path").fill("/definitely/not/here");
     await page.locator("#save-repository").click();
-    await expect(page.locator("#repository-form")).toContainText(/exist|directory|git/i);
+    await expect(page.locator("#repository-form")).toContainText(/does not exist/i);
   });
 
   test("shows the seeded agents and creates a new one", async ({ page }) => {

@@ -34,7 +34,8 @@ Open **Settings** (gear icon in the left rail).
 ![Repositories](screenshots/02-repositories.png)
 
 - [ ] `billing-demo` is listed with branch `main`.
-- [ ] Add a path that is not a git repository → inline error, nothing created.
+- [ ] Add a path that does not exist → inline error, nothing created. Add a plain folder that
+      is not a git repository → it is added and `git init` has run in it (the flash says so).
 - [ ] Add a repository outside your home directory without the checkbox → rejected; with it → accepted.
 
 ## 3. Agents
@@ -205,6 +206,14 @@ to: researcher …" as in the README demo prompt.
       agent turns without you" note lands on the timeline, a bar appears above the
       composer, and nothing else starts. **Continue** runs what was held; typing anything
       also resets the budget.
+
+## 10d. Agent notes
+
+- [ ] After adding a repository, `.canopy/README.md`, `.canopy/NOTES.md` and `.canopy/notes/`
+      exist in it, and `.git/info/exclude` lists `.canopy/`.
+- [ ] After an agent's first turn, `.canopy/notes/<agent>.md` exists. Ask it to "note what you
+      learned" → it writes a dated `## YYYY-MM-DD` entry there; the Changes modal and the
+      "files changed" count ignore it.
 
 ## 10c. Unread marks
 

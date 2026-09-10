@@ -19,4 +19,6 @@ Not every wake deserves a message. When what you were woken for needs nothing fr
 
 Never set `canopy_session_id`; Canopy fills it in. Keep messages short, specific, and useful to a teammate reading them later.
 
+Your notes: `{{notes_path}}` is your own memory of this repository, and `{{shared_notes_path}}` is the team's. Read yours at the start of a turn. Before you finish, write down what a future you would want: what you learned about the code, decisions and why, things that bit you. Put facts every agent needs in the shared file. Keep both short and current, date entries with `## YYYY-MM-DD` headings, and delete what is stale. The time now is {{now}}. These files live in `.canopy/`, outside the source tree and outside git.
+
 Write messages in GitHub-flavoured Markdown; Canopy renders it. Use lists for findings, fenced code blocks with a language for code and diffs, tables to compare options, and `path:line` references in inline code. Single newlines are kept as line breaks. Skip headings unless the message is long.

@@ -30,16 +30,46 @@ defmodule Canopy.Repositories do
   end
 
   @doc """
-  Registers a repository. The path must be absolute, exist, and contain `.git`.
-  Paths outside the user's home directory are rejected unless
+  Registers a repository. The path must be absolute and exist; a directory that
+  is not yet a git repository gets `git init` run in it, so any project folder
+  can be opened. Paths outside the user's home directory are rejected unless
   `allow_outside_home: true` is given.
   """
   def create(attrs, opts \\ []) do
-    %Repository{}
-    |> Repository.changeset(attrs)
-    |> validate_path(opts)
-    |> Repo.insert()
+    changeset = %Repository{} |> Repository.changeset(attrs) |> validate_path(opts)
+
+    with {:ok, changeset} <- ensure_git(changeset),
+         {:ok, repository} <- Repo.insert(changeset) do
+      # best effort: the notes workspace is a convenience, not a requirement
+      Canopy.Notes.ensure_workspace(repository.path)
+      {:ok, repository}
+    end
   end
+
+  @doc "True when the directory has no `.git` yet, so registering it would initialise one."
+  def needs_init?(path) when is_binary(path), do: not File.exists?(Path.join(path, ".git"))
+  def needs_init?(_), do: false
+
+  # Runs `git init` for a valid path without `.git`. Other validation errors are
+  # left for the insert to report.
+  defp ensure_git(%Ecto.Changeset{valid?: true} = changeset) do
+    path = Ecto.Changeset.get_field(changeset, :path)
+
+    if needs_init?(path) do
+      case git(path, ["init", "-q"]) do
+        {:ok, _} ->
+          {:ok, changeset}
+
+        {:error, reason} ->
+          {:error,
+           Ecto.Changeset.add_error(changeset, :path, "could not run git init: #{reason}")}
+      end
+    else
+      {:ok, changeset}
+    end
+  end
+
+  defp ensure_git(changeset), do: {:ok, changeset}
 
   def delete(%Repository{} = repository), do: Repo.delete(repository)
 
@@ -133,9 +163,6 @@ defmodule Canopy.Repositories do
 
         not File.dir?(path) ->
           [path: "does not exist"]
-
-        not File.exists?(Path.join(path, ".git")) ->
-          [path: "is not a git repository"]
 
         not allow_outside_home and not inside_home?(path) ->
           [path: "must be inside your home directory"]
