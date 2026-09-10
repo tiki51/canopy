@@ -17,6 +17,11 @@ defmodule Canopy.MCP.Tools.DmTest do
     inactive = agent_fixture(name: "retired-" <> unique_suffix(), active: false)
     ctx = scenario()
     stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
+
+    stub(OC, :add_mcp, fn _dir, _name, _config, _opts ->
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
     on_exit(fn -> Enum.each(Channels.list_dms(), &Runtime.stop_channel(&1.id)) end)
     Map.merge(ctx, %{reviewer: reviewer, inactive: inactive})
   end

@@ -24,6 +24,7 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:opencode_agents, [])
       |> assign(:providers, [])
       |> assign(:show_inactive, false)
+      |> assign(:selected, nil)
       |> start_new()
       |> load_agents()
 
@@ -38,6 +39,24 @@ defmodule CanopyWeb.AgentsLive do
 
     {:ok, socket}
   end
+
+  # /agents/:id selects an agent: its row is highlighted and offers Message and Edit.
+  @impl true
+  def handle_params(%{"id" => id}, _uri, socket) do
+    case Agents.get(id) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That agent no longer exists.")
+         |> push_patch(to: ~p"/agents")}
+
+      agent ->
+        {:noreply, socket |> assign(:selected, agent) |> assign(:page_title, "@" <> agent.name)}
+    end
+  end
+
+  def handle_params(_params, _uri, socket),
+    do: {:noreply, socket |> assign(:selected, nil) |> assign(:page_title, "Agents")}
 
   @impl true
   def handle_event("new", _params, socket) do
@@ -288,10 +307,10 @@ defmodule CanopyWeb.AgentsLive do
       repositories={@repositories}
       agents={@agents}
       dms={@dms}
+      unread={@unread}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
-      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page
         title="Agents"
@@ -332,9 +351,12 @@ defmodule CanopyWeb.AgentsLive do
                 <li
                   :for={agent <- @active_agents}
                   id={"agent-#{agent.id}"}
+                  data-selected={@selected && @selected.id == agent.id}
                   class={[
                     "group -mx-2 flex items-start gap-3 rounded-lg px-2 py-3 transition",
-                    @editing.id == agent.id && "bg-primary/5 ring-1 ring-primary/30"
+                    @editing.id == agent.id && "bg-primary/5 ring-1 ring-primary/30",
+                    @selected && @selected.id == agent.id && @editing.id != agent.id &&
+                      "bg-secondary/10 ring-1 ring-secondary/40"
                   ]}
                 >
                   <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70">
@@ -359,7 +381,21 @@ defmodule CanopyWeb.AgentsLive do
                       {agent.role}
                     </p>
                   </div>
-                  <div class="flex shrink-0 items-center gap-1 opacity-60 transition group-hover:opacity-100">
+                  <div class={[
+                    "flex shrink-0 items-center gap-1 transition group-hover:opacity-100",
+                    (@selected && @selected.id == agent.id && "opacity-100") || "opacity-60"
+                  ]}>
+                    <.link
+                      href={~p"/dm/#{agent.id}"}
+                      id={"message-agent-#{agent.id}"}
+                      class={[
+                        "btn btn-xs",
+                        (@selected && @selected.id == agent.id && "btn-primary") || "btn-ghost"
+                      ]}
+                      title={"Open a direct message with @#{agent.name}"}
+                    >
+                      <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
+                    </.link>
                     <button
                       type="button"
                       id={"edit-agent-#{agent.id}"}

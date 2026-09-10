@@ -151,4 +151,31 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert has_element?(view, "#plugin-source", "canopy_session_id")
     assert has_element?(view, "#plugin-path", "canopy.js")
   end
+
+  test "the conversation brake can be tuned or turned off", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    assert has_element?(view, "#chatter-form input[name='setting[chatter_pause]'][checked]")
+    assert has_element?(view, "#chatter-form input[name='setting[chatter_limit]'][value='6']")
+
+    view
+    |> form("#chatter-form", setting: %{chatter_pause: "true", chatter_limit: "12"})
+    |> render_submit()
+
+    assert Canopy.Settings.chatter_limit() == 12
+    assert render(view) =~ "pause after 12 agent turns"
+
+    view
+    |> form("#chatter-form", setting: %{chatter_pause: "false", chatter_limit: "12"})
+    |> render_submit()
+
+    assert Canopy.Settings.chatter_limit() == nil
+    assert render(view) =~ "Pausing is off"
+
+    view
+    |> form("#chatter-form", setting: %{chatter_pause: "true", chatter_limit: "0"})
+    |> render_submit()
+
+    assert has_element?(view, "#chatter-form", "must be greater than or equal to 1")
+    assert Canopy.Settings.chatter_limit() == nil
+  end
 end

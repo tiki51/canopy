@@ -181,10 +181,10 @@ defmodule CanopyWeb.ChannelLive.New do
       repositories={@repositories}
       agents={@agents}
       dms={@dms}
+      unread={@unread}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
-      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page title="New channel" subtitle="A focused room for one task in one repository">
         <Layouts.empty_state

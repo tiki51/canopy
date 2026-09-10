@@ -32,6 +32,18 @@ defmodule Canopy.Runtime.PromptsTest do
       Prompts.new_message(%{channel: "c", sender: "Steven", message_id: "msg_42", thread?: false})
 
     assert text =~ "msg_42"
-    refute text =~ "body"
+    refute text =~ "message body"
+    refute text =~ "Members of"
+
+    with_members =
+      Prompts.new_message(%{
+        channel: "c",
+        sender: "Steven",
+        message_id: "msg_42",
+        thread?: false,
+        members: ["backend", "reviewer"]
+      })
+
+    assert with_members =~ "Members of #c: @backend, @reviewer"
   end
 end

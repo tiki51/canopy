@@ -29,17 +29,27 @@ defmodule Canopy.Runtime.Prompts do
     end
   end
 
-  def new_message(%{channel: channel, sender: sender, message_id: message_id, thread?: thread?}) do
+  def new_message(
+        %{channel: channel, sender: sender, message_id: message_id, thread?: thread?} = args
+      ) do
     thread_hint =
       if thread?,
         do: " The message is part of a thread; answer with canopy_thread_reply on that thread.",
         else: ""
 
+    members_line =
+      case Map.get(args, :members, []) do
+        [] -> ""
+        names -> "Members of ##{channel}: " <> Enum.map_join(names, ", ", &("@" <> &1)) <> "\n"
+      end
+
     """
     You have a new Canopy message in ##{channel} from #{sender}.
     Message ID: #{message_id}
-
+    #{members_line}
     Read it and any context you need with canopy_messages_read (use around: "#{message_id}") or canopy_messages_search, do the work, then post your findings with canopy_message_send.#{thread_hint}
+    Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.
+    If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop. Never post an acknowledgement.
     """
   end
 

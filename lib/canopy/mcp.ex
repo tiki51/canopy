@@ -52,4 +52,22 @@ defmodule Canopy.MCP do
 
   @doc "JavaScript source of the OpenCode identity plugin."
   def plugin_source, do: @plugin_source
+
+  # -- Registration bookkeeping ------------------------------------------------
+  #
+  # OpenCode reads Canopy's tool list when it connects to the MCP server and
+  # keeps it for the life of that connection, so a Canopy upgrade that adds a
+  # tool would go unseen by a running OpenCode. Re-registering forces a fresh
+  # connection. These marks make that happen once per repository per Canopy
+  # boot, and again after the token rotates.
+
+  @doc "True if this Canopy process already registered with OpenCode for the repository, with the current token."
+  def registered_this_boot?(repository_id) do
+    :persistent_term.get({__MODULE__, :registered, repository_id}, nil) == Settings.mcp_token()
+  end
+
+  @doc "Records that the registration for the repository was posted by this Canopy process."
+  def mark_registered(repository_id) do
+    :persistent_term.put({__MODULE__, :registered, repository_id}, Settings.mcp_token())
+  end
 end

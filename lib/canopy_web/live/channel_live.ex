@@ -22,6 +22,7 @@ defmodule CanopyWeb.ChannelLive do
     Runtime,
     Tasks,
     Timeline,
+    Unread,
     Users
   }
 
@@ -64,6 +65,7 @@ defmodule CanopyWeb.ChannelLive do
     channel = Channels.get!(id)
     members = Channels.members(channel)
     user = Users.local()
+    Unread.mark_read(id, user)
     names = Map.new(Agents.list(), &{&1.id, &1.name})
     events = Timeline.list(id, limit: @page_size)
     {items, threads, message_ids} = split_threads(events)
@@ -85,6 +87,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:user, user)
     |> assign(:names, names)
     |> assign(:agent_statuses, agent_statuses)
+    |> assign(:paused?, Runtime.paused?(id))
     |> assign(:telemetry, telemetry)
     |> assign(:threads, threads)
     |> assign(:message_ids, message_ids)
@@ -167,6 +170,7 @@ defmodule CanopyWeb.ChannelLive do
   @impl true
   def handle_info({:timeline, %Timeline.Event{channel_id: cid} = event}, socket)
       when cid == socket.assigns.channel.id do
+    if event.event_type == "message", do: Unread.mark_read(cid, socket.assigns.user)
     {:noreply, socket |> insert_event(event) |> react_to(event)}
   end
 
@@ -190,6 +194,9 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, status))
      |> assign(:telemetry, telemetry)}
   end
+
+  def handle_info({:chatter, status}, socket),
+    do: {:noreply, assign(socket, :paused?, status == :paused)}
 
   def handle_info(:refresh_branch, socket) do
     {:noreply, socket |> assign_branch() |> schedule_branch_refresh()}
@@ -358,6 +365,11 @@ defmodule CanopyWeb.ChannelLive do
      |> assign_task(socket.assigns.task)}
   end
 
+  def handle_event("continue_chatter", _params, socket) do
+    :ok = Runtime.continue(cid(socket))
+    {:noreply, assign(socket, :paused?, false)}
+  end
+
   def handle_event("toggle_members", _params, socket) do
     socket = assign(socket, :editing_members?, not socket.assigns.editing_members?)
     {:noreply, if(socket.assigns.editing_members?, do: refresh_members(socket), else: socket)}
@@ -490,10 +502,10 @@ defmodule CanopyWeb.ChannelLive do
       repositories={@repositories}
       agents={@agents}
       dms={@dms}
+      unread={@unread}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
-      current_dm_agent_id={@current_dm_agent_id}
       agent_statuses={@agent_statuses}
     >
       <.channel_header
@@ -567,6 +579,7 @@ defmodule CanopyWeb.ChannelLive do
         <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
       </div>
 
+      <.paused_bar :if={@paused? and !Channels.archived?(@channel)} />
       <.composer :if={!Channels.archived?(@channel)} form={@composer} member_names={@member_names} />
       <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
 
@@ -806,6 +819,29 @@ defmodule CanopyWeb.ChannelLive do
         Every active agent is already here. Create more on the Agents page.
       </p>
     </section>
+    """
+  end
+
+  defp paused_bar(assigns) do
+    ~H"""
+    <div
+      id="paused-bar"
+      class="flex shrink-0 flex-wrap items-center justify-center gap-3 border-t border-warning/40 bg-warning/10 px-3 py-2 text-sm"
+    >
+      <.icon name="hero-pause-circle-mini" class="size-4 text-warning" />
+      <span>
+        Paused after {Canopy.Runtime.ChannelServer.chatter_limit() || "several"} agent turns without you.
+        Reply to keep going, or
+      </span>
+      <button
+        type="button"
+        id="continue-chatter"
+        class="btn btn-xs btn-warning"
+        phx-click="continue_chatter"
+      >
+        Continue
+      </button>
+    </div>
     """
   end
 

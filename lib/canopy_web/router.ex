@@ -32,6 +32,7 @@ defmodule CanopyWeb.Router do
       live "/settings", SettingsLive
       live "/repositories", RepositoriesLive
       live "/agents", AgentsLive
+      live "/agents/:id", AgentsLive
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
     end

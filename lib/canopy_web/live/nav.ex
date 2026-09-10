@@ -3,9 +3,8 @@ defmodule CanopyWeb.Nav do
   `on_mount` hook for every LiveView: loads what the sidebar needs and tracks the
   current path so the layout can highlight the active item.
 
-  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:current_path`,
-  `:current_channel_id`, `:current_repository_id` and `:current_dm_agent_id`
-  (nil outside a channel, the last one nil outside a DM). Screens that create or
+  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`, `:current_path`,
+  `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
   """
@@ -13,10 +12,13 @@ defmodule CanopyWeb.Nav do
   import Phoenix.Component
   import Phoenix.LiveView
 
-  alias Canopy.{Agents, Channels, Repositories}
+  alias Canopy.{Agents, Channels, Repositories, Timeline, Unread, Users}
 
   def on_mount(:default, _params, _session, socket) do
-    if connected?(socket), do: Channels.subscribe()
+    if connected?(socket) do
+      Channels.subscribe()
+      Timeline.subscribe_all()
+    end
 
     socket =
       socket
@@ -24,7 +26,6 @@ defmodule CanopyWeb.Nav do
       |> attach_hook(:canopy_nav_refresh, :handle_info, &handle_info/2)
       |> assign_new(:current_channel_id, fn -> nil end)
       |> assign_new(:current_repository_id, fn -> nil end)
-      |> assign_new(:current_dm_agent_id, fn -> nil end)
       |> attach_hook(:canopy_nav_path, :handle_params, &handle_params/3)
 
     {:cont, socket}
@@ -36,11 +37,22 @@ defmodule CanopyWeb.Nav do
     |> assign(:repositories, Repositories.list_with_channels())
     |> assign(:dms, Channels.list_dms())
     |> assign(:agents, Agents.list_active())
+    |> refresh_unread()
   end
+
+  @doc "Reloads the per-channel unread and mention counts for the sidebar."
+  def refresh_unread(socket), do: assign(socket, :unread, Unread.summary(Users.local()))
 
   # Channels created, archived, or reopened anywhere (including DMs agents
   # open) show up in every sidebar without a reload.
   defp handle_info({:channels, :changed}, socket), do: {:halt, refresh_nav(socket)}
+
+  # A message anywhere may change the unread marks. The channel view sees its
+  # own copy of the event first and marks the channel read, so this refresh
+  # already reflects that.
+  defp handle_info({:timeline_any, %{event_type: "message"}}, socket),
+    do: {:halt, refresh_unread(socket)}
+
   defp handle_info(_message, socket), do: {:cont, socket}
 
   defp handle_params(params, uri, socket) do
@@ -54,14 +66,9 @@ defmodule CanopyWeb.Nav do
       |> assign(:current_path, path)
       |> assign(:current_channel_id, channel_id)
       |> assign(:current_repository_id, channel && channel.repository_id)
-      |> assign(:current_dm_agent_id, dm_agent_id(channel))
 
     {:cont, socket}
   end
-
-  # The agent row in the sidebar lights up only for a one-to-one DM.
-  defp dm_agent_id(%{kind: "dm", agents: [%{id: id}]}), do: id
-  defp dm_agent_id(_), do: nil
 
   defp channel_id_from("/channels/" <> _, %{"id" => id}), do: id
   defp channel_id_from(_, _), do: nil

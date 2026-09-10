@@ -65,6 +65,17 @@ defmodule Canopy.Settings do
   @doc "Returns the current MCP token."
   def mcp_token, do: get().mcp_token
 
+  @doc """
+  How many agent turns a channel allows between user messages before pausing,
+  or nil when pausing is turned off.
+  """
+  def chatter_limit do
+    case get() do
+      %Setting{chatter_pause: true, chatter_limit: n} when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
+
   @doc "Changeset for the settings form."
   def change(%Setting{} = setting, attrs \\ %{}), do: Setting.changeset(setting, attrs)
 

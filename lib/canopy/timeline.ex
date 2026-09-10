@@ -24,6 +24,9 @@ defmodule Canopy.Timeline do
   @doc "Subscribes the calling process to a channel's topic."
   def subscribe(channel_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(channel_id))
 
+  @doc "Subscribe to `{:timeline_any, event}` for every channel, for cross-channel UI such as unread marks."
+  def subscribe_all, do: Phoenix.PubSub.subscribe(@pubsub, "timeline:all")
+
   @doc "Unsubscribes the calling process from a channel's topic."
   def unsubscribe(channel_id), do: Phoenix.PubSub.unsubscribe(@pubsub, topic(channel_id))
 
@@ -55,6 +58,7 @@ defmodule Canopy.Timeline do
   def broadcast(%Event{} = event) do
     event = Repo.preload(event, @preloads)
     :ok = Phoenix.PubSub.broadcast(@pubsub, topic(event.channel_id), {:timeline, event})
+    :ok = Phoenix.PubSub.broadcast(@pubsub, "timeline:all", {:timeline_any, event})
     event
   end
 

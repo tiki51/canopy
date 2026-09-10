@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
     <.live_title default="Canopy" suffix=" · Canopy" phx-no-format>{assigns[:page_title]}</.live_title>
+    <link rel="icon" type="image/png" sizes="32x32" href={~p"/images/canopy-icon-32.png"} />
+    <link rel="icon" type="image/png" sizes="192x192" href={~p"/images/canopy-icon-192.png"} />
+    <link rel="apple-touch-icon" sizes="180x180" href={~p"/images/apple-touch-icon.png"} />
+    <meta name="theme-color" content="#0A1730" />
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>

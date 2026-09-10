@@ -14,13 +14,15 @@ test.describe("channel collaboration", () => {
     await expect(card).toContainText(/is working/);
     await expect(card).toContainText("README.md");
 
-    // the agent posted through canopy_message_send, then its final reply was stored
+    // the agent posted through canopy_message_send
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
     // Agent messages are Markdown, rendered to real lists and code blocks.
     await expect(timeline(page).locator(".message-body ol li").first()).toContainText("Read README.md");
     await expect(timeline(page).locator(".message-body pre code")).toContainText("queue.add(invoice_id)");
-    await expect(timeline(page)).toContainText("Reply from the fake agent.");
     await expect(timeline(page)).toContainText(/finished/);
+    // its closing text is kept on the turn card, not posted as a second message
+    await expect(timeline(page).locator('[id^="turn-"][id$="-note"]').first()).toContainText("Reply from the fake agent.");
+    await expect(timeline(page).locator('article[data-kind="reply"]')).toHaveCount(0);
     await expect(card).toBeHidden();
   });
 
@@ -35,7 +37,7 @@ test.describe("channel collaboration", () => {
 
     await page.locator('[id^="permission-"][id$="-once"]').first().click();
     await expect(card).toBeHidden();
-    await expect(timeline(page)).toContainText("Reply from the fake agent.");
+    await expect(timeline(page)).toContainText(/finished/);
   });
 
   test("/delegate runs the delegate in a child session and wakes the owner with the result", async ({ page }) => {

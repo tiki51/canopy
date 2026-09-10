@@ -16,6 +16,11 @@ defmodule CanopyWeb.ChannelLiveTest do
     scenario = Fixtures.scenario(members: [reviewer])
 
     stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
+
+    stub(OC, :add_mcp, fn _dir, _name, _config, _opts ->
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
     stub(OC, :prompt_async, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
 
     stub(OC, :create_session, fn _dir, _body, _opts ->
@@ -154,11 +159,56 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       refute has_element?(view, "#turn-#{without.id}")
       assert has_element?(view, "#line-#{without.id}", "@#{agent.name} finished")
+
+      {:ok, recap} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{
+            "tools" => 1,
+            "outcome" => "ok",
+            "final_text" => "Posted the fix. **Summary**: done."
+          }
+        })
+
+      assert has_element?(view, "details#turn-#{recap.id}:not([open])")
+      assert has_element?(view, "#turn-#{recap.id}-note", "Closing note")
+      assert has_element?(view, "#turn-#{recap.id}-note strong", "Summary")
     end
 
     test "shows an empty state when there are no events", ctx do
       {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
       assert has_element?(view, "#timeline", "Nothing here yet")
+    end
+  end
+
+  describe "unread marks" do
+    test "other channels show a dot for unread and a count for mentions; opening clears them",
+         ctx do
+      %{channel: channel, agent: agent, user: user, repository: repository} = ctx
+      other = Fixtures.channel_fixture(%{repository_id: repository.id, owner_agent_id: agent.id})
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#unread-#{other.id}")
+
+      {:ok, _} = Messages.post_agent_message(other.id, agent.id, "a quiet finding")
+      assert has_element?(view, "#unread-#{other.id}[data-unread='1'][data-mentions='0']")
+      assert has_element?(view, "#sidebar-channel-#{other.id} .font-semibold")
+
+      {:ok, _} =
+        Messages.post_agent_message(other.id, agent.id, "@#{user.display_name} please look")
+
+      assert has_element?(view, "#unread-#{other.id}[data-unread='2'][data-mentions='1']", "1")
+
+      # messages in the open channel never mark it, and never show on its own row
+      {:ok, _} = Messages.post_agent_message(channel.id, agent.id, "@#{user.display_name} here")
+      refute has_element?(view, "#unread-#{channel.id}")
+
+      # opening the other channel reads it
+      {:ok, view, _html} = open(conn_of(ctx), other)
+      refute has_element?(view, "#unread-#{other.id}")
+      refute has_element?(view, "#unread-#{channel.id}")
     end
   end
 
@@ -175,16 +225,16 @@ defmodule CanopyWeb.ChannelLiveTest do
       refute has_element?(view, "#channel-topic")
       assert has_element?(view, "#owner-badge", "@" <> agent.name)
 
-      # The sidebar links every agent to its DM in this repository and marks this one.
-      assert html =~ ~s(href="/dm/#{agent.id}?repository=#{repository.id}")
-      assert has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+      # The DM row is the one marked; the agent row goes to the Agents page.
+      assert has_element?(view, "#sidebar-dm-#{dm.id}[data-active]")
+      refute has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+      assert html =~ ~s(href="/agents/#{agent.id}")
       refute has_element?(view, "#sidebar-channel-#{dm.id}")
       assert has_element?(view, "#sidebar-channel-#{channel.id}")
 
-      # A normal channel is unmarked in the agent list but still links to the DM.
       {:ok, view, _html} = open(conn_of(ctx), channel)
-      refute has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
-      assert has_element?(view, "#sidebar-agent-#{agent.id}[href*='/dm/#{agent.id}']")
+      refute has_element?(view, "#sidebar-dm-#{dm.id}[data-active]")
+      assert has_element?(view, "#sidebar-agent-#{agent.id}[href='/agents/#{agent.id}']")
     end
 
     test "the sidebar lists DMs, including ones agents open while you watch", ctx do
@@ -200,7 +250,6 @@ defmodule CanopyWeb.ChannelLiveTest do
       {:ok, view, _html} = open(conn_of(ctx), group)
       assert has_element?(view, "#channel-name", label)
       assert has_element?(view, "#sidebar-dm-#{group.id}[data-active]")
-      # a group DM does not light up a single agent's row
       refute has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
       assert page_title(view) =~ label
     end
@@ -448,6 +497,21 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#task-status", "working")
       assert has_element?(view, "#task-title", "Ship retries")
       refute has_element?(view, "#task-form")
+    end
+  end
+
+  describe "chatter budget" do
+    test "a pause shows the bar and Continue clears it", ctx do
+      %{channel: channel} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#paused-bar")
+
+      Phoenix.PubSub.broadcast(Canopy.PubSub, Timeline.topic(channel.id), {:chatter, :paused})
+      assert has_element?(view, "#paused-bar", "Paused after")
+
+      view |> element("#continue-chatter") |> render_click()
+      refute has_element?(view, "#paused-bar")
+      refute Runtime.paused?(channel.id)
     end
   end
 

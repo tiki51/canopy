@@ -38,11 +38,20 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   def timeline_item(%{event: %{event_type: "agent_turn_completed"}} = assigns) do
-    assigns = assign(assigns, :entries, Activity.from_payload(assigns.event.payload["activity"]))
+    assigns =
+      assigns
+      |> assign(:entries, Activity.from_payload(assigns.event.payload["activity"]))
+      |> assign(:final_text, assigns.event.payload["final_text"])
 
     ~H"""
     <div id={@id}>
-      <.turn_card event={@event} names={@names} user_name={@user_name} entries={@entries} />
+      <.turn_card
+        event={@event}
+        names={@names}
+        user_name={@user_name}
+        entries={@entries}
+        final_text={@final_text}
+      />
     </div>
     """
   end
@@ -284,8 +293,9 @@ defmodule CanopyWeb.TimelineComponents do
   attr :names, :map, required: true
   attr :user_name, :string, required: true
   attr :entries, :list, default: []
+  attr :final_text, :string, default: nil
 
-  def turn_card(%{entries: []} = assigns) do
+  def turn_card(%{entries: [], final_text: nil} = assigns) do
     ~H"""
     <.system_line
       id={"line-#{@event.id}"}
@@ -336,6 +346,16 @@ defmodule CanopyWeb.TimelineComponents do
       </summary>
       <div class="px-4 pb-2 pt-1">
         <.activity_list id={"turn-#{@event.id}"} entries={@entries} />
+        <div
+          :if={@final_text}
+          id={"turn-#{@event.id}-note"}
+          class={["border-t border-dashed border-base-300 pt-2", @entries != [] && "mt-2"]}
+        >
+          <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
+            Closing note
+          </p>
+          <.message_text body={@final_text} />
+        </div>
       </div>
     </details>
     """
@@ -514,7 +534,13 @@ defmodule CanopyWeb.TimelineComponents do
         "#{agent} started working"
 
       "agent_turn_completed" ->
-        verb = if p["outcome"] == "ok", do: "finished", else: "stopped with an error"
+        verb =
+          cond do
+            p["outcome"] != "ok" -> "stopped with an error"
+            p["passed"] -> "passed" <> suffix(p["note"])
+            true -> "finished"
+          end
+
         Enum.join([agent <> " " <> verb | turn_stats(p)], " · ")
 
       "agent_error" ->

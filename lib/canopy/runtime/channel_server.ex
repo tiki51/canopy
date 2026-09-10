@@ -59,8 +59,15 @@ defmodule Canopy.Runtime.ChannelServer do
     telemetry: %{},
     mcp_registered?: false,
     start_stream?: true,
-    stream_seen?: false
+    stream_seen?: false,
+    # agent turns started since the user last did something
+    chatter: 0,
+    # nil, or the wakeups held back once the chatter budget ran out
+    paused: nil
   ]
+
+  @doc "Agent turns allowed between user actions before the channel pauses itself; nil when off."
+  def chatter_limit, do: Canopy.Settings.chatter_limit()
 
   # -- API --------------------------------------------------------------------
 
@@ -76,6 +83,12 @@ defmodule Canopy.Runtime.ChannelServer do
   def abort(server, agent_id), do: GenServer.call(server, {:abort, agent_id})
   def telemetry(server, agent_id), do: GenServer.call(server, {:telemetry, agent_id})
   def status(server), do: GenServer.call(server, :status)
+  def paused?(server), do: GenServer.call(server, :paused?)
+
+  def pass(server, opencode_session_id, reason),
+    do: GenServer.call(server, {:pass, opencode_session_id, reason})
+
+  def continue(server), do: GenServer.call(server, :continue)
   def wake(server, agent_id, text), do: GenServer.cast(server, {:wake, {:root, agent_id}, text})
 
   # -- Callbacks --------------------------------------------------------------
@@ -165,18 +178,42 @@ defmodule Canopy.Runtime.ChannelServer do
     {:reply, statuses, state}
   end
 
+  def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
+
+  # The agent chose not to respond: the turn ends without a reply message.
+  def handle_call({:pass, sid, reason}, _from, state) do
+    if Map.has_key?(state.turns, sid),
+      do: {:reply, :ok, update_turn(state, sid, &%{&1 | passed: reason || ""})},
+      else: {:reply, {:error, :no_turn}, state}
+  end
+
+  # The user pressed Continue: the held wakeups run, against a fresh budget.
+  def handle_call(:continue, _from, state) do
+    held = state.paused || []
+    state = %{state | chatter: 0, paused: nil}
+    broadcast(state, {:chatter, :resumed})
+
+    {:reply, :ok,
+     Enum.reduce(held, state, fn {t, text}, acc -> wake_within_budget(acc, t, text) end)}
+  end
+
   @impl true
-  def handle_cast({:wake, target, text}, state), do: {:noreply, do_wake(state, target, text)}
+  def handle_cast({:wake, target, text}, state),
+    do: {:noreply, wake_within_budget(%{state | chatter: 0, paused: nil}, target, text)}
 
   @impl true
   def handle_info({:timeline, %Timeline.Event{} = event}, state) do
-    state = maybe_refresh_channel(event, state)
+    state = event |> note_agent_post(state) |> then(&maybe_refresh_channel(event, &1))
     ctx = router_ctx(state)
+
+    # Anything the user does resets the budget and drops whatever was held:
+    # their message wakes whoever it should on its own.
+    state = if user_action?(event), do: resume(state), else: state
 
     state =
       event
       |> Router.wakeups(ctx)
-      |> Enum.reduce(state, fn {target, text}, acc -> do_wake(acc, target, text) end)
+      |> Enum.reduce(state, fn {target, text}, acc -> wake_within_budget(acc, target, text) end)
 
     {:noreply, state}
   rescue
@@ -291,6 +328,56 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # -- Waking agents ----------------------------------------------------------
 
+  # -- Chatter budget ---------------------------------------------------------
+  #
+  # Agents waking agents is what keeps a conversation alive, and also what
+  # could keep it running unattended. Each turn started since the user's last
+  # action counts; past the limit, wakeups are held and the channel says so.
+
+  defp wake_within_budget(%{paused: held} = state, target, text) when is_list(held),
+    do: %{state | paused: held ++ [{target, text}]}
+
+  defp wake_within_budget(state, target, text) do
+    limit = chatter_limit()
+
+    if is_integer(limit) and state.chatter >= limit do
+      pause(state, limit, [{target, text}])
+    else
+      do_wake(%{state | chatter: state.chatter + 1}, target, text)
+    end
+  end
+
+  defp pause(state, limit, held) do
+    {:ok, _} =
+      Messages.post_user_note(
+        state.channel.id,
+        Users.local().id,
+        "Paused after #{limit} agent turns without you. Reply to keep going, or press Continue."
+      )
+
+    broadcast(state, {:chatter, :paused})
+    %{state | paused: held}
+  end
+
+  defp resume(%{paused: nil, chatter: 0} = state), do: state
+
+  defp resume(state) do
+    if is_list(state.paused), do: broadcast(state, {:chatter, :resumed})
+    %{state | chatter: 0, paused: nil}
+  end
+
+  defp user_action?(%Timeline.Event{
+         event_type: "message",
+         message: %{agent_id: nil, kind: kind}
+       }),
+       do: kind != "system"
+
+  defp user_action?(%Timeline.Event{event_type: type, payload: p})
+       when type in ["delegation_created", "handoff_requested"],
+       do: is_nil(p["from_agent_id"])
+
+  defp user_action?(_event), do: false
+
   defp do_wake(state, {:root, agent_id}, text) do
     case ensure_root_session(state, agent_id) do
       {:ok, session, state} ->
@@ -358,7 +445,10 @@ defmodule Canopy.Runtime.ChannelServer do
           texts: [],
           tools: 0,
           files: MapSet.new(),
-          cost: 0.0
+          cost: 0.0,
+          passed: nil,
+          # set once the agent posts through Canopy tools during this turn
+          posted?: false
         }
 
         %{state | turns: Map.put(state.turns, session.opencode_session_id, turn)}
@@ -491,23 +581,28 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp ensure_mcp(%{mcp_registered?: true} = state), do: state
 
+  # A registration OpenCode still reports as connected is reused only if this
+  # Canopy process made it: an older one carries the tool list from before
+  # Canopy last restarted. Otherwise it is (re)posted, which is idempotent.
   defp ensure_mcp(state) do
     dir = state.repository.path
     name = Canopy.MCP.registration_name()
+    repository_id = state.repository.id
+
+    connected? =
+      match?(
+        {:ok, %{^name => %{"status" => "connected"}}},
+        client().mcp_status(dir, state.client_opts)
+      )
 
     registered? =
-      case client().mcp_status(dir, state.client_opts) do
-        {:ok, %{^name => %{"status" => "connected"}}} -> true
-        _ -> false
-      end
-
-    registered? =
-      registered? or
+      (connected? and Canopy.MCP.registered_this_boot?(repository_id)) or
         match?(
           {:ok, _},
           client().add_mcp(dir, name, Canopy.MCP.registration_config(:current), state.client_opts)
         )
 
+    if registered?, do: Canopy.MCP.mark_registered(repository_id)
     %{state | mcp_registered?: registered?}
   end
 
@@ -672,11 +767,16 @@ defmodule Canopy.Runtime.ChannelServer do
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => if(outcome == :ok, do: "ok", else: "error"),
               "delegation_id" => who.delegation_id,
-              "activity" => activity
+              "activity" => activity,
+              "passed" => is_binary(turn.passed),
+              "note" => turn.passed,
+              "final_text" => if(turn.posted?, do: final_text(turn))
             }
           })
 
-        maybe_post_reply(state, turn, who)
+        # The final text is the reply only when the agent said nothing through
+        # the tools; after a message_send it is a recap, kept on the card.
+        if is_nil(turn.passed) and not turn.posted?, do: maybe_post_reply(state, turn, who)
 
         broadcast(
           state,
@@ -687,6 +787,33 @@ defmodule Canopy.Runtime.ChannelServer do
         drain_queue(state, session, who.agent_id)
     end
   end
+
+  # A message the agent posted itself (post or thread reply) while its turn is
+  # in flight marks that turn, so the closing text is not posted a second time.
+  defp note_agent_post(
+         %Timeline.Event{event_type: "message", message: %{agent_id: agent_id, kind: kind}},
+         state
+       )
+       when is_binary(agent_id) and kind in ["post", "thread_reply"] do
+    turns =
+      Map.new(state.turns, fn
+        {sid, %{agent_id: ^agent_id} = turn} -> {sid, %{turn | posted?: true}}
+        other -> other
+      end)
+
+    %{state | turns: turns}
+  end
+
+  defp note_agent_post(_event, state), do: state
+
+  defp final_text(%{texts: [last | _]}) when is_binary(last) do
+    case String.trim(last) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp final_text(_turn), do: nil
 
   # The last text part of the turn is the agent's reply; earlier parts are narration.
   defp maybe_post_reply(state, %{texts: [last | _]}, who) when is_binary(last) do

@@ -21,6 +21,7 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:setting, setting)
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
+     |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
      |> assign(:draft_url, setting.opencode_url)
      |> assign(:health, nil)
      |> assign(:token_visible, false)
@@ -95,6 +96,29 @@ defmodule CanopyWeb.SettingsLive do
     end
   end
 
+  def handle_event("validate_chatter", %{"setting" => params}, socket) do
+    changeset =
+      socket.assigns.setting
+      |> Settings.change(Map.take(params, ["chatter_pause", "chatter_limit"]))
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
+  end
+
+  def handle_event("save_chatter", %{"setting" => params}, socket) do
+    case Settings.update(Map.take(params, ["chatter_pause", "chatter_limit"])) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
+         |> put_flash(:info, chatter_saved(setting))}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
+    end
+  end
+
   def handle_event("toggle_token", _params, socket) do
     {:noreply, update(socket, :token_visible, &(!&1))}
   end
@@ -162,10 +186,10 @@ defmodule CanopyWeb.SettingsLive do
       repositories={@repositories}
       agents={@agents}
       dms={@dms}
+      unread={@unread}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
-      current_dm_agent_id={@current_dm_agent_id}
     >
       <Layouts.page title="Settings" subtitle="OpenCode connection, your name, and the MCP bridge">
         <Layouts.panel
@@ -229,6 +253,47 @@ defmodule CanopyWeb.SettingsLive do
             />
             <div>
               <.button type="submit" variant="primary" id="save-profile">Save</.button>
+            </div>
+          </.form>
+        </Layouts.panel>
+
+        <Layouts.panel
+          id="chatter-panel"
+          title="Conversation"
+          description="Agents wake each other by mentioning and by replying to the owner. This is the brake."
+        >
+          <.form
+            for={@chatter_form}
+            id="chatter-form"
+            phx-change="validate_chatter"
+            phx-submit="save_chatter"
+            class="flex flex-col gap-3"
+          >
+            <.input
+              field={@chatter_form[:chatter_pause]}
+              type="checkbox"
+              label="Pause a channel after agents have taken turns without me"
+            />
+            <div class={[
+              "max-w-xs transition",
+              !Phoenix.HTML.Form.normalize_value("checkbox", @chatter_form[:chatter_pause].value) &&
+                "opacity-50"
+            ]}>
+              <.input
+                field={@chatter_form[:chatter_limit]}
+                type="number"
+                min="1"
+                max="1000"
+                label="Turns before pausing"
+              />
+            </div>
+            <p class="text-xs text-base-content/60">
+              A paused channel holds further wakeups and shows a Continue button; your next
+              message also resets it. Turn this off for long-running work you want to leave
+              alone, and watch the cost.
+            </p>
+            <div>
+              <.button type="submit" variant="primary" id="save-chatter">Save</.button>
             </div>
           </.form>
         </Layouts.panel>
@@ -391,4 +456,10 @@ defmodule CanopyWeb.SettingsLive do
     </script>
     """
   end
+
+  defp chatter_saved(%{chatter_pause: false}),
+    do: "Pausing is off: agents may keep talking until you step in."
+
+  defp chatter_saved(%{chatter_limit: n}),
+    do: "Channels pause after #{n} agent #{if n == 1, do: "turn", else: "turns"} without you."
 end

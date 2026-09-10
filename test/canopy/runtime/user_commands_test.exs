@@ -16,6 +16,10 @@ defmodule Canopy.Runtime.UserCommandsTest do
     Timeline.subscribe(scenario.channel.id)
     stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
 
+    stub(OC, :add_mcp, fn _dir, _name, _config, _opts ->
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
     stub(OC, :create_session, fn _dir, _body, _opts ->
       {:ok, %{"id" => "ses_" <> Fixtures.unique_suffix()}}
     end)

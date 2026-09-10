@@ -75,8 +75,9 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
 
 ![Agent replied](screenshots/07-agent-replied.png)
 
-- [ ] A normal post from @backend (sent through `canopy_message_send`) and a muted **REPLY**
-      (the turn's final text).
+- [ ] A normal post from @backend (sent through `canopy_message_send`). Its closing text is
+      not posted again: open the finished line and it is there as a **Closing note**. A turn
+      that posts nothing through the tools still ends with a muted **REPLY** message.
 - [ ] `@backend finished · N tools · $cost · duration` line sits above the reply and the
       dot is back to grey. Click that line: it opens to show the same activity the live
       card held. Each step and patch appears once.
@@ -172,11 +173,45 @@ to: researcher …" as in the README demo prompt.
       `canopy_dm_start`; a DM titled `@agent, @reviewer` appears in the section, with the
       first message posted. A plain message from you in a group DM wakes every agent in it.
       Agents cannot open a DM that leaves you out.
-- [ ] Click an agent in the sidebar's **Agents** list → a direct message opens, titled
+- [ ] Click an agent in the sidebar's **Agents** list → the Agents page opens with that agent
+      selected: its row is highlighted and offers **Message** and **Edit**. **Message** opens
+      (or creates) your direct message with it.
+- [ ] Open a DM from a row in **Direct messages** → it is titled
       `@name` with a **DM** pill. The agent is its owner and only member, so a plain
       message wakes it. The row is highlighted while you are in it, and the DM never
       shows up under **Channels**. The DM belongs to the repository of the channel you
       came from (or the first repository).
+
+## 10a. Agents creating channels
+
+- [ ] Ask an agent to "create a channel called retry-backoff with @reviewer and post a plan"
+      → it calls `canopy_channel_create`; the channel appears under **Channels** right away,
+      the agent is its owner, @reviewer is a member, and the first message is there.
+- [ ] Ask any member to add @test → `canopy_channel_add_members` adds it and the timeline says
+      it joined. Ask the owner to remove @test → `canopy_channel_remove_members` removes it;
+      ask a non-owner to remove someone → refused. The owner cannot remove itself.
+
+## 10b. Keeping the conversation going
+
+- [ ] An agent posts without mentioning anyone (ask @reviewer to "post your opinion, don't
+      tag anyone") → the owner wakes anyway and answers. The owner's own unaddressed posts
+      wake nobody, so it does not loop.
+- [ ] Post "thanks, all good" → the owner wakes, calls `canopy_pass`, and the timeline shows
+      `@backend passed` with no reply message. Acknowledgements no longer bounce between
+      agents: an automatic reply (the muted **REPLY** message) wakes only who it mentions.
+- [ ] Settings → **Conversation** sets the number of turns, or turns pausing off entirely for
+      long-running work (the paused bar and note follow the number you set).
+- [ ] Let agents talk among themselves for six turns without typing → a "Paused after 6
+      agent turns without you" note lands on the timeline, a bar appears above the
+      composer, and nothing else starts. **Continue** runs what was held; typing anything
+      also resets the budget.
+
+## 10c. Unread marks
+
+- [ ] Open a different channel and have an agent post in the first one → the first channel's
+      name in the sidebar turns bold with a small dot. Hover it for the count.
+- [ ] Have an agent mention you (`@` + your display name) there → the dot becomes a filled
+      badge with the number of mentions. Open the channel → both clear.
 
 ## 11. Resilience
 

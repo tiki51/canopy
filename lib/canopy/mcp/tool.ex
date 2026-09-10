@@ -100,6 +100,33 @@ defmodule Canopy.MCP.Tool do
     end
   end
 
+  @doc """
+  Resolves a comma or space separated list of agent references. `except:` drops
+  one id (the caller). Unknown or deactivated agents are errors; duplicates collapse.
+  """
+  def resolve_agents(nil, _opts), do: {:ok, []}
+
+  def resolve_agents(value, opts) when is_binary(value) do
+    except = Keyword.get(opts, :except)
+
+    value
+    |> String.split([",", " "], trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
+      case resolve_agent(ref) do
+        {:ok, %{id: ^except}} -> {:cont, {:ok, acc}}
+        {:ok, %{active: false}} -> {:halt, {:error, "#{ref} is deactivated"}}
+        {:ok, agent} -> {:cont, {:ok, acc ++ [agent]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, agents} -> {:ok, Enum.uniq_by(agents, & &1.id)}
+      error -> error
+    end
+  end
+
   @doc "Resolves an agent that must be a member of the channel and not the caller."
   def resolve_counterpart(ctx, channel, value, verb) do
     with {:ok, agent} <- resolve_agent(value) do

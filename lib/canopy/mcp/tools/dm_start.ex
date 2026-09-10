@@ -25,33 +25,12 @@ defmodule Canopy.MCP.Tools.DmStart do
   @impl true
   def execute(params, frame) do
     Tool.run(params, frame, fn ctx, params ->
-      with {:ok, others} <- resolve_agents(Map.get(params, :agents), ctx),
+      with {:ok, others} <- Tool.resolve_agents(Map.get(params, :agents), except: ctx.agent.id),
            {:ok, dm} <- Channels.ensure_dm(ctx.channel.repository_id, [ctx.agent | others]),
            {:ok, message_id} <- maybe_post(dm, ctx, Tool.blank_to_nil(Map.get(params, :text))) do
         {:ok, describe(dm, message_id)}
       end
     end)
-  end
-
-  defp resolve_agents(nil, _ctx), do: {:ok, []}
-
-  defp resolve_agents(value, ctx) when is_binary(value) do
-    value
-    |> String.split([",", " "], trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
-      case Tool.resolve_agent(ref) do
-        {:ok, %{id: id}} when id == ctx.agent.id -> {:cont, {:ok, acc}}
-        {:ok, %{active: false}} -> {:halt, {:error, "#{ref} is deactivated"}}
-        {:ok, agent} -> {:cont, {:ok, acc ++ [agent]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, agents} -> {:ok, Enum.uniq_by(agents, & &1.id)}
-      error -> error
-    end
   end
 
   defp maybe_post(_dm, _ctx, nil), do: {:ok, nil}

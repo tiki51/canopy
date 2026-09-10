@@ -34,10 +34,10 @@ defmodule CanopyWeb.Layouts do
   attr :repositories, :list, default: [], doc: "repositories with :channels, from CanopyWeb.Nav"
   attr :dms, :list, default: [], doc: "direct-message channels, from CanopyWeb.Nav"
   attr :agents, :list, default: [], doc: "active agents, from CanopyWeb.Nav"
+  attr :unread, :map, default: %{}, doc: "channel_id => %{count, mentions}, from CanopyWeb.Nav"
   attr :current_path, :string, default: "/"
   attr :current_channel_id, :string, default: nil
   attr :current_repository_id, :string, default: nil, doc: "repository of the open channel"
-  attr :current_dm_agent_id, :string, default: nil, doc: "agent when the open channel is a DM"
   attr :agent_statuses, :map, default: %{}, doc: "agent_id => :idle | :busy | :error"
 
   slot :inner_block, required: true
@@ -67,10 +67,16 @@ defmodule CanopyWeb.Layouts do
         >
           <.link
             navigate={~p"/"}
-            class="mb-3 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-content font-black text-lg shadow-sm transition hover:scale-105"
+            class="mb-3 flex size-9 items-center justify-center rounded-lg shadow-sm transition hover:scale-105"
             title="Canopy"
           >
-            C
+            <img
+              src={~p"/images/canopy-icon-64.png"}
+              alt="Canopy"
+              width="36"
+              height="36"
+              class="size-9 rounded-lg"
+            />
           </.link>
           <.rail_link
             navigate={~p"/repositories"}
@@ -155,11 +161,18 @@ defmodule CanopyWeb.Layouts do
                   title={channel.topic}
                 >
                   <span class="opacity-60">#</span>
-                  <span class="truncate">{channel.name}</span>
+                  <span class={["truncate", unread_class(@unread, channel.id, @current_channel_id)]}>
+                    {channel.name}
+                  </span>
                   <.icon
                     :if={channel.status == "archived"}
                     name="hero-archive-box-mini"
                     class="ml-auto size-3.5 opacity-60"
+                  />
+                  <.unread_mark
+                    unread={@unread}
+                    channel_id={channel.id}
+                    current_id={@current_channel_id}
                   />
                 </.link>
               </li>
@@ -190,10 +203,13 @@ defmodule CanopyWeb.Layouts do
                 ]}
               >
                 <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5 shrink-0 opacity-60" />
-                <span class="truncate">{Canopy.Channels.dm_label(dm)}</span>
+                <span class={["truncate", unread_class(@unread, dm.id, @current_channel_id)]}>
+                  {Canopy.Channels.dm_label(dm)}
+                </span>
                 <span :if={length(@repositories) > 1} class="ml-auto truncate text-[10px] opacity-50">
                   {dm.repository.name}
                 </span>
+                <.unread_mark unread={@unread} channel_id={dm.id} current_id={@current_channel_id} />
               </.link>
             </li>
             <li :if={@dms == []} class="px-2 text-xs text-base-content/40">
@@ -216,14 +232,14 @@ defmodule CanopyWeb.Layouts do
           <ul class="flex flex-col gap-px px-2 pb-4">
             <li :for={agent <- @agents}>
               <.link
-                href={dm_path(agent, @current_repository_id)}
+                navigate={~p"/agents/#{agent.id}"}
                 id={"sidebar-agent-#{agent.id}"}
-                data-active={agent.id == @current_dm_agent_id}
-                title={"Message @#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
+                data-active={@current_path == "/agents/#{agent.id}"}
+                title={"@#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
                 class={[
                   "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition",
-                  agent.id == @current_dm_agent_id && "bg-primary/15 text-primary font-medium",
-                  agent.id != @current_dm_agent_id &&
+                  @current_path == "/agents/#{agent.id}" && "bg-primary/15 text-primary font-medium",
+                  @current_path != "/agents/#{agent.id}" &&
                     "text-base-content/80 hover:bg-base-300 hover:text-base-content"
                 ]}
               >
@@ -233,8 +249,8 @@ defmodule CanopyWeb.Layouts do
                   :if={agent.role}
                   class={[
                     "min-w-0 truncate text-[11px]",
-                    agent.id == @current_dm_agent_id && "text-primary/70",
-                    agent.id != @current_dm_agent_id && "text-base-content/40"
+                    @current_path == "/agents/#{agent.id}" && "text-primary/70",
+                    @current_path != "/agents/#{agent.id}" && "text-base-content/40"
                   ]}
                 >
                   {agent.role}
@@ -486,6 +502,54 @@ defmodule CanopyWeb.Layouts do
     """
   end
 
-  defp dm_path(agent, nil), do: ~p"/dm/#{agent.id}"
-  defp dm_path(agent, repository_id), do: ~p"/dm/#{agent.id}?repository=#{repository_id}"
+  # -- Unread marks -------------------------------------------------------------
+  #
+  # An unread channel gets a bold name and a dot; one that mentions the user
+  # gets a filled count badge instead. The open channel never shows either.
+
+  attr :unread, :map, required: true
+  attr :channel_id, :string, required: true
+  attr :current_id, :string, default: nil
+
+  defp unread_mark(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :state,
+        unread_state(assigns.unread, assigns.channel_id, assigns.current_id)
+      )
+
+    ~H"""
+    <span
+      :if={@state}
+      id={"unread-#{@channel_id}"}
+      data-unread={@state.count}
+      data-mentions={@state.mentions}
+      class={[
+        "ml-auto flex shrink-0 items-center justify-center",
+        @state.mentions > 0 &&
+          "h-4 min-w-4 rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-content",
+        @state.mentions == 0 && "size-2 rounded-full bg-secondary"
+      ]}
+      title={unread_title(@state)}
+    >
+      {if @state.mentions > 0, do: @state.mentions}
+    </span>
+    """
+  end
+
+  defp unread_state(unread, channel_id, current_id) when channel_id != current_id,
+    do: Map.get(unread, channel_id)
+
+  defp unread_state(_unread, _channel_id, _current_id), do: nil
+
+  defp unread_class(unread, channel_id, current_id) do
+    if unread_state(unread, channel_id, current_id), do: "font-semibold text-base-content"
+  end
+
+  defp unread_title(%{count: count, mentions: 0}),
+    do: "#{count} unread #{if count == 1, do: "message", else: "messages"}"
+
+  defp unread_title(%{count: count, mentions: mentions}),
+    do: "#{mentions} #{if mentions == 1, do: "mention", else: "mentions"} · #{count} unread"
 end

@@ -36,7 +36,8 @@ defmodule Canopy.Runtime.RouterTest do
             agent_id: nil,
             user: %{display_name: "Steven"},
             mentions: [],
-            thread_id: nil
+            thread_id: nil,
+            kind: "post"
           },
           msg
         )
@@ -66,9 +67,33 @@ defmodule Canopy.Runtime.RouterTest do
     assert [{{:root, @reviewer}, _}] = Router.wakeups(ev, ctx())
   end
 
-  test "an agent never wakes itself and an agent post without mentions wakes nobody" do
+  test "an agent never wakes itself, and the owner's unaddressed posts wake nobody" do
     ev = message_event(%{agent_id: @backend, mentions: [@backend]})
     assert [] = Router.wakeups(ev, ctx())
+  end
+
+  test "an automatic reply wakes only who it mentions, never the owner or thread author" do
+    reply = message_event(%{agent_id: @reviewer, kind: "reply"})
+    assert [] = Router.wakeups(reply, ctx())
+
+    threaded = message_event(%{agent_id: @reviewer, kind: "reply", thread_id: "msg_root"})
+    ctx = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @backend} end})
+    assert [] = Router.wakeups(threaded, ctx)
+
+    mentioning = message_event(%{agent_id: @reviewer, kind: "reply", mentions: [@backend]})
+    assert [{{:root, @backend}, _}] = Router.wakeups(mentioning, ctx())
+  end
+
+  test "another agent's unaddressed post wakes the owner, once" do
+    ev = message_event(%{agent_id: @reviewer})
+    assert [{{:root, @backend}, text}] = Router.wakeups(ev, ctx())
+    assert text =~ "from @reviewer"
+    assert text =~ "Members of #payments: @backend, @reviewer"
+    assert text =~ "wakes only the agents you @mention, plus the channel owner"
+
+    # no owner, or an owner who left the channel: back to nobody
+    assert [] = Router.wakeups(ev, ctx(%{owner_agent_id: nil}))
+    assert [] = Router.wakeups(ev, ctx(%{owner_agent_id: @outsider}))
   end
 
   test "an agent's thread reply wakes the thread root author" do

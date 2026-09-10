@@ -37,12 +37,29 @@ defmodule Canopy.Runtime.Router do
 
     # In a DM the user is talking to everyone in it, so an unaddressed user
     # message wakes all agents rather than just the owner.
+    # An unaddressed post from an agent reaches the owner, who is responsible
+    # for the task, unless the owner wrote it. Thread replies still go to the
+    # thread's author first.
     targets =
       cond do
-        targets != [] -> targets
-        is_nil(sender_agent_id) and dm?(ctx) -> ctx.members
-        is_nil(sender_agent_id) and ctx.owner_agent_id -> [ctx.owner_agent_id]
-        true -> thread_root_author(message, ctx, sender_agent_id)
+        targets != [] ->
+          targets
+
+        is_nil(sender_agent_id) and dm?(ctx) ->
+          ctx.members
+
+        is_nil(sender_agent_id) and ctx.owner_agent_id ->
+          [ctx.owner_agent_id]
+
+        # The "reply" kind is the turn's final text that Canopy captures on its
+        # own: narration, not a question. It wakes only who it mentions, or
+        # acknowledgements would bounce between agents forever.
+        message.kind == "reply" ->
+          []
+
+        true ->
+          thread_root_author(message, ctx, sender_agent_id) ++
+            owner_fallback(ctx, sender_agent_id)
       end
 
     text =
@@ -50,7 +67,8 @@ defmodule Canopy.Runtime.Router do
         channel: ctx.channel.name,
         sender: sender,
         message_id: message.id,
-        thread?: not is_nil(message.thread_id)
+        thread?: not is_nil(message.thread_id),
+        members: member_names(ctx)
       })
 
     Enum.map(Enum.uniq(targets), &{{:root, &1}, text})
@@ -132,6 +150,22 @@ defmodule Canopy.Runtime.Router do
   end
 
   defp dm?(%{channel: channel}), do: Map.get(channel, :kind) == "dm"
+
+  defp owner_fallback(%{owner_agent_id: owner, members: members}, sender)
+       when is_binary(owner) and owner != sender do
+    if owner in members, do: [owner], else: []
+  end
+
+  defp owner_fallback(_ctx, _sender), do: []
+
+  defp member_names(ctx) do
+    ctx.members
+    |> Enum.map(&ctx.lookup.(&1))
+    |> Enum.flat_map(fn
+      %{name: n} -> [n]
+      _ -> []
+    end)
+  end
 
   defp sender_name(%{agent_id: nil, user: %{display_name: n}}, _ctx) when is_binary(n), do: n
   defp sender_name(%{agent_id: nil}, ctx), do: ctx.user_name

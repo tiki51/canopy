@@ -37,6 +37,29 @@ defmodule CanopyWeb.AgentsLiveTest do
     refute has_element?(view, "#opencode-agents")
   end
 
+  test "/agents/:id selects the agent: highlighted row, Message and Edit, sidebar mark", %{
+    conn: conn
+  } do
+    agent = Fixtures.agent_fixture(%{name: "picked#{Fixtures.unique_suffix()}"})
+    other = Fixtures.agent_fixture()
+
+    {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+    assert page_title(view) =~ "@" <> agent.name
+    assert has_element?(view, "#agent-#{agent.id}[data-selected]")
+    refute has_element?(view, "#agent-#{other.id}[data-selected]")
+    assert has_element?(view, "#message-agent-#{agent.id}[href='/dm/#{agent.id}']", "Message")
+    assert has_element?(view, "#edit-agent-#{agent.id}", "Edit")
+    assert has_element?(view, "#sidebar-agent-#{agent.id}[data-active]")
+    refute has_element?(view, "#sidebar-agent-#{other.id}[data-active]")
+
+    # Edit from the selected row loads it into the form
+    view |> element("#edit-agent-#{agent.id}") |> render_click()
+    assert has_element?(view, "#agent-form input[name='agent[name]'][value='#{agent.name}']")
+
+    # an unknown id falls back to the list
+    assert {:error, {:live_redirect, %{to: "/agents"}}} = live(conn, ~p"/agents/agt_nope")
+  end
+
   test "creates an agent", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/agents")
 
