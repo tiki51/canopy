@@ -23,11 +23,27 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
       {:ok, %{"canopy" => %{"status" => "connected"}}}
     end)
 
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+
     on_exit(fn -> Enum.each(Channels.list(), &Runtime.stop_channel(&1.id)) end)
     Map.merge(ctx, %{reviewer: reviewer, reviewer_session: reviewer_session, tester: tester})
   end
 
   describe "channel_create" do
+    test "an agent can set a spend limit at creation, not change it later", ctx do
+      assert {:ok, text} = call(ChannelCreate, %{name: "budgeted", spend_limit: 3}, ctx)
+      assert text =~ "spend limit $3.00"
+      channel = Channels.get_by_name(ctx.repository.id, "budgeted")
+      assert channel.spend_limit == 3.0
+
+      assert {:ok, text} = call(ChannelCreate, %{name: "free", spend_limit: 0}, ctx)
+      refute text =~ "spend limit"
+      assert Channels.get_by_name(ctx.repository.id, "free").spend_limit == nil
+
+      # no tool changes a limit; the user's panel records "user"
+      refute "spend_limit_set" in Canopy.MCP.Server.tool_names()
+    end
+
     test "creates a channel owned by the caller, with members, task, and a first message", ctx do
       Channels.subscribe()
 
@@ -62,6 +78,23 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
 
       assert [%{body: "Kicking this off. Findings to follow."}] = Messages.list(id)
       assert_receive {:channels, :changed}
+    end
+
+    test "creates a channel in another registered repository on request", ctx do
+      other = repository_fixture(%{name: "calculator_app"})
+
+      assert {:ok, text} =
+               call(ChannelCreate, %{name: "calc", repository: "calculator_app"}, ctx)
+
+      [_, id] = Regex.run(~r/created #calc \[(ch_[^\]]+)\]/, text)
+      assert text =~ "in calculator_app"
+      channel = Channels.get!(id)
+      assert channel.repository_id == other.id
+      assert channel.owner_agent_id == ctx.agent.id
+
+      assert {:error, reason} = call(ChannelCreate, %{name: "x", repository: "nope"}, ctx)
+      assert reason =~ "unknown repository"
+      assert reason =~ "calculator_app"
     end
 
     test "rejects a taken name and unknown agents", ctx do

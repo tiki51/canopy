@@ -42,6 +42,36 @@
     </script>
   </head>
   <body>
+    <%!-- Confirmation dialog for [data-canopy-confirm] controls (see app.js). --%>
+    <dialog
+      id="canopy-confirm"
+      class="m-auto w-full max-w-md rounded-2xl border border-base-300 bg-base-200 p-0 text-base-content shadow-2xl backdrop:bg-base-content/40"
+    >
+      <form method="dialog" class="flex flex-col gap-4 p-5">
+        <div class="flex items-start gap-3">
+          <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
+            <.icon name="hero-exclamation-triangle" class="size-5" />
+          </span>
+          <div class="min-w-0">
+            <h2 id="canopy-confirm-title" class="text-sm font-semibold">Are you sure?</h2>
+            <p id="canopy-confirm-message" class="mt-1 text-sm text-base-content/70"></p>
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            id="canopy-confirm-cancel"
+            class="btn btn-ghost btn-sm"
+            value="cancel"
+          >
+            Cancel
+          </button>
+          <button type="button" id="canopy-confirm-ok" class="btn btn-sm btn-warning" value="ok">
+            Confirm
+          </button>
+        </div>
+      </form>
+    </dialog>
     {@inner_content}
   </body>
 </html>

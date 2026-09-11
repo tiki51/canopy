@@ -22,7 +22,7 @@ defmodule Canopy.MCP.Format do
   def message_line(%Message{} = message, opts \\ []) do
     body =
       if Keyword.get(opts, :bodies, true) do
-        ": " <> single_line(message.body)
+        ": " <> shortened(single_line(message.body), Keyword.get(opts, :truncate, nil))
       else
         ""
       end
@@ -42,6 +42,16 @@ defmodule Canopy.MCP.Format do
   def message_lines(messages, opts) do
     Enum.map_join(messages, "\n", &message_line(&1, opts))
   end
+
+  # Long bodies are cut with a pointer to the full text; every character a
+  # tool returns stays in the agent's context for the rest of its session.
+  defp shortened(text, max) when is_integer(max) and byte_size(text) > max do
+    kept = String.slice(text, 0, max)
+
+    "#{kept}… (+#{String.length(text) - String.length(kept)} chars; canopy_message_get for the full text)"
+  end
+
+  defp shortened(text, _max), do: text
 
   @doc "`2m ago`, `3h ago`, `5d ago`, or `just now`."
   def relative_time(nil), do: "unknown time"

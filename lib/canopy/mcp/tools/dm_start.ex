@@ -17,6 +17,9 @@ defmodule Canopy.MCP.Tools.DmStart do
       description:
         "Other agents to include, comma separated (@name or name). You and the user are always in. Leave empty for a one-to-one DM."
 
+    field :repository, :string,
+      description: "Repository name or id for the DM. Defaults to your current one."
+
     field :text, :string,
       description:
         "First message to post in the DM, in Markdown. @name mentions wake those agents; the user sees it in the sidebar."
@@ -26,7 +29,8 @@ defmodule Canopy.MCP.Tools.DmStart do
   def execute(params, frame) do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, others} <- Tool.resolve_agents(Map.get(params, :agents), except: ctx.agent.id),
-           {:ok, dm} <- Channels.ensure_dm(ctx.channel.repository_id, [ctx.agent | others]),
+           {:ok, repository} <- Tool.resolve_repository(ctx, Map.get(params, :repository)),
+           {:ok, dm} <- Channels.ensure_dm(repository.id, [ctx.agent | others]),
            {:ok, message_id} <- maybe_post(dm, ctx, Tool.blank_to_nil(Map.get(params, :text))) do
         {:ok, describe(dm, message_id)}
       end

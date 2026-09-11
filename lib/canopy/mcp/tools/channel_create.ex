@@ -28,39 +28,54 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
       description:
         "Other agents to add as members, comma separated (@name or name). You are always a member."
 
+    field :repository, :string,
+      description:
+        "Repository name or id to create the channel in. Defaults to your current one; use this to work in another registered repository."
+
     field :text, :string,
       description: "A first message to post, in Markdown. @name mentions wake those agents."
+
+    field :spend_limit, {:either, {:integer, :float}},
+      description:
+        "Optional total the channel may spend, in dollars. Once reached, agents in it stay quiet until the user raises it. Only the user can change it later."
   end
 
   @impl true
   def execute(params, frame) do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, name} <- slug(Map.get(params, :name)),
+           {:ok, repository} <- Tool.resolve_repository(ctx, Map.get(params, :repository)),
            {:ok, others} <- Tool.resolve_agents(Map.get(params, :agents), except: ctx.agent.id),
-           {:ok, channel} <- create(ctx, name, params, others),
+           {:ok, channel} <- create(ctx, repository, name, params, others),
            {:ok, message_id} <-
              maybe_post(channel, ctx, Tool.blank_to_nil(Map.get(params, :text))) do
         members = Enum.map_join(channel.agents, ", ", &("@" <> &1.name))
         posted = if message_id, do: "; posted [#{message_id}]", else: ""
 
+        limit =
+          if channel.spend_limit,
+            do: "; spend limit #{Canopy.Costs.money(channel.spend_limit)}",
+            else: ""
+
         {:ok,
-         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{posted}. " <>
+         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{limit}#{posted}. " <>
            "Post there with canopy_message_send channel: \"#{channel.name}\"."}
       end
     end)
   end
 
-  defp create(ctx, name, params, others) do
+  defp create(ctx, repository, name, params, others) do
     topic = Tool.blank_to_nil(Map.get(params, :topic))
 
     attrs = %{
-      repository_id: ctx.repository.id,
+      repository_id: repository.id,
       name: name,
       topic: topic,
       owner_agent_id: ctx.agent.id,
       agent_ids: Enum.map(others, & &1.id),
       task_title: topic || name,
-      task_description: Tool.blank_to_nil(Map.get(params, :task))
+      task_description: Tool.blank_to_nil(Map.get(params, :task)),
+      spend_limit: limit(Map.get(params, :spend_limit))
     }
 
     case Channels.create(attrs) do
@@ -71,6 +86,9 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
         {:error, "could not create channel: " <> Tool.changeset_reason(changeset)}
     end
   end
+
+  defp limit(n) when is_number(n) and n > 0, do: n / 1
+  defp limit(_), do: nil
 
   defp maybe_post(_channel, _ctx, nil), do: {:ok, nil}
 

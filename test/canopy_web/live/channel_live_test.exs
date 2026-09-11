@@ -21,6 +21,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       {:ok, %{"canopy" => %{"status" => "connected"}}}
     end)
 
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+
     stub(OC, :prompt_async, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
 
     stub(OC, :create_session, fn _dir, _body, _opts ->
@@ -288,7 +290,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#flash-error", "usage: /handoff")
-      assert has_element?(view, "#composer-input", "/handoff")
+      # the browser keeps the draft (LiveView never patches the textarea); the
+      # server must not tell it to clear
       refute_push_event(view, "composer:clear", %{})
     end
 
@@ -327,7 +330,7 @@ defmodule CanopyWeb.ChannelLiveTest do
         part_id: "p1"
       })
 
-      assert has_element?(view, "#telemetry-#{agent.id}", "@#{agent.name} is working")
+      assert has_element?(view, "#telemetry-#{agent.id}", "@#{agent.name} is researching")
       assert has_element?(view, "#telemetry-#{agent.id}-c1", "read")
       assert has_element?(view, "#telemetry-#{agent.id}-c1", "lib/a.ex")
       assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
@@ -515,6 +518,102 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "schedules" do
+    test "the Scheduled panel lists the channel's schedules with a count, cancels, and follows changes",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#schedule-count")
+
+      {:ok, once} =
+        Canopy.Schedules.create(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          created_by_agent_id: agent.id,
+          instruction: "Check the deploy went out.",
+          when: "2h"
+        })
+
+      assert has_element?(view, "#schedule-count", "1")
+      assert render(view) =~ "@#{agent.name} scheduled: once · Check the deploy went out."
+
+      view |> element("#edit-schedules") |> render_click()
+      assert has_element?(view, "#channel-schedules-#{once.id}", "Check the deploy went out.")
+      assert has_element?(view, "#channel-schedules-#{once.id}", "in 2h")
+      assert has_element?(view, "#channel-schedules-#{once.id}", "@#{agent.name}")
+
+      view |> element("#cancel-schedule-#{once.id}") |> render_click()
+      refute has_element?(view, "#channel-schedules-#{once.id}")
+      refute has_element?(view, "#schedule-count")
+      assert %{status: "cancelled"} = Canopy.Schedules.get!(once.id)
+      assert render(view) =~ "cancelled a schedule for @#{agent.name}"
+    end
+  end
+
+  describe "compact timeline" do
+    test "routine activity is marked and hidden by default; the toggle and the browser preference flip it",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+
+      {:ok, started} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_started"
+        })
+
+      {:ok, clean} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{"outcome" => "ok", "tools" => 1}
+        })
+
+      {:ok, passed_note} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{"outcome" => "ok", "passed" => true, "note" => "still 0-0, nothing new"}
+        })
+
+      {:ok, errored} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_error",
+          payload: %{"reason" => "boom"}
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#timeline.timeline-compact")
+      assert has_element?(view, "#evt-#{started.id}[data-activity=routine]")
+      assert has_element?(view, "#evt-#{clean.id}[data-activity=routine]")
+      refute has_element?(view, "#evt-#{passed_note.id}[data-activity]")
+      refute has_element?(view, "#evt-#{errored.id}[data-activity]")
+
+      view |> element("#toggle-activity") |> render_click()
+      refute has_element?(view, "#timeline.timeline-compact")
+      assert has_element?(view, "#toggle-activity.btn-active")
+
+      render_hook(view, "pref", %{"key" => "timeline-activity", "value" => "compact"})
+      assert has_element?(view, "#timeline.timeline-compact")
+    end
+  end
+
+  describe "session reset" do
+    test "the header button resets an idle member's session and says so on the timeline", ctx do
+      %{channel: channel, agent: agent, session: session} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view |> element("#reset-session-#{agent.id}") |> render_click()
+      assert render(view) =~ "reset @#{agent.name}&#39;s session"
+      assert Canopy.AgentSessions.get_root(channel.id, agent.id) == nil
+      refute Canopy.Repo.get(Canopy.AgentSessions.AgentSession, session.id)
+    end
+  end
+
   describe "members and archiving" do
     test "agents can be added and removed from the members panel; the owner cannot", ctx do
       %{channel: channel, agent: owner, reviewer: reviewer} = ctx
@@ -542,8 +641,47 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#add-member-select option[value='#{reviewer.id}']")
 
       # the composer's mention list follows the membership
-      assert has_element?(view, "#composer-input[data-members*='#{newcomer.name}']")
-      refute has_element?(view, "#composer-input[data-members*='#{reviewer.name}']")
+      assert has_element?(view, "#composer-form[data-members*='#{newcomer.name}']")
+      refute has_element?(view, "#composer-form[data-members*='#{reviewer.name}']")
+    end
+
+    test "the budget panel sets and clears the spend limit; reaching it shows a bar", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#edit-budget", "$0.00")
+      refute has_element?(view, "#budget-panel")
+
+      view |> element("#edit-budget") |> render_click()
+      assert has_element?(view, "#budget-spent", "no limit")
+      refute has_element?(view, "#clear-spend-limit")
+
+      view |> form("#budget-form", spend_limit: "abc") |> render_submit()
+      assert render(view) =~ "must be a positive amount"
+
+      view |> form("#budget-form", spend_limit: "2.50") |> render_submit()
+      refute has_element?(view, "#budget-panel")
+      assert has_element?(view, "#edit-budget", "$0.00 / $2.50")
+      assert render(view) =~ "set this channel&#39;s spend limit to $2.50"
+      refute has_element?(view, "#limit-bar")
+
+      {:ok, _} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{"outcome" => "ok", "cost" => 3.0, "tools" => 1, "duration_ms" => 10}
+        })
+
+      assert has_element?(view, "#edit-budget", "$3.00 / $2.50")
+      assert has_element?(view, "#limit-bar", "Spend limit reached: $3.00 of $2.50")
+
+      view |> element("#raise-limit") |> render_click()
+      assert has_element?(view, "#budget-spent", "Spent $3.00 of a $2.50 limit")
+      view |> element("#clear-spend-limit") |> render_click()
+      refute has_element?(view, "#limit-bar")
+      assert has_element?(view, "#edit-budget", "$3.00")
+      refute has_element?(view, "#edit-budget", "/")
+      assert render(view) =~ "removed this channel&#39;s spend limit"
     end
 
     test "archiving hides the composer, marks the sidebar, and reopening restores it", ctx do
@@ -564,6 +702,20 @@ defmodule CanopyWeb.ChannelLiveTest do
       refute has_element?(view, "#archived-bar")
       assert has_element?(view, "#archive-channel")
       assert render(view) =~ "reopened this channel"
+    end
+
+    test "a DM's header switches its repository and the timeline says so", ctx do
+      %{agent: agent, repository: repository} = ctx
+      other = Fixtures.repository_fixture(%{name: "calc"})
+      {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, agent)
+      {:ok, view, _html} = open(conn_of(ctx), dm)
+
+      assert has_element?(view, "#dm-repository option[value='#{repository.id}'][selected]")
+      view |> form("#dm-repository-form", %{"repository_id" => other.id}) |> render_change()
+      assert Canopy.Channels.get!(dm.id).repository_id == other.id
+      assert has_element?(view, "#dm-repository option[value='#{other.id}'][selected]")
+      assert render(view) =~ "moved this conversation to calc"
+      assert has_element?(view, "#sidebar-dm-#{dm.id}[title*=calc]")
     end
 
     test "a DM has no members button", ctx do

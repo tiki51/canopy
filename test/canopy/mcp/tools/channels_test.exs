@@ -47,6 +47,24 @@ defmodule Canopy.MCP.Tools.ChannelsTest do
       assert text =~ "[#{m2.id}] #{ctx.user.display_name}"
     end
 
+    test "shows the spend against a limit when the channel has one", ctx do
+      assert {:ok, text} = call(ChannelGet, %{}, ctx)
+      refute text =~ "Spend:"
+
+      {:ok, _} = Canopy.Channels.set_spend_limit(ctx.channel, 2.0)
+
+      {:ok, _} =
+        Canopy.Timeline.record(%{
+          channel_id: ctx.channel.id,
+          agent_id: ctx.agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{"outcome" => "ok", "cost" => 2.5, "tools" => 0, "duration_ms" => 1}
+        })
+
+      assert {:ok, text} = call(ChannelGet, %{}, ctx)
+      assert text =~ "Spend: $2.50 of a $2.00 limit set by the user (reached: agents are held"
+    end
+
     test "accepts a channel name or id the caller is a member of", ctx do
       assert {:ok, by_name} = call(ChannelGet, %{channel: "#" <> ctx.channel.name}, ctx)
       assert {:ok, by_id} = call(ChannelGet, %{channel: ctx.channel.id}, ctx)

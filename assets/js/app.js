@@ -26,18 +26,53 @@ import {hooks as colocatedHooks} from "phoenix-colocated/canopy"
 import topbar from "../vendor/topbar"
 import Composer from "./hooks/composer"
 import TimelineScroll from "./hooks/timeline_scroll"
+import Pref from "./hooks/pref"
+import AutoDismiss from "./hooks/auto_dismiss"
+import SidebarScroll from "./hooks/sidebar_scroll"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, Composer, TimelineScroll},
+  hooks: {...colocatedHooks, Composer, TimelineScroll, Pref, AutoDismiss, SidebarScroll},
 })
 
 // Show progress bar on live navigation and form submits
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
+
+// Custom confirmation: any control with data-canopy-confirm="message" (and an
+// optional data-canopy-confirm-title / data-canopy-confirm-label) opens the
+// dialog in the root layout instead of the browser's confirm box. Confirming
+// re-dispatches the click with a one-shot marker so LiveView handles it as usual.
+const confirmDialog = document.getElementById("canopy-confirm")
+if (confirmDialog) {
+  let pending = null
+  const close = () => { pending = null; confirmDialog.close() }
+  document.addEventListener("click", e => {
+    const el = e.target.closest("[data-canopy-confirm]")
+    if (!el || el.dataset.canopyConfirmed === "1") return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    pending = el
+    document.getElementById("canopy-confirm-title").textContent = el.dataset.canopyConfirmTitle || "Are you sure?"
+    document.getElementById("canopy-confirm-message").textContent = el.dataset.canopyConfirm
+    document.getElementById("canopy-confirm-ok").textContent = el.dataset.canopyConfirmLabel || "Confirm"
+    confirmDialog.showModal()
+  }, true)
+  document.getElementById("canopy-confirm-cancel").addEventListener("click", close)
+  confirmDialog.addEventListener("click", e => { if (e.target === confirmDialog) close() })
+  confirmDialog.addEventListener("cancel", e => { e.preventDefault(); close() })
+  document.getElementById("canopy-confirm-ok").addEventListener("click", () => {
+    const el = pending
+    close()
+    if (!el) return
+    el.dataset.canopyConfirmed = "1"
+    el.click()
+    delete el.dataset.canopyConfirmed
+  })
+}
 
 // The mobile drawer (rail + sidebar) closes when navigation lands somewhere.
 window.addEventListener("phx:page-loading-stop", _info => {

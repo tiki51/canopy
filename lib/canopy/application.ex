@@ -14,6 +14,8 @@ defmodule Canopy.Application do
        repos: Application.fetch_env!(:canopy, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:canopy, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Canopy.PubSub},
+      # Durable jobs: scheduled agent tasks
+      {Oban, Application.fetch_env!(:canopy, Oban)},
       # Per-repository SSE subscriptions to the OpenCode server
       Canopy.OpenCode.Supervisor,
       # One process per open channel owning agent sessions

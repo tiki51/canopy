@@ -40,8 +40,9 @@ defmodule Canopy.Repositories do
 
     with {:ok, changeset} <- ensure_git(changeset),
          {:ok, repository} <- Repo.insert(changeset) do
-      # best effort: the notes workspace is a convenience, not a requirement
+      # best effort: the notes workspace and the identity plugin are conveniences
       Canopy.Notes.ensure_workspace(repository.path)
+      Canopy.MCP.ensure_project_plugin(repository.path)
       {:ok, repository}
     end
   end

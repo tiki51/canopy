@@ -35,6 +35,13 @@ defmodule CanopyWeb.Layouts do
   attr :dms, :list, default: [], doc: "direct-message channels, from CanopyWeb.Nav"
   attr :agents, :list, default: [], doc: "active agents, from CanopyWeb.Nav"
   attr :unread, :map, default: %{}, doc: "channel_id => %{count, mentions}, from CanopyWeb.Nav"
+
+  attr :schedule_counts, :map,
+    default: %{},
+    doc: "agent_id => active schedules, from CanopyWeb.Nav"
+
+  attr :hold, :string, default: nil, doc: "why agent activity is held, from CanopyWeb.Nav"
+
   attr :current_path, :string, default: "/"
   attr :current_channel_id, :string, default: nil
   attr :current_repository_id, :string, default: nil, doc: "repository of the open channel"
@@ -88,7 +95,13 @@ defmodule CanopyWeb.Layouts do
             navigate={~p"/agents"}
             icon="hero-cpu-chip"
             title="Agents"
-            active={@current_path == "/agents"}
+            active={String.starts_with?(@current_path, "/agents")}
+          />
+          <.rail_link
+            navigate={~p"/costs"}
+            icon="hero-banknotes"
+            title="Costs"
+            active={@current_path == "/costs"}
           />
           <.rail_link
             navigate={~p"/settings"}
@@ -105,6 +118,7 @@ defmodule CanopyWeb.Layouts do
           id="sidebar"
           class="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
           aria-label="Channels and agents"
+          phx-hook="SidebarScroll"
         >
           <div class="flex items-center justify-between px-4 pt-4 pb-2">
             <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
@@ -146,7 +160,7 @@ defmodule CanopyWeb.Layouts do
               <span class="truncate">{repository.name}</span>
             </div>
             <ul class="flex flex-col gap-px">
-              <li :for={channel <- repository.channels}>
+              <li :for={channel <- visible_channels(repository.channels, @current_channel_id)}>
                 <.link
                   navigate={~p"/channels/#{channel.id}"}
                   id={"sidebar-channel-#{channel.id}"}
@@ -180,12 +194,49 @@ defmodule CanopyWeb.Layouts do
                 no channels
               </li>
             </ul>
+            <details
+              :if={archived_channels(repository.channels, @current_channel_id) != []}
+              id={"sidebar-archived-#{repository.id}"}
+              class="group/arch"
+            >
+              <summary class="flex cursor-pointer select-none list-none items-center gap-1 rounded-md px-2 py-1 text-[11px] text-base-content/40 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
+                <.icon
+                  name="hero-chevron-right-mini"
+                  class="size-3 transition-transform group-open/arch:rotate-90"
+                />
+                {length(archived_channels(repository.channels, @current_channel_id))} archived
+              </summary>
+              <ul class="flex flex-col gap-px">
+                <li :for={channel <- archived_channels(repository.channels, @current_channel_id)}>
+                  <.link
+                    navigate={~p"/channels/#{channel.id}"}
+                    id={"sidebar-channel-#{channel.id}"}
+                    class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-base-content/50 opacity-70 transition hover:bg-base-300 hover:text-base-content"
+                    title={channel.topic}
+                  >
+                    <span class="opacity-60">#</span>
+                    <span class="truncate">{channel.name}</span>
+                    <.icon name="hero-archive-box-mini" class="ml-auto size-3.5 opacity-60" />
+                  </.link>
+                </li>
+              </ul>
+            </details>
           </div>
 
           <div class="mt-2 flex items-center justify-between px-4 pt-2 pb-2">
             <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
               Direct messages
             </span>
+            <button
+              type="button"
+              id="sidebar-new-dm"
+              class="flex size-6 items-center justify-center rounded-md text-base-content/60 transition hover:bg-base-300 hover:text-base-content"
+              title="New direct message"
+              phx-click="open_picker"
+              phx-target="#dm-picker-component"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
           </div>
           <ul id="sidebar-dms" class="flex flex-col gap-px px-2 pb-2">
             <li :for={dm <- @dms}>
@@ -205,9 +256,6 @@ defmodule CanopyWeb.Layouts do
                 <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5 shrink-0 opacity-60" />
                 <span class={["truncate", unread_class(@unread, dm.id, @current_channel_id)]}>
                   {Canopy.Channels.dm_label(dm)}
-                </span>
-                <span :if={length(@repositories) > 1} class="ml-auto truncate text-[10px] opacity-50">
-                  {dm.repository.name}
                 </span>
                 <.unread_mark unread={@unread} channel_id={dm.id} current_id={@current_channel_id} />
               </.link>
@@ -255,6 +303,15 @@ defmodule CanopyWeb.Layouts do
                 >
                   {agent.role}
                 </span>
+                <span
+                  :if={Map.get(@schedule_counts, agent.id, 0) > 0}
+                  id={"schedules-#{agent.id}"}
+                  class="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] text-base-content/50"
+                  title={"#{Map.get(@schedule_counts, agent.id)} scheduled"}
+                >
+                  <.icon name="hero-clock-mini" class="size-3" />
+                  {Map.get(@schedule_counts, agent.id)}
+                </span>
               </.link>
             </li>
             <li :if={@agents == []} class="px-2 text-xs text-base-content/40">no agents</li>
@@ -263,8 +320,35 @@ defmodule CanopyWeb.Layouts do
       </div>
 
       <main class="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div
+          :if={@hold}
+          id="hold-banner"
+          class="flex shrink-0 flex-wrap items-center gap-3 border-b border-error/40 bg-error/10 px-4 py-2 text-sm"
+        >
+          <.icon name="hero-hand-raised" class="size-5 shrink-0 text-error" />
+          <span class="min-w-0 flex-1">
+            <span class="font-semibold">Agent runs are on hold.</span>
+            {@hold}. Schedules are paused and wakes are dropped until you release it.
+          </span>
+          <button
+            type="button"
+            id="release-hold"
+            class="btn btn-xs btn-error"
+            phx-click="release_hold"
+          >
+            Release hold
+          </button>
+        </div>
         {render_slot(@inner_block)}
       </main>
+
+      <.live_component
+        module={CanopyWeb.DmPicker}
+        id="dm-picker-component"
+        repositories={@repositories}
+        agents={@agents}
+        current_repository_id={@current_repository_id}
+      />
     </div>
 
     <.flash_group flash={@flash} />
@@ -320,6 +404,16 @@ defmodule CanopyWeb.Layouts do
       <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
       <span class="relative inline-flex size-2 rounded-full bg-success" />
     </span>
+    """
+  end
+
+  def status_dot(%{status: :queued} = assigns) do
+    ~H"""
+    <span
+      class="inline-block size-2 shrink-0 rounded-full bg-warning"
+      data-status="queued"
+      title="Waiting for its turn"
+    />
     """
   end
 
@@ -552,4 +646,12 @@ defmodule CanopyWeb.Layouts do
 
   defp unread_title(%{count: count, mentions: mentions}),
     do: "#{mentions} #{if mentions == 1, do: "mention", else: "mentions"} · #{count} unread"
+
+  # Archived channels stay out of the list unless you are in one; the rest fold
+  # behind an "N archived" toggle.
+  defp visible_channels(channels, current_id),
+    do: Enum.filter(channels, &(&1.status != "archived" or &1.id == current_id))
+
+  defp archived_channels(channels, current_id),
+    do: Enum.filter(channels, &(&1.status == "archived" and &1.id != current_id))
 end

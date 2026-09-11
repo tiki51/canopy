@@ -56,6 +56,11 @@ defmodule Canopy.OpenCode.Client do
     request(:get, "/session/#{session_id}/message", dir(directory, opts, params))
   end
 
+  @doc "Compacts a session: OpenCode replaces its history with a summary made by the given model."
+  @impl true
+  def summarize(directory, session_id, body, opts \\ []) when is_map(body),
+    do: request(:post, "/session/#{session_id}/summarize", [json: body] ++ dir(directory, opts))
+
   @impl true
   def prompt_async(directory, session_id, body, opts \\ []) when is_map(body),
     do:
@@ -105,6 +110,11 @@ defmodule Canopy.OpenCode.Client do
 
   @impl true
   def mcp_status(directory, opts \\ []), do: request(:get, "/mcp", dir(directory, opts))
+
+  @doc "Disposes OpenCode's instance for a directory; the next request recreates it (and reloads plugins)."
+  @impl true
+  def dispose_instance(directory, opts \\ []),
+    do: request(:post, "/instance/dispose", dir(directory, opts))
 
   @doc """
   Builds the `%Req.Request{}` used for one call. Exposed so `EventStream` can open the

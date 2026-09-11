@@ -1,32 +1,44 @@
 defmodule CanopyWeb.AgentsLive do
   @moduledoc """
-  Agents: list active agents with their role and model, create or edit one
-  (name, display name, role, system prompt, OpenCode agent, model override),
-  deactivate, and reactivate.
+  Agents, in four pages under one LiveView:
+
+    * `/agents` — the list (active, plus deactivated behind a toggle)
+    * `/agents/new` — the create form
+    * `/agents/:id` — one agent: identity, model, channels, schedules, actions
+    * `/agents/:id/edit` — the edit form for that agent
 
   The OpenCode agent picker is a datalist filled from `GET /agent` for the
-  first repository; without a repository (or if the call fails) it is a plain
-  text input defaulting to `build`.
+  first repository, and the provider/model selects come from
+  `GET /config/providers`; both degrade to plain inputs when OpenCode is away.
   """
+
   use CanopyWeb, :live_view
 
-  alias Canopy.Agents
+  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules}
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.Client
-  alias Canopy.Repositories
   alias CanopyWeb.Nav
+
+  import CanopyWeb.TimelineComponents, only: [schedule_list: 1, message_text: 1]
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(:page_title, "Agents")
       |> assign(:opencode_agents, [])
       |> assign(:providers, [])
+      |> assign(:default_models, %{})
       |> assign(:show_inactive, false)
-      |> assign(:selected, nil)
-      |> start_new()
+      |> assign(:agent, nil)
+      |> assign(:agent_channels, [])
+      |> assign(:agent_schedules, [])
+      |> assign(:agent_memory, "")
+      |> assign(:memory_updated_at, nil)
+      |> assign(:editing_memory?, false)
+      |> assign_form(Agents.change(%Agent{}))
       |> load_agents()
+
+    if connected?(socket), do: Memory.subscribe()
 
     socket =
       if connected?(socket) do
@@ -40,45 +52,58 @@ defmodule CanopyWeb.AgentsLive do
     {:ok, socket}
   end
 
-  # /agents/:id selects an agent: its row is highlighted and offers Message and Edit.
   @impl true
-  def handle_params(%{"id" => id}, _uri, socket) do
-    case Agents.get(id) do
-      nil ->
+  def handle_params(params, _uri, socket) do
+    case {socket.assigns.live_action, params} do
+      {:index, _} ->
+        {:noreply, socket |> assign(:agent, nil) |> assign(:page_title, "Agents")}
+
+      {:new, _} ->
         {:noreply,
          socket
-         |> put_flash(:error, "That agent no longer exists.")
-         |> push_patch(to: ~p"/agents")}
+         |> assign(:agent, nil)
+         |> assign(:page_title, "New agent")
+         |> assign_form(Agents.change(%Agent{}))}
 
-      agent ->
-        {:noreply, socket |> assign(:selected, agent) |> assign(:page_title, "@" <> agent.name)}
+      {action, %{"id" => id}} when action in [:show, :edit] ->
+        case Agents.get(id) do
+          nil ->
+            {:noreply,
+             socket
+             |> put_flash(:error, "That agent no longer exists.")
+             |> push_navigate(to: ~p"/agents")}
+
+          agent ->
+            socket =
+              socket
+              |> assign(:agent, agent)
+              |> assign(:page_title, "@" <> agent.name)
+              |> load_agent_details()
+
+            {:noreply,
+             if(action == :edit, do: assign_form(socket, Agents.change(agent)), else: socket)}
+        end
     end
   end
 
-  def handle_params(_params, _uri, socket),
-    do: {:noreply, socket |> assign(:selected, nil) |> assign(:page_title, "Agents")}
+  @impl true
+  def handle_info({:schedules, :changed, _channel_id}, %{assigns: %{agent: %Agent{}}} = socket),
+    do: {:noreply, load_agent_details(socket)}
+
+  def handle_info(
+        {:memory, :changed, agent_id},
+        %{assigns: %{agent: %Agent{id: agent_id}}} = socket
+      ),
+      do: {:noreply, load_memory(socket)}
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # -- Events -------------------------------------------------------------------
 
   @impl true
-  def handle_event("new", _params, socket) do
-    {:noreply, start_new(socket)}
-  end
-
-  def handle_event("edit", %{"id" => id}, socket) do
-    agent = Agents.get!(id)
-
-    {:noreply,
-     socket
-     |> assign(:editing, agent)
-     |> assign_form(Agents.change(agent))}
-  end
-
-  def handle_event("cancel", _params, socket) do
-    {:noreply, start_new(socket)}
-  end
-
   def handle_event("validate", %{"agent" => params}, socket) do
     changeset =
-      socket.assigns.editing
+      (socket.assigns.agent || %Agent{})
       |> Agents.change(blank_to_nil(params))
       |> validate_model(socket.assigns.providers)
       |> Map.put(:action, :validate)
@@ -88,7 +113,7 @@ defmodule CanopyWeb.AgentsLive do
 
   def handle_event("save", %{"agent" => params}, socket) do
     params = blank_to_nil(params)
-    editing = socket.assigns.editing
+    editing = socket.assigns.agent || %Agent{}
     checked = editing |> Agents.change(params) |> validate_model(socket.assigns.providers)
 
     result =
@@ -104,10 +129,9 @@ defmodule CanopyWeb.AgentsLive do
 
         {:noreply,
          socket
-         |> start_new()
-         |> load_agents()
          |> Nav.refresh_nav()
-         |> put_flash(:info, "#{verb} @#{agent.name}.")}
+         |> put_flash(:info, "#{verb} @#{agent.name}.")
+         |> push_navigate(to: ~p"/agents/#{agent.id}")}
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, changeset)}
@@ -119,13 +143,9 @@ defmodule CanopyWeb.AgentsLive do
 
     case Agents.deactivate(agent) do
       {:ok, _} ->
-        socket =
-          if socket.assigns.editing.id == agent.id, do: start_new(socket), else: socket
-
         {:noreply,
          socket
-         |> load_agents()
-         |> Nav.refresh_nav()
+         |> refresh_after_change(agent.id)
          |> put_flash(:info, "Deactivated @#{agent.name}.")}
 
       {:error, _} ->
@@ -140,8 +160,7 @@ defmodule CanopyWeb.AgentsLive do
       {:ok, _} ->
         {:noreply,
          socket
-         |> load_agents()
-         |> Nav.refresh_nav()
+         |> refresh_after_change(agent.id)
          |> put_flash(:info, "Reactivated @#{agent.name}.")}
 
       {:error, _} ->
@@ -152,6 +171,56 @@ defmodule CanopyWeb.AgentsLive do
   def handle_event("toggle_inactive", _params, socket) do
     {:noreply, update(socket, :show_inactive, &(!&1))}
   end
+
+  def handle_event("edit_memory", _params, socket),
+    do: {:noreply, assign(socket, :editing_memory?, true)}
+
+  def handle_event("cancel_memory", _params, socket),
+    do: {:noreply, socket |> assign(:editing_memory?, false) |> load_memory()}
+
+  def handle_event("save_memory", %{"memory" => body}, socket) do
+    case Memory.put(socket.assigns.agent.id, body) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> assign(:editing_memory?, false)
+         |> load_memory()
+         |> put_flash(:info, "Memory saved for @#{socket.assigns.agent.name}.")}
+
+      {:error, :too_large} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "That is over #{div(Memory.max_bytes(), 1024)} KB; trim it first."
+         )}
+    end
+  end
+
+  def handle_event("cancel_schedule", %{"id" => id}, socket) do
+    case Schedules.get(id) do
+      nil ->
+        {:noreply, socket}
+
+      schedule ->
+        {:ok, _} = Schedules.cancel(schedule, "cancelled from the Agents page")
+        {:noreply, load_agent_details(socket)}
+    end
+  end
+
+  defp refresh_after_change(socket, agent_id) do
+    socket = socket |> load_agents() |> Nav.refresh_nav()
+
+    case socket.assigns.agent do
+      %Agent{id: ^agent_id} ->
+        socket |> assign(:agent, Agents.get!(agent_id)) |> load_agent_details()
+
+      _ ->
+        socket
+    end
+  end
+
+  # -- OpenCode lookups ---------------------------------------------------------
 
   @impl true
   def handle_async(:opencode_agents, {:ok, {:ok, list}}, socket) when is_list(list) do
@@ -172,23 +241,134 @@ defmodule CanopyWeb.AgentsLive do
     {:noreply, assign(socket, :opencode_agents, [])}
   end
 
-  def handle_async(:providers, {:ok, {:ok, %{"providers" => list}}}, socket) when is_list(list) do
+  def handle_async(:providers, {:ok, {:ok, %{"providers" => list} = body}}, socket)
+      when is_list(list) do
     providers =
       list
       |> Enum.flat_map(fn
         %{"id" => id} = p when is_binary(id) ->
-          models = p |> Map.get("models", %{}) |> Map.keys() |> Enum.sort()
-          [%{id: id, name: Map.get(p, "name") || id, models: models}]
+          model_map = Map.get(p, "models", %{})
+          models = model_map |> Map.keys() |> Enum.sort()
+          pricing = Map.new(model_map, fn {mid, m} -> {mid, pricing_of(m)} end)
+          [%{id: id, name: Map.get(p, "name") || id, models: models, pricing: pricing}]
 
         _ ->
           []
       end)
       |> Enum.sort_by(& &1.id)
 
-    {:noreply, assign(socket, :providers, providers)}
+    {:noreply,
+     socket
+     |> assign(:providers, providers)
+     |> assign(:default_models, Map.get(body, "default", %{}))}
   end
 
   def handle_async(:providers, _other, socket), do: {:noreply, assign(socket, :providers, [])}
+
+  # models.dev pricing, in dollars per million tokens; nil when OpenCode has none
+  defp pricing_of(%{"cost" => %{} = cost}) do
+    %{
+      input: number(cost["input"]),
+      output: number(cost["output"]),
+      cache_read: number(get_in(cost, ["cache", "read"]))
+    }
+  end
+
+  defp pricing_of(_), do: nil
+
+  defp number(n) when is_number(n), do: n / 1
+  defp number(_), do: 0.0
+
+  @doc false
+  def pricing(providers, provider, model) when is_binary(provider) and is_binary(model) do
+    case Enum.find(providers, &(&1.id == provider)) do
+      %{pricing: pricing} -> Map.get(pricing, model)
+      _ -> nil
+    end
+  end
+
+  def pricing(_providers, _provider, _model), do: nil
+
+  @doc false
+  def price_text(nil, _providers, _provider), do: nil
+
+  # A provider whose every model costs $0 is not free: OpenCode has no per-token
+  # price for it, typically a subscription login (ChatGPT, Claude) that bills
+  # by plan. A $0 model among priced ones really is free.
+  def price_text(%{input: i, output: o, cache_read: c}, providers, provider) do
+    cond do
+      i == 0 and o == 0 and provider_unpriced?(providers, provider) ->
+        "no per-token price reported by OpenCode; usually a subscription login billed by plan"
+
+      i == 0 and o == 0 ->
+        "free"
+
+      true ->
+        cache = if c > 0, do: " · cached input #{dollars(c)}", else: ""
+        "#{dollars(i)} in / #{dollars(o)} out per million tokens#{cache}"
+    end
+  end
+
+  defp provider_unpriced?(providers, provider) do
+    case Enum.find(providers, &(&1.id == provider)) do
+      %{pricing: pricing} when map_size(pricing) > 0 ->
+        Enum.all?(pricing, fn {_, p} -> is_nil(p) or (p.input == 0 and p.output == 0) end)
+
+      _ ->
+        true
+    end
+  end
+
+  defp dollars(n) when n >= 1, do: "$" <> :erlang.float_to_binary(n / 1, decimals: 2)
+
+  defp dollars(n),
+    do:
+      "$" <>
+        (:erlang.float_to_binary(n / 1, decimals: 3)
+         |> String.trim_trailing("0")
+         |> String.trim_trailing("."))
+
+  @doc false
+  def agent_price_line(agent, providers, defaults) do
+    case effective_model(agent, defaults) do
+      nil ->
+        nil
+
+      {p, m} ->
+        prefix = if is_nil(model_label(agent)), do: "(#{p}/#{m}) ", else: ""
+        prefix <> (price_text(pricing(providers, p, m), providers, p) || "price unknown")
+    end
+  end
+
+  @doc false
+  def form_price_line(form, providers, defaults) do
+    provider = form[:model_provider].value
+    model = form[:model_id].value
+    picked? = is_binary(provider) and provider != "" and is_binary(model) and model != ""
+
+    case if(picked?, do: {provider, model}, else: effective_model(%Agent{}, defaults)) do
+      nil ->
+        "Pick a model to see its price."
+
+      {p, m} ->
+        note = if picked?, do: "", else: " (OpenCode's default)"
+
+        "#{p}/#{m}#{note} — #{price_text(pricing(providers, p, m), providers, p) || "price unknown"}"
+    end
+  end
+
+  # The model an agent actually runs on: its override, else OpenCode's default
+  # for the first provider that has one.
+  defp effective_model(%Agent{model_provider: p, model_id: m}, _defaults)
+       when is_binary(p) and is_binary(m),
+       do: {p, m}
+
+  defp effective_model(_agent, defaults) when map_size(defaults) > 0 do
+    {p, m} = Enum.min_by(defaults, fn {p, _} -> p end)
+    {p, m}
+  end
+
+  defp effective_model(_agent, _defaults), do: nil
 
   # With the provider list known, a model override must name a configured provider
   # and one of its models; otherwise OpenCode rejects every prompt at run time.
@@ -260,13 +440,7 @@ defmodule CanopyWeb.AgentsLive do
     end
   end
 
-  defp start_new(socket) do
-    agent = %Agent{}
-
-    socket
-    |> assign(:editing, agent)
-    |> assign_form(Agents.change(agent))
-  end
+  # -- Assigns ------------------------------------------------------------------
 
   defp assign_form(socket, changeset) do
     assign(socket, :form, to_form(changeset, id: "agent-form"))
@@ -278,7 +452,43 @@ defmodule CanopyWeb.AgentsLive do
     socket
     |> assign(:active_agents, active)
     |> assign(:inactive_agents, inactive)
+    |> assign(:schedule_counts, Schedules.active_counts_by_agent())
   end
+
+  defp load_agent_details(%{assigns: %{agent: %Agent{id: id}}} = socket) do
+    channels =
+      Channels.list()
+      |> Enum.filter(fn channel -> Enum.any?(channel.agents, &(&1.id == id)) end)
+      |> Enum.sort_by(&{&1.kind != "channel", &1.status, &1.name})
+
+    socket
+    |> assign(:agent_channels, channels)
+    |> assign(:agent_schedules, Schedules.list_for_agent(id))
+    |> assign(:agent_spend, agent_spend(id))
+    |> load_memory()
+  end
+
+  defp load_agent_details(socket), do: socket
+
+  defp agent_spend(agent_id) do
+    for {key, since} <- [
+          today: Canopy.Costs.since(:today),
+          week: Canopy.Costs.since(:week),
+          all: nil
+        ],
+        into: %{} do
+      row = Canopy.Costs.by_agent(since) |> Enum.find(&(&1.key == agent_id))
+      {key, if(row, do: row.cost, else: 0.0)}
+    end
+  end
+
+  defp load_memory(%{assigns: %{agent: %Agent{id: id}}} = socket) do
+    socket
+    |> assign(:agent_memory, Memory.get(id))
+    |> assign(:memory_updated_at, Memory.updated_at(id))
+  end
+
+  defp load_memory(socket), do: socket
 
   # Empty optional strings should clear a field rather than fail validation.
   defp blank_to_nil(params) do
@@ -299,6 +509,10 @@ defmodule CanopyWeb.AgentsLive do
   defp model_label(%Agent{model_provider: provider, model_id: nil}), do: provider
   defp model_label(%Agent{model_provider: provider, model_id: id}), do: "#{provider}/#{id}"
 
+  defp initial(%Agent{name: name}), do: name |> String.first() |> String.upcase()
+
+  # -- Render -------------------------------------------------------------------
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -308,286 +522,512 @@ defmodule CanopyWeb.AgentsLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      schedule_counts={@schedule_counts}
+      hold={@hold}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
     >
-      <Layouts.page
-        title="Agents"
-        subtitle="Named coworkers backed by OpenCode agents and a role prompt"
-        max_width="max-w-6xl"
+      <%= case @live_action do %>
+        <% :index -> %>
+          <.index_page {assigns} />
+        <% :new -> %>
+          <.form_page {assigns} />
+        <% :show -> %>
+          <.show_page {assigns} />
+        <% :edit -> %>
+          <.form_page {assigns} />
+      <% end %>
+    </Layouts.app>
+    """
+  end
+
+  # The list.
+  defp index_page(assigns) do
+    ~H"""
+    <Layouts.page
+      title="Agents"
+      subtitle="Named coworkers backed by OpenCode agents and a role prompt"
+      max_width="max-w-none"
+    >
+      <:actions>
+        <.link navigate={~p"/agents/new"} id="new-agent" class="btn btn-sm btn-primary">
+          <.icon name="hero-plus" class="size-4" /> New agent
+        </.link>
+      </:actions>
+
+      <Layouts.empty_state
+        :if={@active_agents == []}
+        id="agents-empty"
+        icon="hero-cpu-chip"
+        title="No agents yet"
       >
-        <div class="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-          <div class="flex flex-col gap-6">
-            <Layouts.panel
-              id="agents-panel"
-              title="Active agents"
-              description="Mention an agent with @name in a channel to wake it."
+        Create one with <.link navigate={~p"/agents/new"} class="link link-primary">New agent</.link>. A good
+        first pair is a builder and a reviewer.
+      </Layouts.empty_state>
+
+      <Layouts.panel
+        :if={@active_agents != []}
+        id="agents-panel"
+        title="Active agents"
+        description="Mention an agent with @name in a channel to wake it. Open one for its channels, schedules, and settings."
+      >
+        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50 md:grid">
+          <span />
+          <span>Agent</span>
+          <span>Role</span>
+          <span>OpenCode agent</span>
+          <span>Model</span>
+          <span title="Active schedules">Sched.</span>
+          <span />
+        </div>
+        <ul id="active-agents" class="divide-y divide-base-300">
+          <li :for={agent <- @active_agents} id={"agent-#{agent.id}"} class="-mx-2">
+            <.link
+              navigate={~p"/agents/#{agent.id}"}
+              class="group flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
             >
-              <:actions>
-                <button
-                  type="button"
-                  id="new-agent"
-                  class={[
-                    "btn btn-sm",
-                    if(@editing.id, do: "btn-soft btn-primary", else: "btn-ghost")
-                  ]}
-                  phx-click="new"
-                >
-                  <.icon name="hero-plus" class="size-4" /> New agent
-                </button>
-              </:actions>
-
-              <Layouts.empty_state
-                :if={@active_agents == []}
-                id="agents-empty"
-                icon="hero-cpu-chip"
-                title="No agents yet"
-              >
-                Create one with the form. A good first pair is a builder and a reviewer.
-              </Layouts.empty_state>
-
-              <ul :if={@active_agents != []} id="active-agents" class="divide-y divide-base-300">
-                <li
-                  :for={agent <- @active_agents}
-                  id={"agent-#{agent.id}"}
-                  data-selected={@selected && @selected.id == agent.id}
-                  class={[
-                    "group -mx-2 flex items-start gap-3 rounded-lg px-2 py-3 transition",
-                    @editing.id == agent.id && "bg-primary/5 ring-1 ring-primary/30",
-                    @selected && @selected.id == agent.id && @editing.id != agent.id &&
-                      "bg-secondary/10 ring-1 ring-secondary/40"
-                  ]}
-                >
-                  <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70">
-                    {String.first(agent.name) |> String.upcase()}
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span class="text-sm font-semibold">{agent.display_name}</span>
-                      <span class="font-mono text-xs text-base-content/60">@{agent.name}</span>
-                      <span class="badge badge-ghost badge-sm font-mono" title="OpenCode agent">
-                        {agent.opencode_agent}
-                      </span>
-                      <span
-                        :if={model_label(agent)}
-                        class="badge badge-soft badge-primary badge-sm font-mono"
-                        title="Model override"
-                      >
-                        {model_label(agent)}
-                      </span>
-                    </div>
-                    <p :if={agent.role} class="mt-0.5 truncate text-xs text-base-content/70">
-                      {agent.role}
-                    </p>
-                  </div>
-                  <div class={[
-                    "flex shrink-0 items-center gap-1 transition group-hover:opacity-100",
-                    (@selected && @selected.id == agent.id && "opacity-100") || "opacity-60"
-                  ]}>
-                    <.link
-                      href={~p"/dm/#{agent.id}"}
-                      id={"message-agent-#{agent.id}"}
-                      class={[
-                        "btn btn-xs",
-                        (@selected && @selected.id == agent.id && "btn-primary") || "btn-ghost"
-                      ]}
-                      title={"Open a direct message with @#{agent.name}"}
-                    >
-                      <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
-                    </.link>
-                    <button
-                      type="button"
-                      id={"edit-agent-#{agent.id}"}
-                      class="btn btn-ghost btn-xs"
-                      phx-click="edit"
-                      phx-value-id={agent.id}
-                    >
-                      <.icon name="hero-pencil-square" class="size-4" /> Edit
-                    </button>
-                    <button
-                      type="button"
-                      id={"deactivate-agent-#{agent.id}"}
-                      class="btn btn-ghost btn-xs text-error"
-                      phx-click="deactivate"
-                      phx-value-id={agent.id}
-                      data-confirm={"Deactivate @#{agent.name}? It stops appearing in channels and mentions, but its history is kept."}
-                      title="Deactivate"
-                    >
-                      <.icon name="hero-power" class="size-4" />
-                    </button>
-                  </div>
-                </li>
-              </ul>
-
-              <div :if={@inactive_agents != []} class="mt-4 border-t border-base-300 pt-3">
-                <button
-                  type="button"
-                  id="toggle-inactive"
-                  class="flex items-center gap-1 text-xs text-base-content/60 hover:text-base-content"
-                  phx-click="toggle_inactive"
-                >
-                  <.icon
-                    name={
-                      if @show_inactive, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"
-                    }
-                    class="size-3.5"
-                  />
-                  {length(@inactive_agents)} deactivated
-                </button>
-                <ul :if={@show_inactive} id="inactive-agents" class="mt-2 flex flex-col gap-1">
-                  <li
-                    :for={agent <- @inactive_agents}
-                    id={"agent-#{agent.id}"}
-                    class="flex items-center gap-2 text-sm text-base-content/60"
-                  >
-                    <span class="font-mono text-xs">@{agent.name}</span>
-                    <span class="truncate text-xs">{agent.role}</span>
-                    <button
-                      type="button"
-                      id={"reactivate-agent-#{agent.id}"}
-                      class="btn btn-ghost btn-xs ml-auto"
-                      phx-click="reactivate"
-                      phx-value-id={agent.id}
-                    >
-                      Reactivate
-                    </button>
-                  </li>
-                </ul>
+              <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
+                {initial(agent)}
               </div>
-            </Layouts.panel>
-          </div>
+              <div class="min-w-0">
+                <div class="truncate text-sm font-semibold">{agent.display_name}</div>
+                <div class="truncate font-mono text-xs text-base-content/60">@{agent.name}</div>
+              </div>
+              <p class="min-w-0 truncate text-sm text-base-content/75" title={agent.role}>
+                {agent.role || "—"}
+              </p>
+              <span
+                class="badge badge-ghost badge-sm justify-self-start font-mono"
+                title="OpenCode agent"
+              >
+                {agent.opencode_agent}
+              </span>
+              <span
+                class={[
+                  "max-w-full justify-self-start truncate font-mono text-xs",
+                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
+                  !model_label(agent) && "text-base-content/50"
+                ]}
+                title={if model_label(agent), do: "Model override", else: "OpenCode's default model"}
+              >
+                {model_label(agent) || "default"}
+              </span>
+              <span
+                class="flex items-center gap-0.5 text-xs text-base-content/60"
+                title="Active schedules"
+              >
+                <.icon
+                  :if={Map.get(@schedule_counts, agent.id, 0) > 0}
+                  name="hero-clock-mini"
+                  class="size-3.5"
+                />
+                {if Map.get(@schedule_counts, agent.id, 0) > 0,
+                  do: Map.get(@schedule_counts, agent.id),
+                  else: "—"}
+              </span>
+              <.icon
+                name="hero-chevron-right-mini"
+                class="hidden size-4 shrink-0 text-base-content/30 group-hover:text-base-content/60 md:block"
+              />
+            </.link>
+          </li>
+        </ul>
+
+        <div :if={@inactive_agents != []} class="mt-4 border-t border-base-300 pt-3">
+          <button
+            type="button"
+            id="toggle-inactive"
+            class="flex items-center gap-1 text-xs text-base-content/60 hover:text-base-content"
+            phx-click="toggle_inactive"
+          >
+            <.icon
+              name={if @show_inactive, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+              class="size-3.5"
+            />
+            {length(@inactive_agents)} deactivated
+          </button>
+          <ul :if={@show_inactive} id="inactive-agents" class="mt-2 flex flex-col gap-1">
+            <li
+              :for={agent <- @inactive_agents}
+              id={"agent-#{agent.id}"}
+              class="flex items-center gap-2 text-sm text-base-content/60"
+            >
+              <.link navigate={~p"/agents/#{agent.id}"} class="font-mono text-xs hover:underline">
+                @{agent.name}
+              </.link>
+              <span class="truncate text-xs">{agent.role}</span>
+              <button
+                type="button"
+                id={"reactivate-agent-#{agent.id}"}
+                class="btn btn-ghost btn-xs ml-auto"
+                phx-click="reactivate"
+                phx-value-id={agent.id}
+              >
+                Reactivate
+              </button>
+            </li>
+          </ul>
+        </div>
+      </Layouts.panel>
+
+      <p :if={@inactive_agents != [] and @active_agents == []} class="text-xs text-base-content/60">
+        {length(@inactive_agents)} deactivated agents can be brought back from their pages.
+      </p>
+    </Layouts.page>
+    """
+  end
+
+  # One agent.
+  defp show_page(assigns) do
+    ~H"""
+    <Layouts.page
+      title={"@" <> @agent.name}
+      subtitle={@agent.display_name}
+      max_width="max-w-none"
+    >
+      <:actions>
+        <.link navigate={~p"/agents"} class="btn btn-ghost btn-sm" id="back-to-agents">
+          <.icon name="hero-arrow-left-mini" class="size-4" /> All agents
+        </.link>
+        <.link
+          :if={@agent.active}
+          href={~p"/dm/#{@agent.id}"}
+          id={"message-agent-#{@agent.id}"}
+          class="btn btn-sm btn-primary"
+          title={"Open a direct message with @#{@agent.name}"}
+        >
+          <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
+        </.link>
+        <.link
+          navigate={~p"/agents/#{@agent.id}/edit"}
+          id={"edit-agent-#{@agent.id}"}
+          class="btn btn-sm"
+        >
+          <.icon name="hero-pencil-square" class="size-4" /> Edit
+        </.link>
+        <button
+          :if={@agent.active}
+          type="button"
+          id={"deactivate-agent-#{@agent.id}"}
+          class="btn btn-ghost btn-sm text-error"
+          phx-click="deactivate"
+          phx-value-id={@agent.id}
+          data-canopy-confirm="It stops appearing in channels and mentions and its schedules pause; its history is kept."
+          data-canopy-confirm-title={"Deactivate @#{@agent.name}?"}
+          data-canopy-confirm-label="Deactivate"
+          title="Deactivate"
+        >
+          <.icon name="hero-power" class="size-4" />
+        </button>
+        <button
+          :if={!@agent.active}
+          type="button"
+          id={"reactivate-agent-#{@agent.id}"}
+          class="btn btn-sm btn-outline"
+          phx-click="reactivate"
+          phx-value-id={@agent.id}
+        >
+          Reactivate
+        </button>
+      </:actions>
+
+      <div
+        id="agent-page"
+        data-agent-id={@agent.id}
+        class="grid items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]"
+      >
+        <div class="flex flex-col gap-6">
+          <Layouts.panel id="agent-about" title="About">
+            <div class="flex items-start gap-4">
+              <div class="flex size-12 shrink-0 items-center justify-center rounded-xl bg-base-200 font-mono text-lg font-semibold text-base-content/70">
+                {initial(@agent)}
+              </div>
+              <dl class="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+                <dt class="text-base-content/50">Status</dt>
+                <dd>
+                  <span :if={@agent.active} class="badge badge-sm badge-success badge-soft">active</span>
+                  <span :if={!@agent.active} class="badge badge-sm badge-ghost">deactivated</span>
+                </dd>
+                <dt class="text-base-content/50">Role</dt>
+                <dd>{@agent.role || "—"}</dd>
+                <dt class="text-base-content/50">OpenCode agent</dt>
+                <dd class="font-mono text-xs">{@agent.opencode_agent}</dd>
+                <dt class="text-base-content/50">Model</dt>
+                <dd class="font-mono text-xs">
+                  {model_label(@agent) || "OpenCode default"}
+                  <span
+                    :if={agent_price_line(@agent, @providers, @default_models)}
+                    id="agent-model-price"
+                    class="ml-1 font-sans text-base-content/60"
+                  >
+                    {agent_price_line(@agent, @providers, @default_models)}
+                  </span>
+                </dd>
+                <dt class="text-base-content/50">Spend</dt>
+                <dd id="agent-spend" class="text-xs tabular-nums">
+                  {Canopy.Costs.money(@agent_spend.today)} today · {Canopy.Costs.money(
+                    @agent_spend.week
+                  )} this week · {Canopy.Costs.money(@agent_spend.all)} all time
+                </dd>
+              </dl>
+            </div>
+            <div :if={@agent.system_prompt} class="mt-4">
+              <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
+                System prompt
+              </p>
+              <pre
+                id="agent-system-prompt"
+                class="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-base-100 p-3 font-mono text-xs leading-relaxed text-base-content/80"
+              >{@agent.system_prompt}</pre>
+            </div>
+          </Layouts.panel>
 
           <Layouts.panel
-            id="agent-form-panel"
-            title={if @editing.id, do: "Edit @#{@editing.name}", else: "New agent"}
-            description="The role and system prompt are sent with every prompt; OpenCode's own agent prompt still applies."
+            id="agent-channels"
+            title="Channels"
+            description="Where this agent is a member. Owned channels are marked."
+          >
+            <ul :if={@agent_channels != []} class="divide-y divide-base-300">
+              <li
+                :for={channel <- @agent_channels}
+                id={"agent-channel-#{channel.id}"}
+                class="flex items-center gap-2 py-2 text-sm"
+              >
+                <.icon
+                  name={
+                    if Channels.dm?(channel),
+                      do: "hero-chat-bubble-left-right-mini",
+                      else: "hero-hashtag-mini"
+                  }
+                  class="size-4 shrink-0 text-base-content/40"
+                />
+                <.link navigate={~p"/channels/#{channel.id}"} class="min-w-0 truncate hover:underline">
+                  {if Channels.dm?(channel), do: Channels.dm_label(channel), else: channel.name}
+                </.link>
+                <span
+                  :if={channel.owner_agent_id == @agent.id}
+                  class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+                >
+                  owner
+                </span>
+                <span :if={channel.status == "archived"} class="badge badge-ghost badge-xs">archived</span>
+                <span class="ml-auto truncate text-xs text-base-content/50">{channel.repository.name}</span>
+              </li>
+            </ul>
+            <p :if={@agent_channels == []} class="text-xs text-base-content/50">
+              Not in any channel yet.
+            </p>
+          </Layouts.panel>
+        </div>
+
+        <div class="flex flex-col gap-6">
+          <Layouts.panel
+            id="agent-memory-panel"
+            title="Memory"
+            description="What this agent carries across repositories and channels. It goes into every prompt; the agent updates it with canopy_memory_write, and you can edit it here."
           >
             <:actions>
-              <button
-                :if={@editing.id}
-                type="button"
-                id="cancel-edit"
-                class="btn btn-ghost btn-sm"
-                phx-click="cancel"
+              <span
+                :if={@memory_updated_at}
+                class="text-[11px] text-base-content/50"
+                title={DateTime.to_iso8601(@memory_updated_at)}
               >
-                Cancel
+                updated {Schedules.relative(@memory_updated_at)}
+              </span>
+              <button
+                :if={!@editing_memory?}
+                type="button"
+                id="edit-memory"
+                class="btn btn-ghost btn-xs"
+                phx-click="edit_memory"
+              >
+                <.icon name="hero-pencil-square" class="size-4" /> Edit
               </button>
             </:actions>
 
-            <.form
-              for={@form}
-              id="agent-form"
-              phx-change="validate"
-              phx-submit="save"
-              class="flex flex-col gap-3"
+            <div
+              :if={!@editing_memory? and @agent_memory == ""}
+              id="agent-memory-empty"
+              class="text-xs text-base-content/50"
             >
-              <div class="grid gap-3 sm:grid-cols-2">
-                <.input
-                  field={@form[:name]}
-                  type="text"
-                  label="Name (slug, used as @name)"
-                  placeholder="backend"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <.input
-                  field={@form[:display_name]}
-                  type="text"
-                  label="Display name"
-                  placeholder="Backend engineer"
-                  autocomplete="off"
-                />
-              </div>
-              <.input
-                field={@form[:role]}
-                type="text"
-                label="Role (one line)"
-                placeholder="Owns the Phoenix backend and its tests"
-                autocomplete="off"
-              />
-              <.input
-                field={@form[:system_prompt]}
-                type="textarea"
-                label="System prompt"
-                rows="8"
-                placeholder="You are the backend engineer on this project. Prefer small, well-tested changes…"
+              Nothing remembered yet. It fills in as the agent works, or write the first entry yourself.
+            </div>
+            <div
+              :if={!@editing_memory? and @agent_memory != ""}
+              id="agent-memory"
+              class="max-h-[32rem] overflow-y-auto text-sm"
+            >
+              <.message_text body={@agent_memory} />
+            </div>
+
+            <form
+              :if={@editing_memory?}
+              id="memory-form"
+              phx-submit="save_memory"
+              class="flex flex-col gap-2"
+            >
+              <textarea
+                id="memory-input"
+                name="memory"
+                rows="16"
                 class="w-full textarea font-mono text-xs leading-relaxed"
-              />
-              <div class="grid gap-3 sm:grid-cols-3">
-                <.input
-                  field={@form[:opencode_agent]}
-                  type="text"
-                  label="OpenCode agent"
-                  placeholder="build"
-                  list={if @opencode_agents != [], do: "opencode-agents"}
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <%= if @providers != [] do %>
-                  <.input
-                    field={@form[:model_provider]}
-                    type="select"
-                    label="Model provider (optional)"
-                    prompt="OpenCode default"
-                    options={provider_options(@providers, @form[:model_provider].value)}
-                  />
-                  <.input
-                    field={@form[:model_id]}
-                    type="select"
-                    label="Model (optional)"
-                    prompt={
-                      if @form[:model_provider].value,
-                        do: "Pick a model",
-                        else: "Pick a provider first"
-                    }
-                    options={
-                      model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
-                    }
-                    disabled={
-                      is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
-                    }
-                  />
-                <% else %>
-                  <.input
-                    field={@form[:model_provider]}
-                    type="text"
-                    label="Model provider (optional)"
-                    placeholder="opencode"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                  <.input
-                    field={@form[:model_id]}
-                    type="text"
-                    label="Model id (optional)"
-                    placeholder="claude-haiku-4-5"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                <% end %>
+                spellcheck="false"
+              >{@agent_memory}</textarea>
+              <div class="flex items-center justify-end gap-2">
+                <button type="button" class="btn btn-ghost btn-sm" phx-click="cancel_memory">Cancel</button>
+                <.button type="submit" variant="primary" id="save-memory">Save memory</.button>
               </div>
-              <datalist :if={@opencode_agents != []} id="opencode-agents">
-                <option :for={name <- @opencode_agents} value={name} />
-              </datalist>
-              <p class="text-xs text-base-content/60">
-                <%= if @opencode_agents != [] or @providers != [] do %>
-                  Suggestions and the provider/model lists come from your OpenCode server. Leave the model blank to use that agent's default.
-                <% else %>
-                  Add a repository and start <code class="font-mono">opencode serve</code>
-                  to get agent name suggestions. Leave the model blank to use OpenCode's default.
-                <% end %>
-              </p>
-              <div class="flex items-center gap-2 pt-1">
-                <.button type="submit" variant="primary" id="save-agent">
-                  {if @editing.id, do: "Save changes", else: "Create agent"}
-                </.button>
-              </div>
-            </.form>
+            </form>
+          </Layouts.panel>
+
+          <Layouts.panel
+            id="agent-schedules-panel"
+            title="Scheduled"
+            description="Across every channel. Ask the agent to schedule or cancel, or cancel here."
+          >
+            <.schedule_list
+              id="agent-schedules"
+              schedules={@agent_schedules}
+              scope={:agent}
+              empty="Nothing scheduled for this agent."
+            />
           </Layouts.panel>
         </div>
-      </Layouts.page>
-    </Layouts.app>
+      </div>
+    </Layouts.page>
+    """
+  end
+
+  # Create (no @agent) or edit (@agent set).
+  defp form_page(assigns) do
+    ~H"""
+    <Layouts.page
+      title={if @agent, do: "Edit @#{@agent.name}", else: "New agent"}
+      subtitle="The role and system prompt are sent with every prompt; OpenCode's own agent prompt still applies."
+      max_width="max-w-4xl"
+    >
+      <:actions>
+        <.link
+          navigate={if @agent, do: ~p"/agents/#{@agent.id}", else: ~p"/agents"}
+          id="cancel-edit"
+          class="btn btn-ghost btn-sm"
+        >
+          Cancel
+        </.link>
+      </:actions>
+
+      <Layouts.panel id="agent-form-panel" title={if @agent, do: "Settings", else: "Details"}>
+        <.form
+          for={@form}
+          id="agent-form"
+          phx-change="validate"
+          phx-submit="save"
+          class="flex flex-col gap-3"
+        >
+          <div class="grid gap-3 sm:grid-cols-2">
+            <.input
+              field={@form[:name]}
+              type="text"
+              label="Name (slug, used as @name)"
+              placeholder="backend"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <.input
+              field={@form[:display_name]}
+              type="text"
+              label="Display name"
+              placeholder="Backend engineer"
+              autocomplete="off"
+            />
+          </div>
+          <.input
+            field={@form[:role]}
+            type="text"
+            label="Role (one line)"
+            placeholder="Owns the Phoenix backend and its tests"
+            autocomplete="off"
+          />
+          <.input
+            field={@form[:system_prompt]}
+            type="textarea"
+            label="System prompt"
+            rows="8"
+            placeholder="You are the backend engineer on this project. Prefer small, well-tested changes…"
+            class="w-full textarea font-mono text-xs leading-relaxed"
+          />
+          <div class="grid gap-3 sm:grid-cols-3">
+            <.input
+              field={@form[:opencode_agent]}
+              type="text"
+              label="OpenCode agent"
+              placeholder="build"
+              list={if @opencode_agents != [], do: "opencode-agents"}
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <%= if @providers != [] do %>
+              <.input
+                field={@form[:model_provider]}
+                type="select"
+                label="Model provider (optional)"
+                prompt="OpenCode default"
+                options={provider_options(@providers, @form[:model_provider].value)}
+              />
+              <.input
+                field={@form[:model_id]}
+                type="select"
+                label="Model (optional)"
+                prompt={
+                  if @form[:model_provider].value, do: "Pick a model", else: "Pick a provider first"
+                }
+                options={
+                  model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
+                }
+                disabled={is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""}
+              />
+            <% else %>
+              <.input
+                field={@form[:model_provider]}
+                type="text"
+                label="Model provider (optional)"
+                placeholder="opencode"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@form[:model_id]}
+                type="text"
+                label="Model id (optional)"
+                placeholder="claude-haiku-4-5"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            <% end %>
+          </div>
+          <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
+            {form_price_line(@form, @providers, @default_models)}
+          </p>
+          <datalist :if={@opencode_agents != []} id="opencode-agents">
+            <option :for={name <- @opencode_agents} value={name} />
+          </datalist>
+          <p class="text-xs text-base-content/60">
+            <%= if @opencode_agents != [] or @providers != [] do %>
+              Suggestions and the provider/model lists come from your OpenCode server. Leave the model blank to use that agent's default.
+            <% else %>
+              Add a repository and start <code class="font-mono">opencode serve</code>
+              to get agent name suggestions. Leave the model blank to use OpenCode's default.
+            <% end %>
+          </p>
+          <div class="flex items-center gap-2 pt-1">
+            <.button type="submit" variant="primary" id="save-agent">
+              {if @agent, do: "Save changes", else: "Create agent"}
+            </.button>
+          </div>
+        </.form>
+      </Layouts.panel>
+    </Layouts.page>
     """
   end
 end

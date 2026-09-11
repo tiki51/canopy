@@ -18,6 +18,9 @@ defmodule Canopy.Channels.Channel do
     field :topic, :string
     field :status, :string, default: "open"
     field :kind, :string, default: "channel"
+    # total dollars the channel may spend; nil for no limit. Only the user
+    # changes it once set (see `Canopy.Channels.set_spend_limit/2`).
+    field :spend_limit, :float
 
     belongs_to :repository, Canopy.Repositories.Repository
     belongs_to :owner, Canopy.Agents.Agent, foreign_key: :owner_agent_id
@@ -36,7 +39,7 @@ defmodule Canopy.Channels.Channel do
 
   def changeset(channel, attrs) do
     channel
-    |> cast(attrs, [:name, :topic, :status, :kind, :repository_id, :owner_agent_id])
+    |> cast(attrs, [:name, :topic, :status, :kind, :repository_id, :owner_agent_id, :spend_limit])
     |> update_change(:name, &normalize_name/1)
     |> validate_required([:name, :status, :repository_id])
     |> validate_format(:name, @name_regex,
@@ -46,6 +49,7 @@ defmodule Canopy.Channels.Channel do
     |> validate_length(:topic, max: 500)
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:kind, @kinds)
+    |> validate_number(:spend_limit, greater_than: 0, less_than: 1_000_000)
     |> foreign_key_constraint(:repository_id)
     |> foreign_key_constraint(:owner_agent_id)
     |> unique_constraint([:repository_id, :name], error_key: :name)

@@ -41,7 +41,9 @@ defmodule Canopy.Runtime.Activity do
       kind: :tool,
       status: :running,
       label: present(data[:title]) || present(data[:tool]) || "tool",
-      detail: short_input(data[:input])
+      detail: short_input(data[:input]),
+      tool: present(data[:tool]),
+      command: command_of(data[:input])
     })
   end
 
@@ -51,7 +53,9 @@ defmodule Canopy.Runtime.Activity do
       kind: :tool,
       status: if(data[:status] == :error, do: :error, else: :ok),
       label: present(data[:title]) || present(data[:tool]) || "tool",
-      detail: present(data[:error]) || short_input(data[:input])
+      detail: present(data[:error]) || short_input(data[:input]),
+      tool: present(data[:tool]),
+      command: command_of(data[:input])
     }
 
     card = put_entry(card, entry)
@@ -64,7 +68,9 @@ defmodule Canopy.Runtime.Activity do
       kind: :file,
       status: :ok,
       label: Path.basename(path),
-      detail: path
+      detail: path,
+      tool: nil,
+      command: nil
     })
   end
 
@@ -81,7 +87,9 @@ defmodule Canopy.Runtime.Activity do
         kind: :step,
         status: :ok,
         label: "step #{data[:reason] || "completed"}",
-        detail: step_detail(data[:tokens], cost)
+        detail: step_detail(data[:tokens], cost),
+        tool: nil,
+        command: nil
       })
 
     if seen?, do: card, else: %{card | cost: card.cost + cost}
@@ -101,7 +109,9 @@ defmodule Canopy.Runtime.Activity do
       kind: :diff,
       status: :ok,
       label: "#{length(files)} changed #{if(length(files) == 1, do: "file", else: "files")}",
-      detail: Enum.map_join(files, ", ", &diff_file/1)
+      detail: Enum.map_join(files, ", ", &diff_file/1),
+      tool: nil,
+      command: nil
     })
   end
 
@@ -113,11 +123,95 @@ defmodule Canopy.Runtime.Activity do
       kind: :diff,
       status: :ok,
       label: "patch",
-      detail: Enum.map_join(files, ", ", &diff_file/1)
+      detail: Enum.map_join(files, ", ", &diff_file/1),
+      tool: nil,
+      command: nil
     })
   end
 
   def fold(_event, card), do: card
+
+  @doc """
+  What the agent is doing right now, as a verb for the live card: "thinking"
+  before any tool call or while only text streams, otherwise from the most
+  recent tool: researching (reading, searching, fetching), building (editing),
+  testing (a test command), running commands, planning, writing, coordinating.
+  """
+  @spec verb(card) :: String.t()
+  def verb(%{entries: entries}) do
+    case Enum.reverse(entries) |> Enum.find(&(&1.kind == :tool)) do
+      nil -> "thinking"
+      %{status: status} when status != :running -> "thinking"
+      %{tool: tool, command: command} -> verb_for(tool || "", command || "")
+    end
+  end
+
+  @doc false
+  def verb_for(tool, command) do
+    tool = String.downcase(tool)
+
+    cond do
+      tool == "bash" and test_command?(command) ->
+        "testing"
+
+      tool == "bash" and install_command?(command) ->
+        "installing"
+
+      tool == "bash" ->
+        "running commands"
+
+      tool in ~w(read glob grep list ls) ->
+        "researching"
+
+      tool in ~w(webfetch websearch) ->
+        "researching the web"
+
+      String.contains?(
+        tool,
+        ~w(messages_read messages_search channel_get channels_list agents_list schedules_list handoff_get task_get)
+      ) ->
+        "catching up"
+
+      tool in ~w(edit write patch apply_patch multiedit) ->
+        "building"
+
+      tool in ~w(todowrite todoread task) ->
+        "planning"
+
+      String.contains?(tool, ~w(message_send thread_reply)) ->
+        "writing"
+
+      String.contains?(
+        tool,
+        ~w(delegate handoff channel_create channel_add dm_start schedule_create)
+      ) ->
+        "coordinating"
+
+      String.contains?(tool, "pass") ->
+        "wrapping up"
+
+      true ->
+        "working"
+    end
+  end
+
+  defp test_command?(command),
+    do:
+      Regex.match?(
+        ~r/\b(mix test|pytest|npm test|yarn test|pnpm test|go test|cargo test|rspec|jest|vitest|unittest|phpunit|bundle exec rspec)\b/,
+        command
+      )
+
+  defp install_command?(command),
+    do:
+      Regex.match?(
+        ~r/\b(mix deps\.get|npm (install|ci)|yarn( install)?|pnpm install|pip install|bundle install|cargo build|go mod)\b/,
+        command
+      )
+
+  defp command_of(%{"command" => c}) when is_binary(c), do: String.slice(c, 0, 200)
+  defp command_of(%{command: c}) when is_binary(c), do: String.slice(c, 0, 200)
+  defp command_of(_), do: nil
 
   @doc "The entries of a card as JSON-safe maps, for a timeline payload."
   @spec to_payload(card) :: [map]
@@ -145,7 +239,9 @@ defmodule Canopy.Runtime.Activity do
         kind: atom_in(e["kind"], @kinds, :tool),
         status: atom_in(e["status"], @statuses, :ok),
         label: to_string(e["label"] || ""),
-        detail: e["detail"] && to_string(e["detail"])
+        detail: e["detail"] && to_string(e["detail"]),
+        tool: nil,
+        command: nil
       }
     end)
   end

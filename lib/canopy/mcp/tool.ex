@@ -8,6 +8,7 @@ defmodule Canopy.MCP.Tool do
   """
 
   alias Anubis.Server.Response
+  alias Canopy.Repositories
   alias Canopy.{Agents, Channels}
   alias Canopy.MCP.Identity
 
@@ -78,6 +79,29 @@ defmodule Canopy.MCP.Tool do
 
       true ->
         {:ok, channel}
+    end
+  end
+
+  @doc "A registered repository by name or id; nil means the caller's own."
+  def resolve_repository(ctx, nil), do: {:ok, ctx.repository}
+
+  def resolve_repository(ctx, value) when is_binary(value) do
+    ref = String.trim(value)
+
+    cond do
+      ref == "" ->
+        {:ok, ctx.repository}
+
+      true ->
+        case Enum.find(Repositories.list(), &(&1.id == ref or &1.name == ref)) do
+          nil ->
+            {:error,
+             "unknown repository #{inspect(ref)}; registered: " <>
+               Enum.map_join(Repositories.list(), ", ", & &1.name)}
+
+          repository ->
+            {:ok, repository}
+        end
     end
   end
 

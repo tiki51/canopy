@@ -25,6 +25,7 @@ defmodule Canopy.Runtime.ChannelServer do
     Agents,
     AgentSessions,
     Channels,
+    Costs,
     Delegations,
     Messages,
     PermissionRequests,
@@ -41,7 +42,7 @@ defmodule Canopy.Runtime.ChannelServer do
   @telemetry_cap 200
   @reconcile_grace_ms 15_000
 
-  defstruct [
+  @fields [
     :channel,
     :repository,
     :client_opts,
@@ -63,8 +64,23 @@ defmodule Canopy.Runtime.ChannelServer do
     # agent turns started since the user last did something
     chatter: 0,
     # nil, or the wakeups held back once the chatter budget ran out
-    paused: nil
+    paused: nil,
+    # a DM moved to another repository: applied once no turn is in flight
+    pending_switch?: false,
+    # wakes waiting for the channel's one turn at a time (serialize_turns)
+    waiting: [],
+    # the hold reason this channel already posted a note for (one note per hold)
+    hold_noted: nil,
+    # the spend limit this channel already recorded as reached (one line per limit)
+    limit_noted: nil
   ]
+
+  defstruct @fields
+
+  # A dev code reload swaps this module under running servers without touching
+  # their state, so a server started before a struct field was added would
+  # crash on its first access. Each callback fills in defaults first.
+  @field_count length(@fields) + 1
 
   @doc "Agent turns allowed between user actions before the channel pauses itself; nil when off."
   def chatter_limit, do: Canopy.Settings.chatter_limit()
@@ -81,6 +97,10 @@ defmodule Canopy.Runtime.ChannelServer do
       do: GenServer.call(server, {:respond_permission, permission_request_id, reply})
 
   def abort(server, agent_id), do: GenServer.call(server, {:abort, agent_id})
+
+  def reset_session(server, agent_id, by),
+    do: GenServer.call(server, {:reset_session, agent_id, by})
+
   def telemetry(server, agent_id), do: GenServer.call(server, {:telemetry, agent_id})
   def status(server), do: GenServer.call(server, :status)
   def paused?(server), do: GenServer.call(server, :paused?)
@@ -89,7 +109,9 @@ defmodule Canopy.Runtime.ChannelServer do
     do: GenServer.call(server, {:pass, opencode_session_id, reason})
 
   def continue(server), do: GenServer.call(server, :continue)
-  def wake(server, agent_id, text), do: GenServer.cast(server, {:wake, {:root, agent_id}, text})
+
+  def wake(server, agent_id, text),
+    do: GenServer.cast(server, {:wake, {:root, agent_id}, %{text: text, trigger: "scheduled"}})
 
   # -- Callbacks --------------------------------------------------------------
 
@@ -114,6 +136,8 @@ defmodule Canopy.Runtime.ChannelServer do
     {:ok, attach(state)}
   end
 
+  defp upgrade(state), do: struct(__MODULE__, Map.from_struct(state))
+
   defp attach(state) do
     :ok = Timeline.subscribe(state.channel.id)
     :ok = OpenCode.Supervisor.subscribe_repository(state.repository.id)
@@ -135,6 +159,9 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   @impl true
+  def handle_call(msg, from, %__MODULE__{} = state) when map_size(state) != @field_count,
+    do: handle_call(msg, from, upgrade(state))
+
   def handle_call({:respond_permission, request_id, reply}, _from, state) do
     request = PermissionRequests.get!(request_id)
 
@@ -149,6 +176,43 @@ defmodule Canopy.Runtime.ChannelServer do
       {:reply, {:ok, request}, state}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # Drops the agent's root session in this channel so its next wake starts a
+  # fresh OpenCode session: the cure for a poisoned or bloated context.
+  def handle_call({:reset_session, agent_id, by}, _from, state) do
+    session =
+      Map.get(state.sessions, agent_id) || AgentSessions.get_root(state.channel.id, agent_id)
+
+    cond do
+      is_nil(session) ->
+        {:reply, {:error, :no_session}, state}
+
+      Map.has_key?(state.turns, session.opencode_session_id) ->
+        {:reply, {:error, :busy}, state}
+
+      true ->
+        {:ok, _} = AgentSessions.delete(session)
+
+        {:ok, _} =
+          Timeline.record(%{
+            channel_id: state.channel.id,
+            agent_id: agent_id,
+            event_type: "session_reset",
+            ref_id: session.id,
+            payload: %{"by" => by, "opencode_session_id" => session.opencode_session_id}
+          })
+
+        state = %{
+          state
+          | sessions: Map.delete(state.sessions, agent_id),
+            index: Map.delete(state.index, session.opencode_session_id),
+            queues: Map.delete(state.queues, session.opencode_session_id),
+            telemetry: Map.delete(state.telemetry, agent_id)
+        }
+
+        {:reply, :ok, state}
     end
   end
 
@@ -175,7 +239,8 @@ defmodule Canopy.Runtime.ChannelServer do
          if(Map.has_key?(state.turns, session.opencode_session_id), do: :busy, else: :idle)}
       end)
 
-    {:reply, statuses, state}
+    queued = Map.new(waiting_agent_ids(state), &{&1, :queued})
+    {:reply, Map.merge(statuses, queued), state}
   end
 
   def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
@@ -198,10 +263,19 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   @impl true
+  def handle_cast(msg, %__MODULE__{} = state) when map_size(state) != @field_count,
+    do: handle_cast(msg, upgrade(state))
+
   def handle_cast({:wake, target, text}, state),
     do: {:noreply, wake_within_budget(%{state | chatter: 0, paused: nil}, target, text)}
 
   @impl true
+  def handle_info(msg, %__MODULE__{} = state) when map_size(state) != @field_count,
+    do: handle_info(msg, upgrade(state))
+
+  def handle_info({:timeline, %Timeline.Event{event_type: "repository_switched"}}, state),
+    do: {:noreply, apply_switch(%{state | pending_switch?: true})}
+
   def handle_info({:timeline, %Timeline.Event{} = event}, state) do
     state = event |> note_agent_post(state) |> then(&maybe_refresh_channel(event, &1))
     ctx = router_ctx(state)
@@ -210,10 +284,14 @@ defmodule Canopy.Runtime.ChannelServer do
     # their message wakes whoever it should on its own.
     state = if user_action?(event), do: resume(state), else: state
 
+    trigger = trigger_of(event)
+
     state =
       event
       |> Router.wakeups(ctx)
-      |> Enum.reduce(state, fn {target, text}, acc -> wake_within_budget(acc, target, text) end)
+      |> Enum.reduce(state, fn {target, text}, acc ->
+        wake_within_budget(acc, target, %{text: text, trigger: trigger})
+      end)
 
     {:noreply, state}
   rescue
@@ -256,8 +334,10 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_info({:opencode_stream, :connected, _repository_id}, %{stream_seen?: false} = state),
     do: {:noreply, %{state | stream_seen?: true}}
 
+  # A reconnect usually means OpenCode restarted, and its MCP registrations are
+  # process-local: forget ours so the next prompt checks and re-registers.
   def handle_info({:opencode_stream, :connected, _repository_id}, state),
-    do: {:noreply, reconcile(state)}
+    do: {:noreply, reconcile(%{state | mcp_registered?: false})}
 
   # The MCP token changed: the registration OpenCode holds is stale.
   def handle_info({:settings, :mcp_token_rotated}, state),
@@ -340,10 +420,96 @@ defmodule Canopy.Runtime.ChannelServer do
   defp wake_within_budget(state, target, text) do
     limit = chatter_limit()
 
-    if is_integer(limit) and state.chatter >= limit do
-      pause(state, limit, [{target, text}])
+    cond do
+      # A global hold (billing): drop the wake and say so once per channel.
+      # The user's next message, after releasing the hold, wakes agents again.
+      Canopy.Hold.active?() ->
+        note_hold(state)
+
+      # The channel has spent its limit: drop the wake and say so once per limit.
+      # Raising the limit and posting again wakes agents.
+      over_spend_limit?(state) ->
+        note_spend_limit(state)
+
+      is_integer(limit) and state.chatter >= limit ->
+        pause(state, limit, [{target, text}])
+
+      # One turn at a time: agents woken while another works wait their turn,
+      # in order. They are counted against the budget when they actually start.
+      Canopy.Settings.serialize_turns?() and map_size(state.turns) > 0 ->
+        enqueue_waiting(state, target, text)
+
+      true ->
+        do_wake(%{state | chatter: state.chatter + 1}, target, text)
+    end
+  end
+
+  # Read fresh: the user changes the limit while the server runs.
+  defp over_spend_limit?(state) do
+    case Channels.spend_limit(state.channel.id) do
+      limit when is_number(limit) -> Costs.channel_total(state.channel.id) >= limit
+      _ -> false
+    end
+  end
+
+  defp note_spend_limit(state) do
+    limit = Channels.spend_limit(state.channel.id)
+
+    if state.limit_noted == limit do
+      state
     else
-      do_wake(%{state | chatter: state.chatter + 1}, target, text)
+      {:ok, _} =
+        Timeline.record(%{
+          channel_id: state.channel.id,
+          event_type: "spend_limit_reached",
+          ref_id: state.channel.id,
+          payload: %{"limit" => limit, "spent" => Costs.channel_total(state.channel.id)}
+        })
+
+      %{state | limit_noted: limit}
+    end
+  end
+
+  defp note_hold(state) do
+    reason = Canopy.Hold.reason()
+
+    if state.hold_noted == reason do
+      state
+    else
+      {:ok, _} =
+        Messages.post_user_note(
+          state.channel.id,
+          Users.local().id,
+          "Agent runs are on hold: #{reason}. Release the hold in the banner, then reply to continue."
+        )
+
+      %{state | hold_noted: reason}
+    end
+  end
+
+  defp enqueue_waiting(state, target, text) do
+    state = %{state | waiting: state.waiting ++ [{target, text}]}
+    agent_id = waiting_agent_id(target)
+    if agent_id, do: broadcast(state, {:agent_status, agent_id, :queued})
+    state
+  end
+
+  # After a turn ends: if the channel is free, start the next waiting wake.
+  defp start_next_waiting(%{waiting: []} = state), do: state
+  defp start_next_waiting(%{turns: turns} = state) when map_size(turns) > 0, do: state
+
+  defp start_next_waiting(%{waiting: [{target, text} | rest]} = state),
+    do: wake_within_budget(%{state | waiting: rest}, target, text)
+
+  defp waiting_agent_ids(state),
+    do: state.waiting |> Enum.map(fn {t, _} -> waiting_agent_id(t) end) |> Enum.reject(&is_nil/1)
+
+  defp waiting_agent_id({:root, agent_id}), do: agent_id
+
+  defp waiting_agent_id({:child, delegation_id}) do
+    case Delegations.get(delegation_id) do
+      %{to_agent_id: id} -> id
+      _ -> nil
     end
   end
 
@@ -377,6 +543,13 @@ defmodule Canopy.Runtime.ChannelServer do
        do: is_nil(p["from_agent_id"])
 
   defp user_action?(_event), do: false
+
+  # What a wake is attributed to on the turn summary (the Costs page groups by it).
+  defp trigger_of(%Timeline.Event{event_type: "message", message: %{agent_id: nil}}), do: "user"
+  defp trigger_of(%Timeline.Event{event_type: "message"}), do: "agent"
+  defp trigger_of(%Timeline.Event{event_type: "delegation_" <> _}), do: "delegation"
+  defp trigger_of(%Timeline.Event{event_type: "handoff_" <> _}), do: "handoff"
+  defp trigger_of(_event), do: "other"
 
   defp do_wake(state, {:root, agent_id}, text) do
     case ensure_root_session(state, agent_id) do
@@ -414,7 +587,7 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp send_prompt(state, session, agent_id, text) do
+  defp send_prompt(state, session, agent_id, %{text: text, trigger: trigger}) do
     agent = Agents.get!(agent_id)
     Canopy.Notes.ensure_agent_notes(state.repository.path, agent)
     state = ensure_mcp(state)
@@ -449,7 +622,13 @@ defmodule Canopy.Runtime.ChannelServer do
           cost: 0.0,
           passed: nil,
           # set once the agent posts through Canopy tools during this turn
-          posted?: false
+          posted?: false,
+          # context of the largest model call (input + cached input tokens)
+          context: 0,
+          # model calls, and their tokens summed
+          steps: 0,
+          tokens: %{},
+          trigger: trigger
         }
 
         %{state | turns: Map.put(state.turns, session.opencode_session_id, turn)}
@@ -463,7 +642,7 @@ defmodule Canopy.Runtime.ChannelServer do
     body = %{
       parts: [%{type: "text", text: text}],
       agent: agent.opencode_agent || "build",
-      system: Prompts.system(agent, state.channel, state.repository),
+      system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       tools: %{"canopy_*" => true}
     }
 
@@ -590,6 +769,13 @@ defmodule Canopy.Runtime.ChannelServer do
     name = Canopy.MCP.registration_name()
     repository_id = state.repository.id
 
+    # The identity plugin must be in this repository; a fresh install only
+    # takes effect once OpenCode recreates its instance for the directory.
+    case Canopy.MCP.ensure_project_plugin(dir) do
+      {:ok, :installed} -> client().dispose_instance(dir, state.client_opts)
+      _ -> :ok
+    end
+
     connected? =
       match?(
         {:ok, %{^name => %{"status" => "connected"}}},
@@ -715,6 +901,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp handle_execution(%{type: :agent_error, data: %{error: error}} = event, who, state) do
     reason = error_message(error)
+    if Canopy.Hold.billing_error?(reason), do: Canopy.Hold.engage(reason)
 
     {:ok, _} =
       Timeline.record(%{
@@ -767,10 +954,15 @@ defmodule Canopy.Runtime.ChannelServer do
               "cost" => turn.cost,
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => if(outcome == :ok, do: "ok", else: "error"),
+              "model" => turn_model(who.agent_id),
               "delegation_id" => who.delegation_id,
               "activity" => activity,
               "passed" => is_binary(turn.passed),
               "note" => turn.passed,
+              "trigger" => turn.trigger,
+              "steps" => turn.steps,
+              "context" => turn.context,
+              "tokens" => turn.tokens,
               "final_text" => if(turn.posted?, do: final_text(turn))
             }
           })
@@ -785,8 +977,40 @@ defmodule Canopy.Runtime.ChannelServer do
         )
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
-        drain_queue(state, session, who.agent_id)
+        state = if outcome == :ok, do: maybe_compact(state, session, turn, who), else: state
+
+        if state.pending_switch?,
+          do: apply_switch(state),
+          else: state |> drain_queue(session, who.agent_id) |> start_next_waiting()
     end
+  end
+
+  # The DM now works in another repository. Once nothing is in flight, forget
+  # every session (they belong to the old directory), reload the channel, and
+  # follow the new repository's event stream; the next wake starts fresh there.
+  defp apply_switch(%{turns: turns} = state) when map_size(turns) > 0, do: state
+
+  defp apply_switch(state) do
+    Enum.each(AgentSessions.list_for_channel(state.channel.id), &AgentSessions.delete/1)
+    channel = Channels.get!(state.channel.id)
+    repository = Repositories.get!(channel.repository_id)
+    :ok = OpenCode.Supervisor.subscribe_repository(repository.id)
+
+    state = %{
+      state
+      | channel: channel,
+        repository: repository,
+        sessions: %{},
+        child_sessions: %{},
+        index: %{},
+        queues: %{},
+        telemetry: %{},
+        mcp_registered?: false,
+        pending_switch?: false
+    }
+
+    if state.start_stream?, do: ensure_stream(state)
+    state
   end
 
   # A message the agent posted itself (post or thread reply) while its turn is
@@ -830,6 +1054,14 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp maybe_post_reply(_state, _turn, _who), do: nil
 
+  # "provider/model" as configured on the agent; OpenCode's default otherwise.
+  defp turn_model(agent_id) do
+    case Agents.get(agent_id) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) -> p <> "/" <> m
+      _ -> "opencode default"
+    end
+  end
+
   defp drain_queue(state, session, agent_id) do
     case Map.get(state.queues, session.opencode_session_id, []) do
       [] ->
@@ -850,7 +1082,90 @@ defmodule Canopy.Runtime.ChannelServer do
       else: %{turn | files: MapSet.put(turn.files, path)}
   end
 
+  # Each step is one model call; keep the largest context it carried and sum
+  # the tokens, the way the provider bills them.
+  defp turn_stats(turn, %{type: :step_completed, data: %{tokens: tokens}}) when is_map(tokens) do
+    context = number(tokens["input"]) + number(get_in(tokens, ["cache", "read"]))
+
+    step = %{
+      "input" => number(tokens["input"]),
+      "output" => number(tokens["output"]),
+      "reasoning" => number(tokens["reasoning"]),
+      "cache_read" => number(get_in(tokens, ["cache", "read"])),
+      "cache_write" => number(get_in(tokens, ["cache", "write"]))
+    }
+
+    %{
+      turn
+      | context: max(turn.context, context),
+        steps: turn.steps + 1,
+        tokens: Map.merge(turn.tokens, step, fn _k, a, b -> a + b end)
+    }
+  end
+
   defp turn_stats(turn, _), do: turn
+
+  defp number(n) when is_number(n), do: n
+  defp number(_), do: 0
+
+  @doc "Context (tokens per model call) above which a session is compacted after its turn."
+  def context_cap, do: Application.get_env(:canopy, :context_cap, 40_000)
+
+  # A session that has grown past the cap gets compacted by OpenCode: its
+  # history becomes a summary, so the next turn starts small. Memory and the
+  # channel tools carry everything else. Best effort: a failure is logged.
+  defp maybe_compact(state, session, %{context: context}, who) when context > 0 do
+    if context > context_cap() do
+      case compaction_model(who.agent_id) do
+        {provider, model} ->
+          case client().summarize(
+                 state.repository.path,
+                 session.opencode_session_id,
+                 %{providerID: provider, modelID: model},
+                 state.client_opts
+               ) do
+            {:ok, _} ->
+              {:ok, _} =
+                Timeline.record(%{
+                  channel_id: state.channel.id,
+                  agent_id: who.agent_id,
+                  event_type: "session_compacted",
+                  ref_id: session.id,
+                  payload: %{"context" => context, "cap" => context_cap()}
+                })
+
+            {:error, reason} ->
+              Logger.warning(
+                "compaction failed for #{session.opencode_session_id}: #{inspect(reason)}"
+              )
+          end
+
+        nil ->
+          Logger.warning("no model to compact #{session.opencode_session_id} with")
+      end
+    end
+
+    state
+  end
+
+  defp maybe_compact(state, _session, _turn, _who), do: state
+
+  # The agent's own model, else OpenCode's default for the first provider.
+  defp compaction_model(agent_id) do
+    case Agents.get(agent_id) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
+        {p, m}
+
+      _ ->
+        case client().providers([]) do
+          {:ok, %{"default" => defaults}} when map_size(defaults) > 0 ->
+            defaults |> Enum.min_by(fn {p, _} -> p end)
+
+          _ ->
+            nil
+        end
+    end
+  end
 
   defp update_turn(state, sid, fun) do
     case Map.get(state.turns, sid) do

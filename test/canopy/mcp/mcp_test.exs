@@ -30,4 +30,23 @@ defmodule Canopy.MCPTest do
     assert source =~ "output.args.canopy_session_id = input.sessionID"
     assert source =~ "export const"
   end
+
+  test "ensure_project_plugin/1 writes the plugin once, keeps it out of git, and refreshes a stale copy" do
+    path = Canopy.Fixtures.git_dir_fixture()
+    plugin = Canopy.MCP.project_plugin_path(path)
+
+    assert {:ok, :installed} = Canopy.MCP.ensure_project_plugin(path)
+    assert File.read!(plugin) == Canopy.MCP.plugin_source()
+    assert File.read!(Path.join(path, ".git/info/exclude")) =~ "\n.opencode/\n"
+    assert {:ok, []} = Canopy.Repositories.status(path)
+
+    assert {:ok, :present} = Canopy.MCP.ensure_project_plugin(path)
+
+    File.write!(plugin, "// old version\n")
+    assert {:ok, :installed} = Canopy.MCP.ensure_project_plugin(path)
+    assert File.read!(plugin) == Canopy.MCP.plugin_source()
+
+    assert length(String.split(File.read!(Path.join(path, ".git/info/exclude")), ".opencode/")) ==
+             2
+  end
 end

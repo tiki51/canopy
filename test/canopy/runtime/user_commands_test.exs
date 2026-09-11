@@ -20,6 +20,8 @@ defmodule Canopy.Runtime.UserCommandsTest do
       {:ok, %{"canopy" => %{"status" => "connected"}}}
     end)
 
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+
     stub(OC, :create_session, fn _dir, _body, _opts ->
       {:ok, %{"id" => "ses_" <> Fixtures.unique_suffix()}}
     end)

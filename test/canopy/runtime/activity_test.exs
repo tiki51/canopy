@@ -70,4 +70,39 @@ defmodule Canopy.Runtime.ActivityTest do
 
     assert Activity.from_payload(nil) == []
   end
+
+  test "the card's verb follows the latest running tool" do
+    assert Activity.verb(Activity.new()) == "thinking"
+
+    running = fn tool, input ->
+      Activity.fold_all([ev(:tool_started, %{call_id: "c", tool: tool, input: input})])
+    end
+
+    assert Activity.verb(running.("read", %{"filePath" => "a.ex"})) == "researching"
+    assert Activity.verb(running.("grep", %{})) == "researching"
+    assert Activity.verb(running.("webfetch", %{})) == "researching the web"
+    assert Activity.verb(running.("edit", %{})) == "building"
+
+    assert Activity.verb(running.("bash", %{"command" => "mix test test/foo_test.exs"})) ==
+             "testing"
+
+    assert Activity.verb(running.("bash", %{"command" => "npm ci"})) == "installing"
+    assert Activity.verb(running.("bash", %{"command" => "ls -la"})) == "running commands"
+    assert Activity.verb(running.("todowrite", %{})) == "planning"
+    assert Activity.verb(running.("canopy_messages_read", %{})) == "catching up"
+    assert Activity.verb(running.("canopy_message_send", %{})) == "writing"
+    assert Activity.verb(running.("canopy_delegate_task", %{})) == "coordinating"
+    assert Activity.verb(running.("canopy_pass", %{})) == "wrapping up"
+    assert Activity.verb(running.("mystery", %{})) == "working"
+
+    # once the tool completes and text streams, it is thinking again
+    done =
+      Activity.fold_all([
+        ev(:tool_started, %{call_id: "c", tool: "edit", input: %{}}),
+        ev(:tool_completed, %{call_id: "c", tool: "edit", status: :ok, input: %{}}),
+        ev(:text_delta, %{delta: "So", message_id: "m", part_id: "p"})
+      ])
+
+    assert Activity.verb(done) == "thinking"
+  end
 end

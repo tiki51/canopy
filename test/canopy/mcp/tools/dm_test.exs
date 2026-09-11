@@ -6,7 +6,7 @@ defmodule Canopy.MCP.Tools.DmTest do
   import Mox
 
   alias Canopy.{Channels, Messages, Runtime}
-  alias Canopy.MCP.Tools.DmStart
+  alias Canopy.MCP.Tools.{DmStart, DmSwitchRepository}
   alias Canopy.OpenCode.ClientMock, as: OC
 
   setup :set_mox_global
@@ -21,6 +21,8 @@ defmodule Canopy.MCP.Tools.DmTest do
     stub(OC, :add_mcp, fn _dir, _name, _config, _opts ->
       {:ok, %{"canopy" => %{"status" => "connected"}}}
     end)
+
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
 
     on_exit(fn -> Enum.each(Channels.list_dms(), &Runtime.stop_channel(&1.id)) end)
     Map.merge(ctx, %{reviewer: reviewer, inactive: inactive})
@@ -67,6 +69,35 @@ defmodule Canopy.MCP.Tools.DmTest do
              Enum.sort([ctx.agent.id, ctx.reviewer.id])
 
     assert text =~ "with the user and " <> Channels.dm_label(dm)
+  end
+
+  test "opens the DM in another repository when asked", ctx do
+    other = repository_fixture(%{name: "calculator_app"})
+    assert {:ok, text} = call(DmStart, %{repository: "calculator_app"}, ctx)
+    [_, id] = Regex.run(~r/dm \[(ch_[^\]]+)\]/, text)
+    assert Channels.get!(id).repository_id == other.id
+  end
+
+  test "switching a DM's repository moves it; channels are refused", ctx do
+    other = repository_fixture(%{name: "calculator_app"})
+    {:ok, dm} = Channels.ensure_dm(ctx.repository.id, ctx.agent)
+    dm_session = session_fixture(%{channel: dm, agent_id: ctx.agent.id})
+
+    assert {:ok, text} = call(DmSwitchRepository, %{repository: "calculator_app"}, dm_session)
+    assert text =~ "now works in calculator_app"
+    assert text =~ "next turn"
+    assert Channels.get!(dm.id).repository_id == other.id
+
+    # with no runtime for the DM, the switch dropped its sessions at once; a new
+    # turn would create one, so the next call comes from a fresh session
+    dm_session = session_fixture(%{channel: Channels.get!(dm.id), agent_id: ctx.agent.id})
+    assert {:ok, text} = call(DmSwitchRepository, %{repository: "calculator_app"}, dm_session)
+    assert text =~ "already works in calculator_app"
+
+    assert {:error, reason} = call(DmSwitchRepository, %{repository: "calculator_app"}, ctx)
+    assert reason =~ "is a channel"
+    assert {:error, reason} = call(DmSwitchRepository, %{repository: "nope"}, dm_session)
+    assert reason =~ "unknown repository"
   end
 
   test "refuses unknown or deactivated agents", ctx do

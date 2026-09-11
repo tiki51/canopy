@@ -1,5 +1,5 @@
 defmodule Canopy.Runtime.PromptsTest do
-  use ExUnit.Case, async: true
+  use Canopy.DataCase, async: false
 
   alias Canopy.Runtime.Prompts
 
@@ -11,21 +11,32 @@ defmodule Canopy.Runtime.PromptsTest do
       system_prompt: "Prefer small diffs."
     }
 
-    text = Prompts.system(agent, %{name: "payments"}, %{path: "/repo"})
+    text = Prompts.system(agent, %{name: "payments"}, %{id: "r1", path: "/repo"})
     assert text =~ "You are Backend (@backend)"
     assert text =~ "channel #payments"
     assert text =~ "/repo"
     assert text =~ "Role: Primary implementation"
     assert text =~ "/repo/.canopy/notes/backend.md"
+    assert text =~ "This is the only repository registered in Canopy."
+
+    with_others =
+      Prompts.system(agent, %{name: "payments"}, %{id: "r1", path: "/repo"}, [
+        %{id: "r1", name: "billing", path: "/repo"},
+        %{id: "r2", name: "calculator_app", path: "/other"}
+      ])
+
+    assert with_others =~ "Other repositories registered in Canopy: calculator_app (/other)."
+    assert with_others =~ "canopy_channel_create or canopy_dm_start"
     assert text =~ "/repo/.canopy/NOTES.md"
-    assert text =~ ~r/The time now is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\./
+    # the clock is not in the system text (it would spoil the cacheable prefix)
+    refute text =~ "The time now is"
     assert String.ends_with?(text, "Prefer small diffs.")
     refute text =~ "{{"
   end
 
   test "system prompt works without a role prompt" do
     agent = %{name: "x", display_name: nil, role: nil, system_prompt: nil}
-    text = Prompts.system(agent, %{name: "c"}, %{path: "/r"})
+    text = Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"})
     assert text =~ "You are x (@x)"
     refute text =~ "{{"
   end
@@ -48,5 +59,69 @@ defmodule Canopy.Runtime.PromptsTest do
       })
 
     assert with_members =~ "Members of #c: @backend, @reviewer"
+  end
+
+  test "the system prompt carries the agent's memory" do
+    agent =
+      Canopy.Fixtures.agent_fixture(%{
+        name: "mem",
+        display_name: "Mem",
+        role: "r",
+        system_prompt: nil
+      })
+
+    text = Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"})
+    assert text =~ "Your memory across repositories is empty so far."
+
+    {:ok, _} = Canopy.Memory.put(agent.id, "## 2026-09-10\n- the worker is payments.py")
+    text = Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"})
+    assert text =~ "the worker is payments.py"
+    assert text =~ "canopy_memory_write"
+  end
+
+  test "scheduled prompts tell the agent not to poll for a human" do
+    text =
+      Prompts.scheduled(%{
+        channel: "c",
+        schedule_id: "sch_1",
+        instruction: "check",
+        kind: "recurring"
+      })
+
+    assert text =~ "do not keep checking"
+    assert text =~ "canopy_schedule_cancel"
+    assert text =~ "The user's reply wakes you"
+  end
+
+  test "wake prompts inline short messages, point long ones at message_get, and end with the time" do
+    short =
+      Prompts.new_message(%{
+        channel: "c",
+        sender: "Steven",
+        message_id: "msg_1",
+        thread?: false,
+        body: "Why is it slow?"
+      })
+
+    assert short =~ "Message text:\nWhy is it slow?"
+    assert short =~ ~r/The time now is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\n\z/
+
+    long =
+      Prompts.new_message(%{
+        channel: "c",
+        sender: "Steven",
+        message_id: "msg_1",
+        thread?: false,
+        body: String.duplicate("x", 1_500)
+      })
+
+    assert long =~ "The message is long (1500 chars): read it with canopy_message_get"
+    refute long =~ String.duplicate("x", 100)
+
+    assert Prompts.scheduled(%{channel: "c", schedule_id: "s", instruction: "i", kind: "once"}) =~
+             "The time now is"
+
+    assert Prompts.delegation(%{channel: "c", from: "@a", delegation_id: "d", task: "t"}) =~
+             "The time now is"
   end
 end

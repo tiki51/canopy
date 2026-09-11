@@ -16,10 +16,12 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.{
     Agents,
     Channels,
+    Costs,
     Handoffs,
     PermissionRequests,
     Repositories,
     Runtime,
+    Schedules,
     Tasks,
     Timeline,
     Unread,
@@ -38,9 +40,12 @@ defmodule CanopyWeb.ChannelLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket), do: Schedules.subscribe()
+
     {:ok,
      socket
      |> assign(:channel, nil)
+     |> assign(:compact?, true)
      |> assign(:branch_timer, nil)
      |> stream_configure(:timeline, dom_id: &"evt-#{&1.id}")
      |> stream(:timeline, [])}
@@ -98,6 +103,10 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:editing_task?, false)
     |> assign(:editing_members?, false)
     |> assign(:addable_agents, [])
+    |> assign(:editing_budget?, false)
+    |> assign(:spent, Costs.channel_total(id))
+    |> assign(:editing_schedules?, false)
+    |> assign(:schedules, Schedules.list_for_channel(id))
     |> assign(:changes, nil)
     |> assign_task(Tasks.for_channel(id))
     |> assign_composer("")
@@ -195,6 +204,12 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:telemetry, telemetry)}
   end
 
+  def handle_info({:schedules, :changed, cid}, socket) do
+    if cid == socket.assigns.channel.id,
+      do: {:noreply, assign(socket, :schedules, Schedules.list_for_channel(cid))},
+      else: {:noreply, socket}
+  end
+
   def handle_info({:chatter, status}, socket),
     do: {:noreply, assign(socket, :paused?, status == :paused)}
 
@@ -246,6 +261,15 @@ defmodule CanopyWeb.ChannelLive do
   defp react_to(socket, %{event_type: type}) when type in ~w(channel_archived channel_reopened),
     do: socket |> refresh_channel() |> Nav.refresh_nav()
 
+  defp react_to(socket, %{event_type: "repository_switched"}),
+    do: socket |> refresh_channel() |> assign_branch() |> Nav.refresh_nav()
+
+  defp react_to(socket, %{event_type: "agent_turn_completed"}),
+    do: assign(socket, :spent, Costs.channel_total(cid(socket)))
+
+  defp react_to(socket, %{event_type: "spend_limit_" <> _}),
+    do: socket |> refresh_channel() |> assign(:spent, Costs.channel_total(cid(socket)))
+
   defp react_to(socket, %{event_type: "task_updated"}),
     do: assign_task(socket, Tasks.for_channel(cid(socket)))
 
@@ -277,10 +301,6 @@ defmodule CanopyWeb.ChannelLive do
   # -- Events ------------------------------------------------------------------
 
   @impl true
-  def handle_event("composer_change", %{"message" => %{"body" => body}}, socket) do
-    {:noreply, assign_composer(socket, body)}
-  end
-
   def handle_event("send", %{"message" => %{"body" => body}}, socket) do
     case String.trim(body) do
       "" ->
@@ -304,6 +324,57 @@ defmodule CanopyWeb.ChannelLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Abort failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("toggle_activity", _params, socket) do
+    compact? = not socket.assigns.compact?
+
+    {:noreply,
+     socket
+     |> assign(:compact?, compact?)
+     |> push_event("pref", %{
+       key: "timeline-activity",
+       value: if(compact?, do: "compact", else: "full")
+     })}
+  end
+
+  # the browser remembers the choice (see the Pref hook)
+  def handle_event("pref", %{"key" => "timeline-activity", "value" => value}, socket),
+    do: {:noreply, assign(socket, :compact?, value != "full")}
+
+  def handle_event("pref", _params, socket), do: {:noreply, socket}
+
+  def handle_event("switch_repository", %{"repository_id" => repository_id}, socket) do
+    case Runtime.switch_dm_repository(cid(socket), repository_id, "user") do
+      {:ok, channel} ->
+        {:noreply,
+         socket
+         |> assign(:channel, channel)
+         |> assign_branch()
+         |> Nav.refresh_nav()
+         |> put_flash(
+           :info,
+           "Moved to #{channel.repository.name}. Agents continue there on their next turn."
+         )}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Could not move this conversation.")}
+    end
+  end
+
+  def handle_event("reset_session", %{"agent-id" => agent_id}, socket) do
+    case Runtime.reset_session(cid(socket), agent_id, "user") do
+      :ok ->
+        {:noreply, put_flash(socket, :info, "Session reset. The next turn starts fresh.")}
+
+      {:error, :busy} ->
+        {:noreply,
+         put_flash(socket, :error, "Wait for the current turn to finish, or abort it first.")}
+
+      {:error, :no_session} ->
+        {:noreply,
+         put_flash(socket, :info, "No session yet; the next turn already starts fresh.")}
     end
   end
 
@@ -370,9 +441,57 @@ defmodule CanopyWeb.ChannelLive do
     {:noreply, assign(socket, :paused?, false)}
   end
 
+  def handle_event("toggle_schedules", _params, socket),
+    do: {:noreply, assign(socket, :editing_schedules?, not socket.assigns.editing_schedules?)}
+
+  def handle_event("cancel_schedule", %{"id" => id}, socket) do
+    case Schedules.get(id) do
+      nil ->
+        {:noreply, socket}
+
+      schedule ->
+        {:ok, _} = Schedules.cancel(schedule, "cancelled by #{socket.assigns.user.display_name}")
+        {:noreply, assign(socket, :schedules, Schedules.list_for_channel(cid(socket)))}
+    end
+  end
+
   def handle_event("toggle_members", _params, socket) do
     socket = assign(socket, :editing_members?, not socket.assigns.editing_members?)
     {:noreply, if(socket.assigns.editing_members?, do: refresh_members(socket), else: socket)}
+  end
+
+  def handle_event("toggle_budget", _params, socket),
+    do: {:noreply, assign(socket, :editing_budget?, not socket.assigns.editing_budget?)}
+
+  # Only the user changes a limit: this event has no agent counterpart.
+  def handle_event("set_spend_limit", %{"spend_limit" => value}, socket) do
+    case Channels.set_spend_limit(socket.assigns.channel, value) do
+      {:ok, channel} ->
+        {:noreply,
+         socket
+         |> assign(:channel, channel)
+         |> assign(:editing_budget?, false)
+         |> put_flash(
+           :info,
+           if(channel.spend_limit,
+             do: "Spend limit set to #{Costs.money(channel.spend_limit)}.",
+             else: "Spend limit removed."
+           )
+         )}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "The limit must be a positive amount in dollars.")}
+    end
+  end
+
+  def handle_event("clear_spend_limit", _params, socket) do
+    {:ok, channel} = Channels.set_spend_limit(socket.assigns.channel, nil)
+
+    {:noreply,
+     socket
+     |> assign(:channel, channel)
+     |> assign(:editing_budget?, false)
+     |> put_flash(:info, "Spend limit removed.")}
   end
 
   def handle_event("add_member", %{"agent_id" => ""}, socket), do: {:noreply, socket}
@@ -503,6 +622,8 @@ defmodule CanopyWeb.ChannelLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      schedule_counts={@schedule_counts}
+      hold={@hold}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -516,7 +637,15 @@ defmodule CanopyWeb.ChannelLive do
         agent_statuses={@agent_statuses}
         editing_task?={@editing_task?}
         editing_members?={@editing_members?}
+        editing_schedules?={@editing_schedules?}
+        schedule_count={Enum.count(@schedules, &(&1.status == "active"))}
+        compact?={@compact?}
+        repositories={@repositories}
+        editing_budget?={@editing_budget?}
+        spent={@spent}
       />
+
+      <.budget_panel :if={@editing_budget?} channel={@channel} spent={@spent} />
 
       <.handoff_banner
         :for={handoff <- @pending_handoffs}
@@ -526,6 +655,22 @@ defmodule CanopyWeb.ChannelLive do
       />
 
       <.task_panel :if={@editing_task? and @task_form} form={@task_form} />
+
+      <section
+        :if={@editing_schedules?}
+        id="schedules-panel"
+        class="border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+      >
+        <div class="mb-1 flex items-center gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+            Scheduled
+          </span>
+          <span class="text-xs text-base-content/50">
+            Agents schedule with canopy_schedule_create; ask one to set a reminder or a repeat.
+          </span>
+        </div>
+        <.schedule_list id="channel-schedules" schedules={@schedules} scope={:channel} />
+      </section>
 
       <.members_panel
         :if={@editing_members?}
@@ -551,7 +696,11 @@ defmodule CanopyWeb.ChannelLive do
           </button>
         </div>
 
-        <div id="timeline" phx-update="stream" class="flex flex-col py-2">
+        <div
+          id="timeline"
+          phx-update="stream"
+          class={["flex flex-col py-2", @compact? && "timeline-compact"]}
+        >
           <div
             id="timeline-empty"
             class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/50"
@@ -579,6 +728,11 @@ defmodule CanopyWeb.ChannelLive do
         <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
       </div>
 
+      <.limit_bar
+        :if={limit_reached?(@channel, @spent) and !Channels.archived?(@channel)}
+        channel={@channel}
+        spent={@spent}
+      />
       <.paused_bar :if={@paused? and !Channels.archived?(@channel)} />
       <.composer :if={!Channels.archived?(@channel)} form={@composer} member_names={@member_names} />
       <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
@@ -603,6 +757,12 @@ defmodule CanopyWeb.ChannelLive do
   attr :agent_statuses, :map, required: true
   attr :editing_task?, :boolean, default: false
   attr :editing_members?, :boolean, default: false
+  attr :editing_schedules?, :boolean, default: false
+  attr :schedule_count, :integer, default: 0
+  attr :compact?, :boolean, default: true
+  attr :repositories, :list, default: []
+  attr :editing_budget?, :boolean, default: false
+  attr :spent, :float, default: 0.0
 
   defp channel_header(assigns) do
     ~H"""
@@ -654,6 +814,56 @@ defmodule CanopyWeb.ChannelLive do
           </button>
           <button
             type="button"
+            id="toggle-activity"
+            class={["btn btn-xs btn-ghost", !@compact? && "btn-active"]}
+            phx-click="toggle_activity"
+            phx-hook="Pref"
+            data-pref="timeline-activity"
+            title={
+              if @compact?,
+                do: "Show routine activity (started, finished, scheduled runs)",
+                else: "Hide routine activity"
+            }
+          >
+            <.icon
+              name={if @compact?, do: "hero-eye-slash-mini", else: "hero-eye-mini"}
+              class="size-4"
+            />
+            <span class="hidden sm:inline">Activity</span>
+          </button>
+          <button
+            type="button"
+            id="edit-schedules"
+            class={["btn btn-xs btn-ghost", @editing_schedules? && "btn-active"]}
+            phx-click="toggle_schedules"
+            title="Scheduled tasks in this channel"
+          >
+            <.icon name="hero-clock-mini" class="size-4" />
+            <span class="hidden sm:inline">Scheduled</span>
+            <span :if={@schedule_count > 0} id="schedule-count" class="badge badge-xs badge-primary">
+              {@schedule_count}
+            </span>
+          </button>
+          <button
+            type="button"
+            id="edit-budget"
+            class={[
+              "btn btn-xs btn-ghost",
+              @editing_budget? && "btn-active",
+              limit_reached?(@channel, @spent) && "text-error"
+            ]}
+            phx-click="toggle_budget"
+            title="What this channel has spent, and its limit"
+          >
+            <.icon name="hero-banknotes-mini" class="size-4" />
+            <span class="hidden sm:inline">
+              {Costs.money(@spent)}{if @channel.spend_limit,
+                do: " / " <> Costs.money(@channel.spend_limit),
+                else: ""}
+            </span>
+          </button>
+          <button
+            type="button"
             id="edit-task"
             class={["btn btn-xs btn-ghost", @editing_task? && "btn-active"]}
             phx-click="toggle_task_form"
@@ -676,7 +886,9 @@ defmodule CanopyWeb.ChannelLive do
             id="archive-channel"
             class="btn btn-xs btn-ghost text-base-content/60"
             phx-click="archive_channel"
-            data-confirm={"Archive ##{@channel.name}? Nobody can post until it is reopened."}
+            data-canopy-confirm={"Nobody can post in ##{@channel.name} until it is reopened."}
+            data-canopy-confirm-title={"Archive ##{@channel.name}?"}
+            data-canopy-confirm-label="Archive"
             title="Archive this channel"
           >
             <.icon name="hero-archive-box-arrow-down-mini" class="size-4" />
@@ -718,6 +930,29 @@ defmodule CanopyWeb.ChannelLive do
           <span id="task-title" class="truncate text-base-content/70">{@task.title}</span>
         </span>
 
+        <form
+          :if={Channels.dm?(@channel)}
+          id="dm-repository-form"
+          phx-change="switch_repository"
+          class="flex items-center gap-1.5"
+          title="The repository this DM's agents work in; switch it to move the conversation"
+        >
+          <.icon name="hero-folder-mini" class="size-4 text-base-content/40" />
+          <select
+            id="dm-repository"
+            name="repository_id"
+            class="select select-xs h-6 min-h-0 w-auto max-w-48 border-base-300 bg-base-200 text-xs"
+          >
+            <option
+              :for={repository <- @repositories}
+              value={repository.id}
+              selected={repository.id == @channel.repository_id}
+            >
+              {repository.name}
+            </option>
+          </select>
+        </form>
+
         <span class="flex items-center gap-1 font-mono text-base-content/60" title="Current branch">
           <.icon name="hero-code-bracket-mini" class="size-4 text-base-content/40" />
           <span id="branch">{@branch || "—"}</span>
@@ -743,7 +978,18 @@ defmodule CanopyWeb.ChannelLive do
             >
               <.icon name="hero-stop-circle-mini" class="size-4" />
             </button>
-            <span :if={Map.get(@agent_statuses, member.id) != :busy} class="w-1" />
+            <button
+              :if={Map.get(@agent_statuses, member.id) != :busy}
+              type="button"
+              id={"reset-session-#{member.id}"}
+              class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/40 hover:text-base-content"
+              phx-click="reset_session"
+              phx-value-agent-id={member.id}
+              data-canopy-confirm={"Reset @#{member.name}'s session in this channel? Its next turn starts with a fresh OpenCode session; channel messages are kept."}
+              title="Reset session (fresh context on the next turn)"
+            >
+              <.icon name="hero-arrow-path-mini" class="size-3.5" />
+            </button>
           </li>
         </ul>
       </div>
@@ -822,6 +1068,84 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  defp limit_reached?(%{spend_limit: limit}, spent) when is_number(limit), do: spent >= limit
+  defp limit_reached?(_channel, _spent), do: false
+
+  attr :channel, :map, required: true
+  attr :spent, :float, required: true
+
+  # The user's control over what a channel may spend. Agents can set a limit
+  # when they create a channel; only this panel changes one.
+  defp budget_panel(assigns) do
+    ~H"""
+    <section
+      id="budget-panel"
+      class="flex flex-col gap-2 border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          Budget
+        </span>
+        <span id="budget-spent" class="text-sm tabular-nums">
+          Spent {Costs.money(@spent)}{if @channel.spend_limit,
+            do: " of a " <> Costs.money(@channel.spend_limit) <> " limit",
+            else: ", no limit"}
+        </span>
+      </div>
+      <form id="budget-form" phx-submit="set_spend_limit" class="flex flex-wrap items-center gap-2">
+        <label class="input input-sm w-44" for="spend-limit">
+          <span class="text-base-content/50">$</span>
+          <input
+            id="spend-limit"
+            name="spend_limit"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={@channel.spend_limit}
+            placeholder="No limit"
+            class="grow"
+          />
+        </label>
+        <button type="submit" id="save-spend-limit" class="btn btn-sm btn-primary">Set limit</button>
+        <button
+          :if={@channel.spend_limit}
+          type="button"
+          id="clear-spend-limit"
+          class="btn btn-sm btn-ghost"
+          phx-click="clear_spend_limit"
+        >
+          Remove limit
+        </button>
+      </form>
+      <p class="text-xs text-base-content/50">
+        The total this channel may spend, all time. Once reached, agents here stay quiet until you
+        raise it. Agents can propose a limit when they create a channel; only you change one.
+      </p>
+    </section>
+    """
+  end
+
+  attr :channel, :map, required: true
+  attr :spent, :float, required: true
+
+  defp limit_bar(assigns) do
+    ~H"""
+    <div
+      id="limit-bar"
+      class="flex shrink-0 flex-wrap items-center justify-center gap-3 border-t border-error/40 bg-error/10 px-3 py-2 text-sm"
+    >
+      <.icon name="hero-banknotes-mini" class="size-4 text-error" />
+      <span>
+        Spend limit reached: {Costs.money(@spent)} of {Costs.money(@channel.spend_limit)}. Agents stay
+        quiet here until you raise it.
+      </span>
+      <button type="button" id="raise-limit" class="btn btn-xs btn-error" phx-click="toggle_budget">
+        Change limit
+      </button>
+    </div>
+    """
+  end
+
   defp paused_bar(assigns) do
     ~H"""
     <div
@@ -897,7 +1221,7 @@ defmodule CanopyWeb.ChannelLive do
         for={@form}
         id="composer-form"
         phx-submit="send"
-        phx-change="composer_change"
+        data-members={Jason.encode!(@member_names)}
         class="relative"
       >
         <div
@@ -907,17 +1231,21 @@ defmodule CanopyWeb.ChannelLive do
         >
         </div>
         <div class="flex items-end gap-2 rounded-xl border border-base-300 bg-base-200 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
-          <textarea
-            id="composer-input"
-            name={@form[:body].name}
-            phx-hook="Composer"
-            data-members={Jason.encode!(@member_names)}
-            data-suggestions="#composer-suggestions"
-            rows="2"
-            placeholder="Message the channel — @mention an agent to wake it"
-            class="max-h-48 min-h-10 flex-1 resize-none border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
-            autocomplete="off"
-          >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>
+          <%!-- The textarea is the browser's: LiveView never patches it, so the
+               hook's auto-grown height and the draft survive every update.
+               The server clears it with the "composer:clear" event. --%>
+          <div id="composer-input-wrap" phx-update="ignore" class="min-w-0 flex-1">
+            <textarea
+              id="composer-input"
+              name={@form[:body].name}
+              phx-hook="Composer"
+              data-suggestions="#composer-suggestions"
+              rows="2"
+              placeholder="Message the channel — @mention an agent to wake it"
+              class="max-h-[60vh] min-h-10 w-full resize-y border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
+              autocomplete="off"
+            >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>
+          </div>
           <button
             type="submit"
             id="composer-send"

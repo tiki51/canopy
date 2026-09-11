@@ -72,6 +72,24 @@ defmodule CanopyWeb.ChannelNewLiveTest do
              Enum.sort([ctx.builder.id, ctx.reviewer.id])
   end
 
+  test "creates a channel with a spend limit", ctx do
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+    view
+    |> form("#channel-form",
+      channel: %{
+        repository_id: ctx.repository.id,
+        name: "budgeted",
+        owner_agent_id: ctx.reviewer.id,
+        agent_ids: [ctx.reviewer.id],
+        spend_limit: "4.5"
+      }
+    )
+    |> render_submit()
+
+    assert %{spend_limit: 4.5} = Channels.get_by_name(ctx.repository.id, "budgeted")
+  end
+
   test "creates a channel with only the owner as member", ctx do
     {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
 

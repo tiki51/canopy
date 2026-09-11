@@ -85,6 +85,32 @@ defmodule Canopy.ChannelsTest do
     refute_receive {:timeline, %Timeline.Event{event_type: "member_removed"}}, 100
   end
 
+  test "set_spend_limit/3 validates, records the change, and reads back fresh" do
+    %{channel: channel} = scenario()
+    assert Channels.spend_limit(channel.id) == nil
+
+    assert {:ok, channel} = Channels.set_spend_limit(channel, "$12.50")
+    assert channel.spend_limit == 12.5
+    assert Channels.spend_limit(channel.id) == 12.5
+
+    assert [%{payload: %{"limit" => 12.5, "by" => "user"}}] =
+             Timeline.list(channel.id, types: ["spend_limit_changed"])
+
+    # the same value again records nothing
+    assert {:ok, _} = Channels.set_spend_limit(channel, 12.5)
+    assert [_] = Timeline.list(channel.id, types: ["spend_limit_changed"])
+
+    assert {:error, changeset} = Channels.set_spend_limit(channel, -1)
+    assert %{spend_limit: [_]} = errors_on(changeset)
+    assert {:error, _} = Channels.set_spend_limit(channel, "lots")
+
+    assert {:ok, channel} = Channels.set_spend_limit(channel, nil, "manager")
+    assert channel.spend_limit == nil
+
+    assert [_, %{payload: %{"limit" => nil, "by" => "manager"}}] =
+             Timeline.list(channel.id, types: ["spend_limit_changed"])
+  end
+
   test "archive/1 and reopen/1 flip the status and record events" do
     %{channel: channel} = scenario()
     Timeline.subscribe(channel.id)
@@ -134,9 +160,32 @@ defmodule Canopy.ChannelsTest do
     assert {:ok, %{id: same_id}} = Channels.ensure_dm(repository.id, agent)
     assert same_id == dm.id
 
+    # asking for the same agent in another repository moves the DM there
     other = repository_fixture()
-    assert {:ok, %{id: other_id}} = Channels.ensure_dm(other.id, agent)
-    refute other_id == dm.id
+    Timeline.subscribe(dm.id)
+    assert {:ok, %{id: moved_id, repository_id: moved_repo}} = Channels.ensure_dm(other.id, agent)
+    assert moved_id == dm.id
+    assert moved_repo == other.id
+    assert_receive {:timeline, %Timeline.Event{event_type: "repository_switched", payload: p}}
+    assert p["to"] == other.name and p["from"] == repository.name
+  end
+
+  test "switch_repository/3 is for DMs only and resets sessions when no runtime is up" do
+    %{channel: channel, agent: agent, repository: repository, session: session} = scenario()
+    other = repository_fixture()
+
+    assert {:error, :not_a_dm} = Channels.switch_repository(channel, other.id, "user")
+
+    {:ok, dm} = Channels.ensure_dm(repository.id, agent)
+    dm_session = Canopy.Fixtures.session_fixture(%{channel: dm, agent_id: agent.id})
+    assert {:ok, ^dm} = Channels.switch_repository(dm, repository.id, "user")
+    assert {:error, :unknown_repository} = Channels.switch_repository(dm, "repo_nope", "user")
+
+    assert {:ok, moved} = Channels.switch_repository(dm, other.id, "@" <> agent.name)
+    assert moved.repository_id == other.id
+    refute Canopy.Repo.get(Canopy.AgentSessions.AgentSession, dm_session.id)
+    # the channel's own sessions are untouched
+    assert Canopy.Repo.get(Canopy.AgentSessions.AgentSession, session.id)
   end
 
   test "ensure_dm/2 with several agents is found by its exact set, owned by the first" do

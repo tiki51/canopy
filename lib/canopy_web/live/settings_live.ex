@@ -99,14 +99,14 @@ defmodule CanopyWeb.SettingsLive do
   def handle_event("validate_chatter", %{"setting" => params}, socket) do
     changeset =
       socket.assigns.setting
-      |> Settings.change(Map.take(params, ["chatter_pause", "chatter_limit"]))
+      |> Settings.change(Map.take(params, ["chatter_pause", "chatter_limit", "serialize_turns"]))
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
   end
 
   def handle_event("save_chatter", %{"setting" => params}, socket) do
-    case Settings.update(Map.take(params, ["chatter_pause", "chatter_limit"])) do
+    case Settings.update(Map.take(params, ["chatter_pause", "chatter_limit", "serialize_turns"])) do
       {:ok, setting} ->
         {:noreply,
          socket
@@ -187,6 +187,8 @@ defmodule CanopyWeb.SettingsLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      schedule_counts={@schedule_counts}
+      hold={@hold}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -269,6 +271,15 @@ defmodule CanopyWeb.SettingsLive do
             phx-submit="save_chatter"
             class="flex flex-col gap-3"
           >
+            <.input
+              field={@chatter_form[:serialize_turns]}
+              type="checkbox"
+              label="One agent at a time per channel (others wait their turn)"
+            />
+            <p class="-mt-1 text-xs text-base-content/60">
+              Off, agents woken together all run at once. They get in each other's way and
+              every one of them spends tokens; keep this on unless you want the swarm.
+            </p>
             <.input
               field={@chatter_form[:chatter_pause]}
               type="checkbox"
@@ -360,7 +371,7 @@ defmodule CanopyWeb.SettingsLive do
                   id="rotate-token"
                   class="btn btn-soft btn-warning btn-sm"
                   phx-click="rotate_token"
-                  data-confirm="Rotate the MCP token? Running OpenCode sessions lose access until Canopy re-registers the MCP server, which happens automatically the next time an agent is prompted."
+                  data-canopy-confirm="Rotate the MCP token? Running OpenCode sessions lose access until Canopy re-registers the MCP server, which happens automatically the next time an agent is prompted."
                 >
                   <.icon name="hero-arrow-path-rounded-square" class="size-4" /> Rotate token
                 </button>
@@ -380,7 +391,10 @@ defmodule CanopyWeb.SettingsLive do
                 <.copy_button id="copy-plugin" target="#plugin-source" label="Copy plugin" />
               </div>
               <p class="mb-2 text-xs text-base-content/60">
-                Install once at <code class="font-mono" id="plugin-path">{@plugin_path}</code>
+                Canopy installs this into every registered repository at
+                <code class="font-mono">.opencode/plugins/canopy.js</code>
+                (kept out of git) before an agent's first turn there. To cover repositories you open with OpenCode directly, install it once at
+                <code class="font-mono" id="plugin-path">{@plugin_path}</code>
                 and restart <code class="font-mono">opencode serve</code>. It stamps the real
                 OpenCode session id into every Canopy tool call so agents cannot impersonate each other.
               </p>

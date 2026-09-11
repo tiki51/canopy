@@ -106,6 +106,13 @@ defmodule Canopy.Messages do
 
         older ++ newer
 
+      after_id = Keyword.get(opts, :after) ->
+        base
+        |> where([m], m.id > ^after_id)
+        |> order_by([m], asc: m.id)
+        |> limit(^limit)
+        |> Repo.all()
+
       true ->
         base
         |> maybe_before(Keyword.get(opts, :before))
@@ -257,4 +264,36 @@ defmodule Canopy.Messages do
 
   defp clamp_limit(limit) when is_integer(limit) and limit > 0, do: min(limit, @max_limit)
   defp clamp_limit(_), do: @default_limit
+
+  # -- Read markers (agents) ----------------------------------------------------
+
+  @doc "The newest message id an agent has read in a channel, or nil."
+  def last_read(agent_id, channel_id) do
+    case Repo.get_by(Canopy.Messages.MessageRead, agent_id: agent_id, channel_id: channel_id) do
+      %{last_message_id: id} -> id
+      nil -> nil
+    end
+  end
+
+  @doc "Records the newest message an agent has read in a channel (never moves backwards)."
+  def mark_read(agent_id, channel_id, message_id) when is_binary(message_id) do
+    current = last_read(agent_id, channel_id)
+
+    if is_nil(current) or message_id > current do
+      Repo.insert!(
+        %Canopy.Messages.MessageRead{
+          agent_id: agent_id,
+          channel_id: channel_id,
+          last_message_id: message_id,
+          updated_at: DateTime.utc_now()
+        },
+        on_conflict: [set: [last_message_id: message_id, updated_at: DateTime.utc_now()]],
+        conflict_target: [:agent_id, :channel_id]
+      )
+    end
+
+    :ok
+  end
+
+  def mark_read(_agent_id, _channel_id, _), do: :ok
 end

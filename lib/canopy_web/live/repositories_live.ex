@@ -122,6 +122,8 @@ defmodule CanopyWeb.RepositoriesLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      schedule_counts={@schedule_counts}
+      hold={@hold}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -189,7 +191,7 @@ defmodule CanopyWeb.RepositoriesLive do
                 class="btn btn-ghost btn-xs text-error opacity-60 transition group-hover:opacity-100"
                 phx-click="delete"
                 phx-value-id={row.repository.id}
-                data-confirm={"Remove #{row.repository.name} from Canopy? Its #{row.channel_count} channel(s) and their history are deleted. Files on disk are not touched."}
+                data-canopy-confirm={"Remove #{row.repository.name} from Canopy? Its #{row.channel_count} channel(s) and their history are deleted. Files on disk are not touched."}
                 title="Remove repository"
               >
                 <.icon name="hero-trash" class="size-4" />

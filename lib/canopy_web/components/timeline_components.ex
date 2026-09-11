@@ -44,7 +44,7 @@ defmodule CanopyWeb.TimelineComponents do
       |> assign(:final_text, assigns.event.payload["final_text"])
 
     ~H"""
-    <div id={@id}>
+    <div id={@id} data-activity={activity_class(@event)}>
       <.turn_card
         event={@event}
         names={@names}
@@ -58,7 +58,7 @@ defmodule CanopyWeb.TimelineComponents do
 
   def timeline_item(assigns) do
     ~H"""
-    <div id={@id}>
+    <div id={@id} data-activity={activity_class(@event)}>
       <.system_line
         id={"line-#{@event.id}"}
         icon={event_icon(@event.event_type)}
@@ -168,7 +168,8 @@ defmodule CanopyWeb.TimelineComponents do
       class={[
         "mt-0.5 flex size-8 shrink-0 select-none items-center justify-center rounded-lg text-xs font-bold",
         @message.agent_id && "bg-primary/15 text-primary",
-        is_nil(@message.agent_id) && "bg-neutral text-neutral-content"
+        is_nil(@message.agent_id) &&
+          "bg-secondary text-secondary-content shadow-sm ring-2 ring-secondary/30"
       ]}
       style={
         @message.agent && @message.agent.color &&
@@ -238,6 +239,27 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  @doc """
+  "routine" for lines the compact timeline hides: a turn starting, a turn that
+  finished cleanly (including a pass with nothing to say), a schedule firing.
+  Errors, passes with a note, and everything a person might act on stay visible.
+  """
+  def activity_class(%{event_type: "agent_started"}), do: "routine"
+  def activity_class(%{event_type: "schedule_fired"}), do: "routine"
+  def activity_class(%{event_type: "session_compacted"}), do: "routine"
+
+  def activity_class(%{event_type: "agent_turn_completed", payload: p}) do
+    cond do
+      p["outcome"] != "ok" -> nil
+      p["passed"] && present?(p["note"]) -> nil
+      true -> "routine"
+    end
+  end
+
+  def activity_class(_event), do: nil
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+
   # -- Activity cards ----------------------------------------------------------
 
   @doc """
@@ -260,7 +282,7 @@ defmodule CanopyWeb.TimelineComponents do
         class="flex cursor-pointer select-none list-none items-center gap-2 px-4 py-2 text-sm transition hover:bg-secondary/15 [&::-webkit-details-marker]:hidden"
       >
         <Layouts.status_dot status={:busy} />
-        <span class="font-medium text-secondary">@{@name} is working…</span>
+        <span class="font-medium text-secondary">@{@name} is {Activity.verb(@card)}…</span>
         <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/50">
           <span :if={@card.tool_count > 0}>{@card.tool_count} tools</span>
           <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
@@ -391,6 +413,82 @@ defmodule CanopyWeb.TimelineComponents do
       name="hero-chevron-down-mini"
       class="size-4 shrink-0 opacity-60 transition-transform group-open/card:rotate-180"
     />
+    """
+  end
+
+  # -- Schedules -----------------------------------------------------------------
+
+  @doc """
+  A list of schedules with a Cancel button each. `scope` is `:channel` (agent
+  shown) or `:agent` (channel shown). Emits `cancel_schedule` with the id.
+  """
+  attr :id, :string, required: true
+  attr :schedules, :list, required: true
+  attr :scope, :atom, default: :channel
+  attr :empty, :string, default: "Nothing scheduled."
+
+  def schedule_list(assigns) do
+    ~H"""
+    <ul id={@id} class="flex flex-col divide-y divide-base-300">
+      <li
+        :for={s <- @schedules}
+        id={"#{@id}-#{s.id}"}
+        data-status={s.status}
+        class={["flex items-start gap-3 py-2 text-sm", s.status == "paused" && "opacity-60"]}
+      >
+        <.icon
+          name={if s.kind == "recurring", do: "hero-arrow-path-mini", else: "hero-clock-mini"}
+          class="mt-0.5 size-4 shrink-0 text-base-content/50"
+        />
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span class="font-medium" title={DateTime.to_iso8601(s.next_run_at)}>
+              {Canopy.Schedules.local_text(s.next_run_at)}
+            </span>
+            <span class="text-xs text-base-content/60">{Canopy.Schedules.relative(s.next_run_at)}</span>
+            <span :if={s.kind == "recurring"} class="text-xs text-base-content/60">
+              · {Canopy.Schedules.describe_cron(s.cron)}
+            </span>
+            <span :if={@scope == :channel} class="font-mono text-xs text-base-content/60">@{s.agent.name}</span>
+            <.link
+              :if={@scope == :agent}
+              navigate={~p"/channels/#{s.channel_id}"}
+              class="font-mono text-xs text-secondary hover:underline"
+            >
+              #{s.channel.name}
+            </.link>
+            <span
+              :if={s.status == "paused"}
+              class="badge badge-ghost badge-xs"
+              title={s.status_reason}
+            >
+              paused
+            </span>
+          </div>
+          <p class="mt-0.5 break-words text-xs text-base-content/75">{s.instruction}</p>
+          <p
+            :if={s.status == "paused" and s.status_reason}
+            class="mt-0.5 text-[11px] text-base-content/50"
+          >
+            {s.status_reason}
+          </p>
+        </div>
+        <button
+          type="button"
+          id={"cancel-schedule-#{s.id}"}
+          class="btn btn-ghost btn-xs shrink-0 text-base-content/60 hover:text-error"
+          phx-click="cancel_schedule"
+          phx-value-id={s.id}
+          data-canopy-confirm="It will not run again."
+          data-canopy-confirm-title="Cancel this schedule?"
+          data-canopy-confirm-label="Cancel schedule"
+          title="Cancel"
+        >
+          <.icon name="hero-x-mark-mini" class="size-4" />
+        </button>
+      </li>
+      <li :if={@schedules == []} class="py-2 text-xs text-base-content/50">{@empty}</li>
+    </ul>
     """
   end
 
@@ -533,6 +631,12 @@ defmodule CanopyWeb.TimelineComponents do
       "agent_started" ->
         "#{agent} started working"
 
+      "session_compacted" ->
+        "#{agent}'s session was compacted after reaching #{p["context"]} tokens of context"
+
+      "session_reset" ->
+        "#{if p["by"] == "user", do: user, else: p["by"]} reset #{agent}'s session; it starts fresh on its next turn"
+
       "agent_turn_completed" ->
         verb =
           cond do
@@ -584,6 +688,45 @@ defmodule CanopyWeb.TimelineComponents do
       "channel_reopened" ->
         "#{user} reopened this channel"
 
+      "spend_limit_changed" ->
+        by = if p["by"] in ["user", nil], do: user, else: "@" <> p["by"]
+
+        if is_number(p["limit"]),
+          do: "#{by} set this channel's spend limit to #{Canopy.Costs.money(p["limit"])}",
+          else: "#{by} removed this channel's spend limit"
+
+      "spend_limit_reached" ->
+        "spend limit reached: #{Canopy.Costs.money(p["spent"])} of #{Canopy.Costs.money(p["limit"])}; agents stay quiet here until the limit is raised"
+
+      "repository_switched" ->
+        by = if p["by"] == "user", do: user, else: p["by"]
+
+        "#{by} moved this conversation to #{p["to"]}" <>
+          if(p["from"], do: " (from #{p["from"]})", else: "")
+
+      "schedule_created" ->
+        by =
+          if p["created_by_agent_id"] == event.agent_id,
+            do: "",
+            else: " (by #{agent_ref(names, p["created_by_agent_id"], user_name)})"
+
+        "#{agent} scheduled#{by}: #{schedule_timing(p)} · #{p["instruction"]}"
+
+      "schedule_fired" ->
+        "scheduled task fired for #{agent}: #{p["instruction"]}"
+
+      "schedule_skipped" ->
+        "skipped a scheduled task for #{agent}" <> suffix(p["reason"]) <> ": #{p["instruction"]}"
+
+      "schedule_cancelled" ->
+        "cancelled a schedule for #{agent}" <> suffix(p["reason"]) <> ": #{p["instruction"]}"
+
+      "schedule_paused" ->
+        "paused a schedule for #{agent}" <> suffix(p["reason"]) <> ": #{p["instruction"]}"
+
+      "schedule_resumed" ->
+        "resumed a schedule for #{agent}: #{schedule_timing(p)} · #{p["instruction"]}"
+
       "permission_requested" ->
         "#{agent} asked for #{p["permission"]} permission" <>
           suffix(Enum.join(List.wrap(p["patterns"]), ", "))
@@ -615,8 +758,10 @@ defmodule CanopyWeb.TimelineComponents do
 
   def format_duration(_), do: nil
 
-  @doc "The HH:MM of a datetime (UTC)."
-  def short_time(%DateTime{} = at), do: Calendar.strftime(at, "%H:%M")
+  @doc "The HH:MM of a datetime in the machine's local time."
+  def short_time(%DateTime{} = at),
+    do: at |> Canopy.Schedules.When.to_local_naive() |> Calendar.strftime("%H:%M")
+
   def short_time(_), do: ""
 
   # -- Private helpers ---------------------------------------------------------
@@ -641,6 +786,11 @@ defmodule CanopyWeb.TimelineComponents do
     ]
     |> Enum.reject(&is_nil/1)
   end
+
+  defp schedule_timing(%{"kind" => "recurring", "cron" => cron}),
+    do: Canopy.Schedules.describe_cron(cron)
+
+  defp schedule_timing(_), do: "once"
 
   defp count(n, _noun) when not is_integer(n) or n == 0, do: nil
   defp count(1, noun), do: "1 #{noun}"
@@ -673,6 +823,8 @@ defmodule CanopyWeb.TimelineComponents do
   defp permission_status(other), do: to_string(other)
 
   defp event_icon("agent_started"), do: "hero-play-circle-mini"
+  defp event_icon("session_reset"), do: "hero-arrow-path-mini"
+  defp event_icon("session_compacted"), do: "hero-arrows-pointing-in-mini"
   defp event_icon("agent_turn_completed"), do: "hero-check-circle-mini"
   defp event_icon("agent_error"), do: "hero-exclamation-triangle-mini"
   defp event_icon("delegation_" <> _), do: "hero-arrow-uturn-right-mini"
@@ -683,10 +835,15 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("member_removed"), do: "hero-user-minus-mini"
   defp event_icon("channel_archived"), do: "hero-archive-box-mini"
   defp event_icon("channel_reopened"), do: "hero-archive-box-x-mark-mini"
+  defp event_icon("spend_limit_" <> _), do: "hero-banknotes-mini"
+  defp event_icon("repository_switched"), do: "hero-folder-arrow-down-mini"
+  defp event_icon("schedule_fired"), do: "hero-bell-alert-mini"
+  defp event_icon("schedule_" <> _), do: "hero-clock-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 
   defp event_tone(%{event_type: "agent_error"}), do: "error"
+  defp event_tone(%{event_type: "spend_limit_reached"}), do: "error"
   defp event_tone(%{event_type: "delegation_failed"}), do: "error"
   defp event_tone(%{event_type: "handoff_rejected"}), do: "warning"
 

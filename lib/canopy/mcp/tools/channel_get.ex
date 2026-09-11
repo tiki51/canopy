@@ -41,6 +41,7 @@ defmodule Canopy.MCP.Tools.ChannelGet do
       "Owner: #{Format.agent_ref(channel.owner)}",
       Format.task_block(task),
       "Members: #{members}",
+      spend_line(channel),
       handoff_line(channel),
       "Recent messages (oldest first):",
       recent |> Enum.map(&Format.message_line(&1, bodies: false)) |> preview(recent)
@@ -48,6 +49,15 @@ defmodule Canopy.MCP.Tools.ChannelGet do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  defp spend_line(%{spend_limit: limit} = channel) when is_number(limit) do
+    spent = Canopy.Costs.channel_total(channel.id)
+    held = if spent >= limit, do: " (reached: agents are held until the user raises it)", else: ""
+
+    "Spend: #{Canopy.Costs.money(spent)} of a #{Canopy.Costs.money(limit)} limit set by the user#{held}"
+  end
+
+  defp spend_line(_channel), do: nil
 
   defp preview([], _), do: "(no messages yet)"
 

@@ -109,14 +109,61 @@ defmodule Canopy.Channels do
     agents = Enum.uniq_by(agents, & &1.id)
     wanted = agents |> Enum.map(& &1.id) |> Enum.sort()
 
-    repository_id
-    |> list_dms()
+    # One DM per set of agents, whichever repository it currently works in;
+    # asking for it in another repository moves it there.
+    list_dms()
     |> Enum.find(fn dm -> dm.agents |> Enum.map(& &1.id) |> Enum.sort() == wanted end)
     |> case do
-      %Channel{} = channel -> {:ok, channel}
+      %Channel{repository_id: ^repository_id} = channel -> {:ok, channel}
+      %Channel{} = channel -> switch_repository(channel, repository_id, "user")
       nil -> create_dm(repository_id, agents)
     end
   end
+
+  @doc """
+  Moves a DM to another repository: the conversation stays, the agents' sessions
+  are recreated there on their next turn (after any turn in flight). Records
+  `repository_switched`. Channels other than DMs keep their repository.
+  """
+  def switch_repository(%Channel{kind: "dm"} = channel, repository_id, by) do
+    cond do
+      channel.repository_id == repository_id ->
+        {:ok, channel}
+
+      is_nil(Repo.get(Canopy.Repositories.Repository, repository_id)) ->
+        {:error, :unknown_repository}
+
+      true ->
+        from =
+          channel.repository || Repo.get(Canopy.Repositories.Repository, channel.repository_id)
+
+        to = Repo.get(Canopy.Repositories.Repository, repository_id)
+
+        with {:ok, channel} <-
+               channel |> Channel.changeset(%{repository_id: repository_id}) |> Repo.update() do
+          {:ok, _} =
+            Timeline.record(%{
+              channel_id: channel.id,
+              event_type: "repository_switched",
+              ref_id: channel.id,
+              payload: %{"from" => from && from.name, "to" => to.name, "by" => by}
+            })
+
+          # with no runtime for the channel, nothing defers the reset
+          if is_nil(Canopy.Runtime.Supervisor.whereis(channel.id)),
+            do:
+              Enum.each(
+                Canopy.AgentSessions.list_for_channel(channel.id),
+                &Canopy.AgentSessions.delete/1
+              )
+
+          notify()
+          {:ok, Repo.preload(channel, @preloads, force: true)}
+        end
+    end
+  end
+
+  def switch_repository(%Channel{}, _repository_id, _by), do: {:error, :not_a_dm}
 
   @doc "All DMs, newest first; scoped to a repository when given."
   def list_dms(repository_id \\ nil) do
@@ -178,6 +225,48 @@ defmodule Canopy.Channels do
 
   def reopen(%Channel{} = channel), do: set_status(channel, "open", "channel_reopened")
 
+  @doc """
+  Sets or clears (nil) the total dollars a channel may spend, and records
+  `spend_limit_changed`. Only the user calls this: agents can set a limit when
+  they create a channel, never change one. `by` is "user" or an agent name.
+  """
+  def set_spend_limit(%Channel{} = channel, limit, by \\ "user") do
+    limit = normalize_limit(limit)
+
+    with {:ok, updated} <-
+           channel |> Channel.changeset(%{spend_limit: limit}) |> Repo.update() do
+      if updated.spend_limit != channel.spend_limit do
+        {:ok, _} =
+          Timeline.record(%{
+            channel_id: channel.id,
+            event_type: "spend_limit_changed",
+            ref_id: channel.id,
+            payload: %{"limit" => updated.spend_limit, "by" => by}
+          })
+
+        notify()
+      end
+
+      {:ok, Repo.preload(updated, @preloads, force: true)}
+    end
+  end
+
+  defp normalize_limit(nil), do: nil
+  defp normalize_limit(""), do: nil
+  defp normalize_limit(n) when is_number(n), do: n / 1
+
+  defp normalize_limit(text) when is_binary(text) do
+    case text |> String.trim() |> String.trim_leading("$") |> Float.parse() do
+      {n, _} -> n
+      :error -> text
+    end
+  end
+
+  @doc "The channel's spend limit as stored now (nil for none), without the rest of the row."
+  def spend_limit(channel_id) when is_binary(channel_id) do
+    Repo.one(from(c in Channel, where: c.id == ^channel_id, select: c.spend_limit))
+  end
+
   def archived?(%Channel{status: "archived"}), do: true
   def archived?(_), do: false
 
@@ -190,6 +279,11 @@ defmodule Canopy.Channels do
           ref_id: channel.id,
           payload: %{}
         })
+
+      case status do
+        "archived" -> Canopy.Schedules.pause_for_channel(channel.id, "the channel was archived")
+        "open" -> Canopy.Schedules.resume_for_channel(channel.id)
+      end
 
       notify()
       {:ok, Repo.preload(channel, @preloads, force: true)}

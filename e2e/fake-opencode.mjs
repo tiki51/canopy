@@ -108,8 +108,19 @@ async function runTurn(sessionID, text) {
   } else if (/delegated subtask .* was completed/i.test(text)) {
     await mcpCall("message_send", { canopy_session_id: sessionID, text: "Delegation result received; wrapping up." });
     reply = "Continuing after the delegation.";
+  } else if (/scheduled task of yours is due/i.test(text)) {
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Ran the scheduled check: all green." });
+    reply = "Scheduled task done.";
   } else if (/new Canopy message/i.test(text)) {
-    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
+    const msg = text.match(/Message ID: (msg_\S+)/);
+    const body = msg ? await mcpCall("messages_read", { canopy_session_id: sessionID, around: msg[1], limit: 1 }) : "";
+    if (/schedule/i.test(body)) {
+      const created = await mcpCall("schedule_create", { canopy_session_id: sessionID, when: "3s", what: "Run the scheduled check and report." });
+      await mcpCall("message_send", { canopy_session_id: sessionID, text: "Scheduled it: " + created.split(".")[0] + "." });
+      reply = "Scheduled.";
+    } else {
+      await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
+    }
   }
 
   const textID = nextId("prt");
@@ -129,9 +140,10 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && (p === "/global/health" || p === "/api/health")) return json(res, 200, { healthy: true, version: "fake-1.0" });
     if (req.method === "GET" && p === "/config/providers")
-      return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": {}, "claude-haiku-4-5": {} } }], default: {} });
+      return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } } } }], default: { opencode: "gpt-5-nano" } });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
     if (req.method === "GET" && p === "/mcp") return json(res, 200, mcp ? { canopy: { status: "connected" } } : {});
+    if (req.method === "POST" && p === "/instance/dispose") { mcp = null; mcpSession = null; return json(res, 200, true); }
     if (req.method === "POST" && p === "/mcp") {
       const body = await readBody(req);
       mcp = { url: body.config.url, headers: body.config.headers || {} };
@@ -165,6 +177,7 @@ const server = http.createServer(async (req, res) => {
       runTurn(m[1], text).catch((e) => console.error("[fake-opencode] turn failed", e));
       return;
     }
+    if (req.method === "POST" && p.match(/^\/session\/([^/]+)\/summarize$/)) { await readBody(req); return json(res, 200, true); }
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/abort$/))) {
       emit("session.status", { sessionID: m[1], status: { type: "idle" } });
       emit("session.idle", { sessionID: m[1] });

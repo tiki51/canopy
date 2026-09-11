@@ -11,7 +11,7 @@ test.describe("channel collaboration", () => {
 
     // live telemetry while the fake agent works
     const card = page.locator('[id^="telemetry-"]').first();
-    await expect(card).toContainText(/is working/);
+    await expect(card).toContainText(/is (researching|thinking|building|working)/);
     await expect(card).toContainText("README.md");
 
     // the agent posted through canopy_message_send
@@ -59,6 +59,26 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page)).toContainText(/handoff|handed/i);
     await expect(timeline(page)).toContainText("Accepted the handoff.");
     await expect(page.locator("#owner-badge")).toContainText("reviewer");
+  });
+
+  test("an agent schedules a task through MCP; Oban fires it and the agent runs it", async ({ page }) => {
+    await createChannel(page, "sched");
+    await send(page, "Please schedule a quick check for a few seconds from now.");
+    await expect(timeline(page)).toContainText(/scheduled: once · Run the scheduled check/);
+    await expect(page.locator("#schedule-count")).toContainText("1");
+
+    // the "created" toast covers the header buttons until dismissed
+    await page.locator("#flash-info").click();
+    await expect(page.locator("#flash-info")).toBeHidden();
+    await page.locator("#edit-schedules").click();
+    const row = page.locator('[id^="channel-schedules-sch_"]').first();
+    await expect(row).toContainText("Run the scheduled check and report.");
+
+    // Oban fires the job ~3s out; the fake agent answers the scheduled wake
+    await expect(timeline(page)).toContainText(/scheduled task fired for @backend/, { timeout: 20_000 });
+    await expect(timeline(page)).toContainText("Ran the scheduled check: all green.", { timeout: 20_000 });
+    await expect(page.locator("#schedule-count")).toHaveCount(0);
+    await expect(page.locator("#channel-schedules")).toContainText("Nothing scheduled.");
   });
 
   test("a bad slash command shows an error and keeps the draft", async ({ page }) => {

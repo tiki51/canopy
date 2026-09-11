@@ -12,6 +12,17 @@ config :canopy,
   generators: [timestamp_type: :utc_datetime]
 
 # OpenCode integration defaults. The runtime overrides base_url from Settings.
+# Oban runs scheduled agent tasks (see Canopy.Schedules). SQLite via the Lite engine.
+config :canopy, Oban,
+  engine: Oban.Engines.Lite,
+  notifier: Oban.Notifiers.PG,
+  repo: Canopy.Repo,
+  queues: [schedules: 3],
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 7 * 24 * 60 * 60},
+    {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)}
+  ]
+
 config :canopy, :opencode,
   base_url: "http://127.0.0.1:4096",
   client: Canopy.OpenCode.Client

@@ -150,6 +150,361 @@ defmodule Canopy.Runtime.ChannelServerTest do
     refute_receive {:timeline, %{event_type: "message", message: %{kind: "reply"}}}, 300
   end
 
+  test "resetting a session deletes it, is refused mid-turn, and the next wake creates a new one",
+       ctx do
+    test_pid = self()
+    old_sid = ctx.session.opencode_session_id
+
+    stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, sid})
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^old_sid}, 2_000
+    assert {:error, :busy} = Runtime.reset_session(ctx.channel.id, ctx.agent.id)
+    emit(old_sid, :agent_completed, %{})
+    assert_receive {:agent_status, _, :idle}, 2_000
+
+    assert :ok = Runtime.reset_session(ctx.channel.id, ctx.agent.id, "user")
+
+    assert_receive {:timeline,
+                    %{event_type: "session_reset", payload: %{"opencode_session_id" => ^old_sid}}},
+                   2_000
+
+    assert AgentSessions.get_root(ctx.channel.id, ctx.agent.id) == nil
+    assert {:error, :no_session} = Runtime.reset_session(ctx.channel.id, ctx.agent.id)
+
+    expect(OC, :create_session, fn _dir, %{title: title}, _opts ->
+      assert title =~ "@#{ctx.agent.name}"
+      {:ok, %{"id" => "ses_fresh"}}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "again")
+    assert_receive {:prompted, "ses_fresh"}, 2_000
+
+    assert %{opencode_session_id: "ses_fresh"} =
+             AgentSessions.get_root(ctx.channel.id, ctx.agent.id)
+  end
+
+  test "a DM moved to another repository finishes the current turn, then continues there", ctx do
+    test_pid = self()
+    other = Fixtures.repository_fixture()
+    {:ok, dm} = Canopy.Channels.ensure_dm(ctx.repository.id, ctx.agent)
+    dm_session = Fixtures.session_fixture(%{channel: dm, agent_id: ctx.agent.id})
+    Timeline.subscribe(dm.id)
+    {:ok, _} = Runtime.ensure_channel(dm.id, start_stream: false)
+    on_exit(fn -> Runtime.stop_channel(dm.id) end)
+
+    stub(OC, :prompt_async, fn dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, dir, sid})
+      {:ok, ""}
+    end)
+
+    # the new repository has no MCP registration yet
+    stub(OC, :add_mcp, fn _dir, _name, _config, _opts ->
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+
+    old_sid = dm_session.opencode_session_id
+    old_dir = ctx.repository.path
+    {:ok, _} = Runtime.post_user_message(dm.id, "hello")
+    assert_receive {:prompted, ^old_dir, ^old_sid}, 2_000
+
+    # switched while the turn runs: nothing happens until it ends
+    {:ok, _} = Runtime.switch_dm_repository(dm.id, other.id, "@" <> ctx.agent.name)
+    assert_receive {:timeline, %{event_type: "repository_switched"}}, 2_000
+    Process.sleep(100)
+    assert Canopy.AgentSessions.get_root(dm.id, ctx.agent.id).opencode_session_id == old_sid
+
+    emit(old_sid, :agent_completed, %{})
+    assert_receive {:agent_status, _, :idle}, 2_000
+    Process.sleep(100)
+    assert Canopy.AgentSessions.get_root(dm.id, ctx.agent.id) == nil
+
+    # the next wake creates a session in the new repository's directory
+    new_dir = other.path
+
+    expect(OC, :create_session, fn dir, _body, _opts ->
+      assert dir == new_dir
+      {:ok, %{"id" => "ses_moved"}}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(dm.id, "and now?")
+    assert_receive {:prompted, ^new_dir, "ses_moved"}, 2_000
+  end
+
+  test "the first prompt in a repository installs the identity plugin and reloads OpenCode's instance",
+       ctx do
+    test_pid = self()
+    File.rm_rf!(Path.join(ctx.repository.path, ".opencode"))
+
+    expect(OC, :dispose_instance, fn dir, _opts ->
+      assert dir == ctx.repository.path
+      assert File.exists?(Canopy.MCP.project_plugin_path(dir))
+      send(test_pid, :disposed)
+      {:ok, true}
+    end)
+
+    expect_prompt(self())
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :disposed, 2_000
+    assert_receive {:prompted, _, _}, 2_000
+  end
+
+  test "one turn at a time: a second agent woken mid-turn waits, shows queued, and starts when the first ends",
+       ctx do
+    test_pid = self()
+    owner_sid = ctx.session.opencode_session_id
+
+    reviewer_session =
+      Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
+
+    reviewer_sid = reviewer_session.opencode_session_id
+
+    stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, sid})
+      {:ok, ""}
+    end)
+
+    # the user mentions both: the owner is not mentioned, so only the reviewer... use two messages
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "owner, go")
+    assert_receive {:prompted, ^owner_sid}, 2_000
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} you too")
+    assert_receive {:agent_status, reviewer_id, :queued}, 2_000
+    assert reviewer_id == ctx.reviewer.id
+    refute_receive {:prompted, ^reviewer_sid}, 300
+    assert Runtime.status(ctx.channel.id)[ctx.reviewer.id] == :queued
+
+    emit(owner_sid, :agent_completed, %{})
+    assert_receive {:prompted, ^reviewer_sid}, 2_000
+    assert Runtime.status(ctx.channel.id)[ctx.reviewer.id] == :busy
+  end
+
+  test "with serialization off, agents woken together run at once", ctx do
+    {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
+    test_pid = self()
+    owner_sid = ctx.session.opencode_session_id
+
+    reviewer_session =
+      Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
+
+    reviewer_sid = reviewer_session.opencode_session_id
+
+    stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, sid})
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "owner, go")
+    assert_receive {:prompted, ^owner_sid}, 2_000
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} you too")
+    assert_receive {:prompted, ^reviewer_sid}, 2_000
+    refute_received {:agent_status, _, :queued}
+  end
+
+  test "a billing error engages the hold; held channels drop wakes with one note; release lets a message wake again",
+       ctx do
+    test_pid = self()
+    sid = ctx.session.opencode_session_id
+    Canopy.Hold.subscribe()
+
+    stub(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+
+    error = %{
+      "name" => "ProviderError",
+      "data" => %{
+        "message" => "Insufficient balance. Manage your billing here: https://opencode.ai/billing"
+      }
+    }
+
+    emit(sid, :agent_error, %{error: error})
+    assert_receive {:hold, :engaged}, 2_000
+    assert Canopy.Hold.reason() =~ "Insufficient balance"
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
+                   2_000
+
+    # while held: no prompt, one note, even across several wakes
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello?")
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "anyone?")
+    refute_receive :prompted, 500
+
+    assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: note}}},
+                   2_000
+
+    assert note =~ "on hold: Insufficient balance"
+    refute_receive {:timeline, %{event_type: "message", message: %{kind: "system"}}}, 300
+
+    :ok = Canopy.Hold.release()
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "back")
+    assert_receive :prompted, 2_000
+  end
+
+  test "a turn whose context passed the cap gets its session compacted afterwards", ctx do
+    test_pid = self()
+    sid = ctx.session.opencode_session_id
+
+    {:ok, _} =
+      Canopy.Agents.update(ctx.agent, %{model_provider: "opencode", model_id: "gpt-5-nano"})
+
+    stub(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    expect(OC, :summarize, fn _dir,
+                              ^sid,
+                              %{providerID: "opencode", modelID: "gpt-5-nano"},
+                              _opts ->
+      send(test_pid, :compacted)
+      {:ok, true}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive :prompted, 2_000
+
+    # a small step, then one that carried 45k tokens of context
+    emit(sid, :step_completed, %{
+      part_id: "s1",
+      reason: "tool-calls",
+      cost: 0.001,
+      tokens: %{"input" => 900, "output" => 50, "cache" => %{"read" => 100}}
+    })
+
+    emit(sid, :step_completed, %{
+      part_id: "s2",
+      reason: "stop",
+      cost: 0.02,
+      tokens: %{"input" => 5_000, "output" => 80, "cache" => %{"read" => 40_000}}
+    })
+
+    emit(sid, :agent_completed, %{})
+
+    assert_receive :compacted, 2_000
+
+    assert_receive {:timeline,
+                    %{
+                      event_type: "session_compacted",
+                      payload: %{"context" => 45_000, "cap" => 40_000}
+                    }},
+                   2_000
+
+    # a small turn does not compact
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "again")
+    assert_receive :prompted, 2_000
+
+    emit(sid, :step_completed, %{
+      part_id: "s3",
+      reason: "stop",
+      cost: 0.001,
+      tokens: %{"input" => 2_000, "output" => 10, "cache" => %{"read" => 3_000}}
+    })
+
+    emit(sid, :agent_completed, %{})
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+    refute_receive {:timeline, %{event_type: "session_compacted"}}, 300
+  end
+
+  test "a turn summary records what woke it, its model calls, and tokens", ctx do
+    expect_prompt(self())
+    sid = ctx.session.opencode_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^sid, _}, 2_000
+
+    emit(sid, :step_completed, %{
+      part_id: "s1",
+      reason: "tool-calls",
+      cost: 0.001,
+      tokens: %{"input" => 900, "output" => 50, "cache" => %{"read" => 100, "write" => 20}}
+    })
+
+    emit(sid, :step_completed, %{
+      part_id: "s2",
+      reason: "stop",
+      cost: 0.002,
+      tokens: %{"input" => 1_000, "output" => 30, "reasoning" => 5, "cache" => %{"read" => 900}}
+    })
+
+    emit(sid, :agent_completed, %{})
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: p}}, 2_000
+    assert p["trigger"] == "user"
+    assert p["steps"] == 2
+    assert p["context"] == 1_900
+
+    assert p["tokens"] == %{
+             "input" => 1_900,
+             "output" => 80,
+             "reasoning" => 5,
+             "cache_read" => 1_000,
+             "cache_write" => 20
+           }
+
+    # an agent's post wakes the owner: trigger "agent"
+    expect_prompt(self())
+    {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "found something")
+    assert_receive {:prompted, ^sid, _}, 2_000
+    emit(sid, :agent_completed, %{})
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"trigger" => "agent"}}},
+                   2_000
+  end
+
+  test "a channel that reached its spend limit drops wakes until the user raises it", ctx do
+    {:ok, _} = Canopy.Channels.set_spend_limit(ctx.channel, 1.0)
+    assert_receive {:timeline, %{event_type: "spend_limit_changed"}}, 2_000
+
+    {:ok, _} =
+      Timeline.record(%{
+        channel_id: ctx.channel.id,
+        agent_id: ctx.agent.id,
+        event_type: "agent_turn_completed",
+        payload: %{"outcome" => "ok", "cost" => 1.5, "tools" => 0, "duration_ms" => 1}
+      })
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+
+    # no prompt goes out; the channel records that the limit was reached, once
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "keep going")
+
+    assert_receive {:timeline,
+                    %{
+                      event_type: "spend_limit_reached",
+                      payload: %{"limit" => 1.0, "spent" => 1.5}
+                    }},
+                   2_000
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello?")
+    refute_receive {:timeline, %{event_type: "spend_limit_reached"}}, 300
+    refute :busy in Map.values(Runtime.status(ctx.channel.id))
+
+    # raising the limit lets the next message through
+    {:ok, _} = Canopy.Channels.set_spend_limit(ctx.channel, 5.0)
+    expect_prompt(self())
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "now?")
+    sid = ctx.session.opencode_session_id
+    assert_receive {:prompted, ^sid, _}, 2_000
+  end
+
+  test "a server whose state predates a struct field (dev code reload) heals itself", ctx do
+    # simulate a reload: the running state lacks fields the new module expects
+    :sys.replace_state(ctx.pid, fn state -> Map.drop(state, [:waiting, :limit_noted]) end)
+    assert %{} = ChannelServer.status(ctx.pid)
+    assert Map.has_key?(:sys.get_state(ctx.pid), :waiting)
+  end
+
   test "a passed turn posts no reply and the summary says so", ctx do
     expect_prompt(self())
     sid = ctx.session.opencode_session_id
@@ -183,7 +538,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert File.read!(notes) =~ "# @#{ctx.agent.name} notes"
     assert [%{type: "text", text: text}] = body.parts
     assert text =~ "Message ID: #{message.id}"
-    refute text =~ "please look at the retries"
+    # short messages ride along in the wake prompt, so no read is needed
+    assert text =~ "Message text:\nplease look at the retries"
     assert body.tools == %{"canopy_*" => true}
     assert body.system =~ "@#{ctx.agent.name}"
     assert body.agent == "build"
@@ -444,6 +800,10 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert text =~ "accepted your handoff"
     assert_receive {:timeline, %{event_type: "owner_changed"}}, 2_000
 
+    # the previous owner finishes its turn (one turn at a time per channel)
+    emit(owner_sid, :agent_completed, %{})
+    assert_receive {:agent_status, _, :idle}, 2_000
+
     # the server refreshed the channel: a user message now wakes the new owner
     expect_prompt(test_pid)
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "how is it going?")
@@ -557,6 +917,36 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
         {:opencode_stream, :connected, repo_id}
       )
     end
+  end
+
+  test "after a reconnect the next prompt re-registers the MCP server OpenCode lost", ctx do
+    test_pid = self()
+
+    expect(OC, :prompt_async, 2, fn _dir, _sid, _body, _opts ->
+      send(test_pid, :prompted)
+      {:ok, ""}
+    end)
+
+    stub(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+    stub(OC, :pending_permissions, fn _dir, _opts -> {:ok, []} end)
+
+    # first prompt: registration checked and cached
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "one")
+    assert_receive :prompted, 2_000
+    emit_idle(ctx.session.opencode_session_id)
+
+    # OpenCode restarts: the registration is gone and the stream reconnects
+    stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{}} end)
+
+    expect(OC, :add_mcp, fn _dir, "canopy", _config, _opts ->
+      send(test_pid, :registered)
+      {:ok, %{"canopy" => %{"status" => "connected"}}}
+    end)
+
+    reconnect(ctx.repository.id)
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "two")
+    assert_receive :registered, 2_000
+    assert_receive :prompted, 2_000
   end
 
   test "a reconnect finishes turns OpenCode no longer reports as busy and records missed permissions",

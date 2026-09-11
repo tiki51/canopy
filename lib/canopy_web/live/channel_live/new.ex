@@ -109,7 +109,7 @@ defmodule CanopyWeb.ChannelLive.New do
   defp build_changeset(params, member_ids) do
     params =
       params
-      |> Map.take(["repository_id", "name", "topic", "owner_agent_id"])
+      |> Map.take(["repository_id", "name", "topic", "owner_agent_id", "spend_limit"])
       |> blank_to_nil()
 
     %Channel{}
@@ -126,7 +126,7 @@ defmodule CanopyWeb.ChannelLive.New do
 
   defp create_attrs(params) do
     params
-    |> Map.take(["repository_id", "name", "topic", "owner_agent_id"])
+    |> Map.take(["repository_id", "name", "topic", "owner_agent_id", "spend_limit"])
     |> blank_to_nil()
     |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
   end
@@ -182,6 +182,8 @@ defmodule CanopyWeb.ChannelLive.New do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      schedule_counts={@schedule_counts}
+      hold={@hold}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -287,6 +289,19 @@ defmodule CanopyWeb.ChannelLive.New do
               prompt={if @member_ids == [], do: "Pick members first"}
               options={owner_options(@agents, @member_ids)}
             />
+
+            <.input
+              field={@form[:spend_limit]}
+              type="number"
+              label="Spend limit in dollars (optional)"
+              placeholder="No limit"
+              min="0.01"
+              step="0.01"
+            />
+            <p class="-mt-1 text-xs text-base-content/50">
+              The total this channel may spend. Once reached, agents here stay quiet until you raise
+              it. Only you can change it later.
+            </p>
 
             <div class="flex items-center gap-2 pt-1">
               <.button type="submit" variant="primary" id="create-channel">

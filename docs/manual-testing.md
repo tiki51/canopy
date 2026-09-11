@@ -42,10 +42,14 @@ Open **Settings** (gear icon in the left rail).
 
 ![Agents](screenshots/03-agents.png)
 
-- [ ] The four seeded agents are listed with roles.
-- [ ] *New agent* → the OpenCode agent field offers `build`, `plan`, … from the server (datalist).
-- [ ] Create `@database` with a one-line role and a short system prompt; edit it; deactivate it;
-      the inactive list shows it and *Reactivate* brings it back.
+- [ ] The four seeded agents are listed with roles; each row opens the agent's own page, as
+      does its row in the sidebar's **Agents** list.
+- [ ] *New agent* opens the create form; the OpenCode agent field offers `build`, `plan`, …
+      from the server (datalist). Creating lands on the new agent's page.
+- [ ] An agent's page shows status, role, model, system prompt, its channels (owned ones
+      marked) and its schedules, with **Message**, **Edit**, and deactivate. Edit opens the
+      form and returns to the page; deactivate marks it, the list's deactivated toggle shows
+      it, and *Reactivate* brings it back.
 
 ## 4. Create a channel
 
@@ -69,9 +73,15 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
 ![Agent working](screenshots/06-agent-working.png)
 
 - [ ] `@backend started working` line, owner dot turns green, an *Abort* button appears next to it.
-- [ ] The **is working…** card appears closed, with a pulsing green dot. Open it with the
+- [ ] The live card appears closed, with a pulsing green dot, and its verb follows what the
+      agent is doing: *thinking* before any tool, *researching* while reading or searching,
+      *building* while editing, *testing* on a test command, *writing* while posting. Open it with the
       chevron: it lists tools as they run (`read — payments.py`, `grep`, …) and streams
       the agent's text.
+- [ ] Each idle member pill in the header has a small reset arrow: it drops that agent's
+      OpenCode session in this channel (with confirmation), the timeline says so, and the
+      agent's next turn starts with a fresh context. Use it when an agent has talked itself
+      into a corner, such as insisting its tools are missing.
 - [ ] While busy, post a second message: nothing new starts (it queues) until the turn ends.
 
 ![Agent replied](screenshots/07-agent-replied.png)
@@ -79,7 +89,13 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
 - [ ] A normal post from @backend (sent through `canopy_message_send`). Its closing text is
       not posted again: open the finished line and it is there as a **Closing note**. A turn
       that posts nothing through the tools still ends with a muted **REPLY** message.
-- [ ] `@backend finished · N tools · $cost · duration` line sits above the reply and the
+- [ ] The timeline is compact by default: "started working", clean "finished" lines, and
+      scheduled fires are hidden. The **Activity** toggle in the header shows them, and the
+      browser remembers the choice. Errors, passes with a note, and anything you can act on
+      always show.
+- [ ] With the feed scrolled to the bottom, an agent's new message scrolls into view on its
+      own; scrolled up to read history, the feed stays put.
+- [ ] (With Activity shown) `@backend finished · N tools · $cost · duration` line sits above the reply and the
       dot is back to grey. Click that line: it opens to show the same activity the live
       card held. Each step and patch appears once.
 - [ ] The queued second message now runs.
@@ -169,7 +185,9 @@ to: researcher …" as in the README demo prompt.
 - [ ] When an agent answers inside a thread, the reply nests under the parent with an
       "N replies" toggle.
 - [ ] The sidebar has a **Direct messages** section between Channels and Agents. It lists
-      every DM, including ones agents open; it updates without a reload.
+      every DM, including ones agents open; it updates without a reload. Its **+** opens a
+      modal over the current page to pick one or more agents (and a repository if you have
+      several); opening the same set again returns to the existing DM.
 - [ ] Ask an agent to "start a DM with me and @reviewer about X" → it calls
       `canopy_dm_start`; a DM titled `@agent, @reviewer` appears in the section, with the
       first message posted. A plain message from you in a group DM wakes every agent in it.
@@ -185,6 +203,14 @@ to: researcher …" as in the README demo prompt.
 
 ## 10a. Agents creating channels
 
+- [ ] In a DM with two repositories registered, the header shows a repository dropdown. Switch
+      it → "moved this conversation to …" on the timeline, the sidebar tag changes, and the
+      agent's next turn runs in the new repository (its old session is dropped once idle).
+      Asking the agent to "work in calculator_app from now on" does the same through
+      `canopy_dm_switch_repository`.
+- [ ] With two repositories registered, an agent's prompt names the other one; ask it to
+      "start a channel in calculator_app" → `canopy_channel_create` with `repository:` puts
+      the channel there, and the agent's session in that channel runs in that directory.
 - [ ] Ask an agent to "create a channel called retry-backoff with @reviewer and post a plan"
       → it calls `canopy_channel_create`; the channel appears under **Channels** right away,
       the agent is its owner, @reviewer is a member, and the first message is there.
@@ -200,12 +226,37 @@ to: researcher …" as in the README demo prompt.
 - [ ] Post "thanks, all good" → the owner wakes, calls `canopy_pass`, and the timeline shows
       `@backend passed` with no reply message. Acknowledgements no longer bounce between
       agents: an automatic reply (the muted **REPLY** message) wakes only who it mentions.
+- [ ] Mention two agents in one message → only one starts; the other's dot turns amber
+      (queued) and it starts when the first finishes. Settings → **Conversation** has the
+      "one agent at a time" switch; off, both start together.
 - [ ] Settings → **Conversation** sets the number of turns, or turns pausing off entirely for
       long-running work (the paused bar and note follow the number you set).
 - [ ] Let agents talk among themselves for six turns without typing → a "Paused after 6
       agent turns without you" note lands on the timeline, a bar appears above the
       composer, and nothing else starts. **Continue** runs what was held; typing anything
       also resets the budget.
+
+## 10e. Scheduled tasks
+
+- [ ] Tell an agent "remind me in 2 minutes to check the deploy" → it calls
+      `canopy_schedule_create`; the timeline shows `@agent scheduled: once · …`, the header's
+      **Scheduled** button gets a count, and the panel lists it with "in 2m".
+- [ ] Two minutes later: `scheduled task fired for @agent` appears and the agent takes a
+      turn with that instruction (it posts, or passes).
+- [ ] Ask for a repeat ("every weekday at 9") → the panel shows `every weekday at 09:00`;
+      cancelling from the panel or the Agents page records `cancelled a schedule`.
+- [ ] Open the agent on the Agents page → **Scheduled for @agent** lists schedules across
+      channels with links; the sidebar row shows a clock with the count.
+- [ ] Restart `mix phx.server` with a schedule pending → it still fires on time.
+
+## 10f. Agent memory
+
+- [ ] An agent's page has a **Memory** panel, empty at first. Tell the agent something
+      lasting ("remember that I prefer small PRs") → it calls `canopy_memory_write` and the
+      panel updates without a reload, with an "updated …" stamp.
+- [ ] Open a channel in a *different* repository and ask the agent what it knows → the
+      memory is in its prompt, so it answers without re-learning.
+- [ ] **Edit** on the panel lets you curate the memory by hand.
 
 ## 10d. Agent notes
 
@@ -222,6 +273,37 @@ to: researcher …" as in the README demo prompt.
 - [ ] Have an agent mention you (`@` + your display name) there → the dot becomes a filled
       badge with the number of mentions. Open the channel → both clear.
 
+## 10h. Lean context
+
+- [ ] Post a short message → the agent's finished line shows no `canopy_messages_read` call
+      (the text was already in its wake prompt).
+- [ ] Ask an agent to read the channel twice in a row → the second read answers "nothing new
+      since your last read". A long message comes back shortened with a pointer to
+      `canopy_message_get`.
+- [ ] After a long turn (over 40k tokens of context) a "session was compacted" line appears
+      with Activity on, and the next turn is cheap again on the Costs page.
+
+## 10g. Costs and the billing hold
+
+- [ ] The rail's **Costs** page shows today / 7 days / all-time totals, a 14-day bar, and
+      by-agent, by-channel (linked), by-model breakdowns; the period buttons switch the
+      breakdowns and a finishing turn updates the numbers without a reload.
+- [ ] Make OpenCode report a balance error (or engage the hold from `iex` with
+      `Canopy.Hold.engage("test")`) → a red banner on every page, all schedules paused, and a
+      message in a channel adds one "on hold" note and wakes nobody. **Release hold** in the
+      banner clears it, resumes those schedules, and the next message wakes agents again.
+- [ ] Message and event times show in your local time.
+- [ ] **Where the tokens go** shows model calls, context per call, cache hit rate, prompt and
+      output tokens, passed and error turns; **By trigger** groups spend by what woke the
+      agent; **Costliest turns** lists single turns with links to their channel.
+- [ ] **Auditor**: pick an agent, type a focus, press **Ask @agent to audit** → you land in a
+      DM with it; the agent calls `canopy_costs_report` and replies with recommendations.
+- [ ] **Spend limit**: on a channel, open the Budget button (shows spent / limit), set $1
+      → the sidebar Costs page lists it under **Channel spend limits**. Once the channel's turns
+      pass $1, a red bar says the limit is reached and messages wake nobody; **Change limit**
+      → raise it → the next message wakes the agent again. Ask an agent to create a channel
+      "with a $2 spend limit" → the limit is set; ask it to change it → it cannot.
+
 ## 11. Resilience
 
 - [ ] Kill `opencode serve` mid-turn, start it again → within ~30 s the stream reconnects,
@@ -229,6 +311,8 @@ to: researcher …" as in the README demo prompt.
       (check `GET http://127.0.0.1:4096/mcp?directory=<repo path>` shows `canopy: connected`).
 - [ ] Restart `mix phx.server` → channels, messages, and sessions are all still there; the next
       message reuses the same OpenCode sessions.
+- [ ] Restart `opencode serve` instead → the next message in an already-open channel still
+      has the `canopy_*` tools (Canopy re-registers its MCP server after the reconnect).
 
 ## Troubleshooting
 

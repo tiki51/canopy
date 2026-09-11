@@ -68,7 +68,8 @@ defmodule Canopy.Runtime.Router do
         sender: sender,
         message_id: message.id,
         thread?: not is_nil(message.thread_id),
-        members: member_names(ctx)
+        members: member_names(ctx),
+        body: Map.get(message, :body)
       })
 
     Enum.map(Enum.uniq(targets), &{{:root, &1}, text})

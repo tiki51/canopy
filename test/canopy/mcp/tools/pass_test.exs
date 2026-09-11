@@ -20,6 +20,8 @@ defmodule Canopy.MCP.Tools.PassTest do
       {:ok, %{"canopy" => %{"status" => "connected"}}}
     end)
 
+    stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+
     ctx
   end
 

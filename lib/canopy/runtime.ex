@@ -131,6 +131,20 @@ defmodule Canopy.Runtime do
     ChannelServer.respond_permission(pid, permission_request_id, reply)
   end
 
+  @doc "Moves a DM to another repository; agents continue there on their next turn."
+  def switch_dm_repository(channel_id, repository_id, by \\ "user") do
+    Channels.switch_repository(Channels.get!(channel_id), repository_id, by)
+  end
+
+  @doc """
+  Forgets an agent's session in a channel; its next wake starts a fresh
+  OpenCode session. `{:error, :busy}` while a turn is in flight.
+  """
+  def reset_session(channel_id, agent_id, by \\ "user") do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.reset_session(pid, agent_id, by)
+  end
+
   def abort(channel_id, agent_id) do
     {:ok, pid} = ensure_channel(channel_id)
     ChannelServer.abort(pid, agent_id)
@@ -152,6 +166,15 @@ defmodule Canopy.Runtime do
       nil -> {:error, :no_turn}
       pid -> ChannelServer.pass(pid, opencode_session_id, reason)
     end
+  end
+
+  @doc """
+  Wakes an agent because one of its schedules fired. Like a user action, this
+  resets the channel's chatter budget: the user asked for it.
+  """
+  def wake_scheduled(channel_id, agent_id, text) do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.wake(pid, agent_id, text)
   end
 
   @doc "True when the channel has hit its chatter budget and is holding wakeups."

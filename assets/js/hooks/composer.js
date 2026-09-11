@@ -1,7 +1,11 @@
 // The channel composer: Enter sends, Shift+Enter inserts a newline, and typing
 // `@` opens an autocomplete of the channel's member agents. The textarea keeps
 // its text on a failed send; the server pushes "composer:clear" on success.
+//
+// Height: the box grows with its content up to AUTO_MAX. Dragging the resize
+// handle sets a floor the auto-grow respects, so a taller box stays tall.
 const MAX_SUGGESTIONS = 8
+const AUTO_MAX = 192
 
 const Composer = {
   mounted() {
@@ -9,12 +13,22 @@ const Composer = {
     this.matches = []
     this.popup = document.querySelector(this.el.dataset.suggestions)
 
+    this.manual = null
+    this.lastAuto = null
+
     this.handleEvent("composer:clear", () => {
       this.el.value = ""
-      this.el.style.height = ""
+      this.el.style.height = this.manual ? this.manual + "px" : ""
       this.hide()
       this.el.focus()
     })
+
+    // A height we did not set ourselves is the reader dragging the handle.
+    this.observer = new ResizeObserver(() => {
+      const height = this.el.offsetHeight
+      if (this.lastAuto !== null && Math.abs(height - this.lastAuto) > 2) this.manual = height
+    })
+    this.observer.observe(this.el)
 
     this.el.addEventListener("keydown", e => this.onKeydown(e))
     this.el.addEventListener("input", () => {
@@ -36,9 +50,12 @@ const Composer = {
     this.autosize()
   },
 
+  // The member list lives on the form, which LiveView keeps current; the
+  // textarea itself is never patched.
   members() {
     try {
-      return JSON.parse(this.el.dataset.members || "[]")
+      const source = (this.el.form && this.el.form.dataset.members) || this.el.dataset.members || "[]"
+      return JSON.parse(source)
     } catch (_e) {
       return []
     }
@@ -134,9 +151,16 @@ const Composer = {
     }
   },
 
+  destroyed() {
+    if (this.observer) this.observer.disconnect()
+  },
+
   autosize() {
     this.el.style.height = "auto"
-    this.el.style.height = Math.min(this.el.scrollHeight, 192) + "px"
+    const needed = Math.min(this.el.scrollHeight, AUTO_MAX)
+    const height = Math.max(needed, this.manual || 0)
+    this.el.style.height = height + "px"
+    this.lastAuto = height
   },
 }
 

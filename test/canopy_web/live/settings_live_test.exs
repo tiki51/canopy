@@ -157,6 +157,16 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert has_element?(view, "#chatter-form input[name='setting[chatter_pause]'][checked]")
     assert has_element?(view, "#chatter-form input[name='setting[chatter_limit]'][value='6']")
 
+    assert has_element?(view, "#chatter-form input[name='setting[serialize_turns]'][checked]")
+
+    view
+    |> form("#chatter-form",
+      setting: %{chatter_pause: "true", chatter_limit: "12", serialize_turns: "false"}
+    )
+    |> render_submit()
+
+    refute Canopy.Settings.serialize_turns?()
+
     view
     |> form("#chatter-form", setting: %{chatter_pause: "true", chatter_limit: "12"})
     |> render_submit()

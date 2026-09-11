@@ -65,6 +65,9 @@ defmodule Canopy.Settings do
   @doc "Returns the current MCP token."
   def mcp_token, do: get().mcp_token
 
+  @doc "Whether a channel runs one agent turn at a time (others queue) or lets agents run in parallel."
+  def serialize_turns?, do: get().serialize_turns
+
   @doc """
   How many agent turns a channel allows between user messages before pausing,
   or nil when pausing is turned off.

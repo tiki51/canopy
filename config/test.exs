@@ -32,6 +32,8 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 # The runtime talks to a Mox double in tests; the real client is exercised with Req.Test.
+config :canopy, Oban, testing: :manual
+
 config :canopy, :opencode,
   base_url: "http://opencode.test",
   client: Canopy.OpenCode.ClientMock,

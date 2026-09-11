@@ -12,6 +12,7 @@ defmodule Canopy.Delegations do
   @pending ~w(requested working)
 
   def get!(id), do: Delegation |> Repo.get!(id) |> Repo.preload(@preloads)
+  def get(id), do: Delegation |> Repo.get(id) |> Repo.preload(@preloads)
 
   @doc "Creates a delegation (status `requested`) and records `delegation_created`."
   def create(attrs) do

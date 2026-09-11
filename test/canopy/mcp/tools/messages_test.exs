@@ -5,7 +5,7 @@ defmodule Canopy.MCP.Tools.MessagesTest do
   import Canopy.MCPHelpers
 
   alias Canopy.{Messages, Timeline}
-  alias Canopy.MCP.Tools.{MessageSend, MessagesRead, MessagesSearch, ThreadReply}
+  alias Canopy.MCP.Tools.{MessageGet, MessageSend, MessagesRead, MessagesSearch, ThreadReply}
 
   setup do
     other = agent_fixture(name: "reviewer-" <> unique_suffix())
@@ -61,14 +61,14 @@ defmodule Canopy.MCP.Tools.MessagesTest do
   end
 
   describe "messages_read" do
-    test "returns the latest messages oldest first with ids and senders", ctx do
+    test "the first read returns the latest messages; later reads return only what is new", ctx do
       messages = for n <- 1..5, do: post(ctx, "message #{n}")
 
       {:ok, user_message} =
         Messages.post_user_message(ctx.channel.id, ctx.user.id, "from the user")
 
       assert {:ok, text} = call(MessagesRead, %{}, ctx)
-      assert text =~ "##{ctx.channel.name}: 6 message(s), oldest first"
+      assert text =~ "##{ctx.channel.name}: latest 6 message(s), oldest first (first read here)"
 
       lines = text |> String.split("\n") |> tl()
       assert length(lines) == 6
@@ -76,6 +76,41 @@ defmodule Canopy.MCP.Tools.MessagesTest do
 
       assert List.last(lines) =~
                "[#{user_message.id}] #{ctx.user.display_name} (just now): from the user"
+
+      # nothing new: no bodies come back, and the context stays small
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "nothing new since your last read"
+      refute text =~ "message 1"
+
+      # two more posts: only those
+      m7 = post(ctx, "message 7")
+      m8 = post(ctx, "message 8")
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "2 new message(s) since your last read"
+      assert text =~ m7.id and text =~ m8.id
+      refute text =~ user_message.id
+
+      # the marker is per agent: another member starts from its own first read
+      other_session = session_fixture(%{channel: ctx.channel, agent_id: ctx.other.id})
+      assert {:ok, text} = call(MessagesRead, %{}, other_session)
+      assert text =~ "(first read here)"
+    end
+
+    test "long bodies are shortened and message_get returns them in full", ctx do
+      long = String.duplicate("word ", 200)
+      m = post(ctx, long)
+
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "… (+"
+      assert text =~ "canopy_message_get for the full text"
+      refute text =~ String.duplicate("word ", 150)
+
+      assert {:ok, full} = call(MessageGet, %{id: m.id}, ctx)
+      assert full =~ String.duplicate("word ", 200) |> String.trim()
+      refute full =~ "canopy_message_get"
+
+      assert {:error, reason} = call(MessageGet, %{id: "msg_nope"}, ctx)
+      assert reason =~ "unknown message"
     end
 
     test "supports before, around, thread, and a clamped limit", ctx do
@@ -97,14 +132,21 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert ids == [m4.id, reply.id]
       assert text =~ "(in thread #{m4.id}): in the thread"
 
-      assert {:ok, text} = call(MessagesRead, %{limit: 2}, ctx)
-      assert text =~ "2 message(s)"
-      assert text =~ m8.id and text =~ reply.id
-      refute text =~ m7.id
+      # anchored reads move the marker too: the thread read saw the reply (the
+      # newest message), so only what comes after it is new
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "nothing new since your last read"
+      m9 = post(ctx, "message 9")
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "1 new message(s) since your last read"
+      assert text =~ m9.id
+      refute text =~ "[#{m8.id}]" and text =~ "[#{m7.id}]"
 
       for n <- 9..60, do: post(ctx, "filler #{n}")
+      assert {:ok, text} = call(MessagesRead, %{before: m1.id, limit: 500}, ctx)
+      assert text =~ "0 message(s)"
       assert {:ok, text} = call(MessagesRead, %{limit: 500}, ctx)
-      assert text =~ "50 message(s)"
+      assert text =~ "50 new message(s)"
     end
 
     test "reports an empty channel and enforces membership", ctx do

@@ -45,7 +45,7 @@ test.describe("screenshots for the manual testing guide", () => {
 
     await send(page, "Why are invoices sometimes charged twice? Start by reading payments.py.");
     const card = page.locator('[id^="telemetry-"]').first();
-    await expect(card).toContainText(/is working/);
+    await expect(card).toContainText(/is (researching|thinking|building|working)/);
     await card.scrollIntoViewIfNeeded();
     await shot(page, "06-agent-working");
 

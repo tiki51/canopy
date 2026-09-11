@@ -24,6 +24,7 @@ defmodule Canopy.OpenCode.ClientBehaviour do
   @callback session_status(directory, opts) :: result
   @callback messages(directory, session_id, keyword(), opts) :: result
   @callback prompt_async(directory, session_id, map(), opts) :: result
+  @callback summarize(directory, session_id, map(), opts) :: result
   @callback abort(directory, session_id, opts) :: result
   @callback session_diff(directory, session_id, opts) :: result
   @callback vcs_status(directory, opts) :: result
@@ -32,4 +33,5 @@ defmodule Canopy.OpenCode.ClientBehaviour do
   @callback reply_permission(directory, String.t(), :once | :always | :reject, opts) :: result
   @callback add_mcp(directory, String.t(), map(), opts) :: result
   @callback mcp_status(directory, opts) :: result
+  @callback dispose_instance(directory, opts) :: result
 end

@@ -15,6 +15,13 @@ defmodule Canopy.Settings.Setting do
     # pause agent-to-agent conversation after this many turns without the user
     field :chatter_pause, :boolean, default: true
     field :chatter_limit, :integer, default: 6
+    # one agent turn at a time per channel; others wait in order
+    field :serialize_turns, :boolean, default: true
+    # a global stop on agent activity (Canopy.Hold): why, and since when
+    field :hold_reason, :string
+    field :hold_at, :utc_datetime_usec
+    # the agent the Costs page asks to review spend; nil until the user picks one
+    field :auditor_agent_id, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -26,7 +33,11 @@ defmodule Canopy.Settings.Setting do
       :user_display_name,
       :plugin_verified_at,
       :chatter_pause,
-      :chatter_limit
+      :chatter_limit,
+      :serialize_turns,
+      :hold_reason,
+      :hold_at,
+      :auditor_agent_id
     ])
     |> validate_required([:opencode_url, :user_display_name, :chatter_pause, :chatter_limit])
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)

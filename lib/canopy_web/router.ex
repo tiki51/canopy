@@ -26,16 +26,19 @@ defmodule CanopyWeb.Router do
 
     get "/", PageController, :home
 
-    get "/dm/:agent_id", DmController, :show
-
     live_session :default, on_mount: [CanopyWeb.Nav] do
       live "/settings", SettingsLive
+      live "/costs", CostsLive
       live "/repositories", RepositoriesLive
-      live "/agents", AgentsLive
-      live "/agents/:id", AgentsLive
+      live "/agents", AgentsLive, :index
+      live "/agents/new", AgentsLive, :new
+      live "/agents/:id", AgentsLive, :show
+      live "/agents/:id/edit", AgentsLive, :edit
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
     end
+
+    get "/dm/:agent_id", DmController, :show
   end
 
   scope "/mcp" do
