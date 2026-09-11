@@ -6,6 +6,9 @@
 import http from "node:http";
 
 const PORT = Number(process.env.FAKE_OPENCODE_PORT || 4396);
+// Pause between the steps of a turn; raise it (FAKE_TURN_DELAY_MS=2500) to
+// keep an agent visibly "working" long enough for a screenshot.
+const TURN_DELAY = Number(process.env.FAKE_TURN_DELAY_MS || 50);
 const streams = new Set(); // SSE clients on GET /event
 const sessions = new Map(); // id -> {parentID}
 const pendingPermissions = new Map(); // per_id -> resume fn
@@ -66,14 +69,14 @@ async function runTurn(sessionID, text) {
   const messageID = nextId("msg");
   const part = (extra) => ({ id: nextId("prt"), sessionID, messageID, ...extra });
   emit("session.status", { sessionID, status: { type: "busy" } });
-  await sleep(50);
+  await sleep(TURN_DELAY);
 
   // one read tool, pending -> running -> completed
   const callID = nextId("call");
   const toolID = nextId("prt");
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "pending", input: {} } } });
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "running", input: { filePath: "README.md" }, time: { start: Date.now() } } } });
-  await sleep(50);
+  await sleep(TURN_DELAY);
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "completed", input: { filePath: "README.md" }, title: "README.md", output: "# e2e repo", metadata: {}, time: { start: Date.now() - 50, end: Date.now() } } } });
 
   // Like a real agent, read the message the wake prompt points at; the prompt

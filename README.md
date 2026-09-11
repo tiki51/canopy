@@ -171,7 +171,9 @@ mix test            # ~200 tests, OpenCode is mocked
 mix precommit       # compile with warnings as errors, unused deps, format, tests
 ```
 
-A step-by-step manual test plan with screenshots is in [`docs/manual-testing.md`](docs/manual-testing.md).
+A user guide covering every feature, with screenshots in light and dark mode, is in
+[`docs/user-guide.md`](docs/user-guide.md). A step-by-step manual test plan is in
+[`docs/manual-testing.md`](docs/manual-testing.md).
 
 Browser end-to-end tests live in `e2e/` (Playwright). They boot a fake OpenCode server
 (`e2e/fake-opencode.mjs`, which also calls Canopy's real MCP tools the way an agent would)
@@ -183,6 +185,8 @@ approval, delegation, and handoff.
 cd e2e && npm install && npx playwright install chromium   # once
 npm test                                                    # or npm run test:headed
 SCREENSHOTS=1 npx playwright test screenshots               # regenerate docs/screenshots
+USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
+  npx playwright test user-guide                            # regenerate docs/user-guide/images
 ```
 
 Known gaps in v0: timestamps render in UTC, diffs have no syntax highlighting, and

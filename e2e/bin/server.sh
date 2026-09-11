@@ -30,4 +30,9 @@ mix run -e "
     ({:ok, _} = Canopy.Repositories.create(%{name: \"e2e-repo\", path: \"$REPO\"}))
 "
 
+# Optional extra seed, e.g. the Acme workspace for the user guide screenshots.
+if [ -n "${CANOPY_SEED:-}" ]; then
+  env -u PHX_SERVER mix run "$CANOPY_SEED"
+fi
+
 exec mix phx.server
