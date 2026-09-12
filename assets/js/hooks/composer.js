@@ -1,5 +1,5 @@
-// The channel composer: Enter sends, Shift+Enter inserts a newline, and typing
-// `@` opens an autocomplete of the channel's member agents. The textarea keeps
+// The channel composer: Enter sends, Shift+Enter inserts a newline, typing
+// `@` opens an autocomplete of agents and `#` one of channels. The textarea keeps
 // its text on a failed send; the server pushes "composer:clear" on success.
 //
 // Height: one row by default, growing with its content up to AUTO_MAX. The
@@ -68,11 +68,12 @@ const Composer = {
     this.upload("files", renamed)
   },
 
-  // The member list lives on the form, which LiveView keeps current; the
-  // textarea itself is never patched.
-  members() {
+  // The agent and channel lists live on the form, which LiveView keeps
+  // current; the textarea itself is never patched.
+  candidates(trigger) {
+    const key = trigger === "#" ? "channels" : "agents"
     try {
-      const source = (this.el.form && this.el.form.dataset.members) || this.el.dataset.members || "[]"
+      const source = (this.el.form && this.el.form.dataset[key]) || this.el.dataset[key] || "[]"
       return JSON.parse(source)
     } catch (_e) {
       return []
@@ -107,13 +108,13 @@ const Composer = {
     }
   },
 
-  // The `@word` immediately before the caret, if any.
+  // The `@word` or `#word` immediately before the caret, if any.
   currentMention() {
     const caret = this.el.selectionStart
     const before = this.el.value.slice(0, caret)
-    const match = before.match(/(?:^|[^\w@])@([a-z0-9_-]*)$/i)
+    const match = before.match(/(?:^|[^\w@#])([@#])([a-z0-9_-]*)$/i)
     if (!match) return null
-    return {start: caret - match[1].length - 1, query: match[1].toLowerCase(), caret}
+    return {trigger: match[1], start: caret - match[2].length - 1, query: match[2].toLowerCase(), caret}
   },
 
   refresh() {
@@ -121,7 +122,7 @@ const Composer = {
     if (!mention) return this.hide()
 
     this.mention = mention
-    this.matches = this.members()
+    this.matches = this.candidates(mention.trigger)
       .filter(name => name.toLowerCase().startsWith(mention.query))
       .slice(0, MAX_SUGGESTIONS)
     this.index = Math.min(this.index, Math.max(this.matches.length - 1, 0))
@@ -140,7 +141,7 @@ const Composer = {
       button.className =
         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm " +
         (i === this.index ? "bg-primary text-primary-content" : "hover:bg-base-200")
-      button.textContent = "@" + name
+      button.textContent = (this.mention ? this.mention.trigger : "@") + name
       this.popup.appendChild(button)
     })
     this.popup.classList.remove("hidden")
@@ -150,7 +151,7 @@ const Composer = {
     const mention = this.mention || this.currentMention()
     if (!mention) return this.hide()
     const value = this.el.value
-    const insert = "@" + name + " "
+    const insert = mention.trigger + name + " "
     this.el.value = value.slice(0, mention.start) + insert + value.slice(mention.caret)
     const caret = mention.start + insert.length
     this.el.setSelectionRange(caret, caret)

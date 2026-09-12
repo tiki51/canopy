@@ -144,6 +144,14 @@ storefront_path =
 
 if old = Repositories.get_by_path(Path.join([root, "tmp", "e2e-repo"])), do: Repo.delete!(old)
 
+# Acme's cast is the four original agents plus @finops and a retired @docs;
+# the other default agents would only crowd the screenshots.
+Repo.delete_all(
+  from(a in Canopy.Agents.Agent,
+    where: a.name not in ["backend", "reviewer", "researcher", "test", "docs"]
+  )
+)
+
 {:ok, billing} = Repositories.create(%{name: "acme-billing", path: billing_path})
 {:ok, storefront} = Repositories.create(%{name: "acme-storefront", path: storefront_path})
 
@@ -180,6 +188,7 @@ test_agent = set_model.("test", "gpt-5-nano")
   Agents.create(%{
     name: "finops",
     display_name: "FinOps",
+    group: "Support",
     role: "Watches model spend and recommends savings",
     color: "#0891b2",
     model_provider: "opencode",
@@ -192,15 +201,7 @@ test_agent = set_model.("test", "gpt-5-nano")
     """
   })
 
-{:ok, docs} =
-  Agents.create(%{
-    name: "docs",
-    display_name: "Docs",
-    role: "Keeps the developer documentation current",
-    color: "#9333ea",
-    system_prompt: "You are @docs. You update READMEs and guides after changes land."
-  })
-
+docs = Agents.get_by_name("docs")
 {:ok, _} = Agents.deactivate(docs)
 
 {:ok, _} = Canopy.Costs.Auditor.assign(finops.id)

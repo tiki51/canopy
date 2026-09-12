@@ -42,7 +42,7 @@ Open **Settings** (gear icon in the left rail).
 
 ![Agents](screenshots/03-agents.png)
 
-- [ ] The four seeded agents are listed with roles; each row opens the agent's own page, as
+- [ ] The seeded agents are listed with roles; each row opens the agent's own page, as
       does its row in the sidebar's **Agents** list.
 - [ ] *New agent* opens the create form; the OpenCode agent field offers `build`, `plan`, …
       from the server (datalist). Creating lands on the new agent's page.

@@ -124,6 +124,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:channel, channel)
     |> assign(:members, members)
     |> assign(:member_names, Enum.map(members, & &1.name))
+    |> assign_mention_sources(channel)
     |> assign(:user, user)
     |> assign(:names, names)
     |> assign(:agent_statuses, agent_statuses)
@@ -212,6 +213,35 @@ defmodule CanopyWeb.ChannelLive do
         socket
     end
   end
+
+  # A mention of an agent that is not in the channel wakes nobody; say so and
+  # point at /i, instead of leaving the user waiting.
+  defp outsider_hint(socket, %Messages.Message{mentions: ids}) when ids != [] do
+    members = MapSet.new(socket.assigns.members, & &1.id)
+
+    outsiders =
+      ids
+      |> Enum.reject(&MapSet.member?(members, &1))
+      |> Enum.map(&Map.get(socket.assigns.names, &1))
+      |> Enum.reject(&is_nil/1)
+
+    case outsiders do
+      [] ->
+        socket
+
+      names ->
+        mentions = Enum.map_join(names, ", ", &("@" <> &1))
+        invites = Enum.map_join(names, " ", &("/i @" <> &1))
+
+        put_flash(
+          socket,
+          :info,
+          "#{mentions} #{if length(names) == 1, do: "is", else: "are"} not in this channel, so that mention woke nobody. Invite with #{invites}."
+        )
+    end
+  end
+
+  defp outsider_hint(socket, _result), do: socket
 
   # Turns every finished upload into a document and returns the ids, in the
   # order the files were added. Entries that fail to store are skipped and
@@ -395,6 +425,35 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:addable_agents, Channels.addable_agents(cid(socket)))
   end
 
+  # What the composer suggests after `@` and `#`, and the map that turns
+  # `#name` in bodies into links. In a channel every active agent is offered
+  # (mentioning a non-member only hints at /i); a DM keeps its own set.
+  defp assign_mention_sources(socket, channel) do
+    agent_names =
+      if channel.kind == "dm",
+        do: socket.assigns.member_names,
+        else: Enum.map(Agents.list_active(), & &1.name)
+
+    channels =
+      Channels.list()
+      |> Enum.reject(&(&1.kind == "dm"))
+      |> Enum.sort_by(&{&1.repository_id != channel.repository_id, &1.name})
+
+    links =
+      Enum.reduce(channels, %{}, fn c, acc -> Map.put_new(acc, c.name, c.id) end)
+
+    channel_names =
+      channels
+      |> Enum.filter(&(&1.status == "open"))
+      |> Enum.map(& &1.name)
+      |> Enum.uniq()
+
+    socket
+    |> assign(:agent_names, agent_names)
+    |> assign(:channel_names, channel_names)
+    |> assign(:channel_links, links)
+  end
+
   defp refresh_handoffs(socket),
     do: assign(socket, :pending_handoffs, Handoffs.pending_for_channel(cid(socket)))
 
@@ -424,11 +483,12 @@ defmodule CanopyWeb.ChannelLive do
         documents = store_uploads(socket)
 
         case Runtime.post_user_message(cid(socket), text, attachments: documents ++ picked) do
-          {:ok, _} ->
+          {:ok, result} ->
             {:noreply,
              socket
              |> assign_composer("")
              |> assign(:picked, [])
+             |> outsider_hint(result)
              |> push_event("composer:clear", %{})}
 
           {:error, reason} ->
@@ -871,6 +931,7 @@ defmodule CanopyWeb.ChannelLive do
             names={@names}
             user_name={@user.display_name}
             replies={thread_replies(@threads, event)}
+            channels={@channel_links}
           />
         </div>
 
@@ -893,7 +954,8 @@ defmodule CanopyWeb.ChannelLive do
       <.composer
         :if={!Channels.archived?(@channel)}
         form={@composer}
-        member_names={@member_names}
+        agent_names={@agent_names}
+        channel_names={@channel_names}
         uploads={@uploads}
         picked={@picked}
       />
@@ -1375,7 +1437,8 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   attr :form, :map, required: true
-  attr :member_names, :list, required: true
+  attr :agent_names, :list, required: true
+  attr :channel_names, :list, required: true
   attr :uploads, :map, required: true
   attr :picked, :list, required: true
 
@@ -1391,7 +1454,8 @@ defmodule CanopyWeb.ChannelLive do
         for={@form}
         id="composer-form"
         phx-submit="send"
-        data-members={Jason.encode!(@member_names)}
+        data-agents={Jason.encode!(@agent_names)}
+        data-channels={Jason.encode!(@channel_names)}
         class="relative"
       >
         <div
@@ -1494,7 +1558,7 @@ defmodule CanopyWeb.ChannelLive do
               phx-hook="Composer"
               data-suggestions="#composer-suggestions"
               rows="1"
-              placeholder="Message the channel — @mention an agent to wake it"
+              placeholder="Message the channel — @mention an agent to wake it, #name a channel"
               class="max-h-[60vh] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
               autocomplete="off"
             >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>

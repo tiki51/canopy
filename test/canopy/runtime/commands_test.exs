@@ -21,6 +21,15 @@ defmodule Canopy.Runtime.CommandsTest do
              Commands.parse("/delegate @researcher trace every enqueue path\nand report back")
   end
 
+  test "/i and /invite take a target and an optional message" do
+    assert {:command, :invite, "designer", ""} = Commands.parse("/i @designer")
+
+    assert {:command, :invite, "designer", "have a look at the header"} =
+             Commands.parse("/invite designer have a look at the header")
+
+    assert {:error, "usage: /i" <> _} = Commands.parse("/i")
+  end
+
   test "missing target or text is a usage error" do
     assert {:error, "usage: /handoff" <> _} = Commands.parse("/handoff")
     assert {:error, "usage: /handoff" <> _} = Commands.parse("/handoff @database")

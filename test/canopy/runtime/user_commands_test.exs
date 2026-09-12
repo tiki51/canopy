@@ -126,6 +126,44 @@ defmodule Canopy.Runtime.UserCommandsTest do
     assert_receive {:prompted, "ses_root_rev"}, 2_000
   end
 
+  test "/i adds an agent to the channel, and with a message mentions it", ctx do
+    outsider = Fixtures.agent_fixture(%{name: "outsider#{Fixtures.unique_suffix()}"})
+    refute Canopy.Channels.member?(ctx.channel, outsider)
+
+    assert {:ok, {:invite, %{id: id}}} =
+             Runtime.post_user_message(ctx.channel.id, "/i @#{outsider.name}")
+
+    assert id == outsider.id
+    assert Canopy.Channels.member?(ctx.channel, outsider)
+    assert_receive {:timeline, %{event_type: "member_added", agent_id: ^id}}, 2_000
+    refute_receive {:timeline, %{event_type: "message"}}, 200
+
+    assert {:error, "@#{outsider.name} is already in ##{ctx.channel.name}"} ==
+             Runtime.post_user_message(ctx.channel.id, "/invite #{outsider.name}")
+
+    second = Fixtures.agent_fixture(%{name: "second#{Fixtures.unique_suffix()}"})
+
+    assert {:ok, %Canopy.Messages.Message{} = message} =
+             Runtime.post_user_message(
+               ctx.channel.id,
+               "/i @#{second.name} please look at the header"
+             )
+
+    assert message.body == "@#{second.name} please look at the header"
+    assert message.mentions == [second.id]
+    assert Canopy.Channels.member?(ctx.channel, second)
+
+    assert {:error, "no agent named @nobody"} =
+             Runtime.post_user_message(ctx.channel.id, "/i @nobody")
+
+    {:ok, _} = Canopy.Agents.deactivate(second)
+    third = Fixtures.agent_fixture(%{name: "third#{Fixtures.unique_suffix()}"})
+    {:ok, dm} = Canopy.Channels.ensure_dm(ctx.repository.id, ctx.agent)
+
+    assert {:error, "a DM keeps its agents" <> _} =
+             Runtime.post_user_message(dm.id, "/i @#{third.name}")
+  end
+
   test "bad commands return errors and write nothing", ctx do
     assert {:error, "usage: /handoff" <> _} =
              Runtime.post_user_message(ctx.channel.id, "/handoff")

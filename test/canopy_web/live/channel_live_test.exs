@@ -351,6 +351,57 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "mentions and channel references" do
+    test "mentioning an agent outside the channel hints at /i, which adds it", ctx do
+      %{channel: channel} = ctx
+      outsider = Fixtures.agent_fixture(%{name: "outsider#{Fixtures.unique_suffix()}"})
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#composer-form[data-agents*='#{outsider.name}']")
+
+      view
+      |> form("#composer-form", message: %{body: "@#{outsider.name} can you look?"})
+      |> render_submit()
+
+      assert_receive {:timeline, %{event_type: "message"}}, 2_000
+      assert has_element?(view, "#flash-info", "@#{outsider.name} is not in this channel")
+      assert has_element?(view, "#flash-info", "/i @#{outsider.name}")
+      refute has_element?(view, "#member-#{outsider.id}")
+      # the owner wakes for an unaddressed user message; the outsider never does
+      assert_receive {:agent_status, woken, :busy}, 2_000
+      assert woken == ctx.agent.id
+
+      view |> form("#composer-form", message: %{body: "/i @#{outsider.name}"}) |> render_submit()
+      assert_receive {:timeline, %{event_type: "member_added", agent_id: agent_id}}, 2_000
+      assert agent_id == outsider.id
+      assert has_element?(view, "#member-#{outsider.id}")
+      assert render(view) =~ "@#{outsider.name} joined the channel"
+      assert_push_event(view, "composer:clear", %{})
+    end
+
+    test "#channel in a message links to the channel, and the composer offers channel names",
+         ctx do
+      %{channel: channel, user: user} = ctx
+
+      other =
+        Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "billing-retries"})
+
+      {:ok, message} =
+        Messages.post_user_message(channel.id, user.id, "see #billing-retries and #nope")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#composer-form[data-channels*='billing-retries']")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id} a[href='/channels/#{other.id}']",
+               "#billing-retries"
+             )
+
+      refute has_element?(view, "#message-#{message.id} a", "#nope")
+    end
+  end
+
   describe "library" do
     test "a shared document can be picked from the library and sent again", ctx do
       %{channel: channel, user: user} = ctx
@@ -794,9 +845,9 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert render(view) =~ "@#{reviewer.name} was removed from the channel"
       assert has_element?(view, "#add-member-select option[value='#{reviewer.id}']")
 
-      # the composer's mention list follows the membership
-      assert has_element?(view, "#composer-form[data-members*='#{newcomer.name}']")
-      refute has_element?(view, "#composer-form[data-members*='#{reviewer.name}']")
+      # the composer suggests every active agent, member or not
+      assert has_element?(view, "#composer-form[data-agents*='#{newcomer.name}']")
+      assert has_element?(view, "#composer-form[data-agents*='#{reviewer.name}']")
     end
 
     test "the budget panel sets and clears the spend limit; reaching it shows a bar", ctx do

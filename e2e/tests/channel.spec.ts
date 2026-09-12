@@ -81,6 +81,21 @@ test.describe("channel collaboration", () => {
     await expect(page.locator("#channel-schedules")).toContainText("Nothing scheduled.");
   });
 
+  test("typing # suggests channels and @ suggests every agent", async ({ page }) => {
+    const id = await createChannel(page, "mention-target");
+    await createChannel(page, "mention-source");
+    const input = page.locator("#composer-input");
+    await input.fill("see #mention-t");
+    await expect(page.locator("#composer-suggestions")).toContainText("#mention-target");
+    await input.press("Enter");
+    await expect(input).toHaveValue("see #mention-target ");
+    await input.fill("hi @rev");
+    await expect(page.locator("#composer-suggestions")).toContainText("@reviewer");
+    await input.press("Escape");
+    await input.fill("");
+    void id;
+  });
+
   test("a bad slash command shows an error and keeps the draft", async ({ page }) => {
     await createChannel(page);
     await send(page, "/handoff");

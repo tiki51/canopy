@@ -24,7 +24,7 @@ SQLite is bundled through `ecto_sqlite3`; nothing else to install.
 ## Quick start
 
 ```bash
-mix setup                                  # deps, database, seeds (@backend, @reviewer, @researcher, @test)
+mix setup                                  # deps, database, seeds (twelve starter agents, @auditor as cost auditor)
 opencode serve --port 4096                 # in another terminal
 mix phx.server                             # http://localhost:4000
 CANOPY_BIND=0.0.0.0 mix phx.server         # also reachable from other devices on your network (no login: trusted networks only)

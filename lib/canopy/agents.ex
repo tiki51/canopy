@@ -14,6 +14,33 @@ defmodule Canopy.Agents do
     Repo.all(from a in Agent, where: a.active == true, order_by: [asc: a.name])
   end
 
+  @doc "Distinct group labels in use, alphabetical."
+  def groups do
+    Repo.all(
+      from a in Agent,
+        where: not is_nil(a.group),
+        distinct: true,
+        order_by: a.group,
+        select: a.group
+    )
+  end
+
+  @doc """
+  Splits agents into `[{group, agents}]` for display: groups alphabetically,
+  agents in their given order, the ungrouped last under `nil`. When no agent
+  has a group the single entry is `{nil, agents}`.
+  """
+  def grouped(agents) when is_list(agents) do
+    {grouped, loose} = Enum.split_with(agents, &is_binary(&1.group))
+
+    groups =
+      grouped
+      |> Enum.group_by(& &1.group)
+      |> Enum.sort_by(fn {group, _} -> String.downcase(group) end)
+
+    if loose == [], do: groups, else: groups ++ [{nil, loose}]
+  end
+
   def get!(id), do: Repo.get!(Agent, id)
 
   def get(id), do: Repo.get(Agent, id)

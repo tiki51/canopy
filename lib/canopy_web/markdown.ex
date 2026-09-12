@@ -21,17 +21,26 @@ defmodule CanopyWeb.Markdown do
     syntax_highlight: nil
   ]
 
-  @doc "Markdown to HTML. Returns an empty string for anything that is not a binary."
-  @spec to_html(term) :: String.t()
-  def to_html(body) when is_binary(body) do
+  @doc """
+  Markdown to HTML. Returns an empty string for anything that is not a binary.
+
+  Options: `channels: %{"name" => channel_id}` turns `#name` references outside
+  code and links into in-app links to those channels; unknown names are left
+  as text.
+  """
+  @spec to_html(term, keyword) :: String.t()
+  def to_html(body, opts \\ [])
+
+  def to_html(body, opts) when is_binary(body) do
     body
     |> MDEx.to_html!(@mdex_opts)
     |> highlight_mentions()
     |> restrict_images()
     |> open_links_in_new_tab()
+    |> link_channels(Keyword.get(opts, :channels, %{}))
   end
 
-  def to_html(_), do: ""
+  def to_html(_, _opts), do: ""
 
   @doc "Splits plain text into `{:mention, \"@name\"}` and `{:plain, text}` parts."
   @spec mention_parts(String.t()) :: [{:mention | :plain, String.t()}]
@@ -93,6 +102,44 @@ defmodule CanopyWeb.Markdown do
       [_, value] -> value
       nil -> nil
     end
+  end
+
+  @channel_regex ~r/(?<![\w#&\/])#([a-z0-9][a-z0-9_-]*)/i
+
+  @doc false
+  def channel_class, do: "rounded bg-primary/10 px-1 font-medium text-primary no-underline"
+
+  # `#name` outside code and outside other links becomes a live link when the
+  # name is a known channel.
+  defp link_channels(html, channels) when map_size(channels) == 0, do: html
+
+  defp link_channels(html, channels) do
+    {out, _depth} =
+      @tag_regex
+      |> Regex.split(html, include_captures: true)
+      |> Enum.reduce({[], 0}, fn
+        "<code" <> _ = tag, {acc, depth} -> {[tag | acc], depth + 1}
+        "</code" <> _ = tag, {acc, depth} -> {[tag | acc], max(depth - 1, 0)}
+        "<a " <> _ = tag, {acc, depth} -> {[tag | acc], depth + 1}
+        "</a" <> _ = tag, {acc, depth} -> {[tag | acc], max(depth - 1, 0)}
+        "<" <> _ = tag, {acc, depth} -> {[tag | acc], depth}
+        text, {acc, 0} -> {[link_channel_refs(text, channels) | acc], 0}
+        text, {acc, depth} -> {[text | acc], depth}
+      end)
+
+    out |> Enum.reverse() |> IO.iodata_to_binary()
+  end
+
+  defp link_channel_refs(text, channels) do
+    Regex.replace(@channel_regex, text, fn whole, name ->
+      case Map.get(channels, String.downcase(name)) do
+        nil ->
+          whole
+
+        id ->
+          ~s(<a href="/channels/#{id}" data-phx-link="redirect" data-phx-link-state="push" class="#{channel_class()}">##{name}</a>)
+      end
+    end)
   end
 
   defp open_links_in_new_tab(html),

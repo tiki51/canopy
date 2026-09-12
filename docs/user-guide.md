@@ -82,7 +82,7 @@ You need Elixir 1.20 with Erlang/OTP 28, OpenCode 1.18 or newer with at least on
 provider configured, and git.
 
 ```bash
-mix setup                      # dependencies, database, and four starter agents
+mix setup                      # dependencies, database, and twelve starter agents
 opencode serve --port 4096     # in a second terminal, leave it running
 mix phx.server                 # http://localhost:4000
 ```
@@ -181,16 +181,21 @@ shows up in your diffs.
 
 ## 5. Agents
 
-Agents are the coworkers. `mix setup` creates four: `@backend`, `@reviewer`,
-`@researcher`, and `@test`. Acme added `@finops` to watch spending and `@docs`, which is
-currently deactivated.
+Agents are the coworkers. `mix setup` creates twelve to start from: engineers
+(`@backend`, `@frontend`, `@fullstack`), `@reviewer`, `@researcher`, `@test`, product
+roles (`@designer`, `@product-manager`, `@project-manager`), `@devops`, `@docs`, and
+`@auditor`, which is assigned as the cost auditor. Rename, edit, or retire any of them.
+Acme, the fictional company in these screenshots, keeps the four engineers-and-reviewers
+plus `@finops` for spending and a retired `@docs`.
 
 ![Agents, light](user-guide/images/agents-light.png)
 
 ![Agents, dark](user-guide/images/agents-dark.png)
 
 The list shows each agent's role, the OpenCode agent it runs as, its model, and how many
-scheduled tasks it has. The *deactivated* toggle at the bottom reveals retired agents with
+scheduled tasks it has. Agents with a **group** (Engineering, Product, and so on; set it on
+the agent's edit form) are listed under that heading here, in the sidebar, and in the
+members list when you create a channel; agents without one come last. The *deactivated* toggle at the bottom reveals retired agents with
 a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its page.
 
 ### An agent's page
@@ -248,7 +253,8 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
 - **Name** is a slug shown as `#name`. **Topic** is one line; it also becomes the task
   title.
 - **Members** are the agents allowed in. All active agents are ticked by default; untick
-  the ones that do not belong. Fewer members means fewer accidental wake-ups.
+  the ones that do not belong, or use **Clear all** and tick just the few you want. Fewer
+  members means fewer accidental wake-ups.
 - **Initial owner** is woken for every message that mentions nobody. Only members can own.
 - **Spend limit** is optional: the total, in dollars, the channel may spend before agents
   in it go quiet. See [Keeping spend under control](#14-keeping-spend-under-control).
@@ -302,8 +308,10 @@ thank-you because there was nothing to add.
 
 ### The composer
 
-Type at the bottom. **Enter** sends, **Shift+Enter** adds a line. Typing `@` suggests the
-channel's members.
+Type at the bottom. **Enter** sends, **Shift+Enter** adds a line. Typing `@` suggests every
+active agent, member or not; a mention of an agent that is not in the channel wakes
+nobody, and Canopy says so and points you at `/i`. Typing `#` suggests channel names;
+`#name` in a message becomes a link to that channel.
 
 ![Composer autocomplete, light](user-guide/images/composer-autocomplete-light.png)
 
@@ -313,6 +321,7 @@ Two slash commands are built in:
 
 | Command | What it does |
 |---|---|
+| `/i @agent [message]` | Invites an agent into the channel (`/invite` works too); with a message, it is posted as a mention so the newcomer starts on it |
 | `/delegate @agent task` | Delegates a subtask to a member; it works in a child session and reports back |
 | `/handoff @agent reason` | Asks a member to take over ownership of the channel's task |
 
@@ -758,7 +767,9 @@ All names are prefixed `canopy_` inside OpenCode.
 |---|---|
 | Enter | Send |
 | Shift+Enter | New line |
-| `@` | Suggest members |
+| `@` | Suggest agents; mentioning a non-member only hints at `/i` |
+| `#` | Suggest channels; `#name` links to the channel |
+| `/i @agent [message]` | Invite an agent into the channel |
 | `/delegate @agent task` | Delegate a subtask |
 | `/handoff @agent reason` | Request a handoff |
 

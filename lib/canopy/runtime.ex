@@ -35,11 +35,61 @@ defmodule Canopy.Runtime do
     attachments? = Keyword.get(opts, :attachments, []) != []
 
     case Commands.parse(body) do
-      :text -> Messages.post_user_message(channel_id, Users.local().id, body, opts)
-      {:command, _, _, _} when attachments? -> {:error, "commands cannot carry attachments"}
-      {:command, :handoff, target, reason} -> user_handoff(channel_id, target, reason)
-      {:command, :delegate, target, task} -> user_delegation(channel_id, target, task)
-      {:error, reason} -> {:error, reason}
+      :text ->
+        Messages.post_user_message(channel_id, Users.local().id, body, opts)
+
+      {:command, _, _, _} when attachments? ->
+        {:error, "commands cannot carry attachments"}
+
+      {:command, :handoff, target, reason} ->
+        user_handoff(channel_id, target, reason)
+
+      {:command, :delegate, target, task} ->
+        user_delegation(channel_id, target, task)
+
+      {:command, :invite, target, note} ->
+        user_invite(channel_id, target, note)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # `/i @agent [message]`: the user adds an agent to the channel. With a
+  # message, it is posted as a mention so the newcomer wakes with something to
+  # do; without one, the agent joins quietly. DMs keep their fixed set.
+  defp user_invite(channel_id, target_name, note) do
+    channel = Channels.get!(channel_id)
+
+    with :ok <- invitable(channel),
+         {:ok, agent} <- active_agent_named(target_name),
+         {:ok, _} <- join(channel, agent) do
+      if note == "" do
+        {:ok, {:invite, agent}}
+      else
+        Messages.post_user_message(channel_id, Users.local().id, "@#{agent.name} #{note}")
+      end
+    end
+  end
+
+  defp invitable(%{kind: "dm"}),
+    do: {:error, "a DM keeps its agents; start a new one to add someone"}
+
+  defp invitable(_channel), do: :ok
+
+  defp active_agent_named(name) do
+    case Agents.get_by_name(name) do
+      nil -> {:error, "no agent named @#{name}"}
+      %{active: false} = agent -> {:error, "@#{agent.name} is deactivated"}
+      agent -> {:ok, agent}
+    end
+  end
+
+  defp join(channel, agent) do
+    case Channels.add_agent(channel, agent) do
+      {:ok, :already_member} -> {:error, "@#{agent.name} is already in ##{channel.name}"}
+      {:ok, membership} -> {:ok, membership}
+      {:error, reason} -> {:error, "could not add @#{agent.name}: #{inspect(reason)}"}
     end
   end
 

@@ -32,4 +32,19 @@ defmodule Canopy.AgentsTest do
     assert Agents.list_active() == []
     assert Enum.map(Agents.list(), & &1.id) == [agent.id]
   end
+
+  describe "groups" do
+    test "blank groups become nil, and grouped/1 sorts groups with the loose ones last" do
+      a = agent_fixture(%{name: "zed", group: "Product"})
+      b = agent_fixture(%{name: "amy", group: "engineering"})
+      c = agent_fixture(%{name: "loose", group: "   "})
+      assert c.group == nil
+
+      assert Agents.groups() == ["Product", "engineering"]
+
+      assert [{"engineering", [^b]}, {"Product", [^a]}, {nil, [^c]}] = Agents.grouped([a, b, c])
+      assert [{nil, [^c]}] = Agents.grouped([c])
+      assert Agents.grouped([]) == []
+    end
+  end
 end

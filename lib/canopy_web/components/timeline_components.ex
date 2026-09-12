@@ -22,6 +22,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :names, :map, required: true
   attr :user_name, :string, required: true
   attr :replies, :list, default: []
+  attr :channels, :map, default: %{}, doc: "channel name => id, for #channel links in bodies"
 
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
@@ -31,6 +32,7 @@ defmodule CanopyWeb.TimelineComponents do
         names={@names}
         user_name={@user_name}
         replies={@replies}
+        channels={@channels}
         inline_reply={not is_nil(@event.message.thread_id)}
       />
     </div>
@@ -76,6 +78,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :user_name, :string, required: true
   attr :replies, :list, default: []
   attr :inline_reply, :boolean, default: false
+  attr :channels, :map, default: %{}
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -135,7 +138,11 @@ defmodule CanopyWeb.TimelineComponents do
           "mt-0.5 text-sm leading-relaxed",
           @message.kind == "reply" && "text-base-content/80"
         ]}>
-          <.message_text :if={@message.body not in [nil, ""]} body={@message.body} />
+          <.message_text
+            :if={@message.body not in [nil, ""]}
+            body={@message.body}
+            channels={@channels}
+          />
           <.attachments message={@message} />
         </div>
 
@@ -151,7 +158,12 @@ defmodule CanopyWeb.TimelineComponents do
           </button>
           <div id={"thread-#{@message.id}"} class="mt-2 hidden border-l-2 border-base-300 pl-3">
             <div :for={reply <- @replies} class="-mx-3 sm:-mx-6">
-              <.message_item message={reply} names={@names} user_name={@user_name} />
+              <.message_item
+                message={reply}
+                names={@names}
+                user_name={@user_name}
+                channels={@channels}
+              />
             </div>
           </div>
         </div>
@@ -190,6 +202,7 @@ defmodule CanopyWeb.TimelineComponents do
   """
   attr :body, :string, required: true
   attr :inline, :boolean, default: false
+  attr :channels, :map, default: %{}
 
   def message_text(%{inline: true} = assigns) do
     assigns = assign(assigns, :parts, Markdown.mention_parts(assigns.body || ""))
@@ -200,7 +213,7 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   def message_text(assigns) do
-    assigns = assign(assigns, :html, Markdown.to_html(assigns.body))
+    assigns = assign(assigns, :html, Markdown.to_html(assigns.body, channels: assigns.channels))
 
     ~H"""
     <div class="message-body break-words">{raw(@html)}</div>

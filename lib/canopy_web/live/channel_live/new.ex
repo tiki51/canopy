@@ -32,7 +32,32 @@ defmodule CanopyWeb.ChannelLive.New do
      |> assign_form(build_changeset(attrs, member_ids))}
   end
 
+  # "Select all" / "Clear all" above the members grid. The rest of the form
+  # keeps what was typed; the owner follows the membership as it does when a
+  # box is unchecked by hand.
   @impl true
+  def handle_event("toggle_all_members", _params, socket) do
+    all_ids = Enum.map(socket.assigns.agents, & &1.id)
+
+    member_ids =
+      if Enum.sort(socket.assigns.member_ids) == Enum.sort(all_ids), do: [], else: all_ids
+
+    params =
+      socket.assigns.form.source.params
+      |> Map.put("agent_ids", member_ids)
+      |> ensure_owner(member_ids)
+
+    changeset =
+      params
+      |> build_changeset(member_ids)
+      |> Map.put(:action, socket.assigns.form.source.action)
+
+    {:noreply,
+     socket
+     |> assign(:member_ids, member_ids)
+     |> assign_form(changeset)}
+  end
+
   def handle_event("validate", %{"channel" => params}, socket) do
     member_ids = members_from(params, socket.assigns.agents)
     params = ensure_owner(params, member_ids)
@@ -249,29 +274,47 @@ defmodule CanopyWeb.ChannelLive.New do
             />
 
             <fieldset class="fieldset mb-2">
-              <span class="label mb-1">Members</span>
+              <div class="mb-1 flex items-center justify-between">
+                <span class="label">Members</span>
+                <button
+                  type="button"
+                  id="toggle-all-members"
+                  class="btn btn-ghost btn-xs"
+                  phx-click="toggle_all_members"
+                >
+                  {if length(@member_ids) == length(@agents), do: "Clear all", else: "Select all"}
+                </button>
+              </div>
               <ul id="channel-members" class="grid gap-1 sm:grid-cols-2">
-                <li :for={agent <- @agents}>
-                  <label
-                    for={"member-#{agent.id}"}
-                    class={[
-                      "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition",
-                      agent.id in @member_ids && "border-primary/40 bg-primary/5",
-                      agent.id not in @member_ids && "border-base-300 hover:bg-base-200"
-                    ]}
+                <%= for {group, agents} <- Canopy.Agents.grouped(@agents) do %>
+                  <li
+                    :if={group}
+                    class="pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50 sm:col-span-2"
                   >
-                    <input
-                      type="checkbox"
-                      id={"member-#{agent.id}"}
-                      name="channel[agent_ids][]"
-                      value={agent.id}
-                      checked={agent.id in @member_ids}
-                      class="checkbox checkbox-sm"
-                    />
-                    <span class="font-mono text-xs">@{agent.name}</span>
-                    <span class="truncate text-base-content/60">{agent.role}</span>
-                  </label>
-                </li>
+                    {group}
+                  </li>
+                  <li :for={agent <- agents}>
+                    <label
+                      for={"member-#{agent.id}"}
+                      class={[
+                        "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition",
+                        agent.id in @member_ids && "border-primary/40 bg-primary/5",
+                        agent.id not in @member_ids && "border-base-300 hover:bg-base-200"
+                      ]}
+                    >
+                      <input
+                        type="checkbox"
+                        id={"member-#{agent.id}"}
+                        name="channel[agent_ids][]"
+                        value={agent.id}
+                        checked={agent.id in @member_ids}
+                        class="checkbox checkbox-sm"
+                      />
+                      <span class="font-mono text-xs">@{agent.name}</span>
+                      <span class="truncate text-base-content/60">{agent.role}</span>
+                    </label>
+                  </li>
+                <% end %>
               </ul>
               <p
                 :for={msg <- member_errors(@form)}

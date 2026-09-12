@@ -268,7 +268,16 @@ defmodule CanopyWeb.AgentsLiveTest do
 
       stub(OC, :agents, fn dir, _opts ->
         assert dir == repository.path
-        {:ok, [%{"name" => "plan"}, %{"name" => "build"}, %{"mode" => "no-name"}]}
+
+        {:ok,
+         [
+           %{"name" => "plan", "mode" => "primary"},
+           %{"name" => "build", "mode" => "primary"},
+           %{"name" => "custom-reviewer", "mode" => "primary"},
+           %{"name" => "title", "mode" => "primary", "hidden" => true},
+           %{"name" => "explore", "mode" => "subagent"},
+           %{"mode" => "no-name"}
+         ]}
       end)
 
       {:ok, view, _html} = live(conn, ~p"/agents/new")
@@ -276,22 +285,48 @@ defmodule CanopyWeb.AgentsLiveTest do
 
       assert has_element?(view, "#opencode-agents option[value='build']")
       assert has_element?(view, "#opencode-agents option[value='plan']")
+      assert has_element?(view, "#opencode-agents option[value='custom-reviewer']")
+      refute has_element?(view, "#opencode-agents option[value='title']")
+      refute has_element?(view, "#opencode-agents option[value='explore']")
 
-      assert has_element?(
-               view,
-               "#agent-form input[name='agent[opencode_agent]'][list='opencode-agents']"
-             )
+      assert has_element?(view, "#agent-form select[name='agent[opencode_agent]']")
     end
 
-    test "falls back to a plain input when the OpenCode server is unreachable", %{conn: conn} do
+    test "offers the built-in agents when the OpenCode server is unreachable", %{conn: conn} do
       Fixtures.repository_fixture()
       stub(OC, :agents, fn _dir, _opts -> {:error, {:transport, %{reason: :econnrefused}}} end)
 
       {:ok, view, _html} = live(conn, ~p"/agents/new")
       render_async(view)
 
-      refute has_element?(view, "#opencode-agents")
-      assert has_element?(view, "#agent-form input[name='agent[opencode_agent]']")
+      assert has_element?(view, "#opencode-agents option[value='build']")
+      assert has_element?(view, "#opencode-agents option[value='plan']")
+
+      assert has_element?(view, "#agent-form select[name='agent[opencode_agent]']")
+    end
+
+    test "offers the built-in agents with no repository registered", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/agents/new")
+      assert has_element?(view, "#opencode-agents option[value='build']")
+      assert has_element?(view, "#opencode-agents option[value='plan']")
+    end
+  end
+
+  describe "groups" do
+    test "the sidebar and the list show group headings, and the form saves a group", %{conn: conn} do
+      eng = Fixtures.agent_fixture(%{name: "builder", group: "Engineering"})
+      loose = Fixtures.agent_fixture(%{name: "loose"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#sidebar-group-engineering", "Engineering")
+      assert has_element?(view, "#agents-group-engineering", "Engineering")
+      assert has_element?(view, "#sidebar-agent-#{eng.id}")
+      assert has_element?(view, "#sidebar-agent-#{loose.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{loose.id}/edit")
+      assert has_element?(view, "#agent-groups option[value='Engineering']")
+      view |> form("#agent-form", agent: %{group: "Product"}) |> render_submit()
+      assert Canopy.Agents.get!(loose.id).group == "Product"
     end
   end
 

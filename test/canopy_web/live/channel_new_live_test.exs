@@ -35,6 +35,40 @@ defmodule CanopyWeb.ChannelNewLiveTest do
            )
   end
 
+  test "select all / clear all toggles every member and keeps the rest of the form", ctx do
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+    view
+    |> form("#channel-form", channel: %{name: "retry-logic", topic: "keep me"})
+    |> render_change()
+
+    assert has_element?(view, "#toggle-all-members", "Clear all")
+    view |> element("#toggle-all-members") |> render_click()
+    refute has_element?(view, "#member-#{ctx.builder.id}[checked]")
+    refute has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+    assert has_element?(view, "#toggle-all-members", "Select all")
+    assert has_element?(view, "#channel-form input[name='channel[name]'][value='retry-logic']")
+    assert has_element?(view, "#channel-form input[name='channel[topic]'][value='keep me']")
+
+    view |> element("#toggle-all-members") |> render_click()
+    assert has_element?(view, "#member-#{ctx.builder.id}[checked]")
+    assert has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+    assert has_element?(view, "#toggle-all-members", "Clear all")
+
+    assert has_element?(
+             view,
+             "#channel-form select[name='channel[owner_agent_id]'] option[selected][value='#{ctx.builder.id}']"
+           )
+  end
+
+  test "members are grouped under their group labels", ctx do
+    {:ok, _} = Canopy.Agents.update(ctx.builder, %{group: "Engineering"})
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+    assert has_element?(view, "#channel-members li", "Engineering")
+    assert has_element?(view, "#member-#{ctx.builder.id}")
+    assert has_element?(view, "#member-#{ctx.reviewer.id}")
+  end
+
   test "preselects the repository given in the query string", ctx do
     other = Fixtures.repository_fixture(%{name: "zzz-other"})
     {:ok, view, _html} = live(ctx.conn, ~p"/channels/new?repository_id=#{other.id}")

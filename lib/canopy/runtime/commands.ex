@@ -4,6 +4,7 @@ defmodule Canopy.Runtime.Commands do
 
       /handoff @agent reason for the handoff
       /delegate @agent what the agent should do
+      /i @agent [message]            (also /invite) adds the agent to the channel
 
   `parse/1` returns `{:command, name, target, text}`, `{:error, reason}` for a
   malformed command, or `:text` when the input is a normal message. Anything that
@@ -11,10 +12,12 @@ defmodule Canopy.Runtime.Commands do
   `/lib/foo.ex` still work at the start of a message.
   """
 
-  @commands %{"handoff" => :handoff, "delegate" => :delegate}
+  @commands %{"handoff" => :handoff, "delegate" => :delegate, "i" => :invite, "invite" => :invite}
 
   @type parsed ::
-          :text | {:command, :handoff | :delegate, String.t(), String.t()} | {:error, String.t()}
+          :text
+          | {:command, :handoff | :delegate | :invite, String.t(), String.t()}
+          | {:error, String.t()}
 
   @spec parse(String.t()) :: parsed
   def parse(input) when is_binary(input) do
@@ -33,11 +36,12 @@ defmodule Canopy.Runtime.Commands do
   def parse(_), do: :text
 
   @doc "Short help shown in the composer."
-  def help, do: "/handoff @agent reason · /delegate @agent task"
+  def help, do: "/i @agent invites · /handoff @agent reason · /delegate @agent task"
 
+  # /invite needs only a target; the message after it is optional.
   defp parse_args(command, args) do
     case Regex.run(~r/\A@?([A-Za-z0-9][\w-]*)\s*(.*)\z/s, String.trim(args)) do
-      [_, target, text] when text != "" ->
+      [_, target, text] when text != "" or command == :invite ->
         {:command, command, String.downcase(target), String.trim(text)}
 
       [_, _target, ""] ->
@@ -50,4 +54,5 @@ defmodule Canopy.Runtime.Commands do
 
   defp usage(:handoff), do: "usage: /handoff @agent reason for the handoff"
   defp usage(:delegate), do: "usage: /delegate @agent what the agent should do"
+  defp usage(:invite), do: "usage: /i @agent [message for them]"
 end

@@ -15,6 +15,8 @@ defmodule Canopy.Agents.Agent do
     field :name, :string
     field :display_name, :string
     field :role, :string
+    # optional label the sidebar and pickers group agents under ("Engineering")
+    field :group, :string
     field :system_prompt, :string
     field :opencode_agent, :string, default: "build"
     field :model_provider, :string
@@ -31,6 +33,7 @@ defmodule Canopy.Agents.Agent do
       :name,
       :display_name,
       :role,
+      :group,
       :system_prompt,
       :opencode_agent,
       :model_provider,
@@ -39,6 +42,7 @@ defmodule Canopy.Agents.Agent do
       :active
     ])
     |> update_change(:name, &normalize_name/1)
+    |> update_change(:group, &normalize_group/1)
     |> put_default_display_name()
     |> validate_required([:name, :display_name, :opencode_agent])
     |> validate_format(:name, @name_regex,
@@ -47,6 +51,7 @@ defmodule Canopy.Agents.Agent do
     |> validate_length(:name, max: 40)
     |> validate_length(:display_name, max: 80)
     |> validate_length(:role, max: 200)
+    |> validate_length(:group, max: 40)
     |> unique_constraint(:name)
   end
 
@@ -55,6 +60,15 @@ defmodule Canopy.Agents.Agent do
   end
 
   defp normalize_name(other), do: other
+
+  defp normalize_group(group) when is_binary(group) do
+    case String.trim(group) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_group(other), do: other
 
   defp put_default_display_name(changeset) do
     case {get_field(changeset, :display_name), get_field(changeset, :name)} do

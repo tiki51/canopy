@@ -7,8 +7,8 @@ defmodule CanopyWeb.AgentsLive do
     * `/agents/:id` — one agent: identity, model, channels, schedules, actions
     * `/agents/:id/edit` — the edit form for that agent
 
-  The OpenCode agent picker is a datalist filled from `GET /agent` for the
-  first repository, and the provider/model selects come from
+  The OpenCode agent picker is a select filled from `GET /agent` for the
+  first repository (always offering the built-in `build` and `plan`), and the provider/model selects come from
   `GET /config/providers`; both degrade to plain inputs when OpenCode is away.
   """
 
@@ -21,11 +21,14 @@ defmodule CanopyWeb.AgentsLive do
 
   import CanopyWeb.TimelineComponents, only: [schedule_list: 1, message_text: 1]
 
+  # OpenCode's own primary agents: `build` edits, `plan` is read-only.
+  @builtin_opencode_agents ~w(build plan)
+
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(:opencode_agents, [])
+      |> assign(:opencode_agents, @builtin_opencode_agents)
       |> assign(:providers, [])
       |> assign(:default_models, %{})
       |> assign(:show_inactive, false)
@@ -222,15 +225,22 @@ defmodule CanopyWeb.AgentsLive do
 
   # -- OpenCode lookups ---------------------------------------------------------
 
+  # OpenCode lists every agent it knows, including the internal ones it runs
+  # for itself (compaction, title, summary) and subagents. Only primary, visible
+  # agents can be prompted directly, and the built-ins are always available.
   @impl true
   def handle_async(:opencode_agents, {:ok, {:ok, list}}, socket) when is_list(list) do
     names =
       list
-      |> Enum.map(fn
-        %{"name" => name} when is_binary(name) -> name
-        _ -> nil
+      |> Enum.filter(fn
+        %{"name" => name} = agent when is_binary(name) ->
+          Map.get(agent, "mode", "primary") == "primary" and not Map.get(agent, "hidden", false)
+
+        _ ->
+          false
       end)
-      |> Enum.reject(&is_nil/1)
+      |> Enum.map(& &1["name"])
+      |> Enum.concat(@builtin_opencode_agents)
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -238,7 +248,7 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   def handle_async(:opencode_agents, _other, socket) do
-    {:noreply, assign(socket, :opencode_agents, [])}
+    {:noreply, assign(socket, :opencode_agents, @builtin_opencode_agents)}
   end
 
   def handle_async(:providers, {:ok, {:ok, %{"providers" => list} = body}}, socket)
@@ -430,6 +440,13 @@ defmodule CanopyWeb.AgentsLive do
       else: options
   end
 
+  # The known agents, plus the agent's current value when it is something
+  # else (a name from an OpenCode config Canopy has not seen).
+  defp opencode_agent_options(names, current) do
+    current = if is_binary(current) and String.trim(current) != "", do: String.trim(current)
+    (names ++ List.wrap(current)) |> Enum.uniq() |> Enum.sort()
+  end
+
   defp fetch_opencode_agents(socket) do
     case Repositories.list() do
       [%{path: dir} | _] ->
@@ -452,6 +469,7 @@ defmodule CanopyWeb.AgentsLive do
     socket
     |> assign(:active_agents, active)
     |> assign(:inactive_agents, inactive)
+    |> assign(:groups, Agents.groups())
     |> assign(:schedule_counts, Schedules.active_counts_by_agent())
   end
 
@@ -582,56 +600,67 @@ defmodule CanopyWeb.AgentsLive do
           <span />
         </div>
         <ul id="active-agents" class="divide-y divide-base-300">
-          <li :for={agent <- @active_agents} id={"agent-#{agent.id}"} class="-mx-2">
-            <.link
-              navigate={~p"/agents/#{agent.id}"}
-              class="group flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
+          <%= for {group, agents} <- Agents.grouped(@active_agents) do %>
+            <li
+              :if={group}
+              id={"agents-group-#{Layouts.group_slug(group)}"}
+              class="-mx-2 px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-base-content/50"
             >
-              <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
-                {initial(agent)}
-              </div>
-              <div class="min-w-0">
-                <div class="truncate text-sm font-semibold">{agent.display_name}</div>
-                <div class="truncate font-mono text-xs text-base-content/60">@{agent.name}</div>
-              </div>
-              <p class="min-w-0 truncate text-sm text-base-content/75" title={agent.role}>
-                {agent.role || "—"}
-              </p>
-              <span
-                class="badge badge-ghost badge-sm justify-self-start font-mono"
-                title="OpenCode agent"
+              {group}
+            </li>
+            <li :for={agent <- agents} id={"agent-#{agent.id}"} class="-mx-2">
+              <.link
+                navigate={~p"/agents/#{agent.id}"}
+                class="group flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
               >
-                {agent.opencode_agent}
-              </span>
-              <span
-                class={[
-                  "max-w-full justify-self-start truncate font-mono text-xs",
-                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
-                  !model_label(agent) && "text-base-content/50"
-                ]}
-                title={if model_label(agent), do: "Model override", else: "OpenCode's default model"}
-              >
-                {model_label(agent) || "default"}
-              </span>
-              <span
-                class="flex items-center gap-0.5 text-xs text-base-content/60"
-                title="Active schedules"
-              >
+                <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
+                  {initial(agent)}
+                </div>
+                <div class="min-w-0">
+                  <div class="truncate text-sm font-semibold">{agent.display_name}</div>
+                  <div class="truncate font-mono text-xs text-base-content/60">@{agent.name}</div>
+                </div>
+                <p class="min-w-0 truncate text-sm text-base-content/75" title={agent.role}>
+                  {agent.role || "—"}
+                </p>
+                <span
+                  class="badge badge-ghost badge-sm justify-self-start font-mono"
+                  title="OpenCode agent"
+                >
+                  {agent.opencode_agent}
+                </span>
+                <span
+                  class={[
+                    "max-w-full justify-self-start truncate font-mono text-xs",
+                    model_label(agent) && "badge badge-soft badge-primary badge-sm",
+                    !model_label(agent) && "text-base-content/50"
+                  ]}
+                  title={
+                    if model_label(agent), do: "Model override", else: "OpenCode's default model"
+                  }
+                >
+                  {model_label(agent) || "default"}
+                </span>
+                <span
+                  class="flex items-center gap-0.5 text-xs text-base-content/60"
+                  title="Active schedules"
+                >
+                  <.icon
+                    :if={Map.get(@schedule_counts, agent.id, 0) > 0}
+                    name="hero-clock-mini"
+                    class="size-3.5"
+                  />
+                  {if Map.get(@schedule_counts, agent.id, 0) > 0,
+                    do: Map.get(@schedule_counts, agent.id),
+                    else: "—"}
+                </span>
                 <.icon
-                  :if={Map.get(@schedule_counts, agent.id, 0) > 0}
-                  name="hero-clock-mini"
-                  class="size-3.5"
+                  name="hero-chevron-right-mini"
+                  class="hidden size-4 shrink-0 text-base-content/30 group-hover:text-base-content/60 md:block"
                 />
-                {if Map.get(@schedule_counts, agent.id, 0) > 0,
-                  do: Map.get(@schedule_counts, agent.id),
-                  else: "—"}
-              </span>
-              <.icon
-                name="hero-chevron-right-mini"
-                class="hidden size-4 shrink-0 text-base-content/30 group-hover:text-base-content/60 md:block"
-              />
-            </.link>
-          </li>
+              </.link>
+            </li>
+          <% end %>
         </ul>
 
         <div :if={@inactive_agents != []} class="mt-4 border-t border-base-300 pt-3">
@@ -942,13 +971,26 @@ defmodule CanopyWeb.AgentsLive do
               autocomplete="off"
             />
           </div>
-          <.input
-            field={@form[:role]}
-            type="text"
-            label="Role (one line)"
-            placeholder="Owns the Phoenix backend and its tests"
-            autocomplete="off"
-          />
+          <div class="grid gap-3 sm:grid-cols-[1fr_14rem]">
+            <.input
+              field={@form[:role]}
+              type="text"
+              label="Role (one line)"
+              placeholder="Owns the Phoenix backend and its tests"
+              autocomplete="off"
+            />
+            <.input
+              field={@form[:group]}
+              type="text"
+              label="Group (optional)"
+              placeholder="Engineering"
+              list="agent-groups"
+              autocomplete="off"
+            />
+            <datalist id="agent-groups">
+              <option :for={group <- @groups} value={group} />
+            </datalist>
+          </div>
           <.input
             field={@form[:system_prompt]}
             type="textarea"
@@ -960,12 +1002,10 @@ defmodule CanopyWeb.AgentsLive do
           <div class="grid gap-3 sm:grid-cols-3">
             <.input
               field={@form[:opencode_agent]}
-              type="text"
+              type="select"
+              id="opencode-agents"
               label="OpenCode agent"
-              placeholder="build"
-              list={if @opencode_agents != [], do: "opencode-agents"}
-              autocomplete="off"
-              spellcheck="false"
+              options={opencode_agent_options(@opencode_agents, @form[:opencode_agent].value)}
             />
             <%= if @providers != [] do %>
               <.input
@@ -1009,15 +1049,16 @@ defmodule CanopyWeb.AgentsLive do
           <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
             {form_price_line(@form, @providers, @default_models)}
           </p>
-          <datalist :if={@opencode_agents != []} id="opencode-agents">
-            <option :for={name <- @opencode_agents} value={name} />
-          </datalist>
           <p class="text-xs text-base-content/60">
-            <%= if @opencode_agents != [] or @providers != [] do %>
-              Suggestions and the provider/model lists come from your OpenCode server. Leave the model blank to use that agent's default.
+            <code class="font-mono">build</code>
+            can edit files; <code class="font-mono">plan</code>
+            is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
+            once a repository is registered and <code class="font-mono">opencode serve</code>
+            is up.
+            <%= if @providers != [] do %>
+              Leave the model blank to use that agent's default.
             <% else %>
-              Add a repository and start <code class="font-mono">opencode serve</code>
-              to get agent name suggestions. Leave the model blank to use OpenCode's default.
+              Leave the model blank to use OpenCode's default.
             <% end %>
           </p>
           <div class="flex items-center gap-2 pt-1">

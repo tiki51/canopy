@@ -284,42 +284,51 @@ defmodule CanopyWeb.Layouts do
             </.link>
           </div>
           <ul class="flex flex-col gap-px px-2 pb-4">
-            <li :for={agent <- @agents}>
-              <.link
-                navigate={~p"/agents/#{agent.id}"}
-                id={"sidebar-agent-#{agent.id}"}
-                data-active={@current_path == "/agents/#{agent.id}"}
-                title={"@#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
-                class={[
-                  "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition",
-                  @current_path == "/agents/#{agent.id}" && "bg-primary/15 text-primary font-medium",
-                  @current_path != "/agents/#{agent.id}" &&
-                    "text-base-content/80 hover:bg-base-300 hover:text-base-content"
-                ]}
+            <%= for {group, agents} <- Canopy.Agents.grouped(@agents) do %>
+              <li
+                :if={group}
+                id={"sidebar-group-#{group_slug(group)}"}
+                class="px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-base-content/40 first:pt-0"
               >
-                <.status_dot status={Map.get(@agent_statuses, agent.id, :idle)} />
-                <span class="shrink-0">@{agent.name}</span>
-                <span
-                  :if={agent.role}
+                {group}
+              </li>
+              <li :for={agent <- agents}>
+                <.link
+                  navigate={~p"/agents/#{agent.id}"}
+                  id={"sidebar-agent-#{agent.id}"}
+                  data-active={@current_path == "/agents/#{agent.id}"}
+                  title={"@#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
                   class={[
-                    "min-w-0 truncate text-[11px]",
-                    @current_path == "/agents/#{agent.id}" && "text-primary/70",
-                    @current_path != "/agents/#{agent.id}" && "text-base-content/40"
+                    "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition",
+                    @current_path == "/agents/#{agent.id}" && "bg-primary/15 text-primary font-medium",
+                    @current_path != "/agents/#{agent.id}" &&
+                      "text-base-content/80 hover:bg-base-300 hover:text-base-content"
                   ]}
                 >
-                  {agent.role}
-                </span>
-                <span
-                  :if={Map.get(@schedule_counts, agent.id, 0) > 0}
-                  id={"schedules-#{agent.id}"}
-                  class="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] text-base-content/50"
-                  title={"#{Map.get(@schedule_counts, agent.id)} scheduled"}
-                >
-                  <.icon name="hero-clock-mini" class="size-3" />
-                  {Map.get(@schedule_counts, agent.id)}
-                </span>
-              </.link>
-            </li>
+                  <.status_dot status={Map.get(@agent_statuses, agent.id, :idle)} />
+                  <span class="shrink-0">@{agent.name}</span>
+                  <span
+                    :if={agent.role}
+                    class={[
+                      "min-w-0 truncate text-[11px]",
+                      @current_path == "/agents/#{agent.id}" && "text-primary/70",
+                      @current_path != "/agents/#{agent.id}" && "text-base-content/40"
+                    ]}
+                  >
+                    {agent.role}
+                  </span>
+                  <span
+                    :if={Map.get(@schedule_counts, agent.id, 0) > 0}
+                    id={"schedules-#{agent.id}"}
+                    class="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] text-base-content/50"
+                    title={"#{Map.get(@schedule_counts, agent.id)} scheduled"}
+                  >
+                    <.icon name="hero-clock-mini" class="size-3" />
+                    {Map.get(@schedule_counts, agent.id)}
+                  </span>
+                </.link>
+              </li>
+            <% end %>
             <li :if={@agents == []} class="px-2 text-xs text-base-content/40">no agents</li>
           </ul>
         </aside>
@@ -360,6 +369,9 @@ defmodule CanopyWeb.Layouts do
     <.flash_group flash={@flash} />
     """
   end
+
+  @doc false
+  def group_slug(group), do: group |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
 
   attr :navigate, :string, required: true
   attr :icon, :string, required: true
