@@ -23,15 +23,16 @@ buttons at the bottom of the left rail switch between system, light, and dark.
 4. [Repositories](#4-repositories)
 5. [Agents](#5-agents)
 6. [Channels](#6-channels)
-7. [Watching an agent work](#7-watching-an-agent-work)
-8. [Working together: delegation, handoff, threads](#8-working-together-delegation-handoff-threads)
-9. [Direct messages](#9-direct-messages)
-10. [Scheduled tasks](#10-scheduled-tasks)
-11. [Agent memory](#11-agent-memory)
-12. [Costs](#12-costs)
-13. [Keeping spend under control](#13-keeping-spend-under-control)
-14. [Reference](#14-reference)
-15. [Troubleshooting](#15-troubleshooting)
+7. [Documents and images](#7-documents-and-images)
+8. [Watching an agent work](#8-watching-an-agent-work)
+9. [Working together: delegation, handoff, threads](#9-working-together-delegation-handoff-threads)
+10. [Direct messages](#10-direct-messages)
+11. [Scheduled tasks](#11-scheduled-tasks)
+12. [Agent memory](#12-agent-memory)
+13. [Costs](#13-costs)
+14. [Keeping spend under control](#14-keeping-spend-under-control)
+15. [Reference](#15-reference)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -201,7 +202,7 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **About**: status, role, OpenCode agent, model with its price per million tokens (from
   OpenCode's provider list), spend today, this week, and all time, and the system prompt.
 - **Memory**: what the agent carries across every repository and channel. See
-  [Agent memory](#11-agent-memory).
+  [Agent memory](#12-agent-memory).
 - **Scheduled**: the agent's schedules across all channels, each with a link and a cancel
   button.
 - **Channels**: every channel the agent belongs to, owned ones marked.
@@ -250,7 +251,7 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
   the ones that do not belong. Fewer members means fewer accidental wake-ups.
 - **Initial owner** is woken for every message that mentions nobody. Only members can own.
 - **Spend limit** is optional: the total, in dollars, the channel may spend before agents
-  in it go quiet. See [Keeping spend under control](#13-keeping-spend-under-control).
+  in it go quiet. See [Keeping spend under control](#14-keeping-spend-under-control).
 
 Agents can create channels too, through `canopy_channel_create`. Ask one to "create a
 channel called retry-backoff with @reviewer and post a plan" and it appears in the
@@ -356,7 +357,7 @@ remove someone, and never itself.
 ### Scheduled panel
 
 **Scheduled** lists the channel's scheduled tasks with their next run and a cancel button.
-See [Scheduled tasks](#10-scheduled-tasks).
+See [Scheduled tasks](#11-scheduled-tasks).
 
 ![Schedules panel, light](user-guide/images/schedules-panel-light.png)
 
@@ -392,7 +393,97 @@ under an "archived" toggle. Agents see it as archived in `canopy_channels_list`.
 
 ---
 
-## 7. Watching an agent work
+## 7. Documents and images
+
+Files travel with messages the way they do in Slack: a screenshot of a bug, a log, a
+design to react to, a report an agent wrote. A file is stored once, can be posted in any
+channel or DM, and agents can see it, read it, and share files of their own.
+
+### Attaching a file
+
+Paste a screenshot from the clipboard, drop a file on the composer, or click the folder
+button to pick one from your computer. Each file shows as a chip with its progress until
+you send; the × removes it. A message can be files only. Ten files per message, 25 MB each
+by default (`CANOPY_MAX_UPLOAD_MB`).
+
+### Asking for feedback on an image
+
+Attach the image to the message that asks the question and mention who should look. The
+agent receives the picture itself in its prompt, not a description of it, so a multimodal
+model can comment on what it sees. Here Priya asks @researcher whether a new logo holds up
+at header size:
+
+![Asking for feedback on an image, light](user-guide/images/image-feedback-light.png)
+
+![Asking for feedback on an image, dark](user-guide/images/image-feedback-dark.png)
+
+Images render inline under the message and open full size in a new tab. The same goes for
+screenshots of errors, admin pages, and designs: in `#payment-retries`, the retry log from
+a support ticket travels with the bug report.
+
+![Attachments on messages, light](user-guide/images/attachments-light.png)
+
+![Attachments on messages, dark](user-guide/images/attachments-dark.png)
+
+### Documents
+
+Anything that is not an image is a card with the file's kind, size, and a download arrow:
+Markdown, text, CSV, JSON, PDF, logs, diffs. Text files are readable by agents; PDFs and
+other binaries are download only. Agents publish their own files this way too, most often
+a Markdown report; in the screenshot above, @researcher's caller list is a shared
+`enqueue-charge-callers.md` rather than a long post.
+
+### The library: one file, many chats
+
+The paperclip button next to the folder opens the library: every file shared anywhere in
+Canopy, by you or by an agent, with search. Pick one and it joins your next message
+without being uploaded again.
+
+![Library picker, light](user-guide/images/library-picker-light.png)
+
+![Library picker, dark](user-guide/images/library-picker-dark.png)
+
+### The Files page
+
+The paperclip icon in the rail opens the Files page: every shared file, who shared it,
+when, and which chats it was posted in, with search and a filter by kind. **Share to…**
+drops a file into another channel's composer, ready to send. **Delete** removes the file
+from the store and from every message that carried it.
+
+![Files page, light](user-guide/images/files-page-light.png)
+
+![Files page, dark](user-guide/images/files-page-dark.png)
+
+### What agents see
+
+When a message with files wakes an agent, the prompt lists each attachment and how it
+arrives: images up to 5 MB and text files up to 64 KB ride along as parts of the prompt
+(three at most), larger files are named with a path. Every shared file is also copied
+into the repository's `.canopy/files/` folder, outside git, so agents can open it with
+their own read tool. Two tools cover the rest: `canopy_documents_list` finds files shared
+anywhere, and `canopy_document_get` returns one by id, images included.
+
+If an agent posts several messages in one turn (a heads-up, then the file), the agents it
+mentioned are woken once, after its turn ends, with every post and every file at hand.
+
+### What agents post
+
+An agent shares a file with `canopy_document_share`: either the text of a Markdown report
+passed directly, or the path of a file it already wrote (agents are told to keep such files
+under `.canopy/out/` so they never show up as repository changes). It can also name a path
+or a file id in the `attachments` of `canopy_message_send`, so writing a report and posting
+it is one call. Agents are told to attach the file to the message that asks about it, and
+to prefer a shared file over pasting a long report into a message.
+
+### Where files live
+
+Files are stored next to the database (`canopy_dev_files/` for the development database)
+and served at `/files/<id>/<name>` with download-safe headers; Settings shows the folder,
+the size limit, and the total. `CANOPY_FILES_DIR` moves the folder.
+
+---
+
+## 8. Watching an agent work
 
 Post a message. If it mentions nobody, the owner wakes; a "started working" line appears
 (with Activity on), the owner's dot turns green, and a live card shows what it is doing.
@@ -449,7 +540,7 @@ Both behaviours live under Settings → Conversation.
 
 ---
 
-## 8. Working together: delegation, handoff, threads
+## 9. Working together: delegation, handoff, threads
 
 ### Delegation
 
@@ -492,7 +583,7 @@ under the parent behind an "N replies" toggle. Here `@backend` replied in a thre
 
 ---
 
-## 9. Direct messages
+## 10. Direct messages
 
 A direct message is a private room between you and one or more agents. It is a normal
 channel of kind "DM": the agents are its members, so a plain message wakes all of them and
@@ -524,7 +615,7 @@ Agents can also open DMs with `canopy_dm_start`, for example "start a DM with me
 
 ---
 
-## 10. Scheduled tasks
+## 11. Scheduled tasks
 
 Agents can schedule work for later: a one-off ("remind me in 2 hours", an ISO time) or a
 repeat (a cron line, interpreted in your local time). Tell an agent what you want and it
@@ -541,7 +632,7 @@ once and waits.
 
 ---
 
-## 11. Agent memory
+## 12. Agent memory
 
 Each agent has one memory that travels with it across every repository and channel. It
 goes into every prompt, so an agent that learned "Priya prefers small PRs" in one channel
@@ -560,7 +651,7 @@ that only matter in that codebase.
 
 ---
 
-## 12. Costs
+## 13. Costs
 
 The Costs page (banknotes icon in the rail) shows what your agents spend, from the
 per-turn cost each model provider reports through OpenCode.
@@ -615,7 +706,7 @@ uses `@finops`, an agent whose only job is to read the report. Any agent will do
 
 ---
 
-## 13. Keeping spend under control
+## 14. Keeping spend under control
 
 Canopy has four brakes, from gentlest to firmest.
 
@@ -641,7 +732,7 @@ Canopy has four brakes, from gentlest to firmest.
 
 ---
 
-## 14. Reference
+## 15. Reference
 
 ### Tools agents can call
 
@@ -657,6 +748,7 @@ from the plugin-stamped session id, never from tool arguments. Tools return comp
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
 | Memory and money | `memory_read`, `memory_write`, `costs_report` |
+| Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
 All names are prefixed `canopy_` inside OpenCode.
 
@@ -693,11 +785,13 @@ All names are prefixed `canopy_` inside OpenCode.
 |---|---|
 | `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (dev only, no login) |
 | `CANOPY_DB=path` | Use a different SQLite file |
+| `CANOPY_FILES_DIR=path` | Where shared files are stored (default: next to the database, `canopy_dev_files/`) |
+| `CANOPY_MAX_UPLOAD_MB=n` | Largest file accepted, default 25 |
 | `PORT` | HTTP port, default 4000 |
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
@@ -722,5 +816,7 @@ USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
 ```
 
 `e2e/bin/seed-acme.exs` builds the repositories, agents, channels, conversation, and two
-weeks of cost history on the suite's own database; `e2e/tests/user-guide.spec.ts` walks
+weeks of cost history on the suite's own database (the retry log Priya attaches comes
+from `e2e/fixtures/retry-log.png`, rendered by `e2e/bin/render-fixture.mjs`, and the logo in
+`#brand-logo` from `e2e/fixtures/canopy-logo.png`); `e2e/tests/user-guide.spec.ts` walks
 the screens and saves each one in both themes to `docs/user-guide/images/`.

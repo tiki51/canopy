@@ -16,7 +16,7 @@ defmodule Canopy.Timeline do
 
   @pubsub Canopy.PubSub
   @default_limit 50
-  @preloads [:agent, message: [:agent, :user]]
+  @preloads [:agent, message: [:agent, :user, :documents]]
 
   @doc "PubSub topic for a channel."
   def topic(channel_id) when is_binary(channel_id), do: "channel:#{channel_id}"

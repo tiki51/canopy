@@ -23,6 +23,16 @@ end
 config :canopy, CanopyWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Shared documents live next to the database by default (canopy_dev.db →
+# canopy_dev_files/). CANOPY_FILES_DIR moves them; CANOPY_MAX_UPLOAD_MB caps a file.
+if dir = System.get_env("CANOPY_FILES_DIR") do
+  config :canopy, files_dir: dir
+end
+
+if mb = System.get_env("CANOPY_MAX_UPLOAD_MB") do
+  config :canopy, max_upload_bytes: String.to_integer(mb) * 1024 * 1024
+end
+
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
   config :canopy, CanopyWeb.Endpoint,

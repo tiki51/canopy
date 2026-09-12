@@ -135,7 +135,8 @@ defmodule CanopyWeb.TimelineComponents do
           "mt-0.5 text-sm leading-relaxed",
           @message.kind == "reply" && "text-base-content/80"
         ]}>
-          <.message_text body={@message.body} />
+          <.message_text :if={@message.body not in [nil, ""]} body={@message.body} />
+          <.attachments message={@message} />
         </div>
 
         <div :if={@replies != []} class="mt-1.5">
@@ -205,6 +206,62 @@ defmodule CanopyWeb.TimelineComponents do
     <div class="message-body break-words">{raw(@html)}</div>
     """
   end
+
+  @doc """
+  The documents attached to a message: images inline (opening the file in a
+  new tab), everything else as a card with a download link.
+  """
+  attr :message, :map, required: true
+
+  def attachments(%{message: %{documents: docs}} = assigns) when is_list(docs) and docs != [] do
+    ~H"""
+    <div class="mt-1.5 flex flex-wrap gap-2" id={"attachments-#{@message.id}"}>
+      <%= for doc <- @message.documents do %>
+        <a
+          :if={doc.kind == "image"}
+          id={"attachment-#{@message.id}-#{doc.id}"}
+          href={Canopy.Documents.url_path(doc)}
+          target="_blank"
+          rel="noopener"
+          class="block max-w-full overflow-hidden rounded-lg border border-base-300 bg-base-200"
+          title={"#{doc.filename} (#{Canopy.Documents.size_label(doc.byte_size)})"}
+          data-kind="image"
+        >
+          <img
+            src={Canopy.Documents.url_path(doc)}
+            alt={doc.filename}
+            loading="lazy"
+            class="max-h-80 max-w-full object-contain"
+          />
+        </a>
+        <a
+          :if={doc.kind != "image"}
+          id={"attachment-#{@message.id}-#{doc.id}"}
+          href={Canopy.Documents.url_path(doc)}
+          target="_blank"
+          rel="noopener"
+          class="flex max-w-xs items-center gap-2 rounded-lg border border-base-300 bg-base-200 px-2.5 py-1.5 text-xs transition hover:border-primary/50"
+          data-kind={doc.kind}
+        >
+          <.icon name={document_icon(doc.kind)} class="size-5 shrink-0 text-base-content/60" />
+          <span class="min-w-0">
+            <span class="block truncate font-medium">{doc.filename}</span>
+            <span class="block text-base-content/50">
+              {String.upcase(doc.kind)} · {Canopy.Documents.size_label(doc.byte_size)}
+            </span>
+          </span>
+          <.icon name="hero-arrow-down-tray-mini" class="ml-1 size-4 shrink-0 text-base-content/50" />
+        </a>
+      <% end %>
+    </div>
+    """
+  end
+
+  def attachments(assigns), do: ~H""
+
+  defp document_icon("text"), do: "hero-document-text"
+  defp document_icon("pdf"), do: "hero-document"
+  defp document_icon(_), do: "hero-paper-clip"
 
   @doc "A centred, subtle line for collaboration events and system notes."
   attr :id, :string, required: true

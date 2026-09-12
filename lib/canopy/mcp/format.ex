@@ -18,11 +18,16 @@ defmodule Canopy.MCP.Format do
   def agent_ref(%{name: name}) when is_binary(name), do: "@" <> name
   def agent_ref(id) when is_binary(id), do: id
 
-  @doc "`[msg_01…] @backend (2m ago): body`, with a thread marker for replies."
+  @doc """
+  `[msg_01…] @backend (2m ago): body`, with a thread marker for replies and
+  the attached documents, if any, after the body.
+  """
   def message_line(%Message{} = message, opts \\ []) do
     body =
       if Keyword.get(opts, :bodies, true) do
-        ": " <> shortened(single_line(message.body), Keyword.get(opts, :truncate, nil))
+        ": " <>
+          shortened(body_or_placeholder(message), Keyword.get(opts, :truncate, nil)) <>
+          attachments_suffix(message)
       else
         ""
       end
@@ -34,6 +39,29 @@ defmodule Canopy.MCP.Format do
       end
 
     "[#{message.id}] #{sender(message)} (#{relative_time(message.inserted_at)})#{thread}#{body}"
+  end
+
+  defp body_or_placeholder(%Message{body: body}) do
+    case single_line(body) do
+      "" -> "(no text)"
+      text -> text
+    end
+  end
+
+  @max_listed_attachments 5
+
+  @doc "` [attachments: doc_… shot.png (image, 240 KB); …]` or an empty string."
+  def attachments_suffix(%Message{documents: docs}) when is_list(docs) and docs != [] do
+    {shown, rest} = Enum.split(docs, @max_listed_attachments)
+    more = if rest == [], do: "", else: "; +#{length(rest)} more"
+    " [attachments: " <> Enum.map_join(shown, "; ", &document_ref/1) <> more <> "]"
+  end
+
+  def attachments_suffix(_), do: ""
+
+  @doc "`doc_… report.md (text, 12 KB)`."
+  def document_ref(document) do
+    "#{document.id} #{document.filename} (#{document.kind}, #{Canopy.Documents.size_label(document.byte_size)})"
   end
 
   @doc "Renders messages one per line, or a placeholder when there are none."

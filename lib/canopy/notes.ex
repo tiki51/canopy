@@ -7,6 +7,7 @@ defmodule Canopy.Notes do
         README.md          what this directory is
         NOTES.md           shared, for facts every agent should know
         notes/<agent>.md   one per agent: its own memory of this codebase
+        files/             documents shared in Canopy, copied here for agents to read
 
   Agents read and write these with OpenCode's own file tools; Canopy only
   creates the files, points agents at them in the system prompt, and keeps the
@@ -22,7 +23,9 @@ defmodule Canopy.Notes do
   # Canopy workspace
 
   Notes that Canopy's agents keep about this repository. `NOTES.md` is shared;
-  `notes/<agent>.md` belongs to one agent. Entries are dated. Canopy keeps this
+  `notes/<agent>.md` belongs to one agent. Entries are dated. `files/` holds
+  copies of documents shared in Canopy chats (`<doc id>-<name>`), and `out/`
+  is where agents write files they intend to share. Canopy keeps this
   directory out of git through `.git/info/exclude`; remove that line if you
   want to commit the notes.
   """

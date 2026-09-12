@@ -6,6 +6,10 @@ defmodule CanopyWeb.Markdown do
   schemes are dropped by the renderer, and single newlines become line breaks
   so chat-style messages keep their shape. `@mentions` outside code are
   wrapped in a highlight span after rendering.
+
+  Images are kept only when they point at a document Canopy serves itself
+  (`/files/…`); any other image source becomes a plain link, so a message can
+  never make the browser fetch a remote picture.
   """
 
   @mention_regex ~r/((?<![\w@])@[a-z0-9][a-z0-9_-]*)/i
@@ -23,6 +27,7 @@ defmodule CanopyWeb.Markdown do
     body
     |> MDEx.to_html!(@mdex_opts)
     |> highlight_mentions()
+    |> restrict_images()
     |> open_links_in_new_tab()
   end
 
@@ -63,6 +68,31 @@ defmodule CanopyWeb.Markdown do
 
   defp wrap_mentions(text) do
     Regex.replace(@mention_regex, text, ~s(<span class="#{mention_class()}">\\1</span>))
+  end
+
+  @img_regex ~r/<img\s+([^>]*?)\s*\/?>/
+  @local_src ~r/\bsrc="\/files\/[^"]*"/
+
+  # Local images get lazy loading and a class the timeline styles; remote ones
+  # are downgraded to a link with the alt text (or the URL) as its label.
+  defp restrict_images(html) do
+    Regex.replace(@img_regex, html, fn whole, attrs ->
+      if Regex.match?(@local_src, attrs) do
+        ~s(<img loading="lazy" class="message-image" #{attrs} />)
+      else
+        src = attr(attrs, "src")
+        alt = attr(attrs, "alt")
+        label = if alt in [nil, ""], do: src || whole, else: alt
+        if src, do: ~s(<a href="#{src}">#{label}</a>), else: label
+      end
+    end)
+  end
+
+  defp attr(attrs, name) do
+    case Regex.run(~r/\b#{name}="([^"]*)"/, attrs) do
+      [_, value] -> value
+      nil -> nil
+    end
   end
 
   defp open_links_in_new_tab(html),

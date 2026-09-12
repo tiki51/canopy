@@ -17,6 +17,8 @@ defmodule CanopyWeb.ChannelLive do
     Agents,
     Channels,
     Costs,
+    Documents,
+    Messages,
     Handoffs,
     PermissionRequests,
     Repositories,
@@ -40,23 +42,56 @@ defmodule CanopyWeb.ChannelLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Schedules.subscribe()
+    if connected?(socket) do
+      Schedules.subscribe()
+      Documents.subscribe()
+    end
 
     {:ok,
      socket
      |> assign(:channel, nil)
      |> assign(:compact?, true)
      |> assign(:branch_timer, nil)
+     |> assign(:picked, [])
+     |> assign(:library, nil)
+     |> allow_upload(:files,
+       accept: :any,
+       max_entries: Messages.max_attachments(),
+       max_file_size: Documents.max_bytes(),
+       auto_upload: true
+     )
      |> stream_configure(:timeline, dom_id: &"evt-#{&1.id}")
      |> stream(:timeline, [])}
   end
 
   @impl true
-  def handle_params(%{"id" => id}, _uri, socket) do
-    case socket.assigns.channel do
-      %{id: ^id} -> {:noreply, socket}
-      _ -> {:noreply, load_channel(socket, id)}
+  def handle_params(%{"id" => id} = params, _uri, socket) do
+    socket =
+      case socket.assigns.channel do
+        %{id: ^id} -> socket
+        _ -> load_channel(socket, id)
+      end
+
+    {:noreply, attach_from_params(socket, params)}
+  end
+
+  # `/channels/:id?attach=doc_…` arrives from the Files page's "Share to":
+  # the document lands in the composer as a picked file, ready to send.
+  defp attach_from_params(socket, %{"attach" => id}) do
+    case Documents.get(id) do
+      nil -> put_flash(socket, :error, "That file no longer exists.")
+      document -> pick(socket, document)
     end
+  end
+
+  defp attach_from_params(socket, _params), do: socket
+
+  defp pick(socket, document) do
+    picked = socket.assigns.picked
+
+    if Enum.any?(picked, &(&1.id == document.id)),
+      do: socket,
+      else: assign(socket, :picked, picked ++ [document])
   end
 
   defp load_channel(socket, id) do
@@ -156,6 +191,50 @@ defmodule CanopyWeb.ChannelLive do
     assign(socket, :composer, to_form(%{"body" => body}, as: :message, id: "composer-form"))
   end
 
+  defp load_library(socket, q) do
+    picked = Enum.map(socket.assigns.picked, & &1.id)
+    documents = Documents.list(search: q, limit: 30) |> Enum.reject(&(&1.id in picked))
+    assign(socket, :library, %{q: q, documents: documents})
+  end
+
+  # A deleted document on a thread reply: swap the reply in the threads map.
+  defp refresh_thread_reply(socket, message_id) do
+    case Messages.get(message_id) do
+      %{thread_id: root} = reply when is_binary(root) ->
+        threads =
+          Map.update(socket.assigns.threads, root, [reply], fn replies ->
+            Enum.map(replies, &if(&1.id == reply.id, do: reply, else: &1))
+          end)
+
+        assign(socket, :threads, threads)
+
+      _ ->
+        socket
+    end
+  end
+
+  # Turns every finished upload into a document and returns the ids, in the
+  # order the files were added. Entries that fail to store are skipped and
+  # reported as a flash by the caller.
+  defp store_uploads(socket) do
+    consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
+      result =
+        Documents.create(%{
+          filename: entry.client_name,
+          mime: entry.client_type,
+          source: {:path, path},
+          user_id: socket.assigns.user.id,
+          origin_channel_id: cid(socket)
+        })
+
+      case result do
+        {:ok, document} -> {:ok, document.id}
+        {:error, _} -> {:ok, nil}
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
   defp assign_branch(%{assigns: %{channel: channel}} = socket) do
     branch =
       case Repositories.current_branch(channel.repository) do
@@ -202,6 +281,32 @@ defmodule CanopyWeb.ChannelLive do
      socket
      |> assign(:agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, status))
      |> assign(:telemetry, telemetry)}
+  end
+
+  # A document was deleted somewhere: redraw the messages that carried it.
+  def handle_info({:document_deleted, id, message_ids}, socket) do
+    socket =
+      socket
+      |> assign(:picked, Enum.reject(socket.assigns.picked, &(&1.id == id)))
+      |> then(fn socket ->
+        if socket.assigns.library,
+          do: load_library(socket, socket.assigns.library.q),
+          else: socket
+      end)
+
+    socket =
+      Enum.reduce(message_ids, socket, fn message_id, socket ->
+        if MapSet.member?(socket.assigns.message_ids, message_id) do
+          case Timeline.for_message(message_id) do
+            nil -> socket
+            event -> stream_insert(socket, :timeline, event)
+          end
+        else
+          refresh_thread_reply(socket, message_id)
+        end
+      end)
+
+    {:noreply, socket}
   end
 
   def handle_info({:schedules, :changed, cid}, socket) do
@@ -302,19 +407,70 @@ defmodule CanopyWeb.ChannelLive do
 
   @impl true
   def handle_event("send", %{"message" => %{"body" => body}}, socket) do
-    case String.trim(body) do
-      "" ->
+    text = String.trim(body)
+    entries = socket.assigns.uploads.files.entries
+
+    picked = Enum.map(socket.assigns.picked, & &1.id)
+
+    cond do
+      text == "" and entries == [] and picked == [] ->
         {:noreply, socket}
 
-      text ->
-        case Runtime.post_user_message(cid(socket), text) do
+      Enum.any?(entries, &(not &1.done?)) ->
+        {:noreply,
+         put_flash(socket, :error, "A file is still uploading, or failed; wait or remove it.")}
+
+      true ->
+        documents = store_uploads(socket)
+
+        case Runtime.post_user_message(cid(socket), text, attachments: documents ++ picked) do
           {:ok, _} ->
-            {:noreply, socket |> assign_composer("") |> push_event("composer:clear", %{})}
+            {:noreply,
+             socket
+             |> assign_composer("")
+             |> assign(:picked, [])
+             |> push_event("composer:clear", %{})}
 
           {:error, reason} ->
+            # the files were stored for a message that never happened
+            documents
+            |> Enum.map(&Documents.get/1)
+            |> Enum.reject(&is_nil/1)
+            |> Enum.each(&Documents.delete/1)
+
             {:noreply, socket |> assign_composer(body) |> put_flash(:error, to_string(reason))}
         end
     end
+  end
+
+  # Uploads only progress through a phx-change; the composer text never
+  # round-trips, so there is nothing to validate.
+  def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :files, ref)}
+  end
+
+  # -- Attach from the library --------------------------------------------------
+
+  def handle_event("open_library", _params, socket),
+    do: {:noreply, load_library(socket, "")}
+
+  def handle_event("close_library", _params, socket),
+    do: {:noreply, assign(socket, :library, nil)}
+
+  def handle_event("search_library", %{"q" => q}, socket),
+    do: {:noreply, load_library(socket, q)}
+
+  def handle_event("pick_document", %{"id" => id}, socket) do
+    case Documents.get(id) do
+      nil -> {:noreply, socket}
+      document -> {:noreply, socket |> pick(document) |> assign(:library, nil)}
+    end
+  end
+
+  def handle_event("unpick_document", %{"id" => id}, socket) do
+    {:noreply, assign(socket, :picked, Enum.reject(socket.assigns.picked, &(&1.id == id)))}
   end
 
   def handle_event("abort", %{"agent-id" => agent_id}, socket) do
@@ -734,7 +890,14 @@ defmodule CanopyWeb.ChannelLive do
         spent={@spent}
       />
       <.paused_bar :if={@paused? and !Channels.archived?(@channel)} />
-      <.composer :if={!Channels.archived?(@channel)} form={@composer} member_names={@member_names} />
+      <.composer
+        :if={!Channels.archived?(@channel)}
+        form={@composer}
+        member_names={@member_names}
+        uploads={@uploads}
+        picked={@picked}
+      />
+      <.library_picker :if={@library} library={@library} />
       <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
 
       <.changes_modal :if={@changes} changes={@changes} repository={@channel.repository} />
@@ -1213,10 +1376,17 @@ defmodule CanopyWeb.ChannelLive do
 
   attr :form, :map, required: true
   attr :member_names, :list, required: true
+  attr :uploads, :map, required: true
+  attr :picked, :list, required: true
 
   defp composer(assigns) do
     ~H"""
     <div class="shrink-0 border-t border-base-300 bg-base-100 px-3 pb-2 pt-2 sm:px-6 sm:pb-3">
+      <%!-- Files travel through their own form: uploads need a phx-change, and
+           the composer text must never round-trip on every keystroke. --%>
+      <form id="upload-form" phx-change="validate_upload" phx-submit="validate_upload" class="hidden">
+        <.live_file_input upload={@uploads.files} />
+      </form>
       <.form
         for={@form}
         id="composer-form"
@@ -1230,38 +1400,246 @@ defmodule CanopyWeb.ChannelLive do
           class="absolute bottom-full left-0 z-10 mb-1 hidden w-64 overflow-hidden rounded-lg border border-base-300 bg-base-200 shadow-lg"
         >
         </div>
-        <div class="flex items-end gap-2 rounded-xl border border-base-300 bg-base-200 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+        <div
+          id="composer-box"
+          phx-drop-target={@uploads.files.ref}
+          class="rounded-xl border border-base-300 bg-base-200 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+        >
+          <div
+            :if={@uploads.files.entries != [] or @picked != []}
+            id="composer-files"
+            class="mb-2 flex flex-wrap gap-2"
+          >
+            <div
+              :for={doc <- @picked}
+              id={"picked-#{doc.id}"}
+              class="flex max-w-xs items-center gap-2 rounded-lg border border-primary/40 bg-base-100 px-2 py-1 text-xs"
+              title="From the files library"
+            >
+              <img
+                :if={doc.kind == "image"}
+                src={Documents.url_path(doc)}
+                alt=""
+                class="size-8 rounded object-cover"
+              />
+              <.icon
+                :if={doc.kind != "image"}
+                name="hero-document-mini"
+                class="size-4 shrink-0 text-base-content/60"
+              />
+              <div class="min-w-0">
+                <div class="truncate font-medium" title={doc.filename}>{doc.filename}</div>
+                <div class="text-base-content/50">shared · {Documents.size_label(doc.byte_size)}</div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs btn-square"
+                phx-click="unpick_document"
+                phx-value-id={doc.id}
+                title="Remove"
+                aria-label={"Remove #{doc.filename}"}
+              >
+                <.icon name="hero-x-mark-mini" class="size-3.5" />
+              </button>
+            </div>
+            <div
+              :for={entry <- @uploads.files.entries}
+              id={"upload-#{entry.ref}"}
+              class="flex max-w-xs items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-2 py-1 text-xs"
+            >
+              <.live_img_preview
+                :if={String.starts_with?(entry.client_type || "", "image/")}
+                entry={entry}
+                class="size-8 rounded object-cover"
+              />
+              <.icon
+                :if={!String.starts_with?(entry.client_type || "", "image/")}
+                name="hero-document-mini"
+                class="size-4 shrink-0 text-base-content/60"
+              />
+              <div class="min-w-0">
+                <div class="truncate font-medium" title={entry.client_name}>{entry.client_name}</div>
+                <div
+                  :if={!entry.done? and upload_errors(@uploads.files, entry) == []}
+                  class="text-base-content/50"
+                >
+                  {entry.progress}%
+                </div>
+                <div :for={err <- upload_errors(@uploads.files, entry)} class="text-error">
+                  {upload_error(err)}
+                </div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs btn-square"
+                phx-click="cancel_upload"
+                phx-value-ref={entry.ref}
+                title="Remove"
+                aria-label={"Remove #{entry.client_name}"}
+              >
+                <.icon name="hero-x-mark-mini" class="size-3.5" />
+              </button>
+            </div>
+          </div>
+          <div :for={err <- upload_errors(@uploads.files)} class="mb-1 px-1 text-xs text-error">
+            {upload_error(err)}
+          </div>
           <%!-- The textarea is the browser's: LiveView never patches it, so the
                hook's auto-grown height and the draft survive every update.
                The server clears it with the "composer:clear" event. --%>
-          <div id="composer-input-wrap" phx-update="ignore" class="min-w-0 flex-1">
+          <div id="composer-input-wrap" phx-update="ignore" class="min-w-0">
             <textarea
               id="composer-input"
               name={@form[:body].name}
               phx-hook="Composer"
               data-suggestions="#composer-suggestions"
-              rows="2"
+              rows="1"
               placeholder="Message the channel — @mention an agent to wake it"
-              class="max-h-[60vh] min-h-10 w-full resize-y border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
+              class="max-h-[60vh] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
               autocomplete="off"
             >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>
           </div>
-          <button
-            type="submit"
-            id="composer-send"
-            class="btn btn-sm btn-primary btn-square"
-            title="Send (Enter)"
-          >
-            <.icon name="hero-paper-airplane-mini" class="size-4" />
-          </button>
+          <%!-- Toolbar under the text, Slack-style: attach on the left, send on the right. --%>
+          <div class="mt-1 flex items-center gap-1">
+            <label
+              for={@uploads.files.ref}
+              id="composer-attach"
+              class="btn btn-sm btn-ghost btn-square cursor-pointer"
+              title="Attach a file from your computer (or paste, or drop one here)"
+            >
+              <.icon name="hero-folder-open-mini" class="size-4" />
+            </label>
+            <button
+              type="button"
+              id="composer-library"
+              class="btn btn-sm btn-ghost btn-square"
+              phx-click="open_library"
+              title="Attach a file already shared in Canopy"
+            >
+              <.icon name="hero-paper-clip-mini" class="size-4" />
+            </button>
+            <button
+              type="submit"
+              id="composer-send"
+              class="btn btn-sm btn-primary btn-square ml-auto"
+              title="Send (Enter)"
+            >
+              <.icon name="hero-paper-airplane-mini" class="size-4" />
+            </button>
+          </div>
         </div>
         <p class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
-          Enter to send · Shift+Enter for a new line · {Commands.help()}
+          Enter to send · Shift+Enter for a new line · paste or drop files to attach · {Commands.help()}
         </p>
       </.form>
     </div>
     """
   end
+
+  attr :library, :map, required: true
+
+  defp library_picker(assigns) do
+    ~H"""
+    <div
+      id="library-picker"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-base-content/40 p-4"
+      phx-window-keydown="close_library"
+      phx-key="Escape"
+    >
+      <div
+        id="library-dialog"
+        class="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-200 shadow-2xl"
+        phx-click-away="close_library"
+      >
+        <div class="flex items-start justify-between gap-4 border-b border-base-300 px-5 py-3">
+          <div>
+            <h2 class="text-sm font-semibold">Attach a shared file</h2>
+            <p class="mt-0.5 text-xs text-base-content/60">
+              Files already in Canopy, from any chat. Pick one to add it to your message.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="close-library"
+            class="btn btn-ghost btn-xs btn-square"
+            phx-click="close_library"
+            aria-label="Close"
+          >
+            <.icon name="hero-x-mark-mini" class="size-4" />
+          </button>
+        </div>
+        <form
+          id="library-search"
+          phx-change="search_library"
+          phx-submit="search_library"
+          class="px-5 py-3"
+        >
+          <input
+            type="search"
+            name="q"
+            value={@library.q}
+            placeholder="Search by name"
+            class="input input-sm w-full"
+            phx-debounce="200"
+            autocomplete="off"
+            autofocus
+          />
+        </form>
+        <ul id="library-documents" class="min-h-0 flex-1 divide-y divide-base-300 overflow-y-auto">
+          <li
+            :if={@library.documents == []}
+            class="px-5 py-6 text-center text-sm text-base-content/60"
+          >
+            Nothing shared yet.
+          </li>
+          <li :for={doc <- @library.documents}>
+            <button
+              type="button"
+              id={"library-#{doc.id}"}
+              class="flex w-full items-center gap-3 px-5 py-2 text-left text-sm hover:bg-base-300/50"
+              phx-click="pick_document"
+              phx-value-id={doc.id}
+            >
+              <span class="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded bg-base-100">
+                <img
+                  :if={doc.kind == "image"}
+                  src={Documents.url_path(doc)}
+                  alt=""
+                  loading="lazy"
+                  class="size-9 object-cover"
+                />
+                <.icon
+                  :if={doc.kind != "image"}
+                  name="hero-document-text"
+                  class="size-5 text-base-content/60"
+                />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-medium">{doc.filename}</span>
+                <span class="block text-xs text-base-content/60">
+                  {doc.kind} · {Documents.size_label(doc.byte_size)} · {library_sharer(doc)}
+                </span>
+              </span>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+    """
+  end
+
+  defp library_sharer(%{agent: %{name: name}}) when is_binary(name), do: "@" <> name
+  defp library_sharer(%{user: %{display_name: name}}) when is_binary(name), do: name
+  defp library_sharer(_), do: "unknown"
+
+  defp upload_error(:too_large),
+    do: "Too large; the limit is #{Documents.size_label(Documents.max_bytes())}."
+
+  defp upload_error(:too_many_files),
+    do: "At most #{Messages.max_attachments()} files per message."
+
+  defp upload_error(:not_accepted), do: "That file type is not accepted."
+  defp upload_error(other), do: "Upload failed (#{other})."
 
   attr :changes, :map, required: true
   attr :repository, :map, required: true

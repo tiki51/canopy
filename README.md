@@ -185,6 +185,7 @@ approval, delegation, and handoff.
 cd e2e && npm install && npx playwright install chromium   # once
 npm test                                                    # or npm run test:headed
 SCREENSHOTS=1 npx playwright test screenshots               # regenerate docs/screenshots
+CANOPY_FILES_DIR=/path/to/files mix phx.server              # shared documents; default: next to the database (canopy_dev_files/)
 USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
   npx playwright test user-guide                            # regenerate docs/user-guide/images
 ```

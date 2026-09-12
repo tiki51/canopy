@@ -179,4 +179,24 @@ defmodule Canopy.Runtime.RouterTest do
     assert [] = Router.wakeups(%Event{event_type: "agent_started"}, ctx())
     assert [] = Router.wakeups(%Event{event_type: "permission_requested"}, ctx())
   end
+
+  test "a message with documents wakes with the attachments plan" do
+    small = %Canopy.Documents.Document{
+      id: "doc_a",
+      filename: "a.png",
+      kind: "image",
+      byte_size: 10
+    }
+
+    big = %Canopy.Documents.Document{id: "doc_b", filename: "b.pdf", kind: "pdf", byte_size: 10}
+
+    [{{:root, @backend}, wake}] =
+      Router.wakeups(message_event(%{documents: [small, big]}), ctx())
+
+    assert %{text: text, attachments: [{^small, :part}, {^big, :path}]} = wake
+    assert text =~ "doc_a a.png (image, 10 B) — attached to this prompt as an image"
+
+    [{{:root, @backend}, plain}] = Router.wakeups(message_event(%{}), ctx())
+    assert is_binary(plain)
+  end
 end

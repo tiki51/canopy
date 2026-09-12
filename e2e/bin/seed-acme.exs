@@ -363,6 +363,15 @@ end
     agent_ids: [backend.id, test_agent.id]
   })
 
+{:ok, brand_logo} =
+  Channels.create(%{
+    repository_id: storefront.id,
+    name: "brand-logo",
+    topic: "New logo for the storefront header and login page",
+    owner_agent_id: researcher.id,
+    agent_ids: [reviewer.id]
+  })
+
 {:ok, reviewer_dm} = Channels.ensure_dm(billing.id, reviewer)
 {:ok, finops_dm} = Channels.ensure_dm(billing.id, finops)
 
@@ -510,6 +519,66 @@ stamp.(latency.id, days_ago.(2, 11))
 
 stamp.(latency.id, days_ago.(2, 11))
 
+# -- #brand-logo: asking for feedback on an image ----------------------------------------
+
+{:ok, logo} =
+  Canopy.Documents.create(%{
+    filename: "canopy-logo.png",
+    mime: "image/png",
+    source: {:path, Path.expand("../fixtures/canopy-logo.png", __DIR__)},
+    user_id: user.id,
+    origin_channel_id: brand_logo.id,
+    caption: "Logo proposal from marketing, 800 px master"
+  })
+
+{:ok, _} =
+  Messages.post_user_message(
+    brand_logo.id,
+    user.id,
+    "Marketing sent over the new logo. It goes in the storefront header at 32px and on the login page at full size. @researcher, does it hold up at header size, and is there anything you'd change before it ships?",
+    attachments: [logo.id]
+  )
+
+stamp.(brand_logo.id, days_ago.(1, 16))
+
+turn.(brand_logo, researcher, %{
+  trigger: "user",
+  steps: 3,
+  context: 14_500,
+  duration_ms: 39_000,
+  activity: [
+    tool.("read", "src/components/Header.tsx"),
+    tool.("grep", "logo"),
+    tool.("canopy_message_send", nil)
+  ],
+  final_text: "Posted feedback on the logo with two changes before it ships."
+})
+
+{:ok, _} =
+  Messages.post_agent_message(
+    brand_logo.id,
+    researcher.id,
+    """
+    Looked at the mark against the header (`src/components/Header.tsx:18`, 32px on the navy bar).
+
+    **Works well**
+    - The toucan reads as one shape: dark wing, cream face, green beak. Silhouette survives at 32px.
+    - Navy background matches the header's `#0b1a33`, so the mark can sit flat with no box.
+
+    **Change before it ships**
+    1. **Drop the wordmark at header size.** "Canopy" at 32px is 9px tall and the *y* descender clips the nav underline. Use the bird alone in the header; wordmark only on the login page.
+    2. **The pale blue moon disappears on the header.** It is `#a8c4f5` on navy at about 3.2:1; at 32px it is a 4px dot. Either drop it from the small mark or brighten it to the cream of the face.
+
+    **Nice to have**
+    - Export an SVG; the PNG has soft edges on the beak at 2x.
+    - The two leaves at the bottom right merge at small sizes; one leaf reads cleaner.
+
+    Want me to cut the header-size variant and open a PR against the header component?
+    """
+  )
+
+stamp.(brand_logo.id, days_ago.(1, 16))
+
 # -- #invoice-pdf-export: over its spend limit ------------------------------------------
 
 {:ok, _} =
@@ -566,11 +635,24 @@ stamp.(pdf_export.id, days_ago.(1, 15))
 {:ok, retries} = Channels.set_spend_limit(retries, 5.0)
 stamp.(retries.id, ago.(126))
 
+# Priya attaches the admin screenshot from the support ticket; the runtime
+# would send it to @backend as an image part.
+{:ok, ticket_shot} =
+  Canopy.Documents.create(%{
+    filename: "support-ticket-4821.png",
+    mime: "image/png",
+    source: {:path, Path.expand("../fixtures/retry-log.png", __DIR__)},
+    user_id: user.id,
+    origin_channel_id: retries.id,
+    caption: "Retry log for inv_88213 from the billing admin"
+  })
+
 {:ok, _} =
   Messages.post_user_message(
     retries.id,
     user.id,
-    "Support has three reports this week of an invoice charged twice, always after a failed webhook. Read `payments.py` and `retry_worker.py` and post a root-cause summary. Don't change any files yet."
+    "Support has three reports this week of an invoice charged twice, always after a failed webhook. Here is the retry log from ticket #4821. Read `payments.py` and `retry_worker.py` and post a root-cause summary. Don't change any files yet.",
+    attachments: [ticket_shot.id]
   )
 
 stamp.(retries.id, ago.(124))
@@ -636,6 +718,48 @@ turn.(retries, researcher, %{
     tool.("canopy_task_update", nil)
   ]
 })
+
+# The researcher shares its full write-up as a file rather than a long post.
+{:ok, callers_doc} =
+  Canopy.Documents.create(%{
+    filename: "enqueue-charge-callers.md",
+    source:
+      {:binary,
+       """
+       # Callers of `enqueue_charge`
+
+       Every code path that can enqueue a charge for an invoice, with the guard it relies on.
+
+       | # | Call site | Trigger | Guard before the call |
+       |---|---|---|---|
+       | 1 | `acme/billing/retry_worker.py:7` | cron, every minute | none (re-enqueues every failed job) |
+       | 2 | `acme/billing/webhooks.py:5` | `payment_failed` webhook | none (fires for the retry's own failure too) |
+       | 3 | `acme/admin/replay.py:17` | support's manual replay tool | operator confirmation only |
+
+       ## Notes
+
+       - 1 and 2 overlap whenever the gateway is slow: the worker pops the job while the
+         failure webhook for the same attempt is still in flight.
+       - 3 is rare but has the same race with 1; a replay during the worker's minute can
+         double-charge in the same way.
+       - `invoices.mark_paid` runs after `gateway.charge` returns, so every caller sees
+         `status == "open"` until the first charge completes.
+
+       Recommendation: one idempotency key per invoice attempt, checked before the gateway
+       call, and a `charging` status set before the call rather than after.
+       """},
+    agent_id: researcher.id,
+    origin_channel_id: retries.id,
+    caption: "Full caller list with the guard each path relies on"
+  })
+
+{:ok, _} =
+  Messages.post_agent_message(
+    retries.id,
+    researcher.id,
+    "Full caller list attached; the short version is in the task result.",
+    attachments: [callers_doc.id]
+  )
 
 {:ok, _} =
   Delegations.complete(

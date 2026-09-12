@@ -29,6 +29,7 @@ defmodule CanopyWeb.Router do
     live_session :default, on_mount: [CanopyWeb.Nav] do
       live "/settings", SettingsLive
       live "/costs", CostsLive
+      live "/files", FilesLive
       live "/repositories", RepositoriesLive
       live "/agents", AgentsLive, :index
       live "/agents/new", AgentsLive, :new
@@ -39,6 +40,7 @@ defmodule CanopyWeb.Router do
     end
 
     get "/dm/:agent_id", DmController, :show
+    get "/files/:id/:filename", FileController, :show
   end
 
   scope "/mcp" do

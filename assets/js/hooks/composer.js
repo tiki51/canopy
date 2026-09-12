@@ -2,8 +2,9 @@
 // `@` opens an autocomplete of the channel's member agents. The textarea keeps
 // its text on a failed send; the server pushes "composer:clear" on success.
 //
-// Height: the box grows with its content up to AUTO_MAX. Dragging the resize
-// handle sets a floor the auto-grow respects, so a taller box stays tall.
+// Height: one row by default, growing with its content up to AUTO_MAX. The
+// browser's resize handle is off (CSS resize-none); the manual-floor tracking
+// below is kept in case it is ever turned back on.
 const MAX_SUGGESTIONS = 8
 const AUTO_MAX = 192
 
@@ -36,6 +37,7 @@ const Composer = {
       this.refresh()
     })
     this.el.addEventListener("blur", () => setTimeout(() => this.hide(), 150))
+    this.el.addEventListener("paste", e => this.onPaste(e))
 
     if (this.popup) {
       this.popup.addEventListener("mousedown", e => {
@@ -48,6 +50,22 @@ const Composer = {
     }
 
     this.autosize()
+  },
+
+  // Pasted files (a screenshot from the clipboard arrives as "image.png") go
+  // straight to the upload config; text pastes are left to the browser.
+  onPaste(e) {
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || [])
+    if (files.length === 0) return
+    e.preventDefault()
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-")
+    const renamed = files.map((file, i) => {
+      const generic = /^(image|file|blob)(\.\w+)?$/i.test(file.name) || file.name === ""
+      if (!generic) return file
+      const ext = (file.name.match(/\.\w+$/) || [file.type ? "." + file.type.split("/")[1] : ""])[0]
+      return new File([file], `paste-${stamp}${files.length > 1 ? "-" + (i + 1) : ""}${ext}`, {type: file.type})
+    })
+    this.upload("files", renamed)
   },
 
   // The member list lives on the form, which LiveView keeps current; the

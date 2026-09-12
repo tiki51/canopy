@@ -72,7 +72,10 @@ defmodule Canopy.Runtime.ChannelServer do
     # the hold reason this channel already posted a note for (one note per hold)
     hold_noted: nil,
     # the spend limit this channel already recorded as reached (one line per limit)
-    limit_noted: nil
+    limit_noted: nil,
+    # agent_id => [{target, wake, message}] caused by that agent's posts while
+    # its turn was still running; released, merged per target, when it ends
+    deferred: %{}
   ]
 
   defstruct @fields
@@ -286,12 +289,21 @@ defmodule Canopy.Runtime.ChannelServer do
 
     trigger = trigger_of(event)
 
-    state =
-      event
-      |> Router.wakeups(ctx)
-      |> Enum.reduce(state, fn {target, text}, acc ->
-        wake_within_budget(acc, target, %{text: text, trigger: trigger})
+    wakes =
+      Enum.map(Router.wakeups(event, ctx), fn {target, wake} ->
+        {target, wake_message(wake, trigger)}
       end)
+
+    state =
+      case posting_agent_mid_turn(event, state) do
+        nil ->
+          Enum.reduce(wakes, state, fn {target, wake}, acc ->
+            wake_within_budget(acc, target, wake)
+          end)
+
+        agent_id ->
+          defer_wakes(state, agent_id, wakes, event.message)
+      end
 
     {:noreply, state}
   rescue
@@ -545,6 +557,79 @@ defmodule Canopy.Runtime.ChannelServer do
   defp user_action?(_event), do: false
 
   # What a wake is attributed to on the turn summary (the Costs page groups by it).
+  # An agent that posts while its own turn is still running may post again
+  # before it is done (a heads-up, then the file). Wakes its posts cause wait
+  # for the turn to end, so whoever is woken reads everything at once.
+  defp posting_agent_mid_turn(
+         %Timeline.Event{event_type: "message", message: %{agent_id: agent_id, kind: kind}},
+         state
+       )
+       when is_binary(agent_id) and kind in ["post", "thread_reply"] do
+    if agent_busy?(state, agent_id), do: agent_id, else: nil
+  end
+
+  defp posting_agent_mid_turn(_event, _state), do: nil
+
+  defp agent_busy?(state, agent_id),
+    do: Enum.any?(state.turns, fn {_sid, turn} -> turn.agent_id == agent_id end)
+
+  defp defer_wakes(state, _agent_id, [], _message), do: state
+
+  defp defer_wakes(state, agent_id, wakes, message) do
+    entries = Enum.map(wakes, fn {target, wake} -> {target, wake, message} end)
+    %{state | deferred: Map.update(state.deferred, agent_id, entries, &(&1 ++ entries))}
+  end
+
+  # Releases the wakes an agent's posts caused during its turn: one wake per
+  # target, built from the last post, carrying every attachment and a note
+  # about the earlier posts.
+  defp release_deferred(state, agent_id) do
+    entries = Map.get(state.deferred, agent_id, [])
+
+    cond do
+      entries == [] ->
+        state
+
+      # another turn of the same agent (a child session) is still running
+      agent_busy?(state, agent_id) ->
+        state
+
+      true ->
+        state = %{state | deferred: Map.delete(state.deferred, agent_id)}
+
+        entries
+        |> Enum.group_by(fn {target, _, _} -> target end)
+        |> Enum.sort_by(fn {_target, [{_, _, first} | _]} -> first.id end)
+        |> Enum.reduce(state, fn {target, group}, acc ->
+          wake_within_budget(acc, target, merge_wakes(group))
+        end)
+    end
+  end
+
+  defp merge_wakes([{_target, wake, _message}]), do: wake
+
+  defp merge_wakes(group) do
+    {_, last, _} = List.last(group)
+    earlier = group |> Enum.drop(-1) |> Enum.map(fn {_, _, message} -> message end)
+
+    documents =
+      group
+      |> Enum.flat_map(fn {_, _, message} -> List.wrap(Map.get(message, :documents)) end)
+      |> Enum.reject(&(&1 == %Ecto.Association.NotLoaded{}))
+      |> Enum.uniq_by(& &1.id)
+
+    plan = Canopy.Documents.prompt_plan(documents)
+
+    last
+    |> Map.put(:text, last.text <> Prompts.earlier_posts(earlier, plan))
+    |> Map.put(:attachments, plan)
+  end
+
+  # The router hands back plain text, or a map with the attachments plan when
+  # the message carried files.
+  defp wake_message(text, trigger) when is_binary(text), do: %{text: text, trigger: trigger}
+  defp wake_message(%{text: _} = wake, trigger), do: Map.put(wake, :trigger, trigger)
+
   defp trigger_of(%Timeline.Event{event_type: "message", message: %{agent_id: nil}}), do: "user"
   defp trigger_of(%Timeline.Event{event_type: "message"}), do: "agent"
   defp trigger_of(%Timeline.Event{event_type: "delegation_" <> _}), do: "delegation"
@@ -587,11 +672,12 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp send_prompt(state, session, agent_id, %{text: text, trigger: trigger}) do
+  defp send_prompt(state, session, agent_id, %{text: text, trigger: trigger} = wake) do
     agent = Agents.get!(agent_id)
     Canopy.Notes.ensure_agent_notes(state.repository.path, agent)
     state = ensure_mcp(state)
-    body = prompt_body(agent, state, text)
+    parts = attachment_parts(state, Map.get(wake, :attachments, []))
+    body = prompt_body(agent, state, text, parts)
 
     case client().prompt_async(
            state.repository.path,
@@ -628,7 +714,9 @@ defmodule Canopy.Runtime.ChannelServer do
           # model calls, and their tokens summed
           steps: 0,
           tokens: %{},
-          trigger: trigger
+          trigger: trigger,
+          # documents sent along as file parts; they stay in the session's context
+          attachments: length(parts)
         }
 
         %{state | turns: Map.put(state.turns, session.opencode_session_id, turn)}
@@ -638,9 +726,28 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp prompt_body(agent, state, text) do
+  # Every attachment is materialised under the repository's .canopy/files/ so
+  # the agent can read it; the ones the plan marks as parts ride along too.
+  defp attachment_parts(state, plan) do
+    Enum.flat_map(plan, fn {document, mode} ->
+      case Canopy.Documents.materialize(document, state.repository.path) do
+        {:ok, _path} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("could not materialise #{document.id}: #{inspect(reason)}")
+      end
+
+      case mode do
+        :part -> List.wrap(Canopy.Documents.prompt_part(document))
+        :path -> []
+      end
+    end)
+  end
+
+  defp prompt_body(agent, state, text, parts) do
     body = %{
-      parts: [%{type: "text", text: text}],
+      parts: [%{type: "text", text: text} | parts],
       agent: agent.opencode_agent || "build",
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       tools: %{"canopy_*" => true}
@@ -960,6 +1067,7 @@ defmodule Canopy.Runtime.ChannelServer do
               "passed" => is_binary(turn.passed),
               "note" => turn.passed,
               "trigger" => turn.trigger,
+              "attachments" => Map.get(turn, :attachments, 0),
               "steps" => turn.steps,
               "context" => turn.context,
               "tokens" => turn.tokens,
@@ -978,6 +1086,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
         state = if outcome == :ok, do: maybe_compact(state, session, turn, who), else: state
+
+        state = release_deferred(state, who.agent_id)
 
         if state.pending_switch?,
           do: apply_switch(state),

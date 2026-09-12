@@ -26,6 +26,9 @@ defmodule Canopy.Messages.Message do
     belongs_to :thread, __MODULE__
     has_many :replies, __MODULE__, foreign_key: :thread_id
 
+    has_many :attachments, Canopy.Messages.Attachment, preload_order: [asc: :position]
+    has_many :documents, through: [:attachments, :document]
+
     timestamps(type: :utc_datetime_usec)
   end
 
@@ -34,8 +37,9 @@ defmodule Canopy.Messages.Message do
   @doc """
   Builds a message. `attrs` must carry `:channel_id`, `:body`, and exactly one of
   `:agent_id` / `:user_id`; all values come from code, never from a form.
+  With `attachments: true` the body may be blank: the files are the message.
   """
-  def changeset(message, attrs) do
+  def changeset(message, attrs, opts \\ []) do
     message
     |> cast(attrs, [
       :channel_id,
@@ -48,8 +52,8 @@ defmodule Canopy.Messages.Message do
       :opencode_message_id
     ])
     |> update_change(:body, &String.trim/1)
-    |> validate_required([:channel_id, :kind, :body])
-    |> validate_length(:body, min: 1, max: 100_000)
+    |> validate_required([:channel_id, :kind])
+    |> validate_body(Keyword.get(opts, :attachments, false))
     |> validate_inclusion(:kind, @kinds)
     |> validate_sender()
     |> foreign_key_constraint(:channel_id)
@@ -60,6 +64,27 @@ defmodule Canopy.Messages.Message do
       name: :messages_sender_check,
       message: "exactly one of agent_id or user_id must be set"
     )
+  end
+
+  # A message needs words unless it carries files.
+  defp validate_body(changeset, true) do
+    changeset
+    |> update_change(:body, &(&1 || ""))
+    |> put_change_if_missing(:body, "")
+    |> validate_length(:body, max: 100_000)
+  end
+
+  defp validate_body(changeset, _no_attachments) do
+    changeset
+    |> validate_required([:body])
+    |> validate_length(:body, min: 1, max: 100_000)
+  end
+
+  defp put_change_if_missing(changeset, field, value) do
+    case get_field(changeset, field) do
+      nil -> put_change(changeset, field, value)
+      _ -> changeset
+    end
   end
 
   defp validate_sender(changeset) do

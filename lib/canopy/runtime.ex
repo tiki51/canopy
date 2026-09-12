@@ -32,8 +32,11 @@ defmodule Canopy.Runtime do
   defp do_post_user_message(channel_id, body, opts) do
     {:ok, _pid} = ensure_channel(channel_id)
 
+    attachments? = Keyword.get(opts, :attachments, []) != []
+
     case Commands.parse(body) do
       :text -> Messages.post_user_message(channel_id, Users.local().id, body, opts)
+      {:command, _, _, _} when attachments? -> {:error, "commands cannot carry attachments"}
       {:command, :handoff, target, reason} -> user_handoff(channel_id, target, reason)
       {:command, :delegate, target, task} -> user_delegation(channel_id, target, task)
       {:error, reason} -> {:error, reason}

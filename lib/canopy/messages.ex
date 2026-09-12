@@ -7,17 +7,28 @@ defmodule Canopy.Messages do
   import Ecto.Query, warn: false
 
   alias Canopy.Agents
-  alias Canopy.Messages.Message
+  alias Canopy.Documents
+  alias Canopy.Messages.{Attachment, Message}
   alias Canopy.Repo
   alias Canopy.Timeline
   alias Ecto.Multi
 
   @default_limit 20
   @max_limit 200
-  @preloads [:agent, :user]
+  @preloads [:agent, :user, :documents]
+  @max_attachments 10
   @mention_regex ~r/(?<![\w@])@([a-z0-9][a-z0-9_-]*)/i
 
-  @doc "Posts a message from the local user."
+  @doc "The most documents one message may carry."
+  def max_attachments, do: @max_attachments
+
+  @doc """
+  Posts a message from the local user. Options shared by every poster:
+
+    * `:attachments` — document ids to attach, in order (max #{@max_attachments});
+      with attachments the body may be blank
+    * `:mentions` — override the mentions extracted from the body
+  """
   def post_user_message(channel_id, user_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "post"}, opts)
   end
@@ -204,30 +215,71 @@ defmodule Canopy.Messages do
       |> Map.put(:mentions, Keyword.get(opts, :mentions) || extract_mentions(attrs.body))
       |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
 
-    Multi.new()
-    |> Multi.insert(:message, Message.changeset(%Message{}, attrs))
-    |> Timeline.multi_record(:event, fn %{message: message} ->
-      %{
-        channel_id: message.channel_id,
-        agent_id: message.agent_id,
-        event_type: "message",
-        ref_id: message.id,
-        payload: %{
-          "kind" => message.kind,
-          "thread_id" => message.thread_id,
-          "user_id" => message.user_id,
-          "mentions" => message.mentions
+    with {:ok, document_ids} <- check_attachments(Keyword.get(opts, :attachments, [])) do
+      Multi.new()
+      |> Multi.insert(
+        :message,
+        Message.changeset(%Message{}, attrs, attachments: document_ids != [])
+      )
+      |> Multi.run(:attachments, fn repo, %{message: message} ->
+        document_ids
+        |> Enum.with_index()
+        |> Enum.reduce_while({:ok, []}, fn {document_id, position}, {:ok, acc} ->
+          case repo.insert(
+                 Attachment.changeset(%Attachment{}, %{
+                   message_id: message.id,
+                   document_id: document_id,
+                   position: position
+                 })
+               ) do
+            {:ok, attachment} -> {:cont, {:ok, [attachment | acc]}}
+            {:error, changeset} -> {:halt, {:error, changeset}}
+          end
+        end)
+      end)
+      |> Timeline.multi_record(:event, fn %{message: message} ->
+        %{
+          channel_id: message.channel_id,
+          agent_id: message.agent_id,
+          event_type: "message",
+          ref_id: message.id,
+          payload: %{
+            "kind" => message.kind,
+            "thread_id" => message.thread_id,
+            "user_id" => message.user_id,
+            "mentions" => message.mentions,
+            "attachments" => document_ids
+          }
         }
-      }
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{message: message, event: event}} ->
-        Timeline.broadcast(event)
-        {:ok, Repo.preload(message, @preloads)}
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{message: message, event: event}} ->
+          Timeline.broadcast(event)
+          {:ok, Repo.preload(message, @preloads)}
 
-      {:error, _step, changeset, _changes} ->
-        {:error, changeset}
+        {:error, _step, changeset, _changes} ->
+          {:error, changeset}
+      end
+    end
+  end
+
+  # Attachments are document ids that must exist; duplicates collapse and
+  # order is kept. Errors are strings so tools and the UI can show them as is.
+  defp check_attachments([]), do: {:ok, []}
+
+  defp check_attachments(ids) when is_list(ids) do
+    ids = Enum.uniq(ids)
+
+    cond do
+      length(ids) > @max_attachments ->
+        {:error, "at most #{@max_attachments} attachments per message"}
+
+      true ->
+        case Enum.find(ids, &is_nil(Documents.get(&1))) do
+          nil -> {:ok, ids}
+          missing -> {:error, "unknown document #{missing}"}
+        end
     end
   end
 

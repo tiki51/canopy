@@ -148,6 +148,19 @@ test.describe("screenshots for the user guide", () => {
     await shot(page, "composer-autocomplete", { clip: { x: 312, y: 640, width: 1128, height: 260 } });
     await page.locator("#composer-input").fill("");
 
+    // attachments: the ticket screenshot on Priya's first post and the
+    // researcher's shared write-up, then the library picker
+    const image = page.locator('[id^="attachment-"][data-kind="image"] img').first();
+    await image.evaluate((el: HTMLImageElement) => el.complete || new Promise((r) => (el.onload = r)));
+    await page.locator("article", { has: image }).first().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await shot(page, "attachments");
+    await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await page.locator("#composer-library").click();
+    await expect(page.locator("#library-documents")).toContainText("enqueue-charge-callers.md");
+    await shot(page, "library-picker");
+    await page.locator("#close-library").click();
+
     // -- A channel over its spend limit -------------------------------------------
     await sidebarChannel(page, "invoice-pdf-export").click();
     await expect(page.locator("#limit-bar")).toBeVisible();
@@ -158,6 +171,14 @@ test.describe("screenshots for the user guide", () => {
     await expect(timeline(page)).toContainText("priceCart");
     await openThreads(page);
     await shot(page, "channel-thread");
+
+    // -- Asking for feedback on an image -------------------------------------------
+    await sidebarChannel(page, "brand-logo").click();
+    const logo = page.locator('[id^="attachment-"][data-kind="image"] img').first();
+    await logo.evaluate((el: HTMLImageElement) => el.complete || new Promise((r) => (el.onload = r)));
+    await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = 0));
+    await page.waitForTimeout(300);
+    await shot(page, "image-feedback");
 
     // -- Archived ------------------------------------------------------------------
     await page.locator('[id^="sidebar-archived-"] summary').first().click();
@@ -180,6 +201,11 @@ test.describe("screenshots for the user guide", () => {
     await sidebarDm(page, "@finops").click();
     await expect(timeline(page)).toContainText("Ranked by expected savings");
     await shot(page, "audit-dm");
+
+    // -- Files ----------------------------------------------------------------------
+    await page.goto("/files");
+    await expect(page.locator("#files")).toContainText("support-ticket-4821.png");
+    await shot(page, "files-page");
 
     // -- Costs ----------------------------------------------------------------------
     await page.setViewportSize({ width: 1440, height: 1780 });

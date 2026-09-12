@@ -55,8 +55,8 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert Messages.list(ctx.outsider_channel.id) == []
     end
 
-    test "requires text at the schema level", ctx do
-      assert {:invalid, _} = call(MessageSend, %{}, ctx)
+    test "without text or attachments is refused", ctx do
+      assert {:error, "text is empty"} = call(MessageSend, %{}, ctx)
     end
   end
 

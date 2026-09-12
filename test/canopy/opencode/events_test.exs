@@ -121,4 +121,12 @@ defmodule Canopy.OpenCode.EventsTest do
 
     assert Events.session_id(%{"properties" => %{}}) == nil
   end
+
+  test "file parts in prompts and image attachments on tool results are not telemetry" do
+    events = Fixtures.events("file_parts")
+    assert Enum.any?(events, &(get_in(&1, ["properties", "part", "type"]) == "file"))
+
+    normalized = Enum.flat_map(events, &List.wrap(Events.normalize(&1)))
+    assert [%{type: :tool_completed, data: %{tool: "spike_spike_image"}}] = normalized
+  end
 end

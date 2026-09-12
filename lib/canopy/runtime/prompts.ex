@@ -69,6 +69,64 @@ defmodule Canopy.Runtime.Prompts do
 
   defp inline_body(_args), do: "Read it with canopy_message_get."
 
+  # One line per attached document, saying how the agent gets at it. `plan` is
+  # `Canopy.Documents.prompt_plan/1` output; the parts themselves are added to
+  # the OpenCode prompt by the channel server.
+  defp attachments_block([]), do: ""
+
+  defp attachments_block(plan) when is_list(plan) do
+    lines =
+      Enum.map_join(plan, "\n", fn {document, mode} -> "- " <> attachment_line(document, mode) end)
+
+    "Attachments on this message:\n" <>
+      lines <>
+      "\nEvery attachment is also a file under .canopy/files/ in the repository, readable with your own tools; canopy_document_get returns one by id (images included) and canopy_documents_list finds files shared anywhere in Canopy.\n"
+  end
+
+  @doc """
+  Appended to a wake when the same agent posted several messages in one turn:
+  the earlier ones, with their attachments and how each arrives. `plan` is the
+  merged `Canopy.Documents.prompt_plan/1` for every document in the turn.
+  """
+  def earlier_posts([], _plan), do: ""
+
+  def earlier_posts(messages, plan) do
+    modes = Map.new(plan, fn {document, mode} -> {document.id, mode} end)
+
+    lines =
+      Enum.map_join(messages, "\n", fn message ->
+        docs =
+          message
+          |> Map.get(:documents)
+          |> List.wrap()
+          |> Enum.reject(&(&1 == %Ecto.Association.NotLoaded{}))
+
+        doc_lines =
+          Enum.map_join(docs, "", fn document ->
+            "\n  - " <> attachment_line(document, Map.get(modes, document.id, :path))
+          end)
+
+        "- [#{message.id}]: #{Canopy.MCP.Format.truncate(Canopy.MCP.Format.single_line(message.body), 200)}" <>
+          doc_lines
+      end)
+
+    "\nEarlier in the same turn the sender also posted:\n" <>
+      lines <> "\ncanopy_messages_read returns all of them in full.\n"
+  end
+
+  defp attachment_line(document, mode) do
+    ref = Canopy.MCP.Format.document_ref(document)
+    path = Canopy.Documents.materialized_relative_path(document)
+
+    case {mode, document.kind} do
+      {:part, "image"} -> "#{ref} — attached to this prompt as an image; also at #{path}"
+      {:part, _} -> "#{ref} — attached to this prompt as text; also at #{path}"
+      {:path, "image"} -> "#{ref} — too large to attach; at #{path}"
+      {:path, "text"} -> "#{ref} — not attached; read it at #{path} or with canopy_document_get"
+      {:path, _} -> "#{ref} — at #{path}"
+    end
+  end
+
   def new_message(
         %{channel: channel, sender: sender, message_id: message_id, thread?: thread?} = args
       ) do
@@ -87,7 +145,7 @@ defmodule Canopy.Runtime.Prompts do
     You have a new Canopy message in ##{channel} from #{sender}.
     Message ID: #{message_id}
     #{members_line}
-    #{inline_body(args)}
+    #{inline_body(args)}#{attachments_block(Map.get(args, :attachments, []))}
     canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older ones. Do the work, then post your findings with canopy_message_send.#{thread_hint}
     Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.
     If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop. Never post an acknowledgement.

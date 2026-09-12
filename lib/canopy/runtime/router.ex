@@ -62,6 +62,8 @@ defmodule Canopy.Runtime.Router do
             owner_fallback(ctx, sender_agent_id)
       end
 
+    attachments = message |> documents_of() |> Canopy.Documents.prompt_plan()
+
     text =
       Prompts.new_message(%{
         channel: ctx.channel.name,
@@ -69,10 +71,15 @@ defmodule Canopy.Runtime.Router do
         message_id: message.id,
         thread?: not is_nil(message.thread_id),
         members: member_names(ctx),
-        body: Map.get(message, :body)
+        body: Map.get(message, :body),
+        attachments: attachments
       })
 
-    Enum.map(Enum.uniq(targets), &{{:root, &1}, text})
+    # With attachments the wake carries the plan too, so the channel server
+    # can add the file parts the text promises.
+    wake = if attachments == [], do: text, else: %{text: text, attachments: attachments}
+
+    Enum.map(Enum.uniq(targets), &{{:root, &1}, wake})
   end
 
   defp do_wakeups(%Event{event_type: "delegation_created", payload: p} = ev, ctx) do
@@ -140,6 +147,13 @@ defmodule Canopy.Runtime.Router do
   end
 
   defp do_wakeups(_event, _ctx), do: []
+
+  defp documents_of(message) do
+    case Map.get(message, :documents) do
+      docs when is_list(docs) -> docs
+      _ -> []
+    end
+  end
 
   defp thread_root_author(%{thread_id: nil}, _ctx, _sender), do: []
 

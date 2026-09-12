@@ -13,6 +13,8 @@ erl_crash.dump
 *.db
 *.db-shm
 *.db-wal
+# Shared document bytes, stored next to the database
+*_files/
 
 # Assets
 /priv/static/assets/

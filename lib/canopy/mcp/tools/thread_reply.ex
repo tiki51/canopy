@@ -1,5 +1,8 @@
 defmodule Canopy.MCP.Tools.ThreadReply do
-  @moduledoc "Reply in the thread of an existing message. The thread's author is woken if it is an agent."
+  @moduledoc """
+  Reply in the thread of an existing message. The thread's author is woken if
+  it is an agent. Attach files with `attachments`, as in canopy_message_send.
+  """
 
   use Anubis.Server.Component, type: :tool
 
@@ -9,7 +12,14 @@ defmodule Canopy.MCP.Tools.ThreadReply do
   schema do
     field :canopy_session_id, :string, description: Tool.identity_description()
     field :message_id, {:required, :string}, description: "Id of the message to reply to."
-    field :text, {:required, :string}, description: "Reply body in GitHub-flavoured Markdown."
+
+    field :text, :string,
+      description:
+        "Reply body in GitHub-flavoured Markdown. May be empty when attachments are given."
+
+    field :attachments, :string,
+      description:
+        "Comma-separated document ids (doc_…) or repository-relative file paths to attach."
   end
 
   @impl true
@@ -17,12 +27,22 @@ defmodule Canopy.MCP.Tools.ThreadReply do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, parent} <- parent(params),
            {:ok, channel} <- channel_of(parent, ctx),
-           {:ok, text} <- text(params),
-           {:ok, reply} <- reply(parent, ctx, text) do
-        {:ok, "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}"}
+           {:ok, attachments} <-
+             Tool.resolve_attachments(
+               ctx,
+               channel,
+               Tool.blank_to_nil(Map.get(params, :attachments))
+             ),
+           {:ok, text} <- text(params, attachments),
+           {:ok, reply} <- reply(parent, ctx, text, attachments) do
+        {:ok,
+         "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{attached(attachments)}"}
       end
     end)
   end
+
+  defp attached([]), do: ""
+  defp attached(ids), do: " with #{length(ids)} attachment(s): #{Enum.join(ids, ", ")}"
 
   defp parent(params) do
     id = Tool.blank_to_nil(Map.get(params, :message_id))
@@ -43,17 +63,24 @@ defmodule Canopy.MCP.Tools.ThreadReply do
     end
   end
 
-  defp text(params) do
-    case Tool.blank_to_nil(Map.get(params, :text)) do
-      nil -> {:error, "text is empty"}
-      text -> {:ok, text}
+  defp text(params, attachments) do
+    case {Tool.blank_to_nil(Map.get(params, :text)), attachments} do
+      {nil, []} -> {:error, "text is empty"}
+      {nil, _} -> {:ok, ""}
+      {text, _} -> {:ok, text}
     end
   end
 
-  defp reply(parent, ctx, text) do
-    case Messages.thread_reply(parent.id, {:agent, ctx.agent.id}, text) do
-      {:ok, reply} -> {:ok, reply}
-      {:error, changeset} -> {:error, "could not reply: " <> Tool.changeset_reason(changeset)}
+  defp reply(parent, ctx, text, attachments) do
+    case Messages.thread_reply(parent.id, {:agent, ctx.agent.id}, text, attachments: attachments) do
+      {:ok, reply} ->
+        {:ok, reply}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, "could not reply: " <> Tool.changeset_reason(changeset)}
+
+      {:error, reason} when is_binary(reason) ->
+        {:error, reason}
     end
   end
 end

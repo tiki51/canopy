@@ -257,6 +257,160 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "attachments" do
+    @png File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    test "an uploaded image is attached to the message and rendered inline", ctx do
+      %{channel: channel} = ctx
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      upload =
+        file_input(view, "#upload-form", :files, [
+          %{name: "shot.png", content: @png, type: "image/png"}
+        ])
+
+      assert render_upload(upload, "shot.png") =~ "shot.png"
+      assert has_element?(view, "#composer-files [id^=upload-]", "shot.png")
+
+      view |> form("#composer-form", message: %{body: ""}) |> render_submit()
+
+      assert_receive {:timeline, %{event_type: "message", message: %{id: id, documents: [doc]}}},
+                     2_000
+
+      assert doc.filename == "shot.png"
+      assert doc.kind == "image"
+      assert doc.origin_channel_id == channel.id
+
+      assert has_element?(
+               view,
+               "#attachment-#{id}-#{doc.id}[data-kind=image] img[alt='shot.png']"
+             )
+
+      refute has_element?(view, "#composer-files")
+      assert_push_event(view, "composer:clear", %{})
+    end
+
+    test "other files render as download cards and can be removed before sending", ctx do
+      %{channel: channel} = ctx
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      upload =
+        file_input(view, "#upload-form", :files, [
+          %{name: "report.md", content: "# hi", type: "text/markdown"},
+          %{name: "junk.md", content: "x", type: "text/markdown"}
+        ])
+
+      render_upload(upload, "report.md")
+      render_upload(upload, "junk.md")
+      [_, junk_ref] = Enum.map(upload.entries, & &1["ref"])
+      view |> element("#upload-#{junk_ref} button") |> render_click()
+      refute has_element?(view, "#upload-#{junk_ref}")
+
+      view |> form("#composer-form", message: %{body: "the analysis"}) |> render_submit()
+
+      assert_receive {:timeline, %{event_type: "message", message: %{id: id, documents: [doc]}}},
+                     2_000
+
+      assert doc.filename == "report.md"
+      assert has_element?(view, "#attachment-#{id}-#{doc.id}[data-kind=text]", "report.md")
+      assert has_element?(view, "#message-#{id}", "the analysis")
+    end
+
+    test "a file over the limit shows an error and blocks sending", ctx do
+      Application.put_env(:canopy, :max_upload_bytes, 8)
+      on_exit(fn -> Application.delete_env(:canopy, :max_upload_bytes) end)
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      upload =
+        file_input(view, "#upload-form", :files, [
+          %{name: "big.txt", content: "more than eight bytes", type: "text/plain"}
+        ])
+
+      assert {:error, [[_ref, :too_large]]} = render_upload(upload, "big.txt")
+      assert render(view) =~ "Too large; the limit is 8 B."
+
+      view |> form("#composer-form", message: %{body: "with a big file"}) |> render_submit()
+      assert has_element?(view, "#flash-error", "still uploading, or failed")
+      refute_push_event(view, "composer:clear", %{})
+    end
+
+    test "attachments on a slash command are refused and the files are dropped", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      upload =
+        file_input(view, "#upload-form", :files, [
+          %{name: "shot.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(upload, "shot.png")
+      view |> form("#composer-form", message: %{body: "/handoff @nobody x"}) |> render_submit()
+      assert has_element?(view, "#flash-error", "commands cannot carry attachments")
+      assert Canopy.Documents.count() == 0
+    end
+  end
+
+  describe "library" do
+    test "a shared document can be picked from the library and sent again", ctx do
+      %{channel: channel, user: user} = ctx
+
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: "earlier.md",
+          source: {:binary, "old"},
+          user_id: user.id
+        })
+
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view |> element("#composer-library") |> render_click()
+      assert has_element?(view, "#library-#{doc.id}", "earlier.md")
+      view |> element("#library-dialog form") |> render_change(%{q: "zzz"})
+      refute has_element?(view, "#library-#{doc.id}")
+      view |> element("#library-dialog form") |> render_change(%{q: "earl"})
+      view |> element("#library-#{doc.id}") |> render_click()
+
+      refute has_element?(view, "#library-picker")
+      assert has_element?(view, "#picked-#{doc.id}", "earlier.md")
+
+      view |> form("#composer-form", message: %{body: "again"}) |> render_submit()
+
+      assert_receive {:timeline,
+                      %{event_type: "message", message: %{id: id, documents: [%{id: doc_id}]}}},
+                     2_000
+
+      assert doc_id == doc.id
+      assert has_element?(view, "#attachment-#{id}-#{doc.id}")
+      refute has_element?(view, "#picked-#{doc.id}")
+    end
+
+    test "?attach= pre-picks a document and a deleted document leaves the message", ctx do
+      %{channel: channel, user: user} = ctx
+
+      {:ok, doc} =
+        Canopy.Documents.create(%{filename: "pre.md", source: {:binary, "x"}, user_id: user.id})
+
+      {:ok, message} =
+        Messages.post_user_message(channel.id, user.id, "with file", attachments: [doc.id])
+
+      {:ok, view, _html} = live(conn_of(ctx), ~p"/channels/#{channel.id}?attach=#{doc.id}")
+      assert has_element?(view, "#picked-#{doc.id}", "pre.md")
+      assert has_element?(view, "#attachment-#{message.id}-#{doc.id}")
+
+      view |> element("#picked-#{doc.id} button") |> render_click()
+      refute has_element?(view, "#picked-#{doc.id}")
+
+      {:ok, _} = Canopy.Documents.delete(doc)
+      refute has_element?(view, "#attachment-#{message.id}-#{doc.id}")
+      assert has_element?(view, "#message-#{message.id}", "with file")
+
+      {:ok, view, _html} = live(conn_of(ctx), ~p"/channels/#{channel.id}?attach=doc_gone")
+      assert has_element?(view, "#flash-error", "no longer exists")
+    end
+  end
+
   describe "composer" do
     test "posting text calls the runtime and the message appears via broadcast", ctx do
       %{channel: channel, agent: agent} = ctx

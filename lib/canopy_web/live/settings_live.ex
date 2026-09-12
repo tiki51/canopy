@@ -28,7 +28,11 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:plugin_path, @plugin_path)
      |> assign(:plugin_source, MCP.plugin_source())
      |> assign(:mcp_url, MCP.url())
-     |> assign(:mcp_name, MCP.registration_name())}
+     |> assign(:mcp_name, MCP.registration_name())
+     |> assign(:files_dir, Canopy.Documents.Store.dir())
+     |> assign(:files_limit, Canopy.Documents.max_bytes())
+     |> assign(:files_count, Canopy.Documents.count())
+     |> assign(:files_bytes, Canopy.Documents.total_bytes())}
   end
 
   @impl true
@@ -404,6 +408,29 @@ defmodule CanopyWeb.SettingsLive do
               >{@plugin_source}</pre>
             </div>
           </div>
+        </Layouts.panel>
+
+        <Layouts.panel
+          id="files-panel"
+          title="Shared files"
+          description="Documents attached in chats are stored once, next to the database, and served from /files/. Manage them on the Files page."
+        >
+          <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+            <dt class="text-base-content/60">Storage directory</dt>
+            <dd class="min-w-0 truncate font-mono text-xs" id="files-dir" title={@files_dir}>
+              {@files_dir}
+            </dd>
+            <dt class="text-base-content/60">Size limit per file</dt>
+            <dd id="files-limit">
+              {Canopy.Documents.size_label(@files_limit)}
+              <span class="text-xs text-base-content/50">(CANOPY_MAX_UPLOAD_MB)</span>
+            </dd>
+            <dt class="text-base-content/60">Stored</dt>
+            <dd id="files-stored">
+              {@files_count} file(s), {Canopy.Documents.size_label(@files_bytes)} ·
+              <.link navigate={~p"/files"} class="link link-primary">Files page</.link>
+            </dd>
+          </dl>
         </Layouts.panel>
       </Layouts.page>
     </Layouts.app>

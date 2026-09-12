@@ -9,7 +9,7 @@ defmodule Canopy.MCP.Tool do
 
   alias Anubis.Server.Response
   alias Canopy.Repositories
-  alias Canopy.{Agents, Channels}
+  alias Canopy.{Agents, Channels, Documents}
   alias Canopy.MCP.Identity
 
   @identity_description "Set automatically by Canopy; never fill this in."
@@ -30,8 +30,15 @@ defmodule Canopy.MCP.Tool do
 
     case result do
       {:ok, text} when is_binary(text) -> reply(text, frame)
+      {:ok, text, {:image, data, mime}} -> reply_with_image(text, data, mime, frame)
       {:error, reason} when is_binary(reason) -> error(reason, frame)
     end
+  end
+
+  @doc "A text result followed by an image content block (base64 `data`)."
+  def reply_with_image(text, data, mime, frame) do
+    response = Response.tool() |> Response.text(text) |> Response.image(data, mime)
+    {:reply, response, frame}
   end
 
   @doc "A successful text tool result."
@@ -164,6 +171,52 @@ defmodule Canopy.MCP.Tool do
         true ->
           {:ok, agent}
       end
+    end
+  end
+
+  @doc """
+  Resolves an `attachments` argument: a comma-separated list of document ids
+  (`doc_…`) and repository-relative paths. Paths are shared as new documents
+  first, credited to the caller and the channel. Returns `{:ok, ids}` in the
+  given order or a one-line error naming the bad item.
+  """
+  def resolve_attachments(_ctx, _channel, nil), do: {:ok, []}
+
+  def resolve_attachments(ctx, channel, value) when is_binary(value) do
+    items =
+      value
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    if length(items) > Canopy.Messages.max_attachments() do
+      {:error, "at most #{Canopy.Messages.max_attachments()} attachments per message"}
+    else
+      Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+        case resolve_attachment(ctx, channel, item) do
+          {:ok, id} -> {:cont, {:ok, acc ++ [id]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  defp resolve_attachment(_ctx, _channel, "doc_" <> _ = id) do
+    case Documents.get(id) do
+      nil -> {:error, "unknown document #{id}"}
+      _ -> {:ok, id}
+    end
+  end
+
+  defp resolve_attachment(ctx, channel, path) do
+    case Documents.create_from_repository(ctx.repository.path, path, %{
+           agent_id: ctx.agent.id,
+           origin_channel_id: channel && channel.id
+         }) do
+      {:ok, document} -> {:ok, document.id}
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, changeset} -> {:error, "could not share #{path}: " <> changeset_reason(changeset)}
     end
   end
 

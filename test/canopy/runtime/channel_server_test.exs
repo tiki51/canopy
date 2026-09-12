@@ -45,6 +45,133 @@ defmodule Canopy.Runtime.ChannelServerTest do
     )
   end
 
+  test "attachments on the waking message go to OpenCode as file parts and into .canopy/files",
+       ctx do
+    test_pid = self()
+    png = File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    {:ok, shot} =
+      Canopy.Documents.create(%{
+        filename: "shot.png",
+        mime: "image/png",
+        source: {:binary, png},
+        user_id: ctx.user.id
+      })
+
+    {:ok, note} =
+      Canopy.Documents.create(%{
+        filename: "note.md",
+        source: {:binary, "# hi"},
+        user_id: ctx.user.id
+      })
+
+    {:ok, spec} =
+      Canopy.Documents.create(%{
+        filename: "spec.pdf",
+        mime: "application/pdf",
+        source: {:binary, "%PDF-1.4"},
+        user_id: ctx.user.id
+      })
+
+    expect(OC, :prompt_async, fn _dir, _sid, body, _opts ->
+      send(test_pid, {:prompted, body})
+      {:ok, ""}
+    end)
+
+    {:ok, _} =
+      Runtime.post_user_message(ctx.channel.id, "see attached",
+        attachments: [shot.id, note.id, spec.id]
+      )
+
+    assert_receive {:prompted, body}, 2_000
+    assert [%{type: "text", text: text}, image_part, text_part] = body.parts
+    assert text =~ "#{shot.id} shot.png (image, 75 B) — attached to this prompt as an image"
+    assert text =~ "#{spec.id} spec.pdf (pdf, 8 B) — at .canopy/files/#{spec.id}-spec.pdf"
+
+    assert image_part == %{
+             type: "file",
+             mime: "image/png",
+             filename: "shot.png",
+             url: "data:image/png;base64," <> Base.encode64(png)
+           }
+
+    assert text_part == %{
+             type: "file",
+             mime: "text/plain",
+             filename: "note.md",
+             url: "data:text/plain;base64," <> Base.encode64("# hi")
+           }
+
+    for doc <- [shot, note, spec] do
+      assert File.exists?(
+               Path.join(ctx.repository.path, ".canopy/files/#{doc.id}-#{doc.filename}")
+             )
+    end
+
+    emit(ctx.session.opencode_session_id, :agent_completed, %{})
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"attachments" => 2}}},
+                   2_000
+  end
+
+  test "wakes caused by a busy agent's posts wait for its turn and arrive merged", ctx do
+    %{channel: channel, agent: owner, reviewer: reviewer, session: session} = ctx
+    test_pid = self()
+    png = File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+      send(test_pid, {:prompted, sid, body})
+      {:ok, ""}
+    end)
+
+    stub(OC, :create_session, fn _dir, _body, _opts ->
+      {:ok, %{"id" => "ses_rev_" <> Fixtures.unique_suffix()}}
+    end)
+
+    # the owner's turn starts
+    {:ok, _} = Runtime.post_user_message(channel.id, "get the reviewer's opinion on the logo")
+    assert_receive {:prompted, owner_sid, _}, 2_000
+    assert owner_sid == session.opencode_session_id
+
+    # mid-turn: a heads-up mentioning the reviewer, then the image in a second post
+    {:ok, first} =
+      Messages.post_agent_message(
+        channel.id,
+        owner.id,
+        "@#{reviewer.name}, opinion needed on the logo; image next."
+      )
+
+    {:ok, shot} =
+      Canopy.Documents.create(%{
+        filename: "logo.png",
+        mime: "image/png",
+        source: {:binary, png},
+        agent_id: owner.id
+      })
+
+    {:ok, _second} =
+      Messages.post_agent_message(channel.id, owner.id, "Here it is, @#{reviewer.name}.",
+        attachments: [shot.id]
+      )
+
+    refute_receive {:prompted, _, _}, 300
+
+    # the owner's turn ends: one wake for the reviewer, carrying both posts
+    emit(owner_sid, :agent_completed, %{})
+    assert_receive {:prompted, _reviewer_sid, body}, 2_000
+    refute_receive {:prompted, _, _}, 300
+
+    [%{type: "text", text: text}, image_part] = body.parts
+    assert text =~ "Here it is, @#{reviewer.name}."
+
+    assert text =~
+             "Earlier in the same turn the sender also posted:\n- [#{first.id}]: @#{reviewer.name}, opinion needed on the logo; image next."
+
+    assert text =~ "#{shot.id} logo.png (image, 75 B) — attached to this prompt as an image"
+    assert image_part.mime == "image/png"
+  end
+
   test "with pausing turned off, agents keep waking each other past the limit", ctx do
     {:ok, _} = Canopy.Settings.update(%{chatter_pause: false, chatter_limit: 1})
     test_pid = self()

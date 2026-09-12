@@ -117,7 +117,12 @@ async function runTurn(sessionID, text) {
   } else if (/new Canopy message/i.test(text)) {
     const msg = text.match(/Message ID: (msg_\S+)/);
     const body = msg ? await mcpCall("messages_read", { canopy_session_id: sessionID, around: msg[1], limit: 1 }) : "";
-    if (/schedule/i.test(body)) {
+    if (/publish a report/i.test(body)) {
+      const shared = await mcpCall("document_share", { canopy_session_id: sessionID, filename: "retry-report.md", content: "# Retry report\n\nTwo callers race on `enqueue_charge`.\n", caption: "the report" });
+      const id = (shared.match(/\[(doc_\w+)\]/) || [])[1];
+      await mcpCall("message_send", { canopy_session_id: sessionID, text: "Report attached.", attachments: id });
+      reply = "Published the report.";
+    } else if (/schedule/i.test(body)) {
       const created = await mcpCall("schedule_create", { canopy_session_id: sessionID, when: "3s", what: "Run the scheduled check and report." });
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Scheduled it: " + created.split(".")[0] + "." });
       reply = "Scheduled.";

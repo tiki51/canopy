@@ -124,4 +124,56 @@ defmodule Canopy.Runtime.PromptsTest do
     assert Prompts.delegation(%{channel: "c", from: "@a", delegation_id: "d", task: "t"}) =~
              "The time now is"
   end
+
+  test "new_message lists attachments and how each one reaches the agent" do
+    doc = fn id, name, kind, size ->
+      %Canopy.Documents.Document{id: id, filename: name, kind: kind, byte_size: size}
+    end
+
+    plan = [
+      {doc.("doc_1", "shot.png", "image", 2_048), :part},
+      {doc.("doc_2", "report.md", "text", 300), :part},
+      {doc.("doc_3", "dump.csv", "text", 5_000_000), :path},
+      {doc.("doc_4", "huge.png", "image", 9_000_000), :path},
+      {doc.("doc_5", "spec.pdf", "pdf", 10_000), :path}
+    ]
+
+    text =
+      Prompts.new_message(%{
+        channel: "payments",
+        sender: "Steven",
+        message_id: "msg_1",
+        thread?: false,
+        body: "see attached",
+        attachments: plan
+      })
+
+    assert text =~ "Attachments on this message:"
+
+    assert text =~
+             "- doc_1 shot.png (image, 2 KB) — attached to this prompt as an image; also at .canopy/files/doc_1-shot.png"
+
+    assert text =~
+             "- doc_2 report.md (text, 300 B) — attached to this prompt as text; also at .canopy/files/doc_2-report.md"
+
+    assert text =~
+             "- doc_3 dump.csv (text, 4.8 MB) — not attached; read it at .canopy/files/doc_3-dump.csv or with canopy_document_get"
+
+    assert text =~
+             "- doc_4 huge.png (image, 8.6 MB) — too large to attach; at .canopy/files/doc_4-huge.png"
+
+    assert text =~ "- doc_5 spec.pdf (pdf, 9 KB) — at .canopy/files/doc_5-spec.pdf"
+    assert text =~ "canopy_documents_list"
+
+    plain =
+      Prompts.new_message(%{
+        channel: "p",
+        sender: "S",
+        message_id: "m",
+        thread?: false,
+        body: "hi"
+      })
+
+    refute plain =~ "Attachments"
+  end
 end

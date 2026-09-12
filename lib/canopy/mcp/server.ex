@@ -42,13 +42,16 @@ defmodule Canopy.MCP.Server do
   component(Tools.MemoryRead, name: "memory_read")
   component(Tools.MemoryWrite, name: "memory_write")
   component(Tools.CostsReport, name: "costs_report")
+  component(Tools.DocumentsList, name: "documents_list")
+  component(Tools.DocumentGet, name: "document_get")
+  component(Tools.DocumentShare, name: "document_share")
 
   @tool_names ~w(
     channels_list channel_get messages_read message_get messages_search message_send thread_reply
     task_get task_update agents_list delegate_task handoff_task handoff_get
     handoff_accept handoff_reject dm_start pass channel_create channel_add_members
     channel_remove_members schedule_create schedules_list schedule_cancel memory_read memory_write
-    dm_switch_repository costs_report
+    dm_switch_repository costs_report documents_list document_get document_share
   )
 
   @doc "The names of every tool this server exposes, in registration order."
