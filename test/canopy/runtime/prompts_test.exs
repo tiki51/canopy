@@ -41,6 +41,36 @@ defmodule Canopy.Runtime.PromptsTest do
     refute text =~ "{{"
   end
 
+  test "each agent is told its own execution mode, not the channel's" do
+    build = Prompts.system(agent_with("build"), %{name: "c"}, %{id: "r", path: "/r"})
+    assert build =~ "you have write access and are expected to do the work yourself"
+    assert build =~ "that describes their session, not yours"
+    refute build =~ "read-only"
+
+    plan = Prompts.system(agent_with("plan"), %{name: "c"}, %{id: "r", path: "/r"})
+    assert plan =~ "Your session is read-only"
+    assert plan =~ "never tell the channel that execution is blocked"
+    refute plan =~ "you have write access"
+
+    # a custom OpenCode agent: Canopy cannot know its reach, but a teammate's
+    # limits still must not be read as the channel's
+    custom = Prompts.system(agent_with("reviewer-ro"), %{name: "c"}, %{id: "r", path: "/r"})
+    assert custom =~ "A teammate's limits are their own"
+    refute custom =~ "Your session"
+
+    for text <- [build, plan, custom], do: refute(text =~ "{{")
+  end
+
+  defp agent_with(opencode_agent) do
+    %{
+      name: "x",
+      display_name: "X",
+      role: "r",
+      system_prompt: nil,
+      opencode_agent: opencode_agent
+    }
+  end
+
   test "wake prompts never contain message bodies, only ids" do
     text =
       Prompts.new_message(%{channel: "c", sender: "Steven", message_id: "msg_42", thread?: false})

@@ -100,6 +100,27 @@ defmodule Canopy.OpenCode.Client do
   end
 
   @impl true
+  def pending_questions(directory, opts \\ []),
+    do: request(:get, "/question", dir(directory, opts))
+
+  @doc """
+  Answers a pending `question` tool call. `answers` carries one list of chosen
+  option labels per question, in the order OpenCode asked them.
+  """
+  @impl true
+  def reply_question(directory, question_id, answers, opts \\ []) when is_list(answers),
+    do:
+      request(
+        :post,
+        "/question/#{question_id}/reply",
+        dir(directory, opts) |> Keyword.put(:json, %{answers: answers})
+      )
+
+  @impl true
+  def reject_question(directory, question_id, opts \\ []),
+    do: request(:post, "/question/#{question_id}/reject", dir(directory, opts))
+
+  @impl true
   def add_mcp(directory, name, config, opts \\ []) when is_binary(name) and is_map(config),
     do:
       request(

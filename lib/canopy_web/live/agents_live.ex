@@ -30,6 +30,7 @@ defmodule CanopyWeb.AgentsLive do
       socket
       |> assign(:opencode_agents, @builtin_opencode_agents)
       |> assign(:providers, [])
+      |> assign(:model_picker, nil)
       |> assign(:default_models, %{})
       |> assign(:show_inactive, false)
       |> assign(:agent, nil)
@@ -208,6 +209,35 @@ defmodule CanopyWeb.AgentsLive do
       schedule ->
         {:ok, _} = Schedules.cancel(schedule, "cancelled from the Agents page")
         {:noreply, load_agent_details(socket)}
+    end
+  end
+
+  def handle_event("open_model_picker", %{"id" => id}, socket) do
+    {:noreply, assign(socket, :model_picker, Agents.get!(id))}
+  end
+
+  def handle_event("close_model_picker", _params, socket),
+    do: {:noreply, assign(socket, :model_picker, nil)}
+
+  # "" for both fields clears the override, putting the agent back on whatever
+  # model its OpenCode agent defaults to.
+  def handle_event("pick_model", %{"provider" => provider, "model" => model}, socket) do
+    agent = socket.assigns.model_picker
+    attrs = blank_to_nil(%{"model_provider" => provider, "model_id" => model})
+
+    case Agents.update(agent, attrs) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> assign(:model_picker, nil)
+         |> load_agents()
+         |> put_flash(:info, model_saved(updated))}
+
+      {:error, _changeset} ->
+        {:noreply,
+         socket
+         |> assign(:model_picker, nil)
+         |> put_flash(:error, "Could not change @#{agent.name}'s model.")}
     end
   end
 
@@ -406,6 +436,13 @@ defmodule CanopyWeb.AgentsLive do
           do: changeset,
           else:
             Ecto.Changeset.add_error(changeset, :model_id, "is not available from #{provider}")
+    end
+  end
+
+  defp model_saved(agent) do
+    case model_label(agent) do
+      nil -> "@#{agent.name} is back on its OpenCode default model."
+      label -> "@#{agent.name} now runs on #{label}."
     end
   end
 
@@ -608,57 +645,65 @@ defmodule CanopyWeb.AgentsLive do
             >
               {group}
             </li>
-            <li :for={agent <- agents} id={"agent-#{agent.id}"} class="-mx-2">
-              <.link
-                navigate={~p"/agents/#{agent.id}"}
-                class="group flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
-              >
-                <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
-                  {initial(agent)}
-                </div>
-                <div class="min-w-0">
-                  <div class="truncate text-sm font-semibold">{agent.display_name}</div>
-                  <div class="truncate font-mono text-xs text-base-content/60">@{agent.name}</div>
-                </div>
-                <p class="min-w-0 truncate text-sm text-base-content/75" title={agent.role}>
-                  {agent.role || "—"}
-                </p>
-                <span
-                  class="badge badge-ghost badge-sm justify-self-start font-mono"
-                  title="OpenCode agent"
-                >
-                  {agent.opencode_agent}
-                </span>
-                <span
-                  class={[
-                    "max-w-full justify-self-start truncate font-mono text-xs",
-                    model_label(agent) && "badge badge-soft badge-primary badge-sm",
-                    !model_label(agent) && "text-base-content/50"
-                  ]}
-                  title={
-                    if model_label(agent), do: "Model override", else: "OpenCode's default model"
-                  }
-                >
-                  {model_label(agent) || "default"}
-                </span>
-                <span
-                  class="flex items-center gap-0.5 text-xs text-base-content/60"
-                  title="Active schedules"
-                >
-                  <.icon
-                    :if={Map.get(@schedule_counts, agent.id, 0) > 0}
-                    name="hero-clock-mini"
-                    class="size-3.5"
-                  />
-                  {if Map.get(@schedule_counts, agent.id, 0) > 0,
-                    do: Map.get(@schedule_counts, agent.id),
-                    else: "—"}
-                </span>
-                <.icon
-                  name="hero-chevron-right-mini"
-                  class="hidden size-4 shrink-0 text-base-content/30 group-hover:text-base-content/60 md:block"
-                />
+            <%!-- The row is a link stretched over the whole <li>: it paints above
+                 the static cells, so a click anywhere opens the agent. Only the
+                 model cell is lifted above it, to stay clickable on its own. --%>
+            <li
+              :for={agent <- agents}
+              id={"agent-#{agent.id}"}
+              class="group relative -mx-2 flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
+            >
+              <.link navigate={~p"/agents/#{agent.id}"} class="absolute inset-0 rounded-lg">
+                <span class="sr-only">Open {agent.display_name}</span>
               </.link>
+              <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
+                {initial(agent)}
+              </div>
+              <div class="min-w-0">
+                <div class="truncate text-sm font-semibold">{agent.display_name}</div>
+                <div class="truncate font-mono text-xs text-base-content/60">@{agent.name}</div>
+              </div>
+              <p class="min-w-0 truncate text-sm text-base-content/75" title={agent.role}>
+                {agent.role || "—"}
+              </p>
+              <span
+                class="badge badge-ghost badge-sm justify-self-start font-mono"
+                title="OpenCode agent"
+              >
+                {agent.opencode_agent}
+              </span>
+              <button
+                type="button"
+                id={"model-#{agent.id}"}
+                phx-click="open_model_picker"
+                phx-value-id={agent.id}
+                title="Change this agent's model"
+                class={[
+                  "relative max-w-full justify-self-start truncate rounded-md font-mono text-xs transition hover:ring-2 hover:ring-primary/40",
+                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
+                  !model_label(agent) &&
+                    "px-1.5 py-0.5 text-base-content/50 hover:text-base-content"
+                ]}
+              >
+                {model_label(agent) || "default"}
+              </button>
+              <span
+                class="flex items-center gap-0.5 text-xs text-base-content/60"
+                title="Active schedules"
+              >
+                <.icon
+                  :if={Map.get(@schedule_counts, agent.id, 0) > 0}
+                  name="hero-clock-mini"
+                  class="size-3.5"
+                />
+                {if Map.get(@schedule_counts, agent.id, 0) > 0,
+                  do: Map.get(@schedule_counts, agent.id),
+                  else: "—"}
+              </span>
+              <.icon
+                name="hero-chevron-right-mini"
+                class="hidden size-4 shrink-0 text-base-content/30 group-hover:text-base-content/60 md:block"
+              />
             </li>
           <% end %>
         </ul>
@@ -703,9 +748,129 @@ defmodule CanopyWeb.AgentsLive do
       <p :if={@inactive_agents != [] and @active_agents == []} class="text-xs text-base-content/60">
         {length(@inactive_agents)} deactivated agents can be brought back from their pages.
       </p>
+
+      <.model_picker
+        :if={@model_picker}
+        agent={@model_picker}
+        providers={@providers}
+        defaults={@default_models}
+      />
     </Layouts.page>
     """
   end
+
+  attr :agent, :map, required: true
+  attr :providers, :list, required: true
+  attr :defaults, :map, required: true
+
+  defp model_picker(assigns) do
+    ~H"""
+    <div
+      id="model-picker"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-base-content/40 p-4"
+      phx-window-keydown="close_model_picker"
+      phx-key="Escape"
+    >
+      <div
+        id="model-dialog"
+        class="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-200 shadow-2xl"
+        phx-click-away="close_model_picker"
+      >
+        <div class="flex items-start justify-between gap-4 border-b border-base-300 px-5 py-3">
+          <div class="min-w-0">
+            <h2 class="text-sm font-semibold">Model for @{@agent.name}</h2>
+            <p class="mt-0.5 text-xs text-base-content/60">
+              Takes effect on this agent's next turn; sessions already running keep theirs.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="close-model-picker"
+            class="btn btn-ghost btn-xs btn-square"
+            phx-click="close_model_picker"
+            aria-label="Close"
+          >
+            <.icon name="hero-x-mark-mini" class="size-4" />
+          </button>
+        </div>
+
+        <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          <p
+            :if={@providers == []}
+            id="model-picker-empty"
+            class="px-3 py-6 text-center text-xs text-base-content/60"
+          >
+            No models to choose from: OpenCode did not answer. Start
+            <code class="font-mono">opencode serve</code>
+            and reload, or set the model on the agent's own page.
+          </p>
+
+          <button
+            type="button"
+            id="model-option-default"
+            phx-click="pick_model"
+            phx-value-provider=""
+            phx-value-model=""
+            class={[
+              "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition hover:bg-base-300/60",
+              is_nil(model_label(@agent)) && "bg-primary/10"
+            ]}
+          >
+            <.icon
+              name="hero-check-mini"
+              class={["size-4 shrink-0", model_label(@agent) && "invisible"]}
+            />
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-medium">OpenCode default</span>
+              <span class="block text-xs text-base-content/60">
+                Whatever <code class="font-mono">{@agent.opencode_agent}</code> is configured to use.
+              </span>
+            </span>
+          </button>
+
+          <div :for={provider <- @providers} class="mt-1">
+            <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+              {provider.name}
+            </p>
+            <button
+              :for={model <- provider.models}
+              type="button"
+              id={model_dom_id(provider.id, model)}
+              phx-click="pick_model"
+              phx-value-provider={provider.id}
+              phx-value-model={model}
+              class={[
+                "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition hover:bg-base-300/60",
+                current_model?(@agent, provider.id, model) && "bg-primary/10"
+              ]}
+            >
+              <.icon
+                name="hero-check-mini"
+                class={[
+                  "size-4 shrink-0",
+                  !current_model?(@agent, provider.id, model) && "invisible"
+                ]}
+              />
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
+              <span class="shrink-0 text-[11px] text-base-content/50">
+                {price_text(pricing(@providers, provider.id, model), @providers, provider.id)}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp current_model?(%Agent{model_provider: provider, model_id: model}, provider, model),
+    do: true
+
+  defp current_model?(_agent, _provider, _model), do: false
+
+  # Model ids carry dots and slashes; DOM ids must stay selector-safe.
+  defp model_dom_id(provider, model),
+    do: "model-option-" <> Regex.replace(~r/[^A-Za-z0-9_-]+/, "#{provider}-#{model}", "-")
 
   # One agent.
   defp show_page(assigns) do

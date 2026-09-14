@@ -52,6 +52,30 @@ defmodule Canopy.Runtime.RouterTest do
     refute text =~ "thread"
   end
 
+  test "a user's unaddressed thread reply wakes the thread's author, not the owner" do
+    ctx = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @reviewer} end})
+    event = message_event(%{thread_id: "msg_root", kind: "thread_reply"})
+
+    assert [{{:root, @reviewer}, text}] = Router.wakeups(event, ctx)
+    assert text =~ "thread"
+  end
+
+  test "a user's thread reply still honours mentions over the thread's author" do
+    ctx = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @reviewer} end})
+
+    event =
+      message_event(%{thread_id: "msg_root", kind: "thread_reply", mentions: [@backend]})
+
+    assert [{{:root, @backend}, _}] = Router.wakeups(event, ctx)
+  end
+
+  test "a user's thread reply falls back to the owner when the root is the user's own" do
+    ctx = ctx(%{thread_root: fn "msg_root" -> %{agent_id: nil} end})
+    event = message_event(%{thread_id: "msg_root", kind: "thread_reply"})
+
+    assert [{{:root, @backend}, _}] = Router.wakeups(event, ctx)
+  end
+
   test "in a DM an unaddressed user message wakes every agent, agent posts still need mentions" do
     dm = ctx(%{channel: %{name: "dm-backend-reviewer", kind: "dm"}})
 

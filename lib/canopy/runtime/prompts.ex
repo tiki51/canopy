@@ -7,7 +7,26 @@ defmodule Canopy.Runtime.Prompts do
 
   @preamble_path Application.app_dir(:canopy, "priv/prompts/collaboration.md")
   @external_resource @preamble_path
-  @preamble File.read!(@preamble_path)
+  @default_preamble File.read!(@preamble_path)
+
+  @doc """
+  The collaboration preamble Canopy ships. Settings may override it; this is
+  what the Settings page offers as the starting point and the reset.
+  """
+  def default_preamble, do: @default_preamble
+
+  @doc "The variables a preamble may use, for the Settings page to list."
+  def preamble_variables,
+    do: ~w(display_name name role channel repository_path notes_path shared_notes_path
+           execution_mode other_repositories memory)
+
+  # The user's text when Settings carries one, otherwise what Canopy ships.
+  defp preamble do
+    case Canopy.Settings.get().collaboration_prompt do
+      text when is_binary(text) and text != "" -> text
+      _ -> @default_preamble
+    end
+  end
 
   @doc "System text appended after the OpenCode agent prompt: preamble plus the agent's role prompt."
   def system(agent, channel, repository, others \\ []) do
@@ -19,6 +38,7 @@ defmodule Canopy.Runtime.Prompts do
       "display_name" => agent.display_name || agent.name,
       "name" => agent.name,
       "role" => agent.role || "",
+      "execution_mode" => execution_mode(agent),
       "channel" => channel.name,
       "repository_path" => repository.path,
       "notes_path" => Canopy.Notes.agent_path(repository.path, agent),
@@ -26,12 +46,32 @@ defmodule Canopy.Runtime.Prompts do
     }
 
     preamble =
-      Enum.reduce(vars, @preamble, fn {k, v}, acc -> String.replace(acc, "{{#{k}}}", v) end)
+      Enum.reduce(vars, preamble(), fn {k, v}, acc -> String.replace(acc, "{{#{k}}}", v) end)
 
     case agent.system_prompt do
       nil -> preamble
       "" -> preamble
       role_prompt -> preamble <> "\n\n" <> String.trim(role_prompt)
+    end
+  end
+
+  # An agent is never told what its own OpenCode agent can do, so when a
+  # read-only teammate reports "blocked by plan mode" a writer has no reason to
+  # read that as someone else's limit — it takes it as a fact about the channel
+  # and stops working. Each agent is told its own reach, in the first person.
+  @contagion "A teammate's limits are their own. If someone reports that work is blocked by plan mode or that they cannot execute, that describes their session, not yours."
+
+  defp execution_mode(agent) do
+    case Map.get(agent, :opencode_agent) do
+      "plan" ->
+        "Your session is read-only: you can read, inspect, and plan, but you cannot edit files. That is a limit of your own session, not of this channel or this team. Say it in the first person (\"I can't make that edit from here\") and hand the work to a teammate who can; never tell the channel that execution is blocked, because for them it is not."
+
+      "build" ->
+        "Your session can edit files in this repository: you have write access and are expected to do the work yourself. " <>
+          @contagion
+
+      _ ->
+        @contagion
     end
   end
 

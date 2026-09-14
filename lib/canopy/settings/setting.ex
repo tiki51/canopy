@@ -22,6 +22,8 @@ defmodule Canopy.Settings.Setting do
     field :hold_at, :utc_datetime_usec
     # the agent the Costs page asks to review spend; nil until the user picks one
     field :auditor_agent_id, :string
+    # overrides the collaboration preamble Canopy ships; nil/"" uses the default
+    field :collaboration_prompt, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -37,11 +39,13 @@ defmodule Canopy.Settings.Setting do
       :serialize_turns,
       :hold_reason,
       :hold_at,
-      :auditor_agent_id
+      :auditor_agent_id,
+      :collaboration_prompt
     ])
     |> validate_required([:opencode_url, :user_display_name, :chatter_pause, :chatter_limit])
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)
     |> validate_length(:user_display_name, max: 80)
+    |> validate_length(:collaboration_prompt, max: 20_000)
     |> validate_url(:opencode_url)
   end
 

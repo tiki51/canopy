@@ -5,7 +5,16 @@ defmodule CanopyWeb.ChannelLiveTest do
   import Phoenix.LiveViewTest
   import CanopyWeb.LiveHelpers
 
-  alias Canopy.{Fixtures, Handoffs, Messages, PermissionRequests, Runtime, Timeline}
+  alias Canopy.{
+    Fixtures,
+    Handoffs,
+    Messages,
+    PermissionRequests,
+    QuestionRequests,
+    Runtime,
+    Timeline
+  }
+
   alias Canopy.OpenCode.ClientMock, as: OC
 
   setup :set_mox_global
@@ -583,11 +592,204 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       # closed by default (a <details> without `open`), with a pulsing dot in the header
       assert has_element?(view, "details#telemetry-#{agent.id}:not([open])")
+
+      # The card re-renders on every tool call, and the server never renders
+      # `open`, so a patch would strip the attribute the browser set when the
+      # user expanded it. The hook carries that state across patches.
+      assert has_element?(view, ~s(details#telemetry-#{agent.id}[phx-hook="KeepOpen"]))
       assert has_element?(view, "#telemetry-toggle-#{agent.id} [data-status=busy] .animate-ping")
 
       broadcast_status(channel.id, agent.id, :idle)
       refute has_element?(view, "#telemetry-#{agent.id}")
       refute has_element?(view, "#abort-#{agent.id}")
+    end
+  end
+
+  describe "threads" do
+    test "Reply opens a thread composer and the message lands in the thread", ctx do
+      %{channel: channel, agent: agent} = ctx
+
+      {:ok, root} =
+        Messages.post_agent_message(channel.id, agent.id, "Which width should we use?")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#composer-thread")
+
+      view |> element("#reply-#{root.id}") |> render_click()
+
+      assert has_element?(view, "#composer-thread", "Starting a thread on")
+      assert has_element?(view, "#composer-thread", "Which width should we use?")
+
+      view |> form("#composer-form", %{"message" => %{"body" => "390px"}}) |> render_submit()
+
+      assert [reply] =
+               Messages.list(channel.id, thread: root.id) |> Enum.reject(&(&1.id == root.id))
+
+      assert reply.body == "390px"
+      assert reply.thread_id == root.id
+      assert reply.kind == "thread_reply"
+      assert reply.user_id == ctx.user.id
+
+      # the banner clears and the thread is expanded so the reply is visible
+      refute has_element?(view, "#composer-thread")
+      assert has_element?(view, "#thread-#{root.id}:not([hidden])", "390px")
+    end
+
+    test "replying to a reply joins the same thread rather than nesting", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, first} = Messages.thread_reply(root.id, {:user, user.id}, "first")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#thread-toggle-#{root.id}") |> render_click()
+      view |> element("#reply-#{first.id}") |> render_click()
+
+      assert has_element?(view, "#composer-thread", "Replying in thread to")
+      view |> form("#composer-form", %{"message" => %{"body" => "second"}}) |> render_submit()
+
+      assert %{thread_id: thread_id} = Messages.list(channel.id, thread: root.id) |> List.last()
+      assert thread_id == root.id
+    end
+
+    test "the thread toggle survives a re-render, unlike a client-side toggle", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, _} = Messages.thread_reply(root.id, {:user, user.id}, "first")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#thread-#{root.id}[hidden]")
+
+      view |> element("#thread-toggle-#{root.id}") |> render_click()
+      assert has_element?(view, "#thread-#{root.id}:not([hidden])")
+
+      # a new reply re-renders the parent; the thread must stay open
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "second")
+      assert has_element?(view, "#thread-#{root.id}:not([hidden])", "second")
+
+      view |> element("#thread-toggle-#{root.id}") |> render_click()
+      assert has_element?(view, "#thread-#{root.id}[hidden]")
+    end
+
+    test "cancelling returns the composer to the channel", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#reply-#{root.id}") |> render_click()
+      view |> element("#composer-thread-cancel") |> render_click()
+
+      refute has_element?(view, "#composer-thread")
+
+      view
+      |> form("#composer-form", %{"message" => %{"body" => "to the channel"}})
+      |> render_submit()
+
+      assert %{thread_id: nil} =
+               Messages.list(channel.id) |> Enum.find(&(&1.body == "to the channel"))
+    end
+
+    test "a command cannot be sent in a thread", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#reply-#{root.id}") |> render_click()
+
+      html =
+        view
+        |> form("#composer-form", %{"message" => %{"body" => "/handoff @#{agent.name} take it"}})
+        |> render_submit()
+
+      assert html =~ "commands cannot be sent in a thread"
+    end
+  end
+
+  describe "questions" do
+    defp ask_question(ctx, opts \\ []) do
+      QuestionRequests.record(%{
+        channel_id: ctx.channel.id,
+        agent_session_id: ctx.session.id,
+        opencode_question_id: "que_live_1",
+        questions: [
+          %{
+            "header" => "Mobile screenshots",
+            "question" => "How should dense screenshots behave at 390px?",
+            "options" => [
+              %{"label" => "Keep as is", "description" => "Accept unreadable UI text."},
+              %{"label" => "Add mobile crops", "description" => "Focused close-ups."}
+            ],
+            "custom" => Keyword.get(opts, :custom, false)
+          }
+        ],
+        tool_call_id: "call_1",
+        status: "pending"
+      })
+    end
+
+    test "a pending question renders its options and sends the chosen label", ctx do
+      {:ok, request} = ask_question(ctx)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, "#question-#{request.id}", "How should dense screenshots")
+      assert has_element?(view, "#question-#{request.id}", "Accept unreadable UI text.")
+
+      assert has_element?(
+               view,
+               ~s(#question-#{request.id} input[type="radio"][value="Add mobile crops"])
+             )
+
+      expect(OC, :reply_question, fn _dir, "que_live_1", [["Add mobile crops"]], _opts ->
+        {:ok, true}
+      end)
+
+      view
+      |> form("#question-#{request.id} form", %{"answers" => %{"0" => ["Add mobile crops"]}})
+      |> render_submit()
+
+      refute has_element?(view, "#question-#{request.id}")
+
+      assert %{status: "answered", answers: [["Add mobile crops"]]} =
+               QuestionRequests.get!(request.id)
+    end
+
+    test "a question that allows free text sends what was typed", ctx do
+      {:ok, request} = ask_question(ctx, custom: true)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, ~s(#question-#{request.id} input[name="custom[0]"]))
+
+      expect(OC, :reply_question, fn _dir, "que_live_1", [["crop the tall ones only"]], _opts ->
+        {:ok, true}
+      end)
+
+      view
+      |> form("#question-#{request.id} form", %{"custom" => %{"0" => "crop the tall ones only"}})
+      |> render_submit()
+
+      assert QuestionRequests.get!(request.id).status == "answered"
+    end
+
+    test "submitting with nothing chosen keeps the card and says so", ctx do
+      {:ok, request} = ask_question(ctx)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      html = view |> form("#question-#{request.id} form", %{}) |> render_submit()
+
+      assert html =~ "Answer every question before sending"
+      assert has_element?(view, "#question-#{request.id}")
+      assert QuestionRequests.get!(request.id).status == "pending"
+    end
+
+    test "Dismiss rejects the question", ctx do
+      {:ok, request} = ask_question(ctx)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      expect(OC, :reject_question, fn _dir, "que_live_1", _opts -> {:ok, true} end)
+
+      view |> element("#question-#{request.id}-dismiss") |> render_click()
+
+      refute has_element?(view, "#question-#{request.id}")
+      assert QuestionRequests.get!(request.id).status == "rejected"
     end
   end
 

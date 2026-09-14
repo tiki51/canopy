@@ -29,6 +29,7 @@ defmodule Canopy.Runtime.ChannelServer do
     Delegations,
     Messages,
     PermissionRequests,
+    QuestionRequests,
     Repositories,
     Settings,
     Timeline,
@@ -41,6 +42,11 @@ defmodule Canopy.Runtime.ChannelServer do
 
   @telemetry_cap 200
   @reconcile_grace_ms 15_000
+
+  # How often the turn watchdog looks for turns that have gone quiet, and how
+  # long a turn may go without an OpenCode event before it is reconciled.
+  @watchdog_ms 60_000
+  @turn_stall_ms 120_000
 
   @fields [
     :channel,
@@ -99,6 +105,15 @@ defmodule Canopy.Runtime.ChannelServer do
       when reply in [:once, :always, :reject],
       do: GenServer.call(server, {:respond_permission, permission_request_id, reply})
 
+  @doc """
+  Answers the question an agent asked through OpenCode's `question` tool.
+  `{:answered, answers}` carries one list of chosen option labels per question,
+  in question order; `:rejected` declines to answer.
+  """
+  def respond_question(server, question_request_id, outcome)
+      when outcome == :rejected or elem(outcome, 0) == :answered,
+      do: GenServer.call(server, {:respond_question, question_request_id, outcome})
+
   def abort(server, agent_id), do: GenServer.call(server, {:abort, agent_id})
 
   def reset_session(server, agent_id, by),
@@ -136,8 +151,11 @@ defmodule Canopy.Runtime.ChannelServer do
 
     # Subscribe and load sessions before start_link returns, so a message posted
     # right after ensure_channel/1 cannot be broadcast before we are listening.
+    schedule_watchdog()
     {:ok, attach(state)}
   end
+
+  defp schedule_watchdog, do: Process.send_after(self(), :watchdog, @watchdog_ms)
 
   defp upgrade(state), do: struct(__MODULE__, Map.from_struct(state))
 
@@ -184,6 +202,42 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # Drops the agent's root session in this channel so its next wake starts a
   # fresh OpenCode session: the cure for a poisoned or bloated context.
+  def handle_call({:respond_question, request_id, outcome}, _from, state) do
+    request = QuestionRequests.get!(request_id)
+
+    reply =
+      case outcome do
+        {:answered, answers} ->
+          client().reply_question(
+            state.repository.path,
+            request.opencode_question_id,
+            answers,
+            state.client_opts
+          )
+
+        :rejected ->
+          client().reject_question(
+            state.repository.path,
+            request.opencode_question_id,
+            state.client_opts
+          )
+      end
+
+    case reply do
+      {:ok, _} ->
+        {:reply, resolve_question_if_pending(request, outcome), state}
+
+      # OpenCode no longer holds this question — it restarted, or the session
+      # died still carrying it. There is nothing left to answer, so clear the
+      # card rather than stranding it on screen forever.
+      {:error, {:http, status, _}} when status in [400, 404] ->
+        {:reply, resolve_question_if_pending(request, outcome), state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:reset_session, agent_id, by}, _from, state) do
     session =
       Map.get(state.sessions, agent_id) || AgentSessions.get_root(state.channel.id, agent_id)
@@ -325,7 +379,7 @@ defmodule Canopy.Runtime.ChannelServer do
       Enum.reduce(state.turns, state, fn {sid, _turn}, acc ->
         case Map.get(acc.index, sid) do
           nil -> acc
-          who -> handle_execution(%{event | session_id: sid}, who, acc)
+          who -> handle_execution(%{event | session_id: sid}, who, touch_turn(acc, sid))
         end
       end)
 
@@ -335,7 +389,7 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_info({:opencode_event, %OpenCode.Event{session_id: sid} = event}, state) do
     case Map.get(state.index, sid) do
       nil -> {:noreply, state}
-      who -> {:noreply, handle_execution(event, who, state)}
+      who -> {:noreply, handle_execution(event, who, touch_turn(state, sid))}
     end
   end
 
@@ -355,7 +409,25 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_info({:settings, :mcp_token_rotated}, state),
     do: {:noreply, %{state | mcp_registered?: false}}
 
+  # A turn ends when OpenCode reports the session idle. If that never arrives —
+  # the stream dropped it, or the session died still holding an open tool call —
+  # the turn stays in flight forever and every later wake for that agent queues
+  # behind it, which looks like a channel that has stopped responding. Any turn
+  # that has gone quiet gets reconciled against OpenCode's own view.
+  def handle_info(:watchdog, state) do
+    schedule_watchdog()
+    {:noreply, if(stalled_turn?(state), do: reconcile(state), else: state)}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp stalled_turn?(state) do
+    now = System.monotonic_time(:millisecond)
+
+    Enum.any?(state.turns, fn {_sid, turn} ->
+      now - Map.get(turn, :last_event_at, turn.started_at) > @turn_stall_ms
+    end)
+  end
 
   @doc false
   def reconcile(state) do
@@ -373,50 +445,98 @@ defmodule Canopy.Runtime.ChannelServer do
           Map.keys(state.turns)
       end
 
-    # turns we think are running but OpenCode reports idle: finish them. A turn
-    # younger than the grace period may not be marked busy yet; leave it alone.
+    permissions = pending_prompts(client().pending_permissions(dir, state.client_opts))
+    questions = pending_prompts(client().pending_questions(dir, state.client_opts))
+
+    state = finish_idle_turns(state, busy_ids, permissions, questions)
+
+    # prompts raised while we were disconnected (endpoints may 400: best effort)
+    state = replay_prompts(state, permissions, :approval_required)
+    replay_prompts(state, questions, :question_required)
+  end
+
+  # Turns we think are running but OpenCode reports idle: finish them. A turn
+  # younger than the grace period may not be marked busy yet, and one waiting on
+  # a permission or question prompt is blocked rather than finished — OpenCode
+  # can report such a session idle while it still holds the tool call open.
+  # While either prompt list is unknown, nothing is finished.
+  defp finish_idle_turns(state, _busy_ids, permissions, questions)
+       when permissions == :unknown or questions == :unknown,
+       do: state
+
+  defp finish_idle_turns(state, busy_ids, permissions, questions) do
+    blocked_ids = Enum.map(permissions ++ questions, & &1["sessionID"])
     now = System.monotonic_time(:millisecond)
 
-    state =
-      state.turns
-      |> Enum.reject(fn {sid, turn} ->
-        sid in busy_ids or now - turn.started_at < @reconcile_grace_ms
-      end)
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.reduce(state, fn sid, acc ->
-        case Map.get(acc.index, sid) do
-          nil -> acc
-          who -> finish_turn(acc, sid, who, :ok)
-        end
-      end)
+    state.turns
+    |> Enum.reject(fn {sid, turn} ->
+      sid in busy_ids or sid in blocked_ids or
+        now - turn.started_at < @reconcile_grace_ms
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.reduce(state, fn sid, acc ->
+      case Map.get(acc.index, sid) do
+        nil ->
+          acc
 
-    # permissions raised while we were disconnected (endpoint may 400: best effort)
-    case client().pending_permissions(dir, state.client_opts) do
-      {:ok, requests} when is_list(requests) ->
-        Enum.each(requests, fn req ->
-          case Map.get(state.index, req["sessionID"]) do
-            nil ->
-              :ok
+        who ->
+          Logger.warning(
+            "channel #{acc.channel.name}: finishing orphaned turn #{sid} (OpenCode reports it idle)"
+          )
 
-            who ->
-              handle_execution(
-                %OpenCode.Event{
-                  type: :approval_required,
-                  session_id: req["sessionID"],
-                  data: %{request: req}
-                },
-                who,
-                state
-              )
-          end
-        end)
+          acc |> clear_stale_prompts(sid) |> finish_turn(sid, who, :ok)
+      end
+    end)
+  end
 
-      {:error, reason} ->
-        Logger.debug("permission reconciliation skipped: #{inspect(reason)}")
-    end
+  defp replay_prompts(state, :unknown, type) do
+    Logger.debug("#{type} reconciliation skipped: OpenCode did not answer")
+    state
+  end
+
+  defp replay_prompts(state, requests, type) do
+    Enum.each(requests, fn req ->
+      case Map.get(state.index, req["sessionID"]) do
+        nil ->
+          :ok
+
+        who ->
+          handle_execution(
+            %OpenCode.Event{type: type, session_id: req["sessionID"], data: %{request: req}},
+            who,
+            state
+          )
+      end
+    end)
 
     state
   end
+
+  # The turn is over and OpenCode listed no prompt for it, so any request still
+  # pending here is a phantom nothing can answer. Clear the cards with it.
+  defp clear_stale_prompts(state, sid) do
+    case session_for(state, sid) do
+      nil ->
+        state
+
+      session ->
+        for r <- QuestionRequests.pending_for_channel(state.channel.id),
+            r.agent_session_id == session.id,
+            do: QuestionRequests.resolve(r, :rejected)
+
+        for r <- PermissionRequests.pending_for_channel(state.channel.id),
+            r.agent_session_id == session.id,
+            do: PermissionRequests.resolve(r, :reject)
+
+        state
+    end
+  end
+
+  # A 400/404 means this OpenCode build does not serve the endpoint, which is
+  # the same as nothing pending. Any other failure leaves the answer unknown.
+  defp pending_prompts({:ok, requests}) when is_list(requests), do: requests
+  defp pending_prompts({:error, {:http, status, _}}) when status in [400, 404], do: []
+  defp pending_prompts(_), do: :unknown
 
   # -- Waking agents ----------------------------------------------------------
 
@@ -702,6 +822,9 @@ defmodule Canopy.Runtime.ChannelServer do
           agent_id: agent_id,
           session: session,
           started_at: System.monotonic_time(:millisecond),
+          # bumped by every OpenCode event for this session; the watchdog uses
+          # it to tell a working turn from one nothing will ever finish
+          last_event_at: System.monotonic_time(:millisecond),
           texts: [],
           tools: 0,
           files: MapSet.new(),
@@ -995,6 +1118,39 @@ defmodule Canopy.Runtime.ChannelServer do
     state
   end
 
+  # A question holds the agent's tool call open until someone answers it, so the
+  # turn stays in flight; the card in the feed is the only way to release it.
+  defp handle_execution(
+         %{type: :question_required, data: %{request: req}} = event,
+         %{agent_id: agent_id},
+         state
+       ) do
+    session = session_for(state, event.session_id)
+
+    {:ok, _} =
+      QuestionRequests.record(%{
+        channel_id: state.channel.id,
+        agent_session_id: session && session.id,
+        opencode_question_id: req["id"],
+        questions: req["questions"] || [],
+        tool_call_id: get_in(req, ["tool", "callID"]),
+        status: "pending"
+      })
+
+    broadcast(state, {:telemetry, agent_id, event})
+    state
+  end
+
+  defp handle_execution(%{type: :question_resolved, data: %{request_id: rid} = data}, _who, state) do
+    resolve_question(rid, {:answered, normalize_answers(Map.get(data, :answers, []))})
+    state
+  end
+
+  defp handle_execution(%{type: :question_rejected, data: %{request_id: rid}}, _who, state) do
+    resolve_question(rid, :rejected)
+    state
+  end
+
   defp handle_execution(%{type: :agent_status, data: %{status: :busy}}, _who, state), do: state
 
   defp handle_execution(%{type: :agent_completed} = event, who, state),
@@ -1277,6 +1433,11 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # Map.put, not %{turn | ...}: a turn started before this field existed (a dev
+  # code reload mid-turn) would otherwise crash the server.
+  defp touch_turn(state, sid),
+    do: update_turn(state, sid, &Map.put(&1, :last_event_at, System.monotonic_time(:millisecond)))
+
   defp update_turn(state, sid, fun) do
     case Map.get(state.turns, sid) do
       nil -> state
@@ -1319,6 +1480,25 @@ defmodule Canopy.Runtime.ChannelServer do
     do: PermissionRequests.resolve(request, reply)
 
   defp resolve_if_pending(request, _reply), do: {:ok, request}
+
+  defp resolve_question_if_pending(%{status: "pending"} = request, outcome),
+    do: QuestionRequests.resolve(request, outcome)
+
+  defp resolve_question_if_pending(request, _outcome), do: {:ok, request}
+
+  # Answered or rejected elsewhere (another OpenCode client, or our own reply
+  # coming back around as an event): record it once.
+  defp resolve_question(opencode_question_id, outcome) do
+    case QuestionRequests.get_by_opencode_id(opencode_question_id) do
+      %{status: "pending"} = request -> {:ok, _} = QuestionRequests.resolve(request, outcome)
+      _ -> :ok
+    end
+  end
+
+  # OpenCode sends one list of chosen labels per question; older payloads used a
+  # bare string per question.
+  defp normalize_answers(answers) when is_list(answers), do: Enum.map(answers, &List.wrap/1)
+  defp normalize_answers(_), do: []
 
   defp record_error(state, agent_id, reason) do
     Logger.warning("channel #{state.channel.name}: #{reason}")

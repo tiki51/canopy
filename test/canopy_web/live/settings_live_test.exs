@@ -152,6 +152,85 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert has_element?(view, "#plugin-path", "canopy.js")
   end
 
+  describe "collaboration prompt" do
+    alias Canopy.Runtime.Prompts
+
+    defp agent, do: %{name: "x", display_name: "X", role: "r", system_prompt: nil}
+
+    defp rendered_system,
+      do: Prompts.system(agent(), %{name: "c"}, %{id: "r", path: "/r"})
+
+    test "the panel starts from the prompt Canopy ships", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      assert has_element?(view, "#prompt-panel")
+      refute has_element?(view, "#prompt-customised")
+      refute has_element?(view, "#reset-prompt")
+
+      html = render(view)
+      assert html =~ "canopy_message_send"
+      assert html =~ "{{display_name}}"
+    end
+
+    test "a custom prompt reaches the agents, with variables still filled in", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      view
+      |> form("#prompt-form",
+        setting: %{
+          collaboration_prompt: "You are {{display_name}} in channel {{channel}}. Be terse."
+        }
+      )
+      |> render_submit()
+
+      assert Settings.get().collaboration_prompt =~ "Be terse."
+
+      text = rendered_system()
+      assert text =~ "You are X in channel c. Be terse."
+      refute text =~ "canopy_message_send"
+      refute text =~ "{{"
+
+      assert has_element?(view, "#prompt-customised")
+    end
+
+    test "saving the shipped text unchanged keeps the default in force", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      view
+      |> form("#prompt-form", setting: %{collaboration_prompt: Prompts.default_preamble()})
+      |> render_submit()
+
+      assert Settings.get().collaboration_prompt == nil
+      refute has_element?(view, "#prompt-customised")
+    end
+
+    test "reset puts the shipped prompt back", %{conn: conn} do
+      {:ok, _} = Settings.update(%{"collaboration_prompt" => "Only this."})
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      assert has_element?(view, "#prompt-customised")
+      assert rendered_system() =~ "Only this."
+
+      view |> element("#reset-prompt") |> render_click()
+
+      assert Settings.get().collaboration_prompt == nil
+      refute has_element?(view, "#prompt-customised")
+      assert rendered_system() =~ "canopy_message_send"
+    end
+
+    test "an over-long prompt is rejected instead of saved", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html =
+        view
+        |> form("#prompt-form", setting: %{collaboration_prompt: String.duplicate("x", 20_001)})
+        |> render_submit()
+
+      assert html =~ "should be at most 20000 character(s)"
+      assert Settings.get().collaboration_prompt == nil
+    end
+  end
+
   test "the conversation brake can be tuned or turned off", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings")
     assert has_element?(view, "#chatter-form input[name='setting[chatter_pause]'][checked]")

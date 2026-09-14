@@ -1029,6 +1029,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
     scenario = Fixtures.scenario()
     Timeline.subscribe(scenario.channel.id)
     stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{"canopy" => %{"status" => "connected"}}} end)
+    stub(OC, :pending_questions, fn _dir, _opts -> {:ok, []} end)
     Canopy.MCP.mark_registered(scenario.repository.id)
     {:ok, pid} = Runtime.ensure_channel(scenario.channel.id, start_stream: false)
     on_exit(fn -> Runtime.stop_channel(scenario.channel.id) end)
@@ -1076,8 +1077,17 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
     assert_receive :prompted, 2_000
   end
 
-  test "a reconnect finishes turns OpenCode no longer reports as busy and records missed permissions",
-       ctx do
+  # Ages the channel's turns past the reconciliation grace period.
+  defp age_turns(pid) do
+    :sys.replace_state(pid, fn st ->
+      %{
+        st
+        | turns: Map.new(st.turns, fn {k, t} -> {k, %{t | started_at: t.started_at - 60_000}} end)
+      }
+    end)
+  end
+
+  defp start_turn(ctx) do
     test_pid = self()
 
     expect(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
@@ -1087,17 +1097,31 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    sid = ctx.session.opencode_session_id
+    ctx.session.opencode_session_id
+  end
 
-    # OpenCode says: nothing busy, one permission pending for our session
-    # age the turn past the grace period so reconciliation may finish it
-    :sys.replace_state(ctx.pid, fn st ->
-      %{
-        st
-        | turns: Map.new(st.turns, fn {k, t} -> {k, %{t | started_at: t.started_at - 60_000}} end)
-      }
-    end)
+  test "a reconnect finishes a turn OpenCode no longer reports as busy", ctx do
+    start_turn(ctx)
+    age_turns(ctx.pid)
 
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+    expect(OC, :pending_permissions, fn _dir, _opts -> {:ok, []} end)
+
+    reconnect(ctx.repository.id)
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+    assert %{status: "idle"} = AgentSessions.get!(ctx.session.id)
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :idle}
+  end
+
+  test "a reconnect records permissions raised while disconnected, and leaves the blocked turn in flight",
+       ctx do
+    sid = start_turn(ctx)
+    age_turns(ctx.pid)
+
+    # OpenCode reports nothing busy, but still holds a permission for our
+    # session: the turn is blocked on the prompt, not orphaned. Finishing it
+    # would drain the queue into a session still holding an open tool call.
     expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
 
     expect(OC, :pending_permissions, fn _dir, _opts ->
@@ -1115,14 +1139,13 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
 
     reconnect(ctx.repository.id)
 
-    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
     assert_receive {:timeline, %{event_type: "permission_requested"}}, 2_000
-    assert %{status: "idle"} = AgentSessions.get!(ctx.session.id)
 
     assert [%{opencode_permission_id: "per_missed", status: "pending"}] =
              PermissionRequests.pending_for_channel(ctx.channel.id)
 
-    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :idle}
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
   end
 
   test "a reconnect leaves a turn alone when OpenCode still reports it busy and tolerates a 400 on permissions",

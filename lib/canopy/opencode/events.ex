@@ -96,6 +96,24 @@ defmodule Canopy.OpenCode.Events do
   defp do_normalize("permission.replied", %{"sessionID" => sid} = p),
     do: event(:approval_resolved, sid, %{request_id: p["requestID"], reply: p["reply"]})
 
+  # OpenCode ships the question tool under both an original and a "v2" event
+  # name; the payloads are identical, so both normalize to the same event.
+  defp do_normalize(type, %{"sessionID" => sid} = request)
+       when type in ["question.asked", "question.v2.asked"],
+       do: event(:question_required, sid, %{request: request})
+
+  defp do_normalize(type, %{"sessionID" => sid} = p)
+       when type in ["question.replied", "question.v2.replied"],
+       do:
+         event(:question_resolved, sid, %{
+           request_id: p["requestID"],
+           answers: Map.get(p, "answers", [])
+         })
+
+  defp do_normalize(type, %{"sessionID" => sid} = p)
+       when type in ["question.rejected", "question.v2.rejected"],
+       do: event(:question_rejected, sid, %{request_id: p["requestID"]})
+
   defp do_normalize(_type, _props), do: []
 
   defp part_event(%{"type" => "tool"} = part, sid) do

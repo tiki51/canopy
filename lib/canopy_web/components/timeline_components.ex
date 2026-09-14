@@ -23,6 +23,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :user_name, :string, required: true
   attr :replies, :list, default: []
   attr :channels, :map, default: %{}, doc: "channel name => id, for #channel links in bodies"
+  attr :thread_open, :boolean, default: false
 
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
@@ -33,6 +34,8 @@ defmodule CanopyWeb.TimelineComponents do
         user_name={@user_name}
         replies={@replies}
         channels={@channels}
+        repliable
+        thread_open={@thread_open}
         inline_reply={not is_nil(@event.message.thread_id)}
       />
     </div>
@@ -78,6 +81,8 @@ defmodule CanopyWeb.TimelineComponents do
   attr :user_name, :string, required: true
   attr :replies, :list, default: []
   attr :inline_reply, :boolean, default: false
+  attr :repliable, :boolean, default: false, doc: "show the Reply in thread affordance"
+  attr :thread_open, :boolean, default: false
   attr :channels, :map, default: %{}
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
@@ -133,6 +138,17 @@ defmodule CanopyWeb.TimelineComponents do
           >
             {short_time(@message.inserted_at)}
           </time>
+          <button
+            :if={@repliable}
+            type="button"
+            id={"reply-#{@message.id}"}
+            class="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-base-content/50 opacity-0 transition hover:bg-base-300/60 hover:text-base-content focus:opacity-100 group-hover:opacity-100"
+            phx-click="reply_in_thread"
+            phx-value-id={@message.id}
+            title="Reply in a thread"
+          >
+            <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5" /> Reply
+          </button>
         </div>
         <div class={[
           "mt-0.5 text-sm leading-relaxed",
@@ -147,22 +163,32 @@ defmodule CanopyWeb.TimelineComponents do
         </div>
 
         <div :if={@replies != []} class="mt-1.5">
+          <%!-- Open state lives on the server: a client-side toggle would be
+               undone by the next patch, and a thread re-renders whenever it
+               gains a reply. --%>
           <button
             type="button"
             id={"thread-toggle-#{@message.id}"}
             class="flex items-center gap-1 text-xs font-medium text-primary transition hover:underline"
-            phx-click={JS.toggle(to: "#thread-#{@message.id}")}
+            phx-click="toggle_thread"
+            phx-value-id={@message.id}
+            aria-expanded={to_string(@thread_open)}
           >
             <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5" />
             {ngettext("1 reply", "%{count} replies", length(@replies))}
           </button>
-          <div id={"thread-#{@message.id}"} class="mt-2 hidden border-l-2 border-base-300 pl-3">
+          <div
+            id={"thread-#{@message.id}"}
+            hidden={not @thread_open}
+            class="mt-2 border-l-2 border-base-300 pl-3"
+          >
             <div :for={reply <- @replies} class="-mx-3 sm:-mx-6">
               <.message_item
                 message={reply}
                 names={@names}
                 user_name={@user_name}
                 channels={@channels}
+                repliable
               />
             </div>
           </div>
@@ -344,6 +370,7 @@ defmodule CanopyWeb.TimelineComponents do
     ~H"""
     <details
       id={"telemetry-#{@agent_id}"}
+      phx-hook="KeepOpen"
       class="group/card mx-3 my-2 overflow-hidden sm:mx-6 rounded-xl border border-secondary/40 bg-secondary/10 shadow-xs"
       data-live="true"
     >
@@ -842,6 +869,94 @@ defmodule CanopyWeb.TimelineComponents do
 
   defp initial(name) do
     name |> String.trim_leading("@") |> String.first() |> to_string() |> String.upcase()
+  end
+
+  # -- Question cards ----------------------------------------------------------
+
+  @doc """
+  A pending `question` tool call. The agent's turn stays blocked until this is
+  answered or dismissed, so the card carries the whole form: one group of
+  options per question, plus a free-text box when the agent allowed one.
+  """
+  attr :request, :map, required: true
+  attr :names, :map, required: true
+
+  def question_card(assigns) do
+    ~H"""
+    <section
+      id={"question-#{@request.id}"}
+      class="mx-3 my-2 overflow-hidden rounded-xl border border-info/40 bg-info/5 shadow-xs sm:mx-6"
+    >
+      <form phx-submit="answer_question">
+        <input type="hidden" name="request_id" value={@request.id} />
+
+        <div class="flex items-center gap-2 border-b border-info/20 px-4 py-2.5 text-sm">
+          <.icon name="hero-question-mark-circle" class="size-5 text-info" />
+          <div class="min-w-0 flex-1">
+            <span class="font-medium">@{requester_name(@request, @names)}</span>
+            needs a decision to carry on
+          </div>
+        </div>
+
+        <div
+          :for={{question, index} <- Enum.with_index(@request.questions)}
+          class="border-b border-info/10 px-4 py-3"
+        >
+          <p class="text-sm font-medium">{question["question"]}</p>
+          <p :if={question["header"]} class="mt-0.5 text-xs text-base-content/50">
+            {question["header"]}
+          </p>
+
+          <div class="mt-2 space-y-1.5">
+            <label
+              :for={option <- List.wrap(question["options"])}
+              class="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-info/10"
+            >
+              <input
+                type={if question["multiple"], do: "checkbox", else: "radio"}
+                name={"answers[#{index}][]"}
+                value={option["label"]}
+                class={[
+                  "mt-0.5 shrink-0",
+                  if(question["multiple"], do: "checkbox checkbox-xs", else: "radio radio-xs")
+                ]}
+              />
+              <span class="min-w-0 text-sm">
+                <span class="font-medium">{option["label"]}</span>
+                <span :if={option["description"]} class="block text-xs text-base-content/60">
+                  {option["description"]}
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <input
+            :if={question["custom"]}
+            type="text"
+            name={"custom[#{index}]"}
+            placeholder="Or answer in your own words…"
+            autocomplete="off"
+            class="mt-2 input input-sm input-bordered w-full"
+          />
+        </div>
+
+        <div class="flex items-center justify-end gap-1.5 px-4 py-2.5">
+          <button
+            type="button"
+            id={"question-#{@request.id}-dismiss"}
+            class="btn btn-xs btn-ghost text-error"
+            phx-click="reject_question"
+            phx-value-id={@request.id}
+          >
+            Dismiss
+          </button>
+          <button type="submit" id={"question-#{@request.id}-send"} class="btn btn-xs btn-primary">
+            Send
+          </button>
+        </div>
+      </form>
+    </section>
+    """
   end
 
   defp requester_name(%{agent_session: %{agent: %{name: name}}}, _names), do: name

@@ -48,8 +48,14 @@ defmodule Canopy.Runtime.Router do
         is_nil(sender_agent_id) and dm?(ctx) ->
           ctx.members
 
-        is_nil(sender_agent_id) and ctx.owner_agent_id ->
-          [ctx.owner_agent_id]
+        # A user's unaddressed reply belongs to the thread it is in: the agent
+        # whose message started it answers, not the channel owner. Outside a
+        # thread the owner is still the default listener.
+        is_nil(sender_agent_id) ->
+          case thread_root_author(message, ctx, sender_agent_id) do
+            [] -> List.wrap(ctx.owner_agent_id)
+            authors -> authors
+          end
 
         # The "reply" kind is the turn's final text that Canopy captures on its
         # own: narration, not a question. It wakes only who it mentions, or

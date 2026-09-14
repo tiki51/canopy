@@ -97,6 +97,49 @@ defmodule Canopy.OpenCode.EventsTest do
     assert idx_ask < idx_done
   end
 
+  test "question events normalize under both the original and v2 names" do
+    ask = %{
+      "id" => "que_1",
+      "sessionID" => "ses_1",
+      "questions" => [
+        %{"header" => "Mobile", "question" => "How wide?", "options" => [%{"label" => "390px"}]}
+      ],
+      "tool" => %{"messageID" => "msg_1", "callID" => "call_1"}
+    }
+
+    for type <- ["question.asked", "question.v2.asked"] do
+      assert [%Event{type: :question_required, session_id: "ses_1", data: %{request: req}}] =
+               Events.normalize(%{"type" => type, "properties" => ask})
+
+      assert req["id"] == "que_1"
+      assert [%{"header" => "Mobile"}] = req["questions"]
+      assert %{"callID" => "call_1"} = req["tool"]
+    end
+
+    for type <- ["question.replied", "question.v2.replied"] do
+      assert [%Event{type: :question_resolved, session_id: "ses_1", data: data}] =
+               Events.normalize(%{
+                 "type" => type,
+                 "properties" => %{
+                   "sessionID" => "ses_1",
+                   "requestID" => "que_1",
+                   "answers" => [["390px"]]
+                 }
+               })
+
+      assert data.request_id == "que_1"
+      assert data.answers == [["390px"]]
+    end
+
+    for type <- ["question.rejected", "question.v2.rejected"] do
+      assert [%Event{type: :question_rejected, data: %{request_id: "que_1"}}] =
+               Events.normalize(%{
+                 "type" => type,
+                 "properties" => %{"sessionID" => "ses_1", "requestID" => "que_1"}
+               })
+    end
+  end
+
   test "child session events keep their own session id" do
     events = normalize_all("child_session")
     assert events != []

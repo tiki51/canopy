@@ -21,6 +21,7 @@ defmodule Canopy.Timeline.Event do
     spend_limit_changed spend_limit_reached
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
     permission_requested permission_resolved
+    question_requested question_resolved
   )
 
   schema "timeline_events" do

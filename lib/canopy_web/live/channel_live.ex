@@ -21,6 +21,7 @@ defmodule CanopyWeb.ChannelLive do
     Messages,
     Handoffs,
     PermissionRequests,
+    QuestionRequests,
     Repositories,
     Runtime,
     Schedules,
@@ -53,6 +54,8 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:compact?, true)
      |> assign(:branch_timer, nil)
      |> assign(:picked, [])
+     |> assign(:replying_to, nil)
+     |> assign(:open_threads, MapSet.new())
      |> assign(:library, nil)
      |> allow_upload(:files,
        accept: :any,
@@ -136,6 +139,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:has_earlier?, length(events) >= @page_size)
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
+    |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
     |> assign(:editing_task?, false)
     |> assign(:editing_members?, false)
     |> assign(:addable_agents, [])
@@ -409,6 +413,7 @@ defmodule CanopyWeb.ChannelLive do
     do: assign_task(socket, Tasks.for_channel(cid(socket)))
 
   defp react_to(socket, %{event_type: "permission_" <> _}), do: refresh_permissions(socket)
+  defp react_to(socket, %{event_type: "question_" <> _}), do: refresh_questions(socket)
   defp react_to(socket, _event), do: socket
 
   defp refresh_channel(socket) do
@@ -460,11 +465,110 @@ defmodule CanopyWeb.ChannelLive do
   defp refresh_permissions(socket),
     do: assign(socket, :pending_permissions, PermissionRequests.pending_for_channel(cid(socket)))
 
+  defp refresh_questions(socket),
+    do: assign(socket, :pending_questions, QuestionRequests.pending_for_channel(cid(socket)))
+
+  defp drop_question(socket, id),
+    do:
+      assign(
+        socket,
+        :pending_questions,
+        Enum.reject(socket.assigns.pending_questions, &(&1.id == id))
+      )
+
+  # One list of chosen labels per question, in the order OpenCode asked them.
+  # A free-text answer rides along with whatever was ticked; every question
+  # needs something, since OpenCode expects an answer for each.
+  defp build_answers(request, params) do
+    chosen = Map.get(params, "answers", %{})
+    custom = Map.get(params, "custom", %{})
+
+    answers =
+      request.questions
+      |> Enum.with_index()
+      |> Enum.map(fn {_question, index} ->
+        key = Integer.to_string(index)
+        picked = chosen |> Map.get(key, []) |> List.wrap() |> Enum.reject(&(&1 == ""))
+
+        case custom |> Map.get(key, "") |> to_string() |> String.trim() do
+          "" -> picked
+          text -> picked ++ [text]
+        end
+      end)
+
+    if Enum.any?(answers, &(&1 == [])), do: :incomplete, else: answers
+  end
+
   defp cid(socket), do: socket.assigns.channel.id
+
+  # Stream items are rendered once, when they are inserted: an assign the item
+  # depends on does not re-render it. Re-insert the thread's root so it picks up
+  # the new disclosure state.
+  defp refresh_thread_root(socket, root_id) do
+    case Timeline.for_message(root_id) do
+      nil -> socket
+      event -> stream_insert(socket, :timeline, event)
+    end
+  end
+
+  defp thread_opt(%{assigns: %{replying_to: %{id: id}}}), do: [thread_id: id]
+  defp thread_opt(_socket), do: []
+
+  defp sender_label(%{agent_id: id}, socket) when is_binary(id),
+    do: "@" <> Map.get(socket.assigns.names, id, "agent")
+
+  defp sender_label(_message, socket), do: socket.assigns.user.display_name
+
+  @excerpt_chars 80
+
+  defp excerpt(%{body: body}) when is_binary(body) and body != "" do
+    body
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, @excerpt_chars)
+  end
+
+  defp excerpt(_message), do: "(no text)"
 
   # -- Events ------------------------------------------------------------------
 
   @impl true
+  # Threads are rooted at a top-level message: replying to a reply joins the
+  # thread it is already in rather than nesting a second level.
+  def handle_event("reply_in_thread", %{"id" => id}, socket) do
+    case Messages.get(id) do
+      nil ->
+        {:noreply, socket}
+
+      message ->
+        root_id = message.thread_id || message.id
+
+        target = %{
+          id: root_id,
+          sender: sender_label(message, socket),
+          excerpt: excerpt(message),
+          replies: length(Map.get(socket.assigns.threads, root_id, []))
+        }
+
+        {:noreply,
+         socket
+         |> assign(:replying_to, target)
+         |> assign(:open_threads, MapSet.put(socket.assigns.open_threads, root_id))
+         |> refresh_thread_root(root_id)
+         |> push_event("composer:focus", %{})}
+    end
+  end
+
+  def handle_event("cancel_reply", _params, socket),
+    do: {:noreply, assign(socket, :replying_to, nil)}
+
+  def handle_event("toggle_thread", %{"id" => id}, socket) do
+    open = socket.assigns.open_threads
+    open = if MapSet.member?(open, id), do: MapSet.delete(open, id), else: MapSet.put(open, id)
+
+    {:noreply, socket |> assign(:open_threads, open) |> refresh_thread_root(id)}
+  end
+
   def handle_event("send", %{"message" => %{"body" => body}}, socket) do
     text = String.trim(body)
     entries = socket.assigns.uploads.files.entries
@@ -482,12 +586,15 @@ defmodule CanopyWeb.ChannelLive do
       true ->
         documents = store_uploads(socket)
 
-        case Runtime.post_user_message(cid(socket), text, attachments: documents ++ picked) do
+        opts = [attachments: documents ++ picked] ++ thread_opt(socket)
+
+        case Runtime.post_user_message(cid(socket), text, opts) do
           {:ok, result} ->
             {:noreply,
              socket
              |> assign_composer("")
              |> assign(:picked, [])
+             |> assign(:replying_to, nil)
              |> outsider_hint(result)
              |> push_event("composer:clear", %{})}
 
@@ -603,6 +710,38 @@ defmodule CanopyWeb.ChannelLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not answer permission: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("answer_question", %{"request_id" => id} = params, socket) do
+    request = Enum.find(socket.assigns.pending_questions, &(&1.id == id))
+
+    case request && build_answers(request, params) do
+      nil ->
+        {:noreply, socket}
+
+      :incomplete ->
+        {:noreply, put_flash(socket, :error, "Answer every question before sending.")}
+
+      answers ->
+        case Runtime.respond_question(cid(socket), id, {:answered, answers}) do
+          {:ok, _request} ->
+            {:noreply, drop_question(socket, id)}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Could not answer: #{inspect(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("reject_question", %{"id" => id}, socket) do
+    case Runtime.respond_question(cid(socket), id, :rejected) do
+      {:ok, _request} ->
+        {:noreply, drop_question(socket, id)}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Could not dismiss the question: #{inspect(reason)}")}
     end
   end
 
@@ -931,6 +1070,7 @@ defmodule CanopyWeb.ChannelLive do
             names={@names}
             user_name={@user.display_name}
             replies={thread_replies(@threads, event)}
+            thread_open={thread_open?(@open_threads, event)}
             channels={@channel_links}
           />
         </div>
@@ -943,6 +1083,7 @@ defmodule CanopyWeb.ChannelLive do
         />
 
         <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
+        <.question_card :for={request <- @pending_questions} request={request} names={@names} />
       </div>
 
       <.limit_bar
@@ -958,6 +1099,8 @@ defmodule CanopyWeb.ChannelLive do
         channel_names={@channel_names}
         uploads={@uploads}
         picked={@picked}
+        replying_to={@replying_to}
+        user_name={@user.display_name}
       />
       <.library_picker :if={@library} library={@library} />
       <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
@@ -974,6 +1117,11 @@ defmodule CanopyWeb.ChannelLive do
     do: Map.get(threads, id, [])
 
   defp thread_replies(_threads, _event), do: []
+
+  defp thread_open?(open, %{event_type: "message", message: %{id: id, thread_id: nil}}),
+    do: MapSet.member?(open, id)
+
+  defp thread_open?(_open, _event), do: false
 
   attr :channel, :map, required: true
   attr :task, :map, default: nil
@@ -1441,6 +1589,8 @@ defmodule CanopyWeb.ChannelLive do
   attr :channel_names, :list, required: true
   attr :uploads, :map, required: true
   attr :picked, :list, required: true
+  attr :replying_to, :map, default: nil
+  attr :user_name, :string, required: true
 
   defp composer(assigns) do
     ~H"""
@@ -1450,6 +1600,31 @@ defmodule CanopyWeb.ChannelLive do
       <form id="upload-form" phx-change="validate_upload" phx-submit="validate_upload" class="hidden">
         <.live_file_input upload={@uploads.files} />
       </form>
+      <div
+        :if={@replying_to}
+        id="composer-thread"
+        phx-window-keydown="cancel_reply"
+        phx-key="Escape"
+        class="mb-1.5 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs"
+      >
+        <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5 shrink-0 text-primary" />
+        <span class="shrink-0 font-medium text-primary">
+          {if @replying_to.replies == 0, do: "Starting a thread on", else: "Replying in thread to"}
+        </span>
+        <span class="min-w-0 flex-1 truncate text-base-content/60">
+          {@replying_to.sender}: {@replying_to.excerpt}
+        </span>
+        <button
+          type="button"
+          id="composer-thread-cancel"
+          class="btn btn-ghost btn-xs btn-square shrink-0"
+          phx-click="cancel_reply"
+          title="Post to the channel instead (Esc)"
+          aria-label="Cancel the thread reply"
+        >
+          <.icon name="hero-x-mark-mini" class="size-3.5" />
+        </button>
+      </div>
       <.form
         for={@form}
         id="composer-form"

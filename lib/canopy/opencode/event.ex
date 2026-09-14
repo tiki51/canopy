@@ -23,6 +23,9 @@ defmodule Canopy.OpenCode.Event do
     * `:diff`              data: `%{files: [map]}`
     * `:approval_required` data: `%{request: map}` (id, permission, patterns, metadata with diff, tool)
     * `:approval_resolved` data: `%{request_id, reply}`
+    * `:question_required` data: `%{request: map}` (id, questions with options, tool)
+    * `:question_resolved` data: `%{request_id, answers}`
+    * `:question_rejected` data: `%{request_id}`
   """
 
   @enforce_keys [:type, :data]

@@ -31,6 +31,9 @@ defmodule Canopy.OpenCode.ClientBehaviour do
   @callback vcs_diff(directory, String.t(), opts) :: result
   @callback pending_permissions(directory, opts) :: result
   @callback reply_permission(directory, String.t(), :once | :always | :reject, opts) :: result
+  @callback pending_questions(directory, opts) :: result
+  @callback reply_question(directory, String.t(), [[String.t()]], opts) :: result
+  @callback reject_question(directory, String.t(), opts) :: result
   @callback add_mcp(directory, String.t(), map(), opts) :: result
   @callback mcp_status(directory, opts) :: result
   @callback dispose_instance(directory, opts) :: result

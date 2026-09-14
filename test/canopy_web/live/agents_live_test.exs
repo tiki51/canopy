@@ -57,11 +57,10 @@ defmodule CanopyWeb.AgentsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/agents")
 
-      assert has_element?(
-               view,
-               "#active-agents #agent-#{agent.id} a[href='/agents/#{agent.id}']",
-               "@listed"
-             )
+      # the row's link is stretched over the whole row, so the name sits beside
+      # it rather than inside it
+      assert has_element?(view, "#active-agents #agent-#{agent.id} a[href='/agents/#{agent.id}']")
+      assert has_element?(view, "#active-agents #agent-#{agent.id}", "@listed")
 
       assert has_element?(view, "#agent-#{agent.id}", "Lists things")
       refute has_element?(view, "#active-agents #agent-#{sleepy.id}")
@@ -359,6 +358,72 @@ defmodule CanopyWeb.AgentsLiveTest do
       {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
       assert has_element?(view, "#agent-about", "Reviews every diff")
       assert has_element?(view, "#agent-about", "opencode/gpt-5-nano")
+    end
+  end
+
+  describe "the model picker" do
+    test "the badge opens a modal and picking a model saves it", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "picky"})
+      {:ok, view, _html} = live(conn, ~p"/agents")
+
+      refute has_element?(view, "#model-picker")
+      assert has_element?(view, "#model-#{agent.id}", "default")
+
+      view |> element("#model-#{agent.id}") |> render_click()
+
+      assert has_element?(view, "#model-picker", "Model for @picky")
+      assert has_element?(view, "#model-option-default")
+      assert has_element?(view, "#model-option-opencode-gpt-5-nano")
+      assert has_element?(view, "#model-option-openai-gpt-5-4")
+
+      view |> element("#model-option-opencode-gpt-5-nano") |> render_click()
+
+      assert %{model_provider: "opencode", model_id: "gpt-5-nano"} = Agents.get!(agent.id)
+      refute has_element?(view, "#model-picker")
+      assert has_element?(view, "#model-#{agent.id}", "opencode/gpt-5-nano")
+      assert render(view) =~ "now runs on opencode/gpt-5-nano"
+    end
+
+    test "the current model is marked and can be cleared back to the default", %{conn: conn} do
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "setagent",
+          model_provider: "openai",
+          model_id: "gpt-5.4"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      view |> element("#model-#{agent.id}") |> render_click()
+
+      assert has_element?(view, "#model-option-openai-gpt-5-4.bg-primary\\/10")
+      refute has_element?(view, "#model-option-default.bg-primary\\/10")
+
+      view |> element("#model-option-default") |> render_click()
+
+      assert %{model_provider: nil, model_id: nil} = Agents.get!(agent.id)
+      assert has_element?(view, "#model-#{agent.id}", "default")
+      assert render(view) =~ "back on its OpenCode default model"
+    end
+
+    test "closing leaves the model alone", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "untouched"})
+      {:ok, view, _html} = live(conn, ~p"/agents")
+
+      view |> element("#model-#{agent.id}") |> render_click()
+      view |> element("#close-model-picker") |> render_click()
+
+      refute has_element?(view, "#model-picker")
+      assert %{model_provider: nil, model_id: nil} = Agents.get!(agent.id)
+    end
+
+    test "says so when OpenCode offered no models", %{conn: conn} do
+      stub(OC, :providers, fn _opts -> {:error, {:transport, %{reason: :econnrefused}}} end)
+      agent = Fixtures.agent_fixture(%{name: "offline"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      view |> element("#model-#{agent.id}") |> render_click()
+
+      assert has_element?(view, "#model-picker-empty", "OpenCode did not answer")
     end
   end
 

@@ -20,6 +20,13 @@ defmodule Canopy.Runtime do
 
   Plain text returns `{:ok, %Message{}}`. A malformed or impossible command returns
   `{:error, reason}` with a one-line reason; nothing is written in that case.
+
+  Options:
+
+    * `:attachments` — document ids to carry
+    * `:thread_id` — reply inside the thread rooted at this message id (the
+      parent's own root is used when it is itself a reply). Commands are
+      channel-level actions and cannot be sent in a thread.
   """
   def post_user_message(channel_id, body, opts \\ []) do
     if Channels.archived?(Channels.get!(channel_id)) do
@@ -33,10 +40,17 @@ defmodule Canopy.Runtime do
     {:ok, _pid} = ensure_channel(channel_id)
 
     attachments? = Keyword.get(opts, :attachments, []) != []
+    {thread_id, opts} = Keyword.pop(opts, :thread_id)
 
     case Commands.parse(body) do
+      :text when is_binary(thread_id) ->
+        Messages.thread_reply(thread_id, {:user, Users.local().id}, body, opts)
+
       :text ->
         Messages.post_user_message(channel_id, Users.local().id, body, opts)
+
+      {:command, _, _, _} when is_binary(thread_id) ->
+        {:error, "commands cannot be sent in a thread"}
 
       {:command, _, _, _} when attachments? ->
         {:error, "commands cannot carry attachments"}
@@ -182,6 +196,15 @@ defmodule Canopy.Runtime do
   def respond_permission(channel_id, permission_request_id, reply) do
     {:ok, pid} = ensure_channel(channel_id)
     ChannelServer.respond_permission(pid, permission_request_id, reply)
+  end
+
+  @doc """
+  Answers an agent's question. `outcome` is `{:answered, answers}` with one list
+  of chosen option labels per question, in question order, or `:rejected`.
+  """
+  def respond_question(channel_id, question_request_id, outcome) do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.respond_question(pid, question_request_id, outcome)
   end
 
   @doc "Moves a DM to another repository; agents continue there on their next turn."

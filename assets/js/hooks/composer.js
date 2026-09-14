@@ -17,6 +17,10 @@ const Composer = {
     this.manual = null
     this.lastAuto = null
 
+    // Clicking Reply on a message puts the caret here, so the reply can be
+    // typed without a second click.
+    this.handleEvent("composer:focus", () => this.el.focus())
+
     this.handleEvent("composer:clear", () => {
       this.el.value = ""
       this.el.style.height = this.manual ? this.manual + "px" : ""

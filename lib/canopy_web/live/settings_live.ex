@@ -1,12 +1,14 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
   Settings: the OpenCode server URL (with a connection check), the local user's
-  display name, and the MCP section (identity plugin source, endpoint URL, token).
+  display name, the collaboration preamble every agent is given, and the MCP
+  section (identity plugin source, endpoint URL, token).
   """
   use CanopyWeb, :live_view
 
   alias Canopy.MCP
   alias Canopy.OpenCode.Client
+  alias Canopy.Runtime.Prompts
   alias Canopy.Settings
 
   @plugin_path "~/.config/opencode/plugins/canopy.js"
@@ -22,6 +24,7 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
      |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
+     |> assign(:prompt_form, prompt_form(setting))
      |> assign(:draft_url, setting.opencode_url)
      |> assign(:health, nil)
      |> assign(:token_visible, false)
@@ -120,6 +123,43 @@ defmodule CanopyWeb.SettingsLive do
 
       {:error, changeset} ->
         {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
+    end
+  end
+
+  def handle_event("validate_prompt", %{"setting" => params}, socket) do
+    changeset =
+      socket.assigns.setting
+      |> Settings.change(prompt_attrs(params))
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :prompt_form, to_form(changeset, id: "prompt-form"))}
+  end
+
+  def handle_event("save_prompt", %{"setting" => params}, socket) do
+    case Settings.update(prompt_attrs(params)) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:prompt_form, prompt_form(setting))
+         |> put_flash(:info, prompt_saved(setting))}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :prompt_form, to_form(changeset, id: "prompt-form"))}
+    end
+  end
+
+  def handle_event("reset_prompt", _params, socket) do
+    case Settings.update(%{"collaboration_prompt" => nil}) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:prompt_form, prompt_form(setting))
+         |> put_flash(:info, "Collaboration prompt reset to the one Canopy ships.")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not reset the prompt.")}
     end
   end
 
@@ -314,6 +354,64 @@ defmodule CanopyWeb.SettingsLive do
         </Layouts.panel>
 
         <Layouts.panel
+          id="prompt-panel"
+          title="Collaboration prompt"
+          description="The instructions every agent is given, above its own role prompt. Canopy fills in the {{variables}} per agent."
+        >
+          <:actions>
+            <span
+              :if={customised(@setting)}
+              id="prompt-customised"
+              class="rounded-full bg-warning/20 px-2 py-0.5 text-[11px] font-medium text-warning-content"
+            >
+              customised
+            </span>
+            <.button
+              :if={customised(@setting)}
+              type="button"
+              id="reset-prompt"
+              phx-click="reset_prompt"
+              data-canopy-confirm="Discard your collaboration prompt and go back to the one Canopy ships?"
+            >
+              Reset to default
+            </.button>
+          </:actions>
+          <.form
+            for={@prompt_form}
+            id="prompt-form"
+            phx-change="validate_prompt"
+            phx-submit="save_prompt"
+            class="flex flex-col gap-3"
+          >
+            <.input
+              field={@prompt_form[:collaboration_prompt]}
+              type="textarea"
+              rows="18"
+              label="Instructions"
+              class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed"
+            />
+            <div class="text-xs text-base-content/60">
+              <p class="mb-1">Available variables:</p>
+              <p class="flex flex-wrap gap-1">
+                <code
+                  :for={name <- Prompts.preamble_variables()}
+                  class="rounded bg-base-300/60 px-1 font-mono text-[11px]"
+                >{"{{#{name}}}"}</code>
+              </p>
+            </div>
+            <p class="text-xs text-base-content/60">
+              This is also where agents learn the <code class="font-mono">canopy_</code>
+              tools exist. Strip that out and they lose the ability to post, delegate, or
+              hand off — keep the tool list unless you mean to. Changes reach each agent on
+              its next turn; sessions already running keep the text they started with.
+            </p>
+            <div>
+              <.button type="submit" variant="primary" id="save-prompt">Save</.button>
+            </div>
+          </.form>
+        </Layouts.panel>
+
+        <Layouts.panel
           id="mcp-panel"
           title="MCP bridge"
           description="Agents reach Canopy through an MCP server that Canopy registers with OpenCode on demand."
@@ -496,6 +594,33 @@ defmodule CanopyWeb.SettingsLive do
       }
     </script>
     """
+  end
+
+  # The textarea always shows the text in force, so a fresh install can be
+  # edited from the shipped wording rather than an empty box. Saving it back
+  # unchanged means "still the default", so later Canopy updates keep applying.
+  defp prompt_form(setting) do
+    effective = customised(setting) || Prompts.default_preamble()
+
+    Settings.change(%{setting | collaboration_prompt: effective})
+    |> to_form(id: "prompt-form")
+  end
+
+  defp prompt_attrs(params) do
+    text = params |> Map.get("collaboration_prompt", "") |> to_string()
+
+    if String.trim(text) == String.trim(Prompts.default_preamble()),
+      do: %{"collaboration_prompt" => nil},
+      else: %{"collaboration_prompt" => text}
+  end
+
+  defp customised(%{collaboration_prompt: text}) when is_binary(text) and text != "", do: text
+  defp customised(_setting), do: nil
+
+  defp prompt_saved(setting) do
+    if customised(setting),
+      do: "Collaboration prompt saved. Agents get it on their next turn.",
+      else: "That matches the prompt Canopy ships, so the default is back in use."
   end
 
   defp chatter_saved(%{chatter_pause: false}),
