@@ -234,13 +234,13 @@ defmodule Canopy.Runtime do
   end
 
   @doc """
-  The agent in `opencode_session_id` declines to respond this turn: its final
+  The agent in `engine_session_id` declines to respond this turn: its final
   text is not posted as a reply. `{:error, :no_turn}` when nothing is in flight.
   """
-  def pass(channel_id, opencode_session_id, reason \\ nil) do
+  def pass(channel_id, engine_session_id, reason \\ nil) do
     case Supervisor.whereis(channel_id) do
       nil -> {:error, :no_turn}
-      pid -> ChannelServer.pass(pid, opencode_session_id, reason)
+      pid -> ChannelServer.pass(pid, engine_session_id, reason)
     end
   end
 

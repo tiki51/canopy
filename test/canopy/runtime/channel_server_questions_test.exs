@@ -32,14 +32,14 @@ defmodule Canopy.Runtime.ChannelServerQuestionsTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    ctx.session.opencode_session_id
+    ctx.session.engine_session_id
   end
 
   defp emit(sid, type, data) do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.session_topic(sid),
-      {:opencode_event, %Canopy.OpenCode.Event{type: type, session_id: sid, data: data}}
+      {:engine_event, %Canopy.Engine.Event{type: type, session_id: sid, data: data}}
     )
   end
 

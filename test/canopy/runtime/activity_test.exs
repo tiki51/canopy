@@ -1,7 +1,7 @@
 defmodule Canopy.Runtime.ActivityTest do
   use ExUnit.Case, async: true
 
-  alias Canopy.OpenCode.Event
+  alias Canopy.Engine.Event
   alias Canopy.Runtime.Activity
 
   defp ev(type, data), do: %Event{type: type, session_id: "s", data: data, raw_type: "test"}

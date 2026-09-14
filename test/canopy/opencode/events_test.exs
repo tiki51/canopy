@@ -1,7 +1,8 @@
 defmodule Canopy.OpenCode.EventsTest do
   use ExUnit.Case, async: true
 
-  alias Canopy.OpenCode.{Event, Events}
+  alias Canopy.Engine.Event
+  alias Canopy.OpenCode.Events
   alias Canopy.OpenCodeFixtures, as: Fixtures
 
   defp normalize_all(name), do: name |> Fixtures.events() |> Enum.flat_map(&Events.normalize/1)

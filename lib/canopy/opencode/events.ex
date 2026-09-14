@@ -1,6 +1,6 @@
 defmodule Canopy.OpenCode.Events do
   @moduledoc """
-  Normalizes raw OpenCode SSE events (decoded JSON maps) into `Canopy.OpenCode.Event`
+  Normalizes raw OpenCode SSE events (decoded JSON maps) into `Canopy.Engine.Event`
   structs. Verified against OpenCode 1.18.11, which delivers tool and text telemetry
   through `message.part.updated` parts rather than the `session.next.*` events the
   OpenAPI spec advertises (see Phase 0 spike notes).
@@ -8,7 +8,7 @@ defmodule Canopy.OpenCode.Events do
   `normalize/1` returns a list: empty for noise, usually one event, occasionally two.
   """
 
-  alias Canopy.OpenCode.Event
+  alias Canopy.Engine.Event
 
   @spec normalize(map()) :: [Event.t()]
   def normalize(%{"type" => type} = raw) do

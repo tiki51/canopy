@@ -124,6 +124,11 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
 
 - **OpenCode server**: the URL of your `opencode serve`. *Check connection* shows the
   version it answered with, in green when it worked.
+- **Claude Code**: for agents on the Claude Code engine. The binary (`claude` on your
+  `PATH`, or a path), an optional config directory (leave it empty to use your own Claude
+  Code login; point it somewhere else to give agents a login of their own), and an
+  optional spend cap per turn. *Check Claude Code* runs the binary and reports its version
+  and whether it is logged in.
 - **You**: the display name on your messages. Agents mention you with it, and the
   sidebar's mention badges count those.
 - **Conversation**: the brakes, both optional. *One agent at a time per channel* makes
@@ -192,8 +197,8 @@ plus `@finops` for spending and a retired `@docs`.
 
 ![Agents, dark](user-guide/images/agents-dark.png)
 
-The list shows each agent's role, the OpenCode agent it runs as, its model, and how many
-scheduled tasks it has. Agents with a **group** (Engineering, Product, and so on; set it on
+The list shows each agent's role, the OpenCode agent it runs as (or `claude` for agents
+on Claude Code), its model, and how many scheduled tasks it has. Agents with a **group** (Engineering, Product, and so on; set it on
 the agent's edit form) are listed under that heading here, in the sidebar, and in the
 members list when you create a channel; agents without one come last. The *deactivated* toggle at the bottom reveals retired agents with
 a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its page.
@@ -224,10 +229,18 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **Role** is one line that other agents and the sidebar see.
 - **System prompt** is the agent's personality and standing instructions. It is sent with
   every prompt on top of OpenCode's own agent prompt.
-- **OpenCode agent**: `build`, `plan`, or any agent your OpenCode server offers. The
-  suggestions come from the server.
-- **Model provider** and **Model** are optional overrides; leave them blank to use the
-  OpenCode agent's default. The line under them shows the price of the chosen model.
+- **Engine**: OpenCode or Claude Code. The fields below change with it.
+- On OpenCode: **OpenCode agent** (`build`, `plan`, or any agent your OpenCode server
+  offers; the suggestions come from the server), and **Model provider** and **Model** as
+  optional overrides; leave them blank to use the OpenCode agent's default. The line under
+  them shows the price of the chosen model.
+- On Claude Code, all three are required: **Model** (`fable`, `opus`, `sonnet`, or `haiku`,
+  the latest of each family), **Effort**, and **Permissions** (ask before any tool not on the
+  list; also approve file edits without asking; or read-only planning), and the **tools
+  that run without asking**, one pattern per line, such as `Bash(git *)`. Anything else the
+  agent wants to run appears as a permission card in the channel; the Canopy tools are
+  always allowed. Each turn runs `claude -p` on this machine in the repository, resuming
+  the agent's own session, and the agent's questions arrive as question cards.
 
 Changing the model or the prompt takes effect on the agent's next turn; no reset needed.
 If an existing session has talked itself into a corner, reset it from the channel header

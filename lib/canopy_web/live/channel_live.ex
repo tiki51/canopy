@@ -31,7 +31,7 @@ defmodule CanopyWeb.ChannelLive do
     Users
   }
 
-  alias Canopy.OpenCode.Event
+  alias Canopy.Engine.Event
   alias Canopy.Runtime.{Activity, Commands}
   alias CanopyWeb.Nav
   alias Canopy.Tasks.Task

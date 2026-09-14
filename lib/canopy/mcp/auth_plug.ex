@@ -1,17 +1,20 @@
 defmodule Canopy.MCP.AuthPlug do
   @moduledoc """
-  Authenticates the OpenCode server to the MCP endpoint.
+  Authenticates callers of the MCP endpoint.
 
-  The bearer token must equal `Canopy.Settings.get().mcp_token`. This proves
-  the caller is the OpenCode server Canopy registered with; agent identity is
-  resolved separately from the plugin-stamped `canopy_session_id`.
+  Two bearer tokens are accepted. The settings token (`Canopy.Settings.get().mcp_token`)
+  proves the caller is the OpenCode server Canopy registered with; agent
+  identity is then resolved from the plugin-stamped `canopy_session_id`. A
+  session token (`agent_sessions.mcp_token`) is what a Claude Code process
+  presents; it names the session outright, and the identity is assigned as
+  `:canopy_session` for `Canopy.MCP.Identity` to read from the frame.
   """
 
   @behaviour Plug
 
   import Plug.Conn
 
-  alias Canopy.Settings
+  alias Canopy.{AgentSessions, Settings}
 
   @impl Plug
   def init(opts), do: opts
@@ -19,14 +22,33 @@ defmodule Canopy.MCP.AuthPlug do
   @impl Plug
   def call(conn, _opts) do
     with {:ok, token} <- bearer_token(conn),
-         true <- Plug.Crypto.secure_compare(token, Settings.mcp_token()) do
-      assign(conn, :mcp_authenticated, true)
+         {:ok, conn} <- authenticate(conn, token) do
+      conn
     else
       _ ->
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(401, JSON.encode!(%{"error" => "unauthorized"}))
         |> halt()
+    end
+  end
+
+  defp authenticate(conn, token) do
+    cond do
+      Plug.Crypto.secure_compare(token, Settings.mcp_token()) ->
+        {:ok, assign(conn, :mcp_authenticated, true)}
+
+      session = AgentSessions.get_by_mcp_token(token) ->
+        {:ok,
+         conn
+         |> assign(:mcp_authenticated, true)
+         |> assign(:canopy_session, %{
+           engine: session.engine,
+           engine_session_id: session.engine_session_id
+         })}
+
+      true ->
+        :error
     end
   end
 

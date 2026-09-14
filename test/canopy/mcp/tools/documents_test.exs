@@ -78,7 +78,7 @@ defmodule Canopy.MCP.Tools.DocumentsTest do
   end
 
   test "document_get returns an image as image content", ctx do
-    params = %{"canopy_session_id" => ctx.session.opencode_session_id, "document" => ctx.shot.id}
+    params = %{"canopy_session_id" => ctx.session.engine_session_id, "document" => ctx.shot.id}
     {:ok, validated} = DocumentGet.mcp_schema(params)
     {:reply, response, _frame} = DocumentGet.execute(validated, Anubis.Server.Frame.new())
     refute response.isError

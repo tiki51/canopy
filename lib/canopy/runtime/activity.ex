@@ -10,7 +10,7 @@ defmodule Canopy.Runtime.Activity do
   can be reopened later.
   """
 
-  alias Canopy.OpenCode.Event
+  alias Canopy.Engine.Event
 
   @max_entries 80
   @preview_chars 1_500

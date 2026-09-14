@@ -37,6 +37,9 @@ config :phoenix,
 # The runtime talks to a Mox double in tests; the real client is exercised with Req.Test.
 config :canopy, Oban, testing: :manual
 
+# Claude Code turns spawn a script that prints canned stream-json (see test/support/fake_claude.sh).
+config :canopy, :claude_code, binary: Path.expand("../test/support/fake_claude.sh", __DIR__)
+
 config :canopy, :opencode,
   base_url: "http://opencode.test",
   client: Canopy.OpenCode.ClientMock,

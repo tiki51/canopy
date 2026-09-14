@@ -8,6 +8,13 @@ planning documentation only; it does not describe an implemented Docker setup.
 - Phoenix release application using Elixir 1.20.4, Erlang/OTP 28.5, and Node 22.22.2.
 - SQLite database with Oban Lite and file-backed document storage.
 - OpenCode runs as a separate HTTP service.
+- Claude Code agents run `claude -p` as a child process of the release, so the runtime
+  image needs the `claude` binary on `PATH` (set `claude_binary` in Settings to its path
+  otherwise) and a login: mount a directory on `/data` as `CLAUDE_CONFIG_DIR` (set it as
+  the Claude Code config directory in Settings) after logging in there once with
+  `claude`, or pass `ANTHROPIC_API_KEY` into the container for headless API-key auth.
+  Each Claude Code session also needs to reach the MCP endpoint at the container's own
+  `PHX_HOST`, so the release must be able to connect to itself.
 - Canopy executes Git commands for registered repositories and passes repository
   paths to OpenCode as working directories.
 - SQLite is single-writer; deploy one application replica unless the persistence

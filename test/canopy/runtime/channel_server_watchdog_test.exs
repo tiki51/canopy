@@ -39,7 +39,7 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive {:prompted, _}, 2_000
-    ctx.session.opencode_session_id
+    ctx.session.engine_session_id
   end
 
   # Backdates the turn so it looks both past the grace period and long silent.
@@ -158,7 +158,7 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.session_topic(sid),
-      {:opencode_event, %Canopy.OpenCode.Event{type: type, session_id: sid, data: data}}
+      {:engine_event, %Canopy.Engine.Event{type: type, session_id: sid, data: data}}
     )
   end
 end

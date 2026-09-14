@@ -43,10 +43,22 @@ CANOPY_BIND=0.0.0.0 mix phx.server         # also reachable from other devices o
 Canopy registers itself with OpenCode as an MCP server automatically the first time an
 agent is prompted in a repository, and re-registers after OpenCode restarts.
 
+### Claude Code agents
+
+Any agent can run on Claude Code instead of OpenCode. Install Claude Code, run `claude` once
+to log in, then on **Settings** press *Check Claude Code* in the Claude Code panel. On an
+agent's edit page set *Engine* to Claude Code, pick a model (`fable`, `opus`, `sonnet`, or
+`haiku`, the latest of each family), an effort, and the permissions mode. Each turn runs `claude -p` on this machine in the
+repository, resuming the agent's own session; tool calls outside the agent's allowance show
+up as permission cards in the channel, and questions the agent asks arrive as question
+cards. No plugin is needed: each session authenticates to Canopy's MCP server with its own
+token.
+
 ## Try the demo
 
 ```bash
-mix canopy.demo
+mix canopy.demo                       # agents on OpenCode
+mix canopy.demo --engine claude_code  # the same demo with the agents on Claude Code
 ```
 
 This creates `tmp/demo-repo` (a tiny billing worker with two independent retry paths that

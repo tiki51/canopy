@@ -85,7 +85,12 @@ defmodule CanopyWeb.MCP.StreamableHTTPTest do
     assert length(tools) == length(Canopy.MCP.Server.tool_names())
 
     for tool <- tools do
-      assert tool["inputSchema"]["properties"]["canopy_session_id"]["type"] == "string"
+      # the permission tool is Claude Code's prompt host; its identity comes
+      # from the connection, not a parameter
+      if tool["name"] != "permission" do
+        assert tool["inputSchema"]["properties"]["canopy_session_id"]["type"] == "string"
+      end
+
       assert is_binary(tool["description"]) and tool["description"] != ""
     end
 
@@ -95,7 +100,7 @@ defmodule CanopyWeb.MCP.StreamableHTTPTest do
       |> rpc_post(
         rpc(3, "tools/call", %{
           "name" => "channels_list",
-          "arguments" => %{"canopy_session_id" => ctx.session.opencode_session_id}
+          "arguments" => %{"canopy_session_id" => ctx.session.engine_session_id}
         })
       )
 

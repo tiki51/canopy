@@ -61,6 +61,22 @@ defmodule Canopy.Runtime.PromptsTest do
     for text <- [build, plan, custom], do: refute(text =~ "{{")
   end
 
+  test "the preamble names the engine and its way of identifying the agent" do
+    {channel, repository} = {%{name: "general"}, %{path: "/repo"}}
+
+    opencode = Prompts.system(agent_with("build"), channel, repository)
+    assert opencode =~ "Your OpenCode session is your private workbench"
+    assert opencode =~ "Never set `canopy_session_id`"
+
+    claude =
+      Prompts.system(Map.put(agent_with("build"), :engine, "claude_code"), channel, repository)
+
+    assert claude =~ "Your Claude Code session is your private workbench"
+    assert claude =~ "Your identity travels with every Canopy tool call"
+    assert claude =~ "AskUserQuestion"
+    refute claude =~ "canopy_session_id"
+  end
+
   defp agent_with(opencode_agent) do
     %{
       name: "x",

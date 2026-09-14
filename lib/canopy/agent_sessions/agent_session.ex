@@ -1,6 +1,6 @@
 defmodule Canopy.AgentSessions.AgentSession do
   @moduledoc """
-  One OpenCode session owned by an agent inside a channel.
+  One engine session owned by an agent inside a channel.
 
   Each agent has exactly one root session (no parent) per channel; delegations
   create child sessions that point at the delegator's session.
@@ -17,7 +17,11 @@ defmodule Canopy.AgentSessions.AgentSession do
   @type t :: %__MODULE__{}
 
   schema "agent_sessions" do
-    field :opencode_session_id, :string
+    # the engine that owns the session and its id there (see `Canopy.Engine`)
+    field :engine, :string, default: "opencode"
+    field :engine_session_id, :string
+    # Claude Code sessions: the bearer token their MCP connection presents
+    field :mcp_token, :string, redact: true
     field :status, :string, default: "idle"
     field :last_error, :string
     field :last_seen_at, :utc_datetime_usec
@@ -37,18 +41,21 @@ defmodule Canopy.AgentSessions.AgentSession do
     |> cast(attrs, [
       :channel_id,
       :agent_id,
-      :opencode_session_id,
+      :engine,
+      :engine_session_id,
+      :mcp_token,
       :parent_session_id,
       :status,
       :last_error,
       :last_seen_at
     ])
-    |> validate_required([:channel_id, :agent_id, :opencode_session_id, :status])
+    |> validate_required([:channel_id, :agent_id, :engine, :engine_session_id, :status])
     |> validate_inclusion(:status, @statuses)
     |> foreign_key_constraint(:channel_id)
     |> foreign_key_constraint(:agent_id)
     |> foreign_key_constraint(:parent_session_id)
-    |> unique_constraint(:opencode_session_id)
+    |> unique_constraint([:engine, :engine_session_id], error_key: :engine_session_id)
+    |> unique_constraint(:mcp_token)
     |> unique_constraint([:channel_id, :agent_id],
       message: "already has a root session in this channel"
     )

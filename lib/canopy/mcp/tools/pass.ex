@@ -23,7 +23,7 @@ defmodule Canopy.MCP.Tools.Pass do
     Tool.run(params, frame, fn ctx, params ->
       reason = Tool.blank_to_nil(Map.get(params, :reason))
 
-      case Runtime.pass(ctx.channel.id, ctx.session.opencode_session_id, reason) do
+      case Runtime.pass(ctx.channel.id, ctx.session.engine_session_id, reason) do
         :ok ->
           {:ok,
            "Passing: nothing will be posted for this turn. Do not send a message; end your turn now."}

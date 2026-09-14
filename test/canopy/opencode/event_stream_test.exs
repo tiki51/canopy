@@ -2,7 +2,8 @@ defmodule Canopy.OpenCode.EventStreamTest do
   # Runs a real Bandit server that speaks SSE, so this cannot share the Req.Test plug.
   use ExUnit.Case, async: false
 
-  alias Canopy.OpenCode.{Event, EventStream}
+  alias Canopy.Engine.Event
+  alias Canopy.OpenCode.EventStream
   alias Canopy.OpenCodeFixtures, as: Fixtures
 
   defmodule FakeOpenCode do
@@ -53,34 +54,53 @@ defmodule Canopy.OpenCode.EventStreamTest do
     {:ok, base_url: "http://127.0.0.1:#{port}"}
   end
 
-  test "streams normalized events to repository and session topics and reconnects when closed", %{
+  test "streams normalized events to the session topic once and reconnects when closed", %{
     base_url: base_url
   } do
     repo_id = "repo_test_#{System.unique_integer([:positive])}"
     session = "ses_f7afbd250ffeYpTVGJ30g9OyRZ"
-    Phoenix.PubSub.subscribe(Canopy.PubSub, EventStream.repository_topic(repo_id))
     Phoenix.PubSub.subscribe(Canopy.PubSub, EventStream.session_topic(session))
+
+    test_pid = self()
+
+    spawn_link(fn ->
+      Phoenix.PubSub.subscribe(Canopy.PubSub, EventStream.repository_topic(repo_id))
+      send(test_pid, :relay_ready)
+
+      relay = fn relay ->
+        receive do
+          msg -> send(test_pid, {:relayed, msg})
+        end
+
+        relay.(relay)
+      end
+
+      relay.(relay)
+    end)
+
+    assert_receive :relay_ready
 
     {:ok, pid} =
       EventStream.start_link(repository_id: repo_id, directory: "/repo/path", base_url: base_url)
 
     assert_receive {:connected, "/repo/path"}, 2_000
 
-    # tool telemetry arrives on both topics
-    assert_receive {:opencode_event,
-                    %Event{type: :tool_started, session_id: ^session, data: %{tool: "read"}}},
-                   2_000
-
-    assert_receive {:opencode_event,
+    # tool telemetry arrives on the session topic
+    assert_receive {:engine_event,
                     %Event{type: :tool_started, session_id: ^session, data: %{tool: "read"}}},
                    2_000
 
     # text deltas are attributed and reasoning deltas dropped
-    assert_receive {:opencode_event, %Event{type: :text_delta, data: %{delta: delta}}}, 2_000
+    assert_receive {:engine_event, %Event{type: :text_delta, data: %{delta: delta}}}, 2_000
     assert is_binary(delta)
-    refute_received {:opencode_event, %Event{type: :part_delta}}
+    refute_received {:engine_event, %Event{type: :part_delta}}
 
-    assert_receive {:opencode_event, %Event{type: :agent_completed, session_id: ^session}}, 2_000
+    assert_receive {:engine_event, %Event{type: :agent_completed, session_id: ^session}}, 2_000
+
+    # ...and only there: a subscriber to the repository topic alone sees the
+    # connect notice but no session-bearing event
+    assert_receive {:relayed, {:engine_stream, :connected, ^repo_id}}, 2_000
+    refute_received {:relayed, {:engine_event, %Event{session_id: ^session}}}
 
     # the fake server closes the connection; the stream reconnects after backoff (1 s)
     assert_receive {:connected, "/repo/path"}, 5_000

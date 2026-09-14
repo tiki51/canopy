@@ -46,7 +46,11 @@ defmodule CanopyWeb.Router do
   scope "/mcp" do
     pipe_through :mcp
 
-    forward "/", Anubis.Server.Transport.StreamableHTTP.Plug, server: Canopy.MCP.Server
+    # A Claude Code permission prompt blocks its tool call until the user answers,
+    # so requests may stay open as long as `Canopy.ClaudeCode.Prompts` waits.
+    forward "/", Anubis.Server.Transport.StreamableHTTP.Plug,
+      server: Canopy.MCP.Server,
+      request_timeout: Canopy.ClaudeCode.Prompts.timeout_ms() + :timer.minutes(1)
   end
 
   # Other scopes may use custom stacks.

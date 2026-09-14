@@ -15,18 +15,28 @@ defmodule Canopy.MCPHelpers do
   """
   def call(tool, params, %{session: session}), do: call(tool, params, session)
 
-  def call(tool, params, %Canopy.AgentSessions.AgentSession{opencode_session_id: id}) do
+  def call(tool, params, %Canopy.AgentSessions.AgentSession{engine_session_id: id}) do
     params
     |> stringify()
     |> Map.put("canopy_session_id", id)
     |> then(&execute(tool, &1))
   end
 
-  @doc "Calls `tool` with raw string-keyed arguments (no identity stamp added)."
-  def execute(tool, params) do
+  @doc """
+  Calls `tool` as a session-authenticated connection would (a Claude Code
+  process): the identity rides in the frame assigns, no stamp in the params.
+  """
+  def call_as_session(tool, params, %Canopy.AgentSessions.AgentSession{} = session) do
+    execute(tool, params, %{
+      canopy_session: %{engine: session.engine, engine_session_id: session.engine_session_id}
+    })
+  end
+
+  @doc "Calls `tool` with raw string-keyed arguments (no identity stamp added) and optional frame assigns."
+  def execute(tool, params, assigns \\ %{}) do
     case tool.mcp_schema(stringify(params)) do
       {:ok, validated} ->
-        {:reply, %Response{} = response, %Frame{}} = tool.execute(validated, Frame.new())
+        {:reply, %Response{} = response, %Frame{}} = tool.execute(validated, Frame.new(assigns))
         text = Enum.map_join(response.content, "\n", & &1["text"])
         if response.isError, do: {:error, text}, else: {:ok, text}
 

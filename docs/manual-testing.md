@@ -51,6 +51,35 @@ Open **Settings** (gear icon in the left rail).
       form and returns to the page; deactivate marks it, the list's deactivated toggle shows
       it, and *Reactivate* brings it back.
 
+## 3b. A Claude Code agent (engine: claude_code)
+
+Needs Claude Code installed and logged in. On **Settings**, the *Claude Code* panel's *Check
+Claude Code* button reports the version and the login. Then on **Agents**, edit @researcher:
+set *Engine* to Claude Code, *Model* to `haiku`, *Effort* to `low`, *Permissions* to "approve
+file edits", and save.
+
+- [ ] Post `@researcher list the files in this repository and tell me what the project is`
+      in #payment-retries. The agent's status dot goes busy within about two seconds.
+- [ ] The activity card shows Claude Code's tools (`Glob`, `Read`, `Bash` with the command as
+      the label) and a text preview streaming in.
+- [ ] The turn card carries a cost, the model id, and a context around 20k tokens (Claude
+      Code's own system prompt and tool catalogue), and the reply is posted in the channel.
+- [ ] A second post to the same agent resumes the same session (it remembers the first
+      answer). `ls /tmp/canopy-claude/<session id>/` holds that session's `system.md` and
+      `stderr.log`.
+- [ ] Abort while a turn runs: the turn ends as completed, not as an error, within a second.
+- [ ] Post `@researcher post a one-line summary of the repository with canopy_message_send`:
+      the reply arrives as a message posted by the agent (through the tool), not as a card recap.
+- [ ] Post `@researcher run \`make\` with Bash` (anything outside git): a permission card
+      appears within a few seconds with the command as its pattern. *Reject* ends the call with
+      a denial the agent reports; ask again and press *Always*: the call runs, and further Bash
+      calls in that session no longer prompt.
+- [ ] Post `@researcher ask me whether to continue, with AskUserQuestion, then say what I chose`:
+      a question card appears; pick an option; the agent's reply names it.
+- [ ] Leave a permission card unanswered for 30 minutes (or set
+      `config :canopy, :claude_code, prompt_timeout_ms: 20_000` in dev) and the call is denied
+      "in time"; answering afterwards clears the card without an error.
+
 ## 4. Create a channel
 
 ![New channel](screenshots/04-new-channel.png)

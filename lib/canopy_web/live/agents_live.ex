@@ -109,7 +109,7 @@ defmodule CanopyWeb.AgentsLive do
     changeset =
       (socket.assigns.agent || %Agent{})
       |> Agents.change(blank_to_nil(params))
-      |> validate_model(socket.assigns.providers)
+      |> maybe_validate_model(socket.assigns.providers)
       |> Map.put(:action, :validate)
 
     {:noreply, assign_form(socket, changeset)}
@@ -118,7 +118,7 @@ defmodule CanopyWeb.AgentsLive do
   def handle_event("save", %{"agent" => params}, socket) do
     params = blank_to_nil(params)
     editing = socket.assigns.agent || %Agent{}
-    checked = editing |> Agents.change(params) |> validate_model(socket.assigns.providers)
+    checked = editing |> Agents.change(params) |> maybe_validate_model(socket.assigns.providers)
 
     result =
       cond do
@@ -369,6 +369,8 @@ defmodule CanopyWeb.AgentsLive do
          |> String.trim_trailing("."))
 
   @doc false
+  def agent_price_line(%Agent{engine: "claude_code"}, _providers, _defaults), do: nil
+
   def agent_price_line(agent, providers, defaults) do
     case effective_model(agent, defaults) do
       nil ->
@@ -409,6 +411,14 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   defp effective_model(_agent, _defaults), do: nil
+
+  # The provider check only makes sense for agents OpenCode runs; Claude Code
+  # takes any model id or alias.
+  defp maybe_validate_model(changeset, providers) do
+    if Ecto.Changeset.get_field(changeset, :engine) == "opencode",
+      do: validate_model(changeset, providers),
+      else: changeset
+  end
 
   # With the provider list known, a model override must name a configured provider
   # and one of its models; otherwise OpenCode rejects every prompt at run time.
@@ -559,6 +569,24 @@ defmodule CanopyWeb.AgentsLive do
     end)
   end
 
+  @engine_labels %{"opencode" => "OpenCode", "claude_code" => "Claude Code"}
+
+  defp engine_options, do: Enum.map(Canopy.Engine.names(), &{engine_label(&1), &1})
+
+  defp engine_label(%Agent{engine: engine}), do: engine_label(engine)
+  defp engine_label(engine), do: Map.get(@engine_labels, engine, engine)
+
+  defp default_model_label(%Agent{engine: "claude_code"}), do: "Claude Code default"
+  defp default_model_label(_agent), do: "OpenCode default"
+
+  defp permission_mode_options do
+    [
+      {"Ask first (default)", "default"},
+      {"Auto-approve edits (acceptEdits)", "acceptEdits"},
+      {"Read-only (plan)", "plan"}
+    ]
+  end
+
   defp model_label(%Agent{model_provider: nil, model_id: nil}), do: nil
   defp model_label(%Agent{model_provider: nil, model_id: id}), do: id
   defp model_label(%Agent{model_provider: provider, model_id: nil}), do: provider
@@ -668,11 +696,16 @@ defmodule CanopyWeb.AgentsLive do
               </p>
               <span
                 class="badge badge-ghost badge-sm justify-self-start font-mono"
-                title="OpenCode agent"
+                title={
+                  if agent.engine == "claude_code",
+                    do: "Claude Code · #{agent.permission_mode}",
+                    else: "OpenCode agent"
+                }
               >
-                {agent.opencode_agent}
+                {if agent.engine == "claude_code", do: "claude", else: agent.opencode_agent}
               </span>
               <button
+                :if={agent.engine == "opencode"}
                 type="button"
                 id={"model-#{agent.id}"}
                 phx-click="open_model_picker"
@@ -687,6 +720,17 @@ defmodule CanopyWeb.AgentsLive do
               >
                 {model_label(agent) || "default"}
               </button>
+              <span
+                :if={agent.engine != "opencode"}
+                id={"model-#{agent.id}"}
+                class={[
+                  "max-w-full justify-self-start truncate rounded-md font-mono text-xs",
+                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
+                  !model_label(agent) && "px-1.5 py-0.5 text-base-content/50"
+                ]}
+              >
+                {model_label(agent) || "default"}
+              </span>
               <span
                 class="flex items-center gap-0.5 text-xs text-base-content/60"
                 title="Active schedules"
@@ -945,11 +989,20 @@ defmodule CanopyWeb.AgentsLive do
                 </dd>
                 <dt class="text-base-content/50">Role</dt>
                 <dd>{@agent.role || "—"}</dd>
-                <dt class="text-base-content/50">OpenCode agent</dt>
-                <dd class="font-mono text-xs">{@agent.opencode_agent}</dd>
+                <dt class="text-base-content/50">Engine</dt>
+                <dd id="agent-engine">{engine_label(@agent)}</dd>
+                <%= if @agent.engine == "claude_code" do %>
+                  <dt class="text-base-content/50">Permissions</dt>
+                  <dd class="font-mono text-xs">
+                    {@agent.permission_mode}{if @agent.effort, do: " · effort #{@agent.effort}"}
+                  </dd>
+                <% else %>
+                  <dt class="text-base-content/50">OpenCode agent</dt>
+                  <dd class="font-mono text-xs">{@agent.opencode_agent}</dd>
+                <% end %>
                 <dt class="text-base-content/50">Model</dt>
                 <dd class="font-mono text-xs">
-                  {model_label(@agent) || "OpenCode default"}
+                  {model_label(@agent) || default_model_label(@agent)}
                   <span
                     :if={agent_price_line(@agent, @providers, @default_models)}
                     id="agent-model-price"
@@ -1164,68 +1217,123 @@ defmodule CanopyWeb.AgentsLive do
             placeholder="You are the backend engineer on this project. Prefer small, well-tested changes…"
             class="w-full textarea font-mono text-xs leading-relaxed"
           />
-          <div class="grid gap-3 sm:grid-cols-3">
+          <.input
+            field={@form[:engine]}
+            type="select"
+            id="agent-engine-select"
+            label="Engine"
+            options={engine_options()}
+          />
+          <%= if @form[:engine].value == "claude_code" do %>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@form[:model_id]}
+                type="select"
+                id="claude-model"
+                label="Model"
+                prompt="Choose a model"
+                options={Agent.claude_models()}
+              />
+              <.input
+                field={@form[:effort]}
+                type="select"
+                id="claude-effort"
+                label="Effort"
+                prompt="Choose an effort"
+                options={Agent.efforts()}
+              />
+              <.input
+                field={@form[:permission_mode]}
+                type="select"
+                id="claude-permission-mode"
+                label="Permissions"
+                options={permission_mode_options()}
+              />
+            </div>
             <.input
-              field={@form[:opencode_agent]}
-              type="select"
-              id="opencode-agents"
-              label="OpenCode agent"
-              options={opencode_agent_options(@opencode_agents, @form[:opencode_agent].value)}
+              field={@form[:allowed_tools]}
+              type="textarea"
+              id="claude-allowed-tools"
+              label="Tools that run without asking (one per line or comma-separated; blank for the default set)"
+              rows="3"
+              placeholder="Read, Glob, Grep, Edit, Write, Bash(git *)"
+              class="w-full textarea font-mono text-xs leading-relaxed"
             />
-            <%= if @providers != [] do %>
+            <p class="text-xs text-base-content/60">
+              Permissions: <em>ask first</em>
+              puts every tool not on the list on a permission
+              card in the channel; <em>auto-approve edits</em>
+              also lets file edits through; <em>read-only</em>
+              is plan mode. The Canopy tools are always allowed. Model aliases <code class="font-mono">fable</code>, <code class="font-mono">opus</code>, <code class="font-mono">sonnet</code>, and
+              <code class="font-mono">haiku</code>
+              name the latest of each family; Claude Code picks the exact version.
+            </p>
+          <% else %>
+            <div class="grid gap-3 sm:grid-cols-3">
               <.input
-                field={@form[:model_provider]}
+                field={@form[:opencode_agent]}
                 type="select"
-                label="Model provider (optional)"
-                prompt="OpenCode default"
-                options={provider_options(@providers, @form[:model_provider].value)}
+                id="opencode-agents"
+                label="OpenCode agent"
+                options={opencode_agent_options(@opencode_agents, @form[:opencode_agent].value)}
               />
-              <.input
-                field={@form[:model_id]}
-                type="select"
-                label="Model (optional)"
-                prompt={
-                  if @form[:model_provider].value, do: "Pick a model", else: "Pick a provider first"
-                }
-                options={
-                  model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
-                }
-                disabled={is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""}
-              />
-            <% else %>
-              <.input
-                field={@form[:model_provider]}
-                type="text"
-                label="Model provider (optional)"
-                placeholder="opencode"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <.input
-                field={@form[:model_id]}
-                type="text"
-                label="Model id (optional)"
-                placeholder="claude-haiku-4-5"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            <% end %>
-          </div>
-          <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
-            {form_price_line(@form, @providers, @default_models)}
-          </p>
-          <p class="text-xs text-base-content/60">
-            <code class="font-mono">build</code>
-            can edit files; <code class="font-mono">plan</code>
-            is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
-            once a repository is registered and <code class="font-mono">opencode serve</code>
-            is up.
-            <%= if @providers != [] do %>
-              Leave the model blank to use that agent's default.
-            <% else %>
-              Leave the model blank to use OpenCode's default.
-            <% end %>
-          </p>
+              <%= if @providers != [] do %>
+                <.input
+                  field={@form[:model_provider]}
+                  type="select"
+                  label="Model provider (optional)"
+                  prompt="OpenCode default"
+                  options={provider_options(@providers, @form[:model_provider].value)}
+                />
+                <.input
+                  field={@form[:model_id]}
+                  type="select"
+                  label="Model (optional)"
+                  prompt={
+                    if @form[:model_provider].value, do: "Pick a model", else: "Pick a provider first"
+                  }
+                  options={
+                    model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
+                  }
+                  disabled={
+                    is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
+                  }
+                />
+              <% else %>
+                <.input
+                  field={@form[:model_provider]}
+                  type="text"
+                  label="Model provider (optional)"
+                  placeholder="opencode"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <.input
+                  field={@form[:model_id]}
+                  type="text"
+                  label="Model id (optional)"
+                  placeholder="claude-haiku-4-5"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              <% end %>
+            </div>
+            <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
+              {form_price_line(@form, @providers, @default_models)}
+            </p>
+            <p class="text-xs text-base-content/60">
+              <code class="font-mono">build</code>
+              can edit files; <code class="font-mono">plan</code>
+              is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
+              once a repository is registered and <code class="font-mono">opencode serve</code>
+              is up.
+              <%= if @providers != [] do %>
+                Leave the model blank to use that agent's default.
+              <% else %>
+                Leave the model blank to use OpenCode's default.
+              <% end %>
+            </p>
+          <% end %>
           <div class="flex items-center gap-2 pt-1">
             <.button type="submit" variant="primary" id="save-agent">
               {if @agent, do: "Save changes", else: "Create agent"}

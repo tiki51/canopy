@@ -43,12 +43,19 @@ defmodule Canopy.Fixtures do
     attrs = Map.new(attrs)
     name = Map.get_lazy(attrs, :name, fn -> "agent-" <> unique_suffix() end)
 
-    {:ok, agent} =
+    attrs =
       attrs
       |> Map.put(:name, name)
       |> Map.put_new(:role, "Test agent")
       |> Map.put_new(:system_prompt, "You are #{name}.")
-      |> Agents.create()
+
+    # Claude Code agents must name a model, an effort, and a permission mode
+    attrs =
+      if attrs[:engine] == "claude_code",
+        do: attrs |> Map.put_new(:model_id, "haiku") |> Map.put_new(:effort, "low"),
+        else: attrs
+
+    {:ok, agent} = Agents.create(attrs)
 
     agent
   end
@@ -78,7 +85,7 @@ defmodule Canopy.Fixtures do
       |> Map.delete(:channel)
       |> Map.put_new(:channel_id, channel.id)
       |> Map.put_new(:agent_id, channel.owner_agent_id)
-      |> Map.put_new_lazy(:opencode_session_id, fn -> "ses_" <> unique_suffix() end)
+      |> Map.put_new_lazy(:engine_session_id, fn -> "ses_" <> unique_suffix() end)
       |> AgentSessions.create()
 
     session

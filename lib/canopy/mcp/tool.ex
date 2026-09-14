@@ -23,7 +23,7 @@ defmodule Canopy.MCP.Tool do
   """
   def run(params, frame, fun) when is_function(fun, 2) do
     result =
-      case Identity.resolve(params) do
+      case Identity.resolve(params, frame) do
         {:ok, ctx} -> fun.(ctx, params)
         {:error, reason} -> {:error, reason}
       end

@@ -27,6 +27,16 @@ config :canopy, :opencode,
   base_url: "http://127.0.0.1:4096",
   client: Canopy.OpenCode.Client
 
+# Execution engines by name, as stored on agents and sessions.
+config :canopy, :engines, %{
+  "opencode" => Canopy.Engine.OpenCode,
+  "claude_code" => Canopy.Engine.ClaudeCode
+}
+
+# Claude Code runs as `claude -p` per turn. The binary and config dir come from
+# Settings; this config only carries overrides (tests point `binary` at a fake).
+config :canopy, :claude_code, []
+
 # Configure the endpoint
 config :canopy, CanopyWeb.Endpoint,
   url: [host: "localhost"],

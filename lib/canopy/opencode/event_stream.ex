@@ -2,11 +2,12 @@ defmodule Canopy.OpenCode.EventStream do
   @moduledoc """
   One long-lived SSE subscription to `GET /event?directory=<repo>` per repository.
 
-  Raw events are normalized with `Canopy.OpenCode.Events` and broadcast on
-  `Phoenix.PubSub` as `{:opencode_event, %Canopy.OpenCode.Event{}}` on two topics:
+  Raw events are normalized with `Canopy.OpenCode.Events` and broadcast through
+  `Canopy.Engine.broadcast_event/3` as `{:engine_event, %Canopy.Engine.Event{}}`
+  on the engine topics:
 
-    * `"opencode:repository:<repository_id>"` — every event for the repository
-    * `"opencode:session:<session_id>"`       — events that carry a session id
+    * `"engine:session:<session_id>"`       — events that carry a session id
+    * `"engine:repository:<repository_id>"` — the rest (`file.edited` has no session)
 
   Reconnects with exponential backoff (1 s to 30 s) when the connection drops or when
   no bytes (including OpenCode's ~10 s heartbeats) arrive within the watchdog window.
@@ -42,8 +43,8 @@ defmodule Canopy.OpenCode.EventStream do
     GenServer.start_link(__MODULE__, opts, if(name, do: [name: name], else: []))
   end
 
-  def repository_topic(repository_id), do: "opencode:repository:#{repository_id}"
-  def session_topic(session_id), do: "opencode:session:#{session_id}"
+  defdelegate repository_topic(repository_id), to: Canopy.Engine
+  defdelegate session_topic(session_id), to: Canopy.Engine
 
   @doc "True once the SSE connection is open."
   def connected?(server), do: GenServer.call(server, :connected?)
@@ -70,11 +71,7 @@ defmodule Canopy.OpenCode.EventStream do
       {:ok, %Req.Response{status: 200} = resp} ->
         Logger.info("opencode event stream connected repository=#{state.repository_id}")
 
-        Phoenix.PubSub.broadcast(
-          state.pubsub,
-          repository_topic(state.repository_id),
-          {:opencode_stream, :connected, state.repository_id}
-        )
+        Canopy.Engine.broadcast_connected(state.repository_id, state.pubsub)
 
         {:noreply,
          %{state | resp: resp, buffer: "", connected?: true, backoff_ms: 1_000} |> arm_watchdog()}
@@ -185,13 +182,7 @@ defmodule Canopy.OpenCode.EventStream do
   defp remember_part_type(_event, state), do: state
 
   defp broadcast(event, state) do
-    message = {:opencode_event, event}
-    Phoenix.PubSub.broadcast(state.pubsub, repository_topic(state.repository_id), message)
-
-    if event.session_id do
-      Phoenix.PubSub.broadcast(state.pubsub, session_topic(event.session_id), message)
-    end
-
+    Canopy.Engine.broadcast_event(state.repository_id, event, state.pubsub)
     state
   end
 

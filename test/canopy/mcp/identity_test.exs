@@ -13,7 +13,7 @@ defmodule Canopy.MCP.IdentityTest do
 
   test "resolves a stamped session id to session, agent, channel, and repository", ctx do
     assert {:ok, identity} =
-             Identity.resolve(%{canopy_session_id: ctx.session.opencode_session_id})
+             Identity.resolve(%{canopy_session_id: ctx.session.engine_session_id})
 
     assert identity.session.id == ctx.session.id
     assert identity.agent.id == ctx.agent.id
@@ -43,7 +43,9 @@ defmodule Canopy.MCP.IdentityTest do
     assert Enum.sort(Enum.map(tools, & &1.name)) == Enum.sort(Canopy.MCP.Server.tool_names())
     assert length(tools) == length(Canopy.MCP.Server.tool_names())
 
-    for tool <- tools do
+    # the permission tool is called by Claude Code itself and takes its
+    # identity from the connection, never from a parameter
+    for tool <- tools, tool.name != "permission" do
       assert %{"properties" => %{"canopy_session_id" => field}} = tool.input_schema
       assert field["type"] == "string"
       assert field["description"] =~ "never fill this in"

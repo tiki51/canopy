@@ -1,7 +1,8 @@
-defmodule Canopy.OpenCode.Event do
+defmodule Canopy.Engine.Event do
   @moduledoc """
-  A normalized execution event. Everything Canopy learns from OpenCode's SSE stream is
-  reduced to one of these so the rest of the app never sees OpenCode's wire format.
+  A normalized execution event. Everything Canopy learns from an engine's
+  execution stream (OpenCode's SSE feed, Claude Code's stream-json output) is
+  reduced to one of these so the rest of the app never sees a wire format.
 
   `type` is one of:
 
@@ -26,6 +27,9 @@ defmodule Canopy.OpenCode.Event do
     * `:question_required` data: `%{request: map}` (id, questions with options, tool)
     * `:question_resolved` data: `%{request_id, answers}`
     * `:question_rejected` data: `%{request_id}`
+
+  `session_id` is the engine's own session id (`agent_sessions.engine_session_id`);
+  `raw_type` names the wire event it came from, for debugging only.
   """
 
   @enforce_keys [:type, :data]

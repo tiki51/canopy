@@ -16,6 +16,7 @@ defmodule Canopy.MCP.Server do
   alias Canopy.MCP.Tools
 
   component(Tools.ChannelsList, name: "channels_list")
+  component(Tools.Permission, name: "permission")
   component(Tools.ChannelGet, name: "channel_get")
   component(Tools.MessagesRead, name: "messages_read")
   component(Tools.MessageGet, name: "message_get")
@@ -51,7 +52,7 @@ defmodule Canopy.MCP.Server do
     task_get task_update agents_list delegate_task handoff_task handoff_get
     handoff_accept handoff_reject dm_start pass channel_create channel_add_members
     channel_remove_members schedule_create schedules_list schedule_cancel memory_read memory_write
-    dm_switch_repository costs_report documents_list document_get document_share
+    dm_switch_repository costs_report documents_list document_get document_share permission
   )
 
   @doc "The names of every tool this server exposes, in registration order."

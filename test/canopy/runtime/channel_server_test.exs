@@ -6,7 +6,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
   alias Canopy.{AgentSessions, Delegations, Handoffs, Messages, PermissionRequests, Timeline}
   alias Canopy.Fixtures
   alias Canopy.OpenCode.ClientMock, as: OC
-  alias Canopy.OpenCode.{Event, EventStream}
+  alias Canopy.Engine.Event
+  alias Canopy.OpenCode.EventStream
   alias Canopy.Runtime
   alias Canopy.Runtime.ChannelServer
 
@@ -41,7 +42,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.session_topic(session_id),
-      {:opencode_event, oc_event(session_id, type, data)}
+      {:engine_event, oc_event(session_id, type, data)}
     )
   end
 
@@ -108,7 +109,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
              )
     end
 
-    emit(ctx.session.opencode_session_id, :agent_completed, %{})
+    emit(ctx.session.engine_session_id, :agent_completed, %{})
 
     assert_receive {:timeline,
                     %{event_type: "agent_turn_completed", payload: %{"attachments" => 2}}},
@@ -132,7 +133,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     # the owner's turn starts
     {:ok, _} = Runtime.post_user_message(channel.id, "get the reviewer's opinion on the logo")
     assert_receive {:prompted, owner_sid, _}, 2_000
-    assert owner_sid == session.opencode_session_id
+    assert owner_sid == session.engine_session_id
 
     # mid-turn: a heads-up mentioning the reviewer, then the image in a second post
     {:ok, first} =
@@ -181,7 +182,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
       {:ok, ""}
     end)
 
-    owner_sid = ctx.session.opencode_session_id
+    owner_sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive {:prompted, ^owner_sid}, 2_000
     emit(owner_sid, :agent_completed, %{})
@@ -207,7 +208,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
       {:ok, ""}
     end)
 
-    owner_sid = ctx.session.opencode_session_id
+    owner_sid = ctx.session.engine_session_id
 
     # turn 1: the user's message wakes the owner
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "what do you think?")
@@ -256,7 +257,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "a turn that already posted through the tools keeps its closing text on the card, not as a reply",
        ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "what did you find?")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -280,7 +281,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "resetting a session deletes it, is refused mid-turn, and the next wake creates a new one",
        ctx do
     test_pid = self()
-    old_sid = ctx.session.opencode_session_id
+    old_sid = ctx.session.engine_session_id
 
     stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
       send(test_pid, {:prompted, sid})
@@ -296,7 +297,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert :ok = Runtime.reset_session(ctx.channel.id, ctx.agent.id, "user")
 
     assert_receive {:timeline,
-                    %{event_type: "session_reset", payload: %{"opencode_session_id" => ^old_sid}}},
+                    %{event_type: "session_reset", payload: %{"engine_session_id" => ^old_sid}}},
                    2_000
 
     assert AgentSessions.get_root(ctx.channel.id, ctx.agent.id) == nil
@@ -310,7 +311,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "again")
     assert_receive {:prompted, "ses_fresh"}, 2_000
 
-    assert %{opencode_session_id: "ses_fresh"} =
+    assert %{engine_session_id: "ses_fresh"} =
              AgentSessions.get_root(ctx.channel.id, ctx.agent.id)
   end
 
@@ -335,7 +336,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
 
-    old_sid = dm_session.opencode_session_id
+    old_sid = dm_session.engine_session_id
     old_dir = ctx.repository.path
     {:ok, _} = Runtime.post_user_message(dm.id, "hello")
     assert_receive {:prompted, ^old_dir, ^old_sid}, 2_000
@@ -344,7 +345,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     {:ok, _} = Runtime.switch_dm_repository(dm.id, other.id, "@" <> ctx.agent.name)
     assert_receive {:timeline, %{event_type: "repository_switched"}}, 2_000
     Process.sleep(100)
-    assert Canopy.AgentSessions.get_root(dm.id, ctx.agent.id).opencode_session_id == old_sid
+    assert Canopy.AgentSessions.get_root(dm.id, ctx.agent.id).engine_session_id == old_sid
 
     emit(old_sid, :agent_completed, %{})
     assert_receive {:agent_status, _, :idle}, 2_000
@@ -384,12 +385,12 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "one turn at a time: a second agent woken mid-turn waits, shows queued, and starts when the first ends",
        ctx do
     test_pid = self()
-    owner_sid = ctx.session.opencode_session_id
+    owner_sid = ctx.session.engine_session_id
 
     reviewer_session =
       Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
 
-    reviewer_sid = reviewer_session.opencode_session_id
+    reviewer_sid = reviewer_session.engine_session_id
 
     stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
       send(test_pid, {:prompted, sid})
@@ -414,12 +415,12 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "with serialization off, agents woken together run at once", ctx do
     {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
     test_pid = self()
-    owner_sid = ctx.session.opencode_session_id
+    owner_sid = ctx.session.engine_session_id
 
     reviewer_session =
       Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
 
-    reviewer_sid = reviewer_session.opencode_session_id
+    reviewer_sid = reviewer_session.engine_session_id
 
     stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
       send(test_pid, {:prompted, sid})
@@ -436,7 +437,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "a billing error engages the hold; held channels drop wakes with one note; release lets a message wake again",
        ctx do
     test_pid = self()
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     Canopy.Hold.subscribe()
 
     stub(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
@@ -480,7 +481,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "a turn whose context passed the cap gets its session compacted afterwards", ctx do
     test_pid = self()
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
 
     {:ok, _} =
       Canopy.Agents.update(ctx.agent, %{model_provider: "opencode", model_id: "gpt-5-nano"})
@@ -545,7 +546,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "a turn summary records what woke it, its model calls, and tokens", ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -621,7 +622,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     {:ok, _} = Canopy.Channels.set_spend_limit(ctx.channel, 5.0)
     expect_prompt(self())
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "now?")
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     assert_receive {:prompted, ^sid, _}, 2_000
   end
 
@@ -634,7 +635,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "a passed turn posts no reply and the summary says so", ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "thanks, all good")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -657,7 +658,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     {:ok, message} = Runtime.post_user_message(ctx.channel.id, "please look at the retries")
 
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     assert_receive {:prompted, ^sid, body}, 2_000
 
     # the agent's notes file exists before its first prompt
@@ -696,13 +697,13 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:prompted, "ses_reviewer_new", body}, 2_000
     assert body.system =~ "@#{reviewer.name}"
 
-    assert %{opencode_session_id: "ses_reviewer_new"} =
+    assert %{engine_session_id: "ses_reviewer_new"} =
              AgentSessions.get_root(ctx.channel.id, reviewer.id)
   end
 
   test "prompts queue while the agent is busy and drain when the turn completes", ctx do
     expect_prompt(self(), 2)
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
 
     {:ok, m1} = Runtime.post_user_message(ctx.channel.id, "first")
     assert_receive {:prompted, ^sid, %{parts: [%{text: t1}]}}, 2_000
@@ -718,7 +719,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "execution events become telemetry, a stored reply, and a turn summary", ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -750,7 +751,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.repository_topic(ctx.repository.id),
-      {:opencode_event, oc_event(nil, :file_changed, %{path: "/repo/lib/a.ex"})}
+      {:engine_event, oc_event(nil, :file_changed, %{path: "/repo/lib/a.ex"})}
     )
 
     emit(sid, :text_done, %{message_id: "m", part_id: "p2", text: "Step 1: looking."})
@@ -799,7 +800,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "an agent error ends the turn with an error status and event", ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -819,7 +820,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "permission requests are recorded from events and answered through the client", ctx do
     expect_prompt(self())
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "edit something")
     assert_receive {:prompted, ^sid, _}, 2_000
 
@@ -854,7 +855,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   test "a delegation creates a child session under the delegator and wakes the delegate; completion wakes the delegator",
        ctx do
     reviewer = ctx.reviewer
-    parent_sid = ctx.session.opencode_session_id
+    parent_sid = ctx.session.engine_session_id
     test_pid = self()
 
     expect(OC, :create_session, fn _dir, %{parentID: ^parent_sid, agent: "build"}, _opts ->
@@ -900,7 +901,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
   test "a handoff wakes the target, and acceptance wakes the previous owner", ctx do
     reviewer = ctx.reviewer
-    owner_sid = ctx.session.opencode_session_id
+    owner_sid = ctx.session.engine_session_id
     test_pid = self()
 
     expect(OC, :create_session, fn _dir, _body, _opts -> {:ok, %{"id" => "ses_reviewer_ho"}} end)
@@ -938,7 +939,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   end
 
   test "abort goes to the agent's session and telemetry is empty for unknown agents", ctx do
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
     assert {:ok, true} = Runtime.abort(ctx.channel.id, ctx.agent.id)
     assert {:error, :no_session} = ChannelServer.abort(ctx.pid, "agt_nobody")
@@ -963,7 +964,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     {:ok, _} = Runtime.post_user_message(fresh.channel.id, "one")
     assert_receive {:prompted, _, _}, 2_000
-    emit(fresh.session.opencode_session_id, :agent_completed, %{})
+    emit(fresh.session.engine_session_id, :agent_completed, %{})
     {:ok, _} = Runtime.post_user_message(fresh.channel.id, "two")
     assert_receive {:prompted, _, _}, 2_000
 
@@ -1042,7 +1043,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
       Phoenix.PubSub.broadcast(
         Canopy.PubSub,
         EventStream.repository_topic(repo_id),
-        {:opencode_stream, :connected, repo_id}
+        {:engine_stream, :connected, repo_id}
       )
     end
   end
@@ -1061,7 +1062,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
     # first prompt: registration checked and cached
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "one")
     assert_receive :prompted, 2_000
-    emit_idle(ctx.session.opencode_session_id)
+    emit_idle(ctx.session.engine_session_id)
 
     # OpenCode restarts: the registration is gone and the stream reconnects
     stub(OC, :mcp_status, fn _dir, _opts -> {:ok, %{}} end)
@@ -1097,7 +1098,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    ctx.session.opencode_session_id
+    ctx.session.engine_session_id
   end
 
   test "a reconnect finishes a turn OpenCode no longer reports as busy", ctx do
@@ -1159,7 +1160,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
 
     expect(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => %{"type" => "busy"}}} end)
 
@@ -1183,7 +1184,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "one")
     assert_receive :prompted, 2_000
-    emit_idle(ctx.session.opencode_session_id)
+    emit_idle(ctx.session.engine_session_id)
 
     {:ok, _} = Settings.rotate_mcp_token()
     new_token = Settings.mcp_token()
@@ -1202,8 +1203,7 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.session_topic(sid),
-      {:opencode_event,
-       %Canopy.OpenCode.Event{type: :agent_completed, session_id: sid, data: %{}}}
+      {:engine_event, %Canopy.Engine.Event{type: :agent_completed, session_id: sid, data: %{}}}
     )
 
     Process.sleep(50)
@@ -1217,7 +1217,8 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
 
   alias Canopy.{Fixtures, Runtime, Timeline}
   alias Canopy.OpenCode.ClientMock, as: OC
-  alias Canopy.OpenCode.{Event, EventStream}
+  alias Canopy.Engine.Event
+  alias Canopy.OpenCode.EventStream
 
   setup :set_mox_global
   setup :verify_on_exit!
@@ -1236,7 +1237,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
     Phoenix.PubSub.broadcast(
       Canopy.PubSub,
       EventStream.session_topic(session_id),
-      {:opencode_event, %Event{type: type, session_id: session_id, data: data, raw_type: "test"}}
+      {:engine_event, %Event{type: type, session_id: session_id, data: data, raw_type: "test"}}
     )
   end
 
@@ -1250,7 +1251,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     # An empty session.diff during the turn is noise, not a telemetry entry.
     emit(sid, :diff, %{files: []})
     emit(sid, :tool_started, %{call_id: "c1", tool: "read", status: :running, input: %{}})
@@ -1279,7 +1280,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
     assert_receive :prompted, 2_000
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
 
     error = %{
       "name" => "ProviderModelNotFoundError",
@@ -1293,7 +1294,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
       Phoenix.PubSub.broadcast(
         Canopy.PubSub,
         EventStream.session_topic(sid),
-        {:opencode_event, %Event{type: :agent_error, session_id: sid, data: %{error: error}}}
+        {:engine_event, %Event{type: :agent_error, session_id: sid, data: %{error: error}}}
       )
     end
 

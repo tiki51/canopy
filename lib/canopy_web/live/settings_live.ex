@@ -1,8 +1,9 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
-  Settings: the OpenCode server URL (with a connection check), the local user's
-  display name, the collaboration preamble every agent is given, and the MCP
-  section (identity plugin source, endpoint URL, token).
+  Settings: the OpenCode server URL (with a connection check), the Claude Code
+  binary (with a version and login check), the local user's display name, the
+  collaboration preamble every agent is given, and the MCP section (identity
+  plugin source, endpoint URL, token).
   """
   use CanopyWeb, :live_view
 
@@ -22,6 +23,8 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:page_title, "Settings")
      |> assign(:setting, setting)
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
+     |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
+     |> assign(:claude_check, nil)
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
      |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
      |> assign(:prompt_form, prompt_form(setting))
@@ -64,6 +67,48 @@ defmodule CanopyWeb.SettingsLive do
 
       {:error, changeset} ->
         {:noreply, assign(socket, :opencode_form, to_form(changeset, id: "opencode-form"))}
+    end
+  end
+
+  @claude_fields ["claude_binary", "claude_config_dir", "claude_max_budget_usd"]
+
+  def handle_event("validate_claude", %{"setting" => params}, socket) do
+    changeset =
+      socket.assigns.setting
+      |> Settings.change(Map.take(params, @claude_fields))
+      |> Map.put(:action, :validate)
+
+    {:noreply,
+     socket
+     |> assign(:claude_form, to_form(changeset, id: "claude-form"))
+     |> assign(:claude_check, nil)}
+  end
+
+  def handle_event("save_claude", %{"setting" => params}, socket) do
+    case Settings.update(Map.take(params, @claude_fields)) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
+         |> put_flash(:info, "Claude Code settings saved.")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :claude_form, to_form(changeset, id: "claude-form"))}
+    end
+  end
+
+  # Runs the binary named in the form (saved or not): version and login state.
+  def handle_event("check_claude", _params, socket) do
+    binary = socket.assigns.claude_form[:claude_binary].value |> to_string() |> String.trim()
+
+    if binary == "" do
+      {:noreply, assign(socket, :claude_check, {:error, "enter the binary first"})}
+    else
+      {:noreply,
+       socket
+       |> assign(:claude_check, :checking)
+       |> start_async(:claude_check, fn -> Canopy.Engine.ClaudeCode.check(binary) end)}
     end
   end
 
@@ -188,6 +233,12 @@ defmodule CanopyWeb.SettingsLive do
     {:noreply, assign(socket, :health, normalize_health(result))}
   end
 
+  def handle_async(:claude_check, {:ok, result}, socket),
+    do: {:noreply, assign(socket, :claude_check, result)}
+
+  def handle_async(:claude_check, {:exit, reason}, socket),
+    do: {:noreply, assign(socket, :claude_check, {:error, "check crashed: #{inspect(reason)}"})}
+
   def handle_async(:health, {:exit, reason}, socket) do
     {:noreply, assign(socket, :health, {:error, "check crashed: #{inspect(reason)}"})}
   end
@@ -237,7 +288,7 @@ defmodule CanopyWeb.SettingsLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
     >
-      <Layouts.page title="Settings" subtitle="OpenCode connection, your name, and the MCP bridge">
+      <Layouts.page title="Settings" subtitle="Engines, your name, and the MCP bridge">
         <Layouts.panel
           id="opencode-panel"
           title="OpenCode server"
@@ -276,6 +327,61 @@ defmodule CanopyWeb.SettingsLive do
               </button>
               <.health_result health={@health} />
             </div>
+          </.form>
+        </Layouts.panel>
+
+        <Layouts.panel
+          id="claude-panel"
+          title="Claude Code"
+          description="Agents on the Claude Code engine run `claude -p` per turn on this machine, with its own login."
+        >
+          <.form
+            for={@claude_form}
+            id="claude-form"
+            phx-change="validate_claude"
+            phx-submit="save_claude"
+            class="flex flex-col gap-3"
+          >
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_binary]}
+                type="text"
+                label="Binary (name on PATH or a path)"
+                placeholder="claude"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@claude_form[:claude_config_dir]}
+                type="text"
+                label="Config directory (optional)"
+                placeholder="~/.claude (your own login)"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@claude_form[:claude_max_budget_usd]}
+                type="number"
+                step="0.01"
+                min="0"
+                label="Spend cap per turn, USD (optional)"
+                placeholder="none"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <.button type="submit" variant="primary" id="save-claude">Save</.button>
+              <button type="button" id="check-claude" class="btn btn-soft" phx-click="check_claude">
+                Check Claude Code
+              </button>
+              <.claude_check_result check={@claude_check} />
+            </div>
+            <p class="text-xs text-base-content/60">
+              Leave the config directory empty to use your own Claude Code login and settings
+              (your personal MCP servers are still kept out of agent sessions). Point it at a
+              directory of its own to isolate agents; run <code class="font-mono">claude</code>
+              once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
+              set to log in there.
+            </p>
           </.form>
         </Layouts.panel>
 
@@ -548,6 +654,38 @@ defmodule CanopyWeb.SettingsLive do
           <.icon name="hero-check-circle-mini" class="size-4 text-success" />
           <span class="text-success">
             Connected{if version, do: " · OpenCode #{version}", else: ""}
+          </span>
+        <% {:error, reason} -> %>
+          <.icon name="hero-x-circle-mini" class="size-4 text-error" />
+          <span class="text-error">{reason}</span>
+      <% end %>
+    </span>
+    """
+  end
+
+  attr :check, :any, required: true
+
+  defp claude_check_result(assigns) do
+    ~H"""
+    <span id="claude-check-result" class="flex items-center gap-1.5 text-sm" role="status">
+      <%= case @check do %>
+        <% nil -> %>
+        <% :checking -> %>
+          <span class="text-base-content/60">Checking…</span>
+        <% {:ok, info} -> %>
+          <.icon
+            name={
+              if info.logged_in, do: "hero-check-circle-mini", else: "hero-exclamation-circle-mini"
+            }
+            class={["size-4", if(info.logged_in, do: "text-success", else: "text-warning")]}
+          />
+          <span class={if info.logged_in, do: "text-success", else: "text-warning"}>
+            Claude Code {info.version} at <code class="font-mono">{info.path}</code>{if info.logged_in,
+              do:
+                " · logged in" <>
+                  if(info.subscription, do: " (#{info.subscription})", else: "") <>
+                  if(info.email, do: " as #{info.email}", else: ""),
+              else: " · not logged in: run `claude` once to log in"}
           </span>
         <% {:error, reason} -> %>
           <.icon name="hero-x-circle-mini" class="size-4 text-error" />

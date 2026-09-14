@@ -18,6 +18,9 @@ defmodule Canopy.Application do
       {Oban, Application.fetch_env!(:canopy, Oban)},
       # Per-repository SSE subscriptions to the OpenCode server
       Canopy.OpenCode.Supervisor,
+      # One `claude -p` process per Claude Code turn, and the prompts they wait on
+      Canopy.ClaudeCode.Supervisor,
+      Canopy.ClaudeCode.Prompts,
       # One process per open channel owning agent sessions
       Canopy.Runtime.Supervisor,
       # MCP server for agents (Streamable HTTP, mounted at /mcp; transport starts only when the endpoint serves)

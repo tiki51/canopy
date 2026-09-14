@@ -24,6 +24,11 @@ defmodule Canopy.Settings.Setting do
     field :auditor_agent_id, :string
     # overrides the collaboration preamble Canopy ships; nil/"" uses the default
     field :collaboration_prompt, :string
+    # Claude Code: the binary (a name on PATH or a path), an optional config dir
+    # for the agents' own login and transcripts, and a per-turn spend cap
+    field :claude_binary, :string, default: "claude"
+    field :claude_config_dir, :string
+    field :claude_max_budget_usd, :float
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -40,14 +45,35 @@ defmodule Canopy.Settings.Setting do
       :hold_reason,
       :hold_at,
       :auditor_agent_id,
-      :collaboration_prompt
+      :collaboration_prompt,
+      :claude_binary,
+      :claude_config_dir,
+      :claude_max_budget_usd
     ])
-    |> validate_required([:opencode_url, :user_display_name, :chatter_pause, :chatter_limit])
+    |> update_change(:claude_binary, &trim_or_nil/1)
+    |> update_change(:claude_config_dir, &trim_or_nil/1)
+    |> validate_required([
+      :opencode_url,
+      :user_display_name,
+      :chatter_pause,
+      :chatter_limit,
+      :claude_binary
+    ])
+    |> validate_number(:claude_max_budget_usd, greater_than: 0)
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)
     |> validate_length(:user_display_name, max: 80)
     |> validate_length(:collaboration_prompt, max: 20_000)
     |> validate_url(:opencode_url)
   end
+
+  defp trim_or_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp trim_or_nil(value), do: value
 
   defp validate_url(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->

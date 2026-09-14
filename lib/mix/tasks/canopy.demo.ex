@@ -8,6 +8,9 @@ defmodule Mix.Tasks.Canopy.Demo do
 
       mix canopy.demo
 
+  With `--engine claude_code` the two demo agents run on Claude Code instead
+  (model haiku unless an alias is set, effort high unless set, edits auto-approved).
+
   Then start OpenCode (`opencode serve --port 4096`), run `mix phx.server`, open the
   channel, and post:
 
@@ -103,8 +106,19 @@ defmodule Mix.Tasks.Canopy.Demo do
     """
   }
 
+  @switches [engine: :string]
+
   @impl true
-  def run(_args) do
+  def run(args) do
+    {opts, _rest, _invalid} = OptionParser.parse(args, switches: @switches)
+    engine = Keyword.get(opts, :engine, "opencode")
+
+    unless engine in Canopy.Engine.names() do
+      Mix.raise(
+        "unknown engine #{inspect(engine)}; one of #{Enum.join(Canopy.Engine.names(), ", ")}"
+      )
+    end
+
     Mix.Task.run("app.start")
 
     path = Path.expand(@demo_dir)
@@ -123,6 +137,28 @@ defmodule Mix.Tasks.Canopy.Demo do
 
     researcher = Canopy.Agents.get_by_name("researcher")
 
+    # On Claude Code the demo agents run `claude -p`; haiku keeps the run cheap
+    # unless a model was already chosen.
+    [backend, researcher] =
+      Enum.map([backend, researcher], fn agent ->
+        attrs =
+          if engine == "claude_code",
+            do: %{
+              engine: engine,
+              model_id:
+                if(agent.model_id in Canopy.Agents.Agent.claude_models(),
+                  do: agent.model_id,
+                  else: "haiku"
+                ),
+              effort: agent.effort || "high",
+              permission_mode: "acceptEdits"
+            },
+            else: %{engine: engine}
+
+        {:ok, updated} = Canopy.Agents.update(agent, attrs)
+        updated
+      end)
+
     channel =
       Canopy.Channels.get_by_name(repository.id, "payment-retries") ||
         Canopy.Channels.create(%{
@@ -134,14 +170,24 @@ defmodule Mix.Tasks.Canopy.Demo do
         })
         |> elem(1)
 
+    next =
+      case engine do
+        "claude_code" ->
+          "Next: `claude` once to log in (Settings › Check Claude Code confirms it), then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}"
+
+        _ ->
+          "Next: `opencode serve --port 4096`, then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}"
+      end
+
     Mix.shell().info("""
     Demo ready.
       repository  #{repository.name} at #{path}
       channel     ##{channel.name} (owner @backend, members @backend @researcher)
+      engine      #{engine}#{if engine == "claude_code", do: " (model #{backend.model_id}, acceptEdits)", else: ""}
       plugin      #{path}/.opencode/plugins/canopy.js (project-level; copy to
                   ~/.config/opencode/plugins/canopy.js to cover every repository)
 
-    Next: `opencode serve --port 4096`, then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}
+    #{next}
     """)
   end
 

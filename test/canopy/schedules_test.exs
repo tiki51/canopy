@@ -106,7 +106,7 @@ defmodule Canopy.SchedulesTest do
     {:ok, schedule} = Schedules.create(attrs(ctx, %{when: "1s"}))
     assert %{success: 1} = drain()
 
-    sid = ctx.session.opencode_session_id
+    sid = ctx.session.engine_session_id
     assert_receive {:prompted, ^sid, %{parts: [%{text: text}]}}, 2_000
     assert text =~ "Schedule ID: #{schedule.id}"
     assert text =~ "Check whether the deploy went out."

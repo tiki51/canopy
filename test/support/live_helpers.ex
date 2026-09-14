@@ -5,7 +5,7 @@ defmodule CanopyWeb.LiveHelpers do
   `Canopy.Runtime.ChannelServer` does.
   """
 
-  alias Canopy.OpenCode.Event
+  alias Canopy.Engine.Event
   alias Canopy.Timeline
 
   @doc "Builds a normalized OpenCode event."

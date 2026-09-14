@@ -1,6 +1,6 @@
 defmodule Canopy.AgentSessions do
   @moduledoc """
-  OpenCode sessions per (channel, agent). `get_by_opencode_id/1` is the identity
+  Engine sessions per (channel, agent). `get_by_engine_id/2` is the identity
   lookup every MCP tool call resolves through.
   """
 
@@ -21,14 +21,36 @@ defmodule Canopy.AgentSessions do
     )
   end
 
-  @doc "Resolves an OpenCode session id to its session, agent, channel, and repository."
-  def get_by_opencode_id(opencode_session_id) when is_binary(opencode_session_id) do
+  @doc "Resolves an engine's session id to its session, agent, channel, and repository."
+  def get_by_engine_id(engine, engine_session_id)
+      when is_binary(engine) and is_binary(engine_session_id) do
     AgentSession
-    |> Repo.get_by(opencode_session_id: opencode_session_id)
+    |> Repo.get_by(engine: engine, engine_session_id: engine_session_id)
     |> Repo.preload(@identity_preloads)
   end
 
-  def get_by_opencode_id(_), do: nil
+  def get_by_engine_id(_, _), do: nil
+
+  @doc "The session whose MCP bearer token this is, with identity preloads; nil for unknown tokens."
+  def get_by_mcp_token(token) when is_binary(token) and token != "" do
+    AgentSession
+    |> Repo.get_by(mcp_token: token)
+    |> Repo.preload(@identity_preloads)
+  end
+
+  def get_by_mcp_token(_), do: nil
+
+  @doc "Gives the session an MCP token if it has none (sessions created before tokens existed)."
+  def ensure_mcp_token(%AgentSession{mcp_token: token} = session) when is_binary(token),
+    do: {:ok, session}
+
+  def ensure_mcp_token(%AgentSession{} = session) do
+    session
+    |> AgentSession.changeset(%{mcp_token: generate_mcp_token()})
+    |> Repo.update()
+  end
+
+  def generate_mcp_token, do: :crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)
 
   def get!(id), do: AgentSession |> Repo.get!(id) |> Repo.preload(@identity_preloads)
 

@@ -18,7 +18,7 @@ defmodule Canopy.Runtime.Prompts do
   @doc "The variables a preamble may use, for the Settings page to list."
   def preamble_variables,
     do: ~w(display_name name role channel repository_path notes_path shared_notes_path
-           execution_mode other_repositories memory)
+           execution_mode other_repositories memory engine_name engine_notes)
 
   # The user's text when Settings carries one, otherwise what Canopy ships.
   defp preamble do
@@ -39,6 +39,8 @@ defmodule Canopy.Runtime.Prompts do
       "name" => agent.name,
       "role" => agent.role || "",
       "execution_mode" => execution_mode(agent),
+      "engine_name" => engine_name(agent),
+      "engine_notes" => engine_notes(agent),
       "channel" => channel.name,
       "repository_path" => repository.path,
       "notes_path" => Canopy.Notes.agent_path(repository.path, agent),
@@ -61,12 +63,30 @@ defmodule Canopy.Runtime.Prompts do
   # and stops working. Each agent is told its own reach, in the first person.
   @contagion "A teammate's limits are their own. If someone reports that work is blocked by plan mode or that they cannot execute, that describes their session, not yours."
 
+  defp engine_name(agent) do
+    case Map.get(agent, :engine, "opencode") do
+      "claude_code" -> "Claude Code"
+      _ -> "OpenCode"
+    end
+  end
+
+  # What differs per engine about talking to Canopy.
+  defp engine_notes(agent) do
+    case Map.get(agent, :engine, "opencode") do
+      "claude_code" ->
+        "Your identity travels with every Canopy tool call; there is nothing to set. Questions you ask with AskUserQuestion reach the user as a card in the channel, and their answer comes back to you. A `/compact` message means Canopy is compacting your context; nothing is asked of you."
+
+      _ ->
+        "Never set `canopy_session_id`; Canopy fills it in."
+    end
+  end
+
   defp execution_mode(agent) do
-    case Map.get(agent, :opencode_agent) do
-      "plan" ->
+    case Canopy.Agents.Agent.execution_mode(agent) do
+      :plan ->
         "Your session is read-only: you can read, inspect, and plan, but you cannot edit files. That is a limit of your own session, not of this channel or this team. Say it in the first person (\"I can't make that edit from here\") and hand the work to a teammate who can; never tell the channel that execution is blocked, because for them it is not."
 
-      "build" ->
+      :build ->
         "Your session can edit files in this repository: you have write access and are expected to do the work yourself. " <>
           @contagion
 

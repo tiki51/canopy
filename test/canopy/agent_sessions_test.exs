@@ -14,7 +14,7 @@ defmodule Canopy.AgentSessionsTest do
              AgentSessions.create(%{
                channel_id: channel.id,
                agent_id: agent.id,
-               opencode_session_id: "ses_other"
+               engine_session_id: "ses_other"
              })
 
     assert %{channel_id: ["already has a root session in this channel"]} = errors_on(changeset)
@@ -24,7 +24,7 @@ defmodule Canopy.AgentSessionsTest do
              AgentSessions.create(%{
                channel_id: channel.id,
                agent_id: agent.id,
-               opencode_session_id: "ses_child",
+               engine_session_id: "ses_child",
                parent_session_id: root.id
              })
 
@@ -32,7 +32,7 @@ defmodule Canopy.AgentSessionsTest do
              AgentSessions.create(%{
                channel_id: channel.id,
                agent_id: agent.id,
-               opencode_session_id: "ses_child2",
+               engine_session_id: "ses_child2",
                parent_session_id: root.id
              })
 
@@ -40,7 +40,7 @@ defmodule Canopy.AgentSessionsTest do
     assert child.parent_session_id == root.id
   end
 
-  test "opencode_session_id is unique and resolves identity" do
+  test "engine_session_id is unique and resolves identity" do
     %{channel: channel, agent: agent, session: session, repository: repository} = scenario()
     other = channel_fixture()
 
@@ -48,17 +48,17 @@ defmodule Canopy.AgentSessionsTest do
              AgentSessions.create(%{
                channel_id: other.id,
                agent_id: other.owner_agent_id,
-               opencode_session_id: session.opencode_session_id
+               engine_session_id: session.engine_session_id
              })
 
-    assert %{opencode_session_id: ["has already been taken"]} = errors_on(changeset)
+    assert %{engine_session_id: ["has already been taken"]} = errors_on(changeset)
 
-    resolved = AgentSessions.get_by_opencode_id(session.opencode_session_id)
+    resolved = AgentSessions.get_by_engine_id("opencode", session.engine_session_id)
     assert resolved.id == session.id
     assert resolved.agent.id == agent.id
     assert resolved.channel.id == channel.id
     assert resolved.channel.repository.path == repository.path
-    assert AgentSessions.get_by_opencode_id("ses_unknown") == nil
+    assert AgentSessions.get_by_engine_id("opencode", "ses_unknown") == nil
   end
 
   test "set_status/3 and touch/1" do
