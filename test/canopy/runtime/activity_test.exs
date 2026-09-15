@@ -56,6 +56,53 @@ defmodule Canopy.Runtime.ActivityTest do
     assert card.tool_count == 1
   end
 
+  test "the agent's text streams into one entry in order with the tools and is finished in place" do
+    card =
+      Activity.fold_all([
+        ev(:text_delta, %{part_id: "t1", delta: "Checking the "}),
+        ev(:text_delta, %{part_id: "t1", delta: "formula first."}),
+        ev(:tool_started, %{call_id: "c1", tool: "bash", input: %{"command" => "brew audit"}}),
+        ev(:text_done, %{part_id: "t1", text: "Checking the formula first."}),
+        ev(:tool_completed, %{call_id: "c1", tool: "bash", status: :ok, input: %{}}),
+        ev(:text_delta, %{part_id: "t2", delta: "Audit passed, "})
+      ])
+
+    assert [
+             %{kind: :text, status: :ok, label: "Checking the formula first."},
+             %{kind: :tool, status: :ok},
+             %{kind: :text, status: :running, label: "Audit passed, "}
+           ] = card.entries
+
+    # Claude Code keys deltas by block index and the finished text by message
+    card =
+      Activity.fold_all([
+        ev(:text_delta, %{part_id: "0", delta: "One "}),
+        ev(:text_delta, %{part_id: "0", delta: "moment."}),
+        ev(:text_done, %{part_id: "msg_1-text", text: "One moment."}),
+        ev(:tool_completed, %{call_id: "c2", tool: "read", status: :ok, input: %{}}),
+        ev(:text_delta, %{part_id: "0", delta: "Done."}),
+        ev(:text_done, %{part_id: "msg_2-text", text: "Done."})
+      ])
+
+    assert [
+             %{kind: :text, key: "text-msg_1-text", label: "One moment."},
+             %{kind: :tool},
+             %{kind: :text, key: "text-msg_2-text", label: "Done."}
+           ] = card.entries
+
+    # the closing text becomes the reply, so the stored card drops it
+    assert [%{kind: :text}, %{kind: :tool}] = Activity.drop_trailing_text(card).entries
+
+    assert [%{"kind" => "text", "label" => "One moment."} | _] =
+             card |> Activity.drop_trailing_text() |> Activity.to_payload()
+
+    assert [%{kind: :text}, %{kind: :tool}] =
+             card
+             |> Activity.drop_trailing_text()
+             |> Activity.to_payload()
+             |> Activity.from_payload()
+  end
+
   test "payload round-trip keeps entries and normalises unknown values" do
     card = Activity.fold_all([ev(:file_changed, %{path: "/r/lib/a.ex"})])
     payload = Activity.to_payload(card)

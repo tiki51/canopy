@@ -1,8 +1,9 @@
 defmodule Canopy.Runtime.Activity do
   @moduledoc """
   Folds an agent's execution events into the activity card shown in a channel:
-  one entry per tool call, edited file, step, or patch, plus a streaming text
-  preview and running totals.
+  one entry per tool call, edited file, step, patch, or piece of text the agent
+  wrote between tool calls (its narration, streamed as it arrives), in the
+  order they happened, plus running totals.
 
   The channel view folds live events with `fold/2`; the channel runtime folds
   the buffered events of a finished turn and stores them on the
@@ -13,22 +14,22 @@ defmodule Canopy.Runtime.Activity do
   alias Canopy.Engine.Event
 
   @max_entries 80
-  @preview_chars 1_500
-  @kinds ~w(tool file step diff)a
+  @text_chars 1_500
+  @kinds ~w(tool file step diff text)a
   @statuses ~w(running ok error)a
 
   @type entry :: %{
           key: String.t(),
-          kind: :tool | :file | :step | :diff,
+          kind: :tool | :file | :step | :diff | :text,
           status: :running | :ok | :error,
           label: String.t(),
           detail: String.t() | nil
         }
 
-  @type card :: %{entries: [entry], preview: String.t(), tool_count: non_neg_integer, cost: float}
+  @type card :: %{entries: [entry], tool_count: non_neg_integer, cost: float}
 
   @spec new() :: card
-  def new, do: %{entries: [], preview: "", tool_count: 0, cost: 0.0}
+  def new, do: %{entries: [], tool_count: 0, cost: 0.0}
 
   @doc "Folds a list of events, oldest first, into a card."
   @spec fold_all([Event.t()]) :: card
@@ -95,12 +96,37 @@ defmodule Canopy.Runtime.Activity do
     if seen?, do: card, else: %{card | cost: card.cost + cost}
   end
 
-  def fold(%Event{type: :text_delta, data: %{delta: delta}}, card) when is_binary(delta) do
-    %{card | preview: tail(card.preview <> delta, @preview_chars)}
+  # Text streams into one running entry per part, in its place among the tool
+  # rows; the finished part replaces it. Claude Code keys its deltas by block
+  # index and the finished text by message, so a finished text also claims the
+  # running entry it streamed into when no entry carries its own key.
+  def fold(%Event{type: :text_delta, data: %{delta: delta} = data}, card) when is_binary(delta) do
+    key = "text-" <> (data[:part_id] || "current")
+
+    text =
+      case Enum.find(card.entries, &(&1.key == key)) do
+        %{text: existing} -> existing <> delta
+        _ -> delta
+      end
+
+    put_entry(card, text_entry(key, text, :running))
   end
 
-  def fold(%Event{type: :text_done, data: %{text: text}}, card) when is_binary(text) do
-    %{card | preview: tail(text, @preview_chars)}
+  def fold(%Event{type: :text_done, data: %{text: text} = data}, card) when is_binary(text) do
+    key = "text-" <> (data[:part_id] || unique_key())
+
+    card =
+      case {Enum.any?(card.entries, &(&1.key == key)), List.last(card.entries)} do
+        {false, %{kind: :text, status: :running, key: running}} ->
+          %{card | entries: Enum.reject(card.entries, &(&1.key == running))}
+
+        _ ->
+          card
+      end
+
+    if String.trim(text) == "",
+      do: %{card | entries: Enum.reject(card.entries, &(&1.key == key))},
+      else: put_entry(card, text_entry(key, text, :ok))
   end
 
   def fold(%Event{type: :diff, data: %{files: files}}, card) when is_list(files) do
@@ -130,6 +156,32 @@ defmodule Canopy.Runtime.Activity do
   end
 
   def fold(_event, card), do: card
+
+  defp text_entry(key, text, status) do
+    %{
+      key: key,
+      kind: :text,
+      status: status,
+      label: truncate(String.trim_leading(text), @text_chars),
+      detail: nil,
+      tool: nil,
+      command: nil,
+      text: text
+    }
+  end
+
+  @doc """
+  The card without a closing text entry. A turn's final text is posted as the
+  agent's reply, or kept on the turn card as its recap, so on the finished
+  card it would show twice.
+  """
+  @spec drop_trailing_text(card) :: card
+  def drop_trailing_text(%{entries: entries} = card) do
+    case List.last(entries) do
+      %{kind: :text} -> %{card | entries: Enum.drop(entries, -1)}
+      _ -> card
+    end
+  end
 
   @doc """
   What the agent is doing right now, as a verb for the live card: "thinking"
@@ -326,10 +378,6 @@ defmodule Canopy.Runtime.Activity do
   end
 
   defp diff_file(other), do: to_string(other)
-
-  defp tail(text, max) do
-    if String.length(text) > max, do: "…" <> String.slice(text, -max, max), else: text
-  end
 
   defp truncate(text, max) do
     if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text

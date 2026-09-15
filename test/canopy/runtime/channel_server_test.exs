@@ -885,10 +885,13 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:telemetry, agent_id, %Event{type: :tool_completed}}, 1_000
     assert agent_id == ctx.agent.id
 
+    # finished text parts are kept with the tools, so the card can show them in place
     assert [
              %Event{type: :tool_started},
              %Event{type: :tool_completed},
-             %Event{type: :file_changed}
+             %Event{type: :file_changed},
+             %Event{type: :text_done},
+             %Event{type: :text_done}
            ] = ChannelServer.telemetry(ctx.pid, ctx.agent.id)
 
     emit(sid, :agent_completed, %{})
@@ -904,9 +907,11 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert payload["tools"] == 1
     assert payload["files"] == ["/repo/lib/a.ex"]
 
+    # the narration stays on the card in place; the closing text is the reply
     assert [
              %{"kind" => "tool", "status" => "ok", "label" => "README.md"},
-             %{"kind" => "file", "label" => "a.ex", "detail" => "/repo/lib/a.ex"}
+             %{"kind" => "file", "label" => "a.ex", "detail" => "/repo/lib/a.ex"},
+             %{"kind" => "text", "label" => "Step 1: looking."}
            ] = payload["activity"]
 
     # the summary is recorded before the reply so its card sits above the message

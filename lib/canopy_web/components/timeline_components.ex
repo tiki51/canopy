@@ -391,14 +391,6 @@ defmodule CanopyWeb.TimelineComponents do
         <p :if={@card.entries == []} class="text-xs text-base-content/50">
           Waiting for the first tool call…
         </p>
-        <div :if={@card.preview != ""} class="mt-2 border-t border-dashed border-secondary/20 pt-2">
-          <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
-            Streaming
-          </p>
-          <p class="whitespace-pre-wrap break-words text-xs leading-relaxed text-base-content/80">
-            {@card.preview}
-          </p>
-        </div>
       </div>
     </details>
     """
@@ -489,10 +481,18 @@ defmodule CanopyWeb.TimelineComponents do
       <li
         :for={entry <- @entries}
         id={"#{@id}-#{dom_key(entry.key)}"}
-        class="flex items-start gap-2 text-base-content/75"
+        class={["flex items-start gap-2 text-base-content/75", entry.kind == :text && "my-1"]}
+        data-kind={entry.kind}
       >
         <.icon name={entry_icon(entry)} class={["mt-0.5 size-3.5 shrink-0", entry_class(entry)]} />
-        <span class="min-w-0 truncate">
+        <%!-- The agent's own words between tool calls: prose, wrapped, in place. --%>
+        <p
+          :if={entry.kind == :text}
+          class="min-w-0 whitespace-pre-wrap break-words font-sans leading-relaxed text-base-content/80"
+        >
+          {entry.label}
+        </p>
+        <span :if={entry.kind != :text} class="min-w-0 truncate">
           <span class="text-base-content">{entry.label}</span>
           <span :if={entry.detail} class="text-base-content/50">— {entry.detail}</span>
         </span>
@@ -1046,10 +1046,13 @@ defmodule CanopyWeb.TimelineComponents do
   defp entry_icon(%{kind: :file}), do: "hero-pencil-square-mini"
   defp entry_icon(%{kind: :step}), do: "hero-flag-mini"
   defp entry_icon(%{kind: :diff}), do: "hero-document-text-mini"
+  defp entry_icon(%{kind: :text}), do: "hero-chat-bubble-bottom-center-text-mini"
   defp entry_icon(_), do: "hero-information-circle-mini"
 
   defp entry_class(%{kind: :tool, status: :running}), do: "animate-spin text-success"
   defp entry_class(%{kind: :tool, status: :error}), do: "text-error"
   defp entry_class(%{kind: :file}), do: "text-warning"
+  defp entry_class(%{kind: :text, status: :running}), do: "text-secondary"
+  defp entry_class(%{kind: :text}), do: "text-secondary/60"
   defp entry_class(_), do: "text-base-content/40"
 end

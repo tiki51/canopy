@@ -1220,6 +1220,8 @@ defmodule Canopy.Runtime.ChannelServer do
          state
        ) do
     broadcast(state, {:telemetry, agent_id, event})
+    # kept with the tool events so the finished card shows the narration in place
+    state = buffer(state, agent_id, event)
     update_turn(state, event.session_id, fn turn -> %{turn | texts: [text | turn.texts]} end)
   end
 
@@ -1378,6 +1380,7 @@ defmodule Canopy.Runtime.ChannelServer do
           |> Map.get(who.agent_id, [])
           |> Enum.reverse()
           |> Activity.fold_all()
+          |> Activity.drop_trailing_text()
           |> Activity.to_payload()
 
         {:ok, _} =
