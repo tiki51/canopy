@@ -910,6 +910,34 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "stop all" do
+    test "the header button aborts every turn and shows the stopped bar until Continue", ctx do
+      %{channel: channel, agent: agent, session: session} = ctx
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view
+      |> form("#composer-form", message: %{body: "please look at retries"})
+      |> render_submit()
+
+      assert_receive {:agent_status, _, :busy}, 2_000
+      assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
+
+      sid = session.engine_session_id
+      expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
+      view |> element("#stop-all") |> render_click()
+
+      assert has_element?(view, "#flash-info", "Stopped: 1 turn aborted")
+      assert has_element?(view, "#paused-bar", "Stopped.")
+      refute has_element?(view, "#abort-#{agent.id}")
+      assert Runtime.stopped?(channel.id)
+
+      view |> element("#continue-chatter") |> render_click()
+      refute has_element?(view, "#paused-bar")
+      refute Runtime.stopped?(channel.id)
+    end
+  end
+
   describe "chatter budget" do
     test "a pause shows the bar and Continue clears it", ctx do
       %{channel: channel} = ctx

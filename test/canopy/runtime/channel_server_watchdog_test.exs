@@ -146,6 +146,84 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     assert QuestionRequests.pending_for_channel(ctx.channel.id) == []
   end
 
+  # -- Retry loops -----------------------------------------------------------
+
+  @retry %{"type" => "retry", "attempt" => 10, "message" => "The usage limit has been reached"}
+
+  test "a turn the engine has been retrying for too long is ended with a note", ctx do
+    sid = start_turn(ctx)
+    emit(sid, :agent_status, %{status: :retry, raw: @retry})
+    # the retry notices have spaced out: the turn looks quiet
+    silence_turn(ctx.pid)
+
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => @retry}} end)
+    expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
+    tick(ctx.pid)
+
+    assert_receive {:timeline, %{event_type: "agent_error", payload: %{"reason" => reason}}},
+                   2_000
+
+    assert reason ==
+             "opencode was still retrying after 10 attempts: The usage limit has been reached"
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
+                   2_000
+
+    assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: body}}},
+                   2_000
+
+    assert body =~ "Ended #{ctx.agent.name}'s turn"
+    assert body =~ "The usage limit has been reached"
+    assert body =~ "Mention the agent again"
+
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :idle}
+    assert %{status: "error", last_error: ^reason} = AgentSessions.get!(ctx.session.id)
+  end
+
+  test "a long retry loop is ended even while its retry notices keep the turn fresh", ctx do
+    sid = start_turn(ctx)
+    emit(sid, :agent_status, %{status: :retry, raw: @retry})
+
+    :sys.replace_state(ctx.pid, fn st ->
+      %{
+        st
+        | turns:
+            Map.new(st.turns, fn {k, t} ->
+              {k, %{t | retrying: %{t.retrying | since: t.retrying.since - 600_000}}}
+            end)
+      }
+    end)
+
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => @retry}} end)
+    expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
+    tick(ctx.pid)
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+    assert_receive {:timeline, %{event_type: "message", message: %{kind: "system"}}}, 2_000
+  end
+
+  test "a retry that only just began is left to the engine", ctx do
+    sid = start_turn(ctx)
+    emit(sid, :agent_status, %{status: :retry, raw: Map.put(@retry, "attempt", 1)})
+    stub(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => @retry}} end)
+
+    tick(ctx.pid)
+
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+    refute_received {:timeline, %{event_type: "message", message: %{kind: "system"}}}
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
+  end
+
+  test "a retry that went through clears the clock", ctx do
+    sid = start_turn(ctx)
+    emit(sid, :agent_status, %{status: :retry, raw: @retry})
+    emit(sid, :agent_status, %{status: :busy, raw: %{"type" => "busy"}})
+
+    assert %{turns: turns} = :sys.get_state(ctx.pid)
+    assert %{retrying: nil} = turns[sid]
+  end
+
   defp question do
     %{
       "header" => "Mobile screenshots",

@@ -30,6 +30,11 @@ defmodule Canopy.Runtime.CommandsTest do
     assert {:error, "usage: /i" <> _} = Commands.parse("/i")
   end
 
+  test "/stop takes no arguments and ignores any given" do
+    assert {:command, :stop, "", ""} = Commands.parse("/stop")
+    assert {:command, :stop, "", ""} = Commands.parse("/STOP everything now")
+  end
+
   test "missing target or text is a usage error" do
     assert {:error, "usage: /handoff" <> _} = Commands.parse("/handoff")
     assert {:error, "usage: /handoff" <> _} = Commands.parse("/handoff @database")

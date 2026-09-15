@@ -31,6 +31,7 @@ defmodule Canopy.Engine.ClaudeCode do
   alias Canopy.Agents.Agent
   alias Canopy.ClaudeCode.{Command, Prompts}
   alias Canopy.Engine.Event
+  alias Canopy.Settings.Setting
 
   @context_cap 120_000
   @allowed_tools [
@@ -69,10 +70,11 @@ defmodule Canopy.Engine.ClaudeCode do
   `claude auth status`. `{:ok, %{version, logged_in, auth_method, subscription, email}}`
   or `{:error, reason}`.
   """
-  def check(binary \\ binary_name()) do
-    with {:ok, path} <- find(binary),
-         {:ok, version} <- run(path, ["--version"]),
-         {:ok, status} <- run(path, ["auth", "status"]) do
+  def check(binary \\ binary_name(), config_dir \\ configured_config_dir()) do
+    with {:ok, config_dir} <- normalize_config_dir(config_dir),
+         {:ok, path} <- find(binary),
+         {:ok, version} <- run(path, ["--version"], config_dir),
+         {:ok, status} <- run(path, ["auth", "status"], config_dir) do
       auth =
         case JSON.decode(status) do
           {:ok, %{} = map} -> map
@@ -98,8 +100,13 @@ defmodule Canopy.Engine.ClaudeCode do
     end
   end
 
-  defp run(path, args) do
-    case System.cmd(path, args, env: [{"CLAUDECODE", nil}], stderr_to_stdout: true) do
+  defp run(path, args, config_dir) do
+    env =
+      [{"CLAUDECODE", nil}] ++
+        if(config_dir, do: [{"CLAUDE_CONFIG_DIR", config_dir}], else: []) ++
+        Enum.map(config(:env, []), fn {key, value} -> {to_string(key), to_string(value)} end)
+
+    case System.cmd(path, args, env: env, stderr_to_stdout: true) do
       {out, 0} ->
         {:ok, String.trim(out)}
 
@@ -166,6 +173,8 @@ defmodule Canopy.Engine.ClaudeCode do
 
     %{
       busy: ClaudeCode.Supervisor.running(),
+      # the CLI retries inside its own process; nothing to see from here
+      retrying: [],
       permissions: prompt_events(pending, :permission, :approval_required),
       questions: prompt_events(pending, :question, :question_required)
     }
@@ -187,10 +196,13 @@ defmodule Canopy.Engine.ClaudeCode do
   # -- Turns --------------------------------------------------------------------
 
   defp start_turn(ctx, state, session, agent, content, opts) do
+    settings = Settings.get()
+
     # The runtime's copy of the session may predate its first turn and its
     # token; the row says whether Claude Code has seen it (a wrong guess is
     # corrected by the turn) and carries the MCP token the process presents.
-    with {:ok, binary} <- binary(state),
+    with {:ok, config_dir} <- normalize_config_dir(configured_config_dir(settings)),
+         {:ok, binary} <- binary(state),
          {:ok, fresh} <- AgentSessions.ensure_mcp_token(AgentSessions.get!(session.id)) do
       sid = session.engine_session_id
       dir = work_dir(sid)
@@ -200,7 +212,6 @@ defmodule Canopy.Engine.ClaudeCode do
       system_file = write_system(dir, opts[:system])
       mcp_file = write_mcp_config(dir, fresh.mcp_token)
       seen? = fresh.last_seen_at != nil
-      settings = Settings.get()
 
       command = fn flag ->
         Command.build(
@@ -216,7 +227,7 @@ defmodule Canopy.Engine.ClaudeCode do
           permission_mode: Map.get(agent, :permission_mode) || "default",
           allowed_tools: allowed_tools(agent) ++ Prompts.always_list(sid),
           max_budget_usd: settings.claude_max_budget_usd,
-          config_dir: config(:config_dir, nil) || settings.claude_config_dir,
+          config_dir: config_dir,
           mcp_tool_timeout_ms: config(:mcp_tool_timeout_ms, @default_mcp_tool_timeout_ms),
           extra_env: config(:env, [])
         )
@@ -344,6 +355,25 @@ defmodule Canopy.Engine.ClaudeCode do
   end
 
   defp blank_to_nil(_), do: nil
+
+  defp configured_config_dir(settings \\ Settings.get()) do
+    (config(:config_dir, nil) || settings.claude_config_dir)
+    |> Setting.normalize_claude_config_dir()
+  end
+
+  defp normalize_config_dir(nil), do: {:ok, nil}
+
+  defp normalize_config_dir(value) do
+    case Setting.normalize_claude_config_dir(value) do
+      nil ->
+        {:ok, nil}
+
+      path ->
+        if Path.type(path) == :absolute,
+          do: {:ok, path},
+          else: {:error, "Claude config directory must be an absolute path"}
+    end
+  end
 
   defp config(key, default),
     do: Keyword.get(Application.get_env(:canopy, :claude_code, []), key, default)

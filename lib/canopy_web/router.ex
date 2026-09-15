@@ -43,6 +43,12 @@ defmodule CanopyWeb.Router do
     get "/files/:id/:filename", FileController, :show
   end
 
+  scope "/", CanopyWeb do
+    pipe_through :api
+
+    get "/health", HealthController, :show
+  end
+
   scope "/mcp" do
     pipe_through :mcp
 

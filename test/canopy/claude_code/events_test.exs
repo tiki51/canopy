@@ -5,7 +5,7 @@ defmodule Canopy.ClaudeCode.EventsTest do
   alias Canopy.Engine.Event
 
   @fixture Path.expand("../../support/claude_code_fixtures/events-capture.jsonl", __DIR__)
-  @cwd "/Users/stevenbarber/devl/canopy/tmp/claude-spike/repo"
+  @cwd "/workspace/repo"
 
   defp replay(path \\ @fixture, cwd \\ @cwd) do
     path
@@ -57,7 +57,7 @@ defmodule Canopy.ClaudeCode.EventsTest do
 
   test "each model call is one step with token buckets; the usage is not double counted" do
     steps = for %Event{type: :step_completed, data: d} <- replay(), do: d
-    # nine message_start/message_delta pairs across the three processes
+    # Nine message_start/message_delta pairs across three turns.
     assert length(steps) == 9
     assert Enum.all?(steps, &(&1.tokens["input"] >= 0 and is_map(&1.tokens["cache"])))
     assert Enum.any?(steps, &(&1.tokens["cache"]["read"] > 20_000))
@@ -85,7 +85,7 @@ defmodule Canopy.ClaudeCode.EventsTest do
   test "init and status lines mark the agent busy and carry the model" do
     events = replay()
 
-    assert [%Event{data: %{session: %{"model" => "claude-haiku-4-5-20251001"}}} | _] =
+    assert [%Event{data: %{session: %{"model" => "claude-test"}}} | _] =
              for(%Event{type: :session_updated} = e <- events, do: e)
 
     assert Enum.count(events, &(&1.type == :agent_status and &1.data.status == :busy)) > 3

@@ -200,4 +200,17 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     assert first =~ "--session-id #{session.engine_session_id}"
     assert second =~ "--resume #{session.engine_session_id}"
   end
+
+  test "a relative configured Claude directory rejects the turn before launch", ctx do
+    config = Application.fetch_env!(:canopy, :claude_code)
+    Application.put_env(:canopy, :claude_code, Keyword.put(config, :config_dir, "relative/path"))
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+
+    assert_receive {:timeline, %{event_type: "agent_error", payload: %{"reason" => reason}}},
+                   5_000
+
+    assert reason =~ "Claude config directory must be an absolute path"
+    refute File.exists?(ctx.log)
+  end
 end

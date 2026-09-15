@@ -20,8 +20,13 @@ if System.get_env("PHX_SERVER") do
   config :canopy, CanopyWeb.Endpoint, server: true
 end
 
-config :canopy, CanopyWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+port =
+  case Integer.parse(System.get_env("PORT", "4000")) do
+    {port, ""} when port in 1..65_535 -> port
+    _ -> raise "environment variable PORT must be an integer from 1 to 65535"
+  end
+
+config :canopy, CanopyWeb.Endpoint, http: [port: port]
 
 # Shared documents live next to the database by default (canopy_dev.db →
 # canopy_dev_files/). CANOPY_FILES_DIR moves them; CANOPY_MAX_UPLOAD_MB caps a file.
@@ -58,6 +63,14 @@ if config_env() == :prod do
       For example: /etc/canopy/canopy.db
       """
 
+  case File.mkdir_p(Path.dirname(database_path)) do
+    :ok ->
+      :ok
+
+    {:error, reason} ->
+      raise "could not create database directory: #{reason |> :file.format_error() |> List.to_string()}"
+  end
+
   config :canopy, Canopy.Repo,
     database: database_path,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
@@ -74,12 +87,29 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  public_url = System.get_env("CANOPY_URL", "http://127.0.0.1:#{port}")
+
+  uri =
+    case URI.new(public_url) do
+      {:ok, uri} -> uri
+      {:error, _part} -> raise "environment variable CANOPY_URL must be a valid URL"
+    end
+
+  unless uri.scheme in ["http", "https"] and uri.host in ["127.0.0.1", "localhost"] and
+           uri.port in 1..65_535 and
+           uri.path in [nil, "", "/"] and is_nil(uri.query) and is_nil(uri.fragment) and
+           is_nil(uri.userinfo) do
+    raise "environment variable CANOPY_URL must be a loopback http or https origin without a path"
+  end
+
+  public_url = String.trim_trailing(public_url, "/")
+  config :canopy, public_url: public_url
 
   config :canopy, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :canopy, CanopyWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: uri.host, port: uri.port, scheme: uri.scheme],
+    check_origin: [public_url, "//127.0.0.1", "//localhost", "//[::1]"],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

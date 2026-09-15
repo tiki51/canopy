@@ -64,6 +64,9 @@ defmodule Canopy.Runtime do
       {:command, :invite, target, note} ->
         user_invite(channel_id, target, note)
 
+      {:command, :stop, _, _} ->
+        stop_all(channel_id)
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -224,6 +227,24 @@ defmodule Canopy.Runtime do
   def abort(channel_id, agent_id) do
     {:ok, pid} = ensure_channel(channel_id)
     ChannelServer.abort(pid, agent_id)
+  end
+
+  @doc """
+  Stops all agent activity in the channel: every turn in flight is aborted,
+  every waiting wake dropped, and later wakes are held until the user replies
+  or presses Continue. Also what `/stop` in the composer does.
+  """
+  def stop_all(channel_id) do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.stop_all(pid)
+  end
+
+  @doc "True when the channel was stopped by the user and has not been resumed."
+  def stopped?(channel_id) do
+    case Supervisor.whereis(channel_id) do
+      nil -> false
+      pid -> ChannelServer.stopped?(pid)
+    end
   end
 
   def telemetry(channel_id, agent_id) do

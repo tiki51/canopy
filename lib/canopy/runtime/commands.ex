@@ -5,6 +5,7 @@ defmodule Canopy.Runtime.Commands do
       /handoff @agent reason for the handoff
       /delegate @agent what the agent should do
       /i @agent [message]            (also /invite) adds the agent to the channel
+      /stop                          aborts every turn and holds the channel
 
   `parse/1` returns `{:command, name, target, text}`, `{:error, reason}` for a
   malformed command, or `:text` when the input is a normal message. Anything that
@@ -12,11 +13,17 @@ defmodule Canopy.Runtime.Commands do
   `/lib/foo.ex` still work at the start of a message.
   """
 
-  @commands %{"handoff" => :handoff, "delegate" => :delegate, "i" => :invite, "invite" => :invite}
+  @commands %{
+    "handoff" => :handoff,
+    "delegate" => :delegate,
+    "i" => :invite,
+    "invite" => :invite,
+    "stop" => :stop
+  }
 
   @type parsed ::
           :text
-          | {:command, :handoff | :delegate | :invite, String.t(), String.t()}
+          | {:command, :handoff | :delegate | :invite | :stop, String.t(), String.t()}
           | {:error, String.t()}
 
   @spec parse(String.t()) :: parsed
@@ -36,7 +43,12 @@ defmodule Canopy.Runtime.Commands do
   def parse(_), do: :text
 
   @doc "Short help shown in the composer."
-  def help, do: "/i @agent invites · /handoff @agent reason · /delegate @agent task"
+  def help,
+    do:
+      "/i @agent invites · /handoff @agent reason · /delegate @agent task · /stop stops everything"
+
+  # /stop takes nothing: whatever follows it is ignored.
+  defp parse_args(:stop, _args), do: {:command, :stop, "", ""}
 
   # /invite needs only a target; the message after it is optional.
   defp parse_args(command, args) do

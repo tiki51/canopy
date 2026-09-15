@@ -44,11 +44,19 @@ defmodule Canopy.Engine do
 
   @typedoc """
   The engine's own view, for the turn watchdog: which engine sessions are busy,
-  and the permission and question prompts still open, as `:approval_required` /
-  `:question_required` events. `:unknown` when the engine could not answer.
+  which of those are stuck retrying a failing model call (with the engine's
+  message and attempt count), and the permission and question prompts still
+  open, as `:approval_required` / `:question_required` events. `:unknown` when
+  the engine could not answer.
   """
+  @type retrying :: %{
+          session_id: String.t(),
+          message: String.t() | nil,
+          attempt: non_neg_integer() | nil
+        }
   @type reconciliation :: %{
           busy: [String.t()] | :unknown,
+          retrying: [retrying] | :unknown,
           permissions: [Event.t()] | :unknown,
           questions: [Event.t()] | :unknown
         }

@@ -49,6 +49,13 @@ defmodule Canopy.Runtime.ChannelServer do
   @watchdog_ms 60_000
   @turn_stall_ms 120_000
 
+  # How long the engine may keep retrying a failing model call (a provider's
+  # usage limit, an outage) before the turn is ended and the channel told.
+  @retry_give_up_ms 300_000
+
+  # Appended to a wake that replaced an earlier one still waiting for the same agent.
+  @merged_wake_note "\nOther messages arrived while you were busy; this wake stands for all of them, and canopy_messages_read returns everything new.\n"
+
   @fields [
     :channel,
     :repository,
@@ -73,6 +80,8 @@ defmodule Canopy.Runtime.ChannelServer do
     chatter: 0,
     # nil, or the wakeups held back once the chatter budget ran out
     paused: nil,
+    # the user pressed Stop: wakes stay held (paused) until they reply or continue
+    stopped?: false,
     # a DM moved to another repository: applied once no turn is in flight
     pending_switch?: false,
     # wakes waiting for the channel's one turn at a time (serialize_turns)
@@ -117,6 +126,15 @@ defmodule Canopy.Runtime.ChannelServer do
       do: GenServer.call(server, {:respond_question, question_request_id, outcome})
 
   def abort(server, agent_id), do: GenServer.call(server, {:abort, agent_id})
+
+  @doc """
+  Stops everything in the channel: aborts every turn in flight, drops every
+  wake still waiting, and holds any wake agents cause afterwards until the
+  user replies or presses Continue. Returns how many turns were aborted and
+  how many wakes dropped.
+  """
+  def stop_all(server), do: GenServer.call(server, :stop_all)
+  def stopped?(server), do: GenServer.call(server, :stopped?)
 
   def reset_session(server, agent_id, by),
     do: GenServer.call(server, {:reset_session, agent_id, by})
@@ -265,6 +283,55 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # The user's stop button. Every turn in flight is aborted and closed here,
+  # rather than waiting for the engine to say so; the engine's own report of
+  # the abort (an "Aborted" error, an idle) lands after the turn is gone and is
+  # ignored. Every wake still waiting (queued behind a turn, held by the
+  # chatter budget, deferred until a poster's turn ends) is dropped first, so
+  # closing the turns starts nothing. The channel then holds wakes like a
+  # chatter pause: the user's next message or Continue lifts it.
+  def handle_call(:stop_all, _from, state) do
+    dropped =
+      length(state.waiting) + length(state.paused || []) +
+        (state.queues |> Map.values() |> Enum.map(&length/1) |> Enum.sum()) +
+        (state.deferred |> Map.values() |> Enum.map(&length/1) |> Enum.sum())
+
+    Enum.each(waiting_agent_ids(state), &broadcast(state, {:agent_status, &1, :idle}))
+
+    state = %{
+      state
+      | waiting: [],
+        queues: %{},
+        deferred: %{},
+        paused: [],
+        stopped?: true,
+        chatter: 0
+    }
+
+    turns = state.turns
+
+    state =
+      Enum.reduce(turns, state, fn {sid, turn}, acc ->
+        abort_turn(acc, sid, turn, "stopped by the user")
+      end)
+
+    aborted = map_size(turns)
+
+    {:ok, _} =
+      Messages.post_user_note(
+        state.channel.id,
+        Users.local().id,
+        "Stopped all agent activity: #{count(aborted, "turn")} aborted, " <>
+          "#{count(dropped, "queued wake")} dropped. " <>
+          "Agents stay quiet until you reply or press Continue."
+      )
+
+    broadcast(state, {:chatter, :stopped})
+    {:reply, {:ok, %{aborted: aborted, dropped: dropped}}, state}
+  end
+
+  def handle_call(:stopped?, _from, state), do: {:reply, state.stopped? == true, state}
+
   def handle_call({:telemetry, agent_id}, _from, state),
     do: {:reply, state.telemetry |> Map.get(agent_id, []) |> Enum.reverse(), state}
 
@@ -291,7 +358,7 @@ defmodule Canopy.Runtime.ChannelServer do
   # The user pressed Continue: the held wakeups run, against a fresh budget.
   def handle_call(:continue, _from, state) do
     held = state.paused || []
-    state = %{state | chatter: 0, paused: nil}
+    state = %{state | chatter: 0, paused: nil, stopped?: false}
     broadcast(state, {:chatter, :resumed})
 
     {:reply, :ok,
@@ -355,7 +422,7 @@ defmodule Canopy.Runtime.ChannelServer do
       Enum.reduce(state.turns, state, fn {sid, _turn}, acc ->
         case Map.get(acc.index, sid) do
           nil -> acc
-          who -> handle_execution(%{event | session_id: sid}, who, touch_turn(acc, sid))
+          who -> handle_execution(%{event | session_id: sid}, who, touch_turn(acc, sid, event))
         end
       end)
 
@@ -365,7 +432,7 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_info({:engine_event, %Event{session_id: sid} = event}, state) do
     case Map.get(state.index, sid) do
       nil -> {:noreply, state}
-      who -> {:noreply, handle_execution(event, who, touch_turn(state, sid))}
+      who -> {:noreply, handle_execution(event, who, touch_turn(state, sid, event))}
     end
   end
 
@@ -389,20 +456,35 @@ defmodule Canopy.Runtime.ChannelServer do
   # the stream dropped it, or the session died still holding an open tool call —
   # the turn stays in flight forever and every later wake for that agent queues
   # behind it, which looks like a channel that has stopped responding. Any turn
-  # that has gone quiet gets reconciled against the engine's own view.
+  # that has gone quiet, or has been stuck retrying a failing model call, gets
+  # reconciled against the engine's own view.
   def handle_info(:watchdog, state) do
     schedule_watchdog()
-    {:noreply, if(stalled_turn?(state), do: reconcile(state), else: state)}
+
+    {:noreply,
+     if(stalled_turn?(state) or retrying_turn?(state), do: reconcile(state), else: state)}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp stalled_turn?(state) do
     now = System.monotonic_time(:millisecond)
+    Enum.any?(state.turns, fn {_sid, turn} -> stalled?(turn, now) end)
+  end
 
-    Enum.any?(state.turns, fn {_sid, turn} ->
-      now - Map.get(turn, :last_event_at, turn.started_at) > @turn_stall_ms
-    end)
+  defp stalled?(turn, now),
+    do: now - Map.get(turn, :last_event_at, turn.started_at) > @turn_stall_ms
+
+  defp retrying_turn?(state) do
+    now = System.monotonic_time(:millisecond)
+    Enum.any?(state.turns, fn {_sid, turn} -> retrying_too_long?(turn, now) end)
+  end
+
+  defp retrying_too_long?(turn, now) do
+    case Map.get(turn, :retrying) do
+      %{since: since} -> now - since > @retry_give_up_ms
+      _ -> false
+    end
   end
 
   @doc false
@@ -411,6 +493,7 @@ defmodule Canopy.Runtime.ChannelServer do
       view = mod.reconcile(ctx(acc), es)
 
       acc
+      |> abort_stuck_turns(mod, view.retrying)
       |> finish_idle_turns(mod, view)
       # prompts raised while we were disconnected (best effort)
       |> replay_prompts(view.permissions)
@@ -460,6 +543,90 @@ defmodule Canopy.Runtime.ChannelServer do
     end)
   end
 
+  # Turns the engine reports as retrying a failing model call, and which have
+  # been at it too long (retrying since well before now, or quiet for the stall
+  # window because the retry notices themselves have spaced out), are ended:
+  # the engine is told to abort, the turn closes with the provider's message as
+  # its error, and the channel gets a note so nobody waits on an agent that
+  # will not answer. A fresh retry is left to the engine, which handles
+  # transient failures on its own.
+  defp abort_stuck_turns(state, _mod, :unknown), do: state
+
+  defp abort_stuck_turns(state, mod, retrying) do
+    now = System.monotonic_time(:millisecond)
+
+    Enum.reduce(retrying, state, fn %{session_id: sid} = retry, acc ->
+      with %{} = turn <- Map.get(acc.turns, sid),
+           true <- Engine.for(turn.session) == mod,
+           true <- retrying_too_long?(turn, now) or stalled?(turn, now),
+           %{} = who <- Map.get(acc.index, sid) do
+        end_stuck_turn(acc, mod, sid, turn, who, retry)
+      else
+        _ -> acc
+      end
+    end)
+  end
+
+  defp end_stuck_turn(state, mod, sid, turn, who, retry) do
+    reason = stuck_reason(mod, retry)
+    agent_name = agent_name(who.agent_id)
+    Logger.warning("channel #{state.channel.name}: ending #{agent_name}'s turn #{sid}: #{reason}")
+
+    {:ok, _} =
+      Timeline.record(%{
+        channel_id: state.channel.id,
+        agent_id: who.agent_id,
+        event_type: "agent_error",
+        payload: %{"reason" => reason}
+      })
+
+    {:ok, _} =
+      Messages.post_user_note(
+        state.channel.id,
+        Users.local().id,
+        "Ended #{agent_name}'s turn: #{reason}. Mention the agent again to retry."
+      )
+
+    abort_turn(state, sid, turn, reason)
+  end
+
+  # Tells the engine to abort the turn and closes it here with the reason as
+  # its error, without waiting for the engine's report.
+  defp abort_turn(state, sid, turn, reason) do
+    {mod, es, state} = engine_of(state, turn.session)
+
+    case mod.abort(ctx(state), es, turn.session) do
+      {:ok, _} -> :ok
+      {:error, error} -> Logger.warning("abort of #{sid} failed: #{inspect(error)}")
+    end
+
+    case Map.get(state.index, sid) do
+      nil -> %{state | turns: Map.delete(state.turns, sid)}
+      who -> state |> clear_stale_prompts(sid) |> finish_turn(sid, who, {:error, reason})
+    end
+  end
+
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(n, noun), do: "#{n} #{noun}s"
+
+  defp stuck_reason(mod, %{message: message, attempt: attempt}) do
+    attempts =
+      case attempt do
+        n when is_integer(n) and n > 0 -> " after #{n} attempts"
+        _ -> ""
+      end
+
+    message = if is_binary(message) and message != "", do: ": #{message}", else: ""
+    "#{mod.name()} was still retrying#{attempts}#{message}"
+  end
+
+  defp agent_name(agent_id) do
+    case Agents.get(agent_id) do
+      nil -> "the agent"
+      agent -> agent.name
+    end
+  end
+
   defp replay_prompts(state, :unknown) do
     Logger.debug("prompt reconciliation skipped: the engine did not answer")
     state
@@ -505,7 +672,7 @@ defmodule Canopy.Runtime.ChannelServer do
   # action counts; past the limit, wakeups are held and the channel says so.
 
   defp wake_within_budget(%{paused: held} = state, target, text) when is_list(held),
-    do: %{state | paused: held ++ [{target, text}]}
+    do: %{state | paused: put_once(held, target, text)}
 
   defp wake_within_budget(state, target, text) do
     limit = chatter_limit()
@@ -578,13 +745,36 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   defp enqueue_waiting(state, target, text) do
-    state = %{state | waiting: state.waiting ++ [{target, text}]}
+    state = %{state | waiting: put_once(state.waiting, target, text)}
     agent_id = waiting_agent_id(target)
     if agent_id, do: broadcast(state, {:agent_status, agent_id, :queued})
     state
   end
 
   # After a turn ends: if the channel is free, start the next waiting wake.
+  # A target waits in a list at most once: a later wake for one already there
+  # is merged into its entry, which keeps its place in line.
+  defp put_once(list, target, wake) do
+    case List.keyfind(list, target, 0) do
+      nil -> list ++ [{target, wake}]
+      {_, old} -> List.keyreplace(list, target, 0, {target, merge_wake(old, wake)})
+    end
+  end
+
+  # Two wakes for the same target become one: the newer message is the one to
+  # start from, and the agent reads everything new when it wakes, so the text
+  # is the newer wake's plus a line saying it stands for more. Attachments
+  # from both ride along.
+  defp merge_wake(old, new) do
+    attachments =
+      (Map.get(old, :attachments, []) ++ Map.get(new, :attachments, []))
+      |> Enum.uniq_by(fn {document, _mode} -> document.id end)
+
+    new
+    |> Map.put(:text, new.text <> @merged_wake_note)
+    |> Map.put(:attachments, attachments)
+  end
+
   defp start_next_waiting(%{waiting: []} = state), do: state
   defp start_next_waiting(%{turns: turns} = state) when map_size(turns) > 0, do: state
 
@@ -619,7 +809,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp resume(state) do
     if is_list(state.paused), do: broadcast(state, {:chatter, :resumed})
-    %{state | chatter: 0, paused: nil}
+    %{state | chatter: 0, paused: nil, stopped?: false}
   end
 
   defp user_action?(%Timeline.Event{
@@ -744,7 +934,13 @@ defmodule Canopy.Runtime.ChannelServer do
     sid = session.engine_session_id
 
     if Map.has_key?(state.turns, sid) do
-      %{state | queues: Map.update(state.queues, sid, [text], &(&1 ++ [text]))}
+      queue =
+        case Map.get(state.queues, sid, []) do
+          [] -> [text]
+          [old | _] -> [merge_wake(old, text)]
+        end
+
+      %{state | queues: Map.put(state.queues, sid, queue)}
     else
       send_prompt(state, session, agent_id, text)
     end
@@ -801,6 +997,9 @@ defmodule Canopy.Runtime.ChannelServer do
       passed: nil,
       # set once the agent posts through Canopy tools during this turn
       posted?: false,
+      # %{since, message, attempt} while the engine is retrying a failing
+      # model call; cleared when the call goes through
+      retrying: nil,
       # context of the largest model call (input + cached input tokens)
       context: 0,
       # model calls, and their tokens summed
@@ -1103,6 +1302,32 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp handle_execution(%{type: :agent_status, data: %{status: :busy}}, _who, state), do: state
 
+  # The engine's model call failed and it is backing off before trying again.
+  # Remembered on the turn, so the watchdog can tell a long retry loop from
+  # one that just started; the first notice fixes when it began, and any other
+  # event for the session (the call went through) clears it, in touch_turn/3.
+  defp handle_execution(
+         %{type: :agent_status, data: %{status: :retry} = data} = event,
+         _who,
+         state
+       ) do
+    raw = Map.get(data, :raw, %{})
+
+    update_turn(state, event.session_id, fn turn ->
+      since =
+        case Map.get(turn, :retrying) do
+          %{since: since} -> since
+          _ -> System.monotonic_time(:millisecond)
+        end
+
+      Map.put(turn, :retrying, %{
+        since: since,
+        message: raw["message"],
+        attempt: raw["attempt"]
+      })
+    end)
+  end
+
   defp handle_execution(%{type: :agent_completed} = event, who, state),
     do: finish_turn(state, event.session_id, who, :ok)
 
@@ -1378,9 +1603,18 @@ defmodule Canopy.Runtime.ChannelServer do
   defp maybe_compact(state, _session, _turn, _who), do: state
 
   # Map.put, not %{turn | ...}: a turn started before this field existed (a dev
-  # code reload mid-turn) would otherwise crash the server.
-  defp touch_turn(state, sid),
+  # code reload mid-turn) would otherwise crash the server. A retry notice is
+  # not progress: it keeps the retry clock running; anything else stops it.
+  defp touch_turn(state, sid, %Event{type: :agent_status, data: %{status: :retry}}),
     do: update_turn(state, sid, &Map.put(&1, :last_event_at, System.monotonic_time(:millisecond)))
+
+  defp touch_turn(state, sid, _event) do
+    update_turn(state, sid, fn turn ->
+      turn
+      |> Map.put(:last_event_at, System.monotonic_time(:millisecond))
+      |> Map.put(:retrying, nil)
+    end)
+  end
 
   defp update_turn(state, sid, fun) do
     case Map.get(state.turns, sid) do

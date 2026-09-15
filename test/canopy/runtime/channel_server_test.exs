@@ -254,6 +254,75 @@ defmodule Canopy.Runtime.ChannelServerTest do
     refute Runtime.paused?(ctx.channel.id)
   end
 
+  test "Stop all aborts every turn, drops what was waiting, and holds the channel until the user replies",
+       ctx do
+    test_pid = self()
+
+    stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+      send(test_pid, {:prompted, sid, body})
+      {:ok, ""}
+    end)
+
+    owner_sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^owner_sid, _}, 2_000
+
+    # arrives while the owner works: queued behind the turn
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "and this")
+    refute_receive {:prompted, _, _}, 200
+
+    expect(OC, :abort, fn _dir, ^owner_sid, _opts -> {:ok, true} end)
+    assert {:ok, %{aborted: 1, dropped: 1}} = Runtime.stop_all(ctx.channel.id)
+
+    assert_receive {:chatter, :stopped}, 1_000
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
+                   2_000
+
+    assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: note}}},
+                   2_000
+
+    assert note =~ "Stopped all agent activity: 1 turn aborted, 1 queued wake dropped"
+
+    assert %{status: "error", last_error: "stopped by the user"} =
+             AgentSessions.get!(ctx.session.id)
+
+    assert Runtime.stopped?(ctx.channel.id)
+    assert Runtime.paused?(ctx.channel.id)
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :idle}
+
+    # the queued message is not sent, and OpenCode's own report of the abort
+    # changes nothing
+    emit(owner_sid, :agent_error, %{error: %{"data" => %{"message" => "Aborted"}}})
+    emit(owner_sid, :agent_completed, %{})
+    refute_receive {:prompted, _, _}, 300
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+
+    # agents talking among themselves wake nobody while stopped
+    {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "one more thought")
+    refute_receive {:prompted, _, _}, 300
+    assert Runtime.stopped?(ctx.channel.id)
+
+    # the user's own message lifts the stop and wakes the owner as usual
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "ok, carry on")
+    assert_receive {:chatter, :resumed}, 1_000
+    assert_receive {:prompted, ^owner_sid, _}, 2_000
+    refute Runtime.stopped?(ctx.channel.id)
+    refute Runtime.paused?(ctx.channel.id)
+  end
+
+  test "/stop in the composer is the stop button", ctx do
+    expect_prompt(self())
+    owner_sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^owner_sid, _}, 2_000
+
+    expect(OC, :abort, fn _dir, ^owner_sid, _opts -> {:ok, true} end)
+    assert {:ok, %{aborted: 1, dropped: 0}} = Runtime.post_user_message(ctx.channel.id, "/stop")
+    assert Runtime.stopped?(ctx.channel.id)
+  end
+
   test "a turn that already posted through the tools keeps its closing text on the card, not as a reply",
        ctx do
     expect_prompt(self())
@@ -410,6 +479,61 @@ defmodule Canopy.Runtime.ChannelServerTest do
     emit(owner_sid, :agent_completed, %{})
     assert_receive {:prompted, ^reviewer_sid}, 2_000
     assert Runtime.status(ctx.channel.id)[ctx.reviewer.id] == :busy
+  end
+
+  test "an agent woken repeatedly behind its own turn is queued once, for the newest message",
+       ctx do
+    # with turns serialized the later wakes would wait in line instead (tested below)
+    {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
+    expect_prompt(self(), 2)
+    owner_sid = ctx.session.engine_session_id
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^owner_sid, _}, 2_000
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "second thing")
+    {:ok, third} = Runtime.post_user_message(ctx.channel.id, "third thing")
+    refute_receive {:prompted, _, _}, 200
+
+    assert %{queues: %{^owner_sid => [wake]}} = :sys.get_state(ctx.pid)
+    assert wake.text =~ "Message ID: #{third.id}"
+    assert wake.text =~ "Other messages arrived while you were busy"
+
+    emit(owner_sid, :agent_completed, %{})
+    assert_receive {:prompted, ^owner_sid, body}, 2_000
+    assert [%{text: text}] = body.parts
+    assert text =~ "Message ID: #{third.id}"
+    emit(owner_sid, :agent_completed, %{})
+    refute_receive {:prompted, _, _}, 300
+  end
+
+  test "an agent waiting for its turn is listed once however often it is woken", ctx do
+    test_pid = self()
+    owner_sid = ctx.session.engine_session_id
+
+    reviewer_session =
+      Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
+
+    reviewer_sid = reviewer_session.engine_session_id
+
+    stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, sid})
+      {:ok, ""}
+    end)
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "owner, go")
+    assert_receive {:prompted, ^owner_sid}, 2_000
+
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} you too")
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} and this")
+    assert_receive {:agent_status, _, :queued}, 2_000
+    assert [{{:root, reviewer_id}, _}] = :sys.get_state(ctx.pid).waiting
+    assert reviewer_id == ctx.reviewer.id
+
+    emit(owner_sid, :agent_completed, %{})
+    assert_receive {:prompted, ^reviewer_sid}, 2_000
+    emit(reviewer_sid, :agent_completed, %{})
+    refute_receive {:prompted, ^reviewer_sid}, 300
   end
 
   test "with serialization off, agents woken together run at once", ctx do

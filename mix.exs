@@ -8,6 +8,7 @@ defmodule Canopy.MixProject do
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
+      releases: [canopy: [include_executables_for: [:unix], steps: [:assemble, :tar]]],
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),

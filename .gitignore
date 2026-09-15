@@ -1,5 +1,6 @@
 # Build and deps (Phoenix app lands here in Phase 1)
 /_build/
+/dist/
 /deps/
 /cover/
 /doc/

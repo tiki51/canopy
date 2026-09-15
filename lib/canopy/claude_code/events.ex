@@ -3,9 +3,9 @@ defmodule Canopy.ClaudeCode.Events do
   Normalizes Claude Code stream-json lines (decoded JSON maps) into
   `Canopy.Engine.Event`s.
 
-  Line shapes were captured in `test/support/claude_code_fixtures/events-capture.jsonl`
-  (see `_claude_docs/architecture/Claude Code Spike Notes.md` §8). The
-  normalizer is stateful across one turn: it remembers each tool call's input
+  Line shapes are represented by an anonymized synthetic fixture in
+  `test/support/claude_code_fixtures/events-capture.jsonl`. The normalizer is
+  stateful across one turn: it remembers each tool call's input
   until its result arrives, and folds the streaming usage of each model call
   into one `:step_completed`.
   """

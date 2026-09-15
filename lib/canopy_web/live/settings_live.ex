@@ -12,8 +12,6 @@ defmodule CanopyWeb.SettingsLive do
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
 
-  @plugin_path "~/.config/opencode/plugins/canopy.js"
-
   @impl true
   def mount(_params, _session, socket) do
     setting = Settings.get()
@@ -31,7 +29,7 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:draft_url, setting.opencode_url)
      |> assign(:health, nil)
      |> assign(:token_visible, false)
-     |> assign(:plugin_path, @plugin_path)
+     |> assign(:plugin_path, MCP.global_plugin_path())
      |> assign(:plugin_source, MCP.plugin_source())
      |> assign(:mcp_url, MCP.url())
      |> assign(:mcp_name, MCP.registration_name())
@@ -101,6 +99,7 @@ defmodule CanopyWeb.SettingsLive do
   # Runs the binary named in the form (saved or not): version and login state.
   def handle_event("check_claude", _params, socket) do
     binary = socket.assigns.claude_form[:claude_binary].value |> to_string() |> String.trim()
+    config_dir = socket.assigns.claude_form[:claude_config_dir].value
 
     if binary == "" do
       {:noreply, assign(socket, :claude_check, {:error, "enter the binary first"})}
@@ -108,7 +107,7 @@ defmodule CanopyWeb.SettingsLive do
       {:noreply,
        socket
        |> assign(:claude_check, :checking)
-       |> start_async(:claude_check, fn -> Canopy.Engine.ClaudeCode.check(binary) end)}
+       |> start_async(:claude_check, fn -> Canopy.Engine.ClaudeCode.check(binary, config_dir) end)}
     end
   end
 

@@ -132,6 +132,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:names, names)
     |> assign(:agent_statuses, agent_statuses)
     |> assign(:paused?, Runtime.paused?(id))
+    |> assign(:stopped?, Runtime.stopped?(id))
     |> assign(:telemetry, telemetry)
     |> assign(:threads, threads)
     |> assign(:message_ids, message_ids)
@@ -350,7 +351,11 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   def handle_info({:chatter, status}, socket),
-    do: {:noreply, assign(socket, :paused?, status == :paused)}
+    do:
+      {:noreply,
+       socket
+       |> assign(:paused?, status in [:paused, :stopped])
+       |> assign(:stopped?, status == :stopped)}
 
   def handle_info(:refresh_branch, socket) do
     {:noreply, socket |> assign_branch() |> schedule_branch_refresh()}
@@ -648,6 +653,17 @@ defmodule CanopyWeb.ChannelLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Abort failed: #{inspect(reason)}")}
     end
+  end
+
+  def handle_event("stop_all", _params, socket) do
+    {:ok, %{aborted: aborted}} = Runtime.stop_all(cid(socket))
+
+    {:noreply,
+     put_flash(
+       socket,
+       :info,
+       "Stopped: #{aborted} #{if aborted == 1, do: "turn", else: "turns"} aborted. Reply or press Continue to resume."
+     )}
   end
 
   def handle_event("toggle_activity", _params, socket) do
@@ -1091,7 +1107,7 @@ defmodule CanopyWeb.ChannelLive do
         channel={@channel}
         spent={@spent}
       />
-      <.paused_bar :if={@paused? and !Channels.archived?(@channel)} />
+      <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
       <.composer
         :if={!Channels.archived?(@channel)}
         form={@composer}
@@ -1331,7 +1347,18 @@ defmodule CanopyWeb.ChannelLive do
           <span id="branch">{@branch || "—"}</span>
         </span>
 
-        <ul id="members" class="ml-auto flex items-center gap-2">
+        <button
+          :if={!Channels.archived?(@channel)}
+          type="button"
+          id="stop-all"
+          class="btn btn-xs btn-error btn-outline ml-auto"
+          phx-click="stop_all"
+          title="Abort every running turn, drop queued wakes, and hold the channel until you reply"
+        >
+          <.icon name="hero-stop-mini" class="size-3.5" /> Stop all
+        </button>
+
+        <ul id="members" class="flex items-center gap-2">
           <li
             :for={member <- @members}
             id={"member-#{member.id}"}
@@ -1519,6 +1546,8 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  attr :stopped?, :boolean, default: false
+
   defp paused_bar(assigns) do
     ~H"""
     <div
@@ -1526,7 +1555,10 @@ defmodule CanopyWeb.ChannelLive do
       class="flex shrink-0 flex-wrap items-center justify-center gap-3 border-t border-warning/40 bg-warning/10 px-3 py-2 text-sm"
     >
       <.icon name="hero-pause-circle-mini" class="size-4 text-warning" />
-      <span>
+      <span :if={@stopped?}>
+        Stopped. Agents stay quiet until you reply, or
+      </span>
+      <span :if={!@stopped?}>
         Paused after {Canopy.Runtime.ChannelServer.chatter_limit() || "several"} agent turns without you.
         Reply to keep going, or
       </span>

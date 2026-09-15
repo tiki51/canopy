@@ -9,7 +9,8 @@ import Config
 
 config :canopy,
   ecto_repos: [Canopy.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  public_url: nil
 
 # OpenCode integration defaults. The runtime overrides base_url from Settings.
 # Oban runs scheduled agent tasks (see Canopy.Schedules). SQLite via the Lite engine.

@@ -29,8 +29,16 @@ defmodule Canopy.MCP do
   @doc "The name under which Canopy registers its MCP server with OpenCode."
   def registration_name, do: @registration_name
 
-  @doc "The public URL of the MCP endpoint, derived from the Phoenix endpoint."
-  def url, do: CanopyWeb.Endpoint.url() <> "/mcp"
+  @doc "The configured URL of the MCP endpoint."
+  def url do
+    (Application.get_env(:canopy, :public_url) || CanopyWeb.Endpoint.url()) <> "/mcp"
+  end
+
+  @doc "The global OpenCode identity plugin path for the current user."
+  def global_plugin_path do
+    config_home = System.get_env("XDG_CONFIG_HOME") || Path.join(System.user_home!(), ".config")
+    Path.join([config_home, "opencode", "plugins", "canopy.js"])
+  end
 
   @doc """
   The config map to POST to OpenCode's `/mcp` as `%{name: registration_name(), config: ...}`.

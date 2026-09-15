@@ -166,19 +166,26 @@ defmodule Canopy.Engine.OpenCode do
   def reconcile(ctx, state) do
     dir = ctx.repository.path
 
-    busy =
+    # The status map lists non-idle sessions only; a session whose model call
+    # keeps failing shows as `retry` with the provider's message and the attempt.
+    {busy, retrying} =
       case client().session_status(dir, state.client_opts) do
         {:ok, statuses} when is_map(statuses) ->
-          statuses
-          |> Enum.reject(fn {_, st} -> st["type"] == "idle" end)
-          |> Enum.map(&elem(&1, 0))
+          active = Enum.reject(statuses, fn {_, st} -> st["type"] == "idle" end)
+
+          retrying =
+            for {sid, %{"type" => "retry"} = st} <- active,
+                do: %{session_id: sid, message: st["message"], attempt: st["attempt"]}
+
+          {Enum.map(active, &elem(&1, 0)), retrying}
 
         _ ->
-          :unknown
+          {:unknown, :unknown}
       end
 
     %{
       busy: busy,
+      retrying: retrying,
       permissions:
         prompts(client().pending_permissions(dir, state.client_opts), :approval_required),
       questions: prompts(client().pending_questions(dir, state.client_opts), :question_required)

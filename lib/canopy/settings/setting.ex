@@ -51,7 +51,7 @@ defmodule Canopy.Settings.Setting do
       :claude_max_budget_usd
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
-    |> update_change(:claude_config_dir, &trim_or_nil/1)
+    |> update_change(:claude_config_dir, &normalize_claude_config_dir/1)
     |> validate_required([
       :opencode_url,
       :user_display_name,
@@ -63,8 +63,25 @@ defmodule Canopy.Settings.Setting do
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)
     |> validate_length(:user_display_name, max: 80)
     |> validate_length(:collaboration_prompt, max: 20_000)
+    |> validate_change(:claude_config_dir, fn :claude_config_dir, value ->
+      if Path.type(value) == :absolute,
+        do: [],
+        else: [claude_config_dir: "must be an absolute path"]
+    end)
     |> validate_url(:opencode_url)
   end
+
+  @doc "Trims a Claude config directory and expands a leading `~` using HOME."
+  def normalize_claude_config_dir(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      "~" -> System.user_home!()
+      "~/" <> rest -> Path.join(System.user_home!(), rest)
+      trimmed -> trimmed
+    end
+  end
+
+  def normalize_claude_config_dir(value), do: value
 
   defp trim_or_nil(value) when is_binary(value) do
     case String.trim(value) do

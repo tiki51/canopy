@@ -35,4 +35,12 @@ defmodule Canopy.SettingsTest do
     assert setting.opencode_url == "http://localhost:5000"
     assert Users.get!(user.id).display_name == "Steven"
   end
+
+  test "Claude config directory expands HOME and must be absolute" do
+    assert {:ok, setting} = Settings.update(%{claude_config_dir: "~/.claude-agents"})
+    assert setting.claude_config_dir == Path.join(System.user_home!(), ".claude-agents")
+
+    assert {:error, changeset} = Settings.update(%{claude_config_dir: "relative/path"})
+    assert %{claude_config_dir: ["must be an absolute path"]} = errors_on(changeset)
+  end
 end

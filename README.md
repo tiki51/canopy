@@ -254,7 +254,15 @@ git -C tmp/demo-repo checkout -- .
 - **Turn watchdog.** A turn that has gone quiet for two minutes is checked against the
   engine's own view of the session. If the engine says it is idle, Canopy finishes the
   turn and replays any permission or question prompt raised meanwhile, so a dropped
-  stream never leaves a channel stuck behind a phantom turn.
+  stream never leaves a channel stuck behind a phantom turn. If the engine says it is
+  still retrying a failing model call (a provider's usage limit, an outage) after five
+  minutes, Canopy aborts the turn, marks the agent errored with the provider's message,
+  and posts a note in the channel so nobody waits on an agent that will not answer.
+- **Stop all.** The red button in the channel header (or `/stop` in the composer) aborts
+  every running turn, drops every wake still queued or held, and keeps the channel quiet
+  until you reply or press Continue. Use it when agents have started talking among
+  themselves and are not listening; the per-agent stop only ends one turn, and the others
+  keep waking each other.
 - **Session reset.** If an agent has talked itself into a corner, reset its session from
   the arrow on its pill in the channel header. The next turn starts fresh with the current
   settings and memory.
@@ -310,6 +318,10 @@ And when you want to see or stop the spending:
 - **One turn at a time.** Within a channel, agents take turns; an agent woken while
   another works waits in order (its dot shows amber). Turn it off under Settings →
   Conversation to let them run in parallel.
+- **One place in line.** An agent waits at most once, however many messages arrive for it
+  while it is busy or in line: later wakes merge into the one it already has, which keeps
+  its place, starts from the newest message, and carries every attachment. The agent reads
+  everything new when it wakes.
 - **Chatter budget.** A channel allows six agent turns between your messages. After that
   it holds further wakes, posts a note, and shows a Continue button. Change the number, or
   turn the pause off for long autonomous runs and lean on spend limits instead.
@@ -328,16 +340,21 @@ identity plugin source. Environment variables cover the rest:
 | Variable | Purpose | Default |
 |---|---|---|
 | `PORT` | HTTP port | `4000` |
+| `CANOPY_URL` | Browser and MCP origin for a production release | `http://127.0.0.1:$PORT` |
 | `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (dev only, no login) | loopback |
 | `CANOPY_DB` | Path to the SQLite database | `canopy_dev.db` in the project |
 | `CANOPY_FILES_DIR` | Where shared files are stored | next to the database, `canopy_dev_files/` |
 | `CANOPY_MAX_UPLOAD_MB` | Largest file accepted | `25` |
 | `CLAUDE_CONFIG_DIR` | Honoured by `claude` itself; set the config directory in Settings to give agents their own login | your login |
 
-Production releases additionally require `DATABASE_PATH` and `SECRET_KEY_BASE` (see
-`config/runtime.exs`). A plan for running Canopy in Docker is in
+Production releases additionally require `DATABASE_PATH`, `SECRET_KEY_BASE`, and
+`PHX_SERVER=true` (see `config/runtime.exs`). Canopy creates the database directory,
+runs migrations when started as a release, and exposes `GET /health` for service checks.
+`CANOPY_URL` must match the origin engines can use to reach Canopy; local Homebrew
+services should keep the loopback default. A plan for running Canopy in Docker is in
 [`docs/dockerization-plan.md`](docs/dockerization-plan.md); it is a plan, not a shipped
-image.
+image. Maintainers can build and publish the native macOS archive by following
+[`docs/releasing.md`](docs/releasing.md).
 
 ## The tools agents can call
 

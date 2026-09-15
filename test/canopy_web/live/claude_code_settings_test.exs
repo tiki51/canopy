@@ -202,7 +202,12 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
       fake = Path.expand("../../support/fake_claude.sh", __DIR__)
       {:ok, view, _html} = live(conn, ~p"/settings")
 
-      view |> form("#claude-form", setting: %{claude_binary: fake}) |> render_change()
+      config_dir = Path.join(System.tmp_dir!(), "canopy-claude-check")
+
+      view
+      |> form("#claude-form", setting: %{claude_binary: fake, claude_config_dir: config_dir})
+      |> render_change()
+
       view |> element("#check-claude") |> render_click()
       render_async(view)
 

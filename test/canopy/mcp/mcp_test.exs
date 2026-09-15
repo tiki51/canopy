@@ -5,11 +5,15 @@ defmodule Canopy.MCPTest do
   alias Canopy.Settings
 
   test "registration_config/1 points OpenCode at the /mcp endpoint with the bearer token" do
+    previous = Application.get_env(:canopy, :public_url)
+    Application.put_env(:canopy, :public_url, "http://127.0.0.1:4567")
+    on_exit(fn -> Application.put_env(:canopy, :public_url, previous) end)
+
     config = MCP.registration_config("tok_123")
 
     assert config == %{
              type: "remote",
-             url: CanopyWeb.Endpoint.url() <> "/mcp",
+             url: "http://127.0.0.1:4567/mcp",
              headers: %{"Authorization" => "Bearer tok_123"},
              enabled: true
            }
@@ -21,6 +25,19 @@ defmodule Canopy.MCPTest do
 
     assert MCP.registration_config(:current) == MCP.registration_config(Settings.mcp_token())
     assert MCP.registration_name() == "canopy"
+  end
+
+  test "global_plugin_path/0 honors XDG_CONFIG_HOME" do
+    previous = System.get_env("XDG_CONFIG_HOME")
+    System.put_env("XDG_CONFIG_HOME", "/tmp/canopy-config")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("XDG_CONFIG_HOME", previous),
+        else: System.delete_env("XDG_CONFIG_HOME")
+    end)
+
+    assert MCP.global_plugin_path() == "/tmp/canopy-config/opencode/plugins/canopy.js"
   end
 
   test "plugin_source/0 stamps the session id into canopy_ tool calls" do
