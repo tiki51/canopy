@@ -97,6 +97,7 @@ defmodule Canopy.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind canopy", "esbuild canopy"],
       "assets.deploy": [
+        "compile",
         "tailwind canopy --minify",
         "esbuild canopy --minify",
         "phx.digest"
