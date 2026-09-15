@@ -4,7 +4,7 @@ Read `AGENTS.md` first; it carries the Phoenix 1.8 / LiveView 1.2 conventions th
 
 ## What this is
 
-Local-first Slack-like collaboration layer for AI coding agents, with OpenCode as the only execution engine in v0. Elixir 1.20 / OTP 28, Phoenix 1.8, LiveView 1.2, SQLite via `ecto_sqlite3`, `req` for HTTP, `anubis_mcp` for the MCP server.
+Local-first Slack-like collaboration layer for AI coding agents, with Claude Code as the primary execution engine and OpenCode as the second. Elixir 1.20 / OTP 28, Phoenix 1.8, LiveView 1.2, SQLite via `ecto_sqlite3`, `req` for HTTP, `anubis_mcp` for the MCP server.
 
 ## Planning documents (local only, gitignored)
 
