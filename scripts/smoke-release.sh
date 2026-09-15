@@ -26,8 +26,22 @@ export CANOPY_FILES_DIR="$root/state/files"
 export SECRET_KEY_BASE="0123456789012345678901234567890123456789012345678901234567890123"
 export PORT="$port"
 export CANOPY_URL="http://127.0.0.1:$port"
-export PHX_SERVER=true
+export RELEASE_NODE="canopy_smoke_$$@localhost"
 
+unset PHX_SERVER
+seed_output="$("$root/bin/canopy" eval 'Canopy.Release.seed()')"
+case "$seed_output" in
+  *"created agent @backend"*) ;;
+  *) echo "initial seed did not create default agents" >&2; exit 1 ;;
+esac
+
+seed_output="$("$root/bin/canopy" eval 'Canopy.Release.seed()')"
+case "$seed_output" in
+  *"agent @backend already exists"*) ;;
+  *) echo "second seed was not idempotent" >&2; exit 1 ;;
+esac
+
+export PHX_SERVER=true
 "$root/bin/canopy" start > "$root/canopy.log" 2>&1 &
 pid=$!
 
