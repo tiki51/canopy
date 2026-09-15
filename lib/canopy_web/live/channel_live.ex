@@ -1272,6 +1272,17 @@ defmodule CanopyWeb.ChannelLive do
           <button
             :if={!Channels.archived?(@channel)}
             type="button"
+            id="stop-all"
+            class="btn btn-xs btn-ghost text-error"
+            phx-click="stop_all"
+            title="Stop all: abort every running turn, drop queued wakes, and hold the channel until you reply"
+          >
+            <.icon name="hero-stop-mini" class="size-4" />
+            <span class="hidden sm:inline">Stop</span>
+          </button>
+          <button
+            :if={!Channels.archived?(@channel)}
+            type="button"
             id="archive-channel"
             class="btn btn-xs btn-ghost text-base-content/60"
             phx-click="archive_channel"
@@ -1347,18 +1358,7 @@ defmodule CanopyWeb.ChannelLive do
           <span id="branch">{@branch || "—"}</span>
         </span>
 
-        <button
-          :if={!Channels.archived?(@channel)}
-          type="button"
-          id="stop-all"
-          class="btn btn-xs btn-error btn-outline ml-auto"
-          phx-click="stop_all"
-          title="Abort every running turn, drop queued wakes, and hold the channel until you reply"
-        >
-          <.icon name="hero-stop-mini" class="size-3.5" /> Stop all
-        </button>
-
-        <ul id="members" class="flex items-center gap-2">
+        <ul id="members" class="ml-auto flex items-center gap-2">
           <li
             :for={member <- @members}
             id={"member-#{member.id}"}
