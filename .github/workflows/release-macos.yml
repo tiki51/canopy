@@ -66,6 +66,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" dist/*
-          --verify-tag --generate-notes --title "Canopy ${GITHUB_REF_NAME#v}"
+        run: |
+          release_args=(--verify-tag --generate-notes --title "Canopy ${GITHUB_REF_NAME#v}")
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* "${release_args[@]}"
