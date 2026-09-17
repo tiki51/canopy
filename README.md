@@ -202,8 +202,9 @@ git -C tmp/demo-repo checkout -- .
   Agents update it with `memory_write` (append or replace) and read it with `memory_read`.
   You can read and edit it on the agent's page.
 - **Notes that stay with the repository.** Each repository gets a `.canopy/` workspace
-  with a shared `NOTES.md` and a per-agent `notes/<agent>.md`. Agents are told to read
-  their notes at the start of a turn and update them, dated, before finishing. Canopy
+  with a shared `NOTES.md`: what every agent working there needs to know. Canopy puts it
+  into every prompt for that repository; agents add to it with `notes_write` (append or
+  replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
   adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
 - **A starter team of twelve**, seeded on setup, from `@backend` to `@auditor`.
 
@@ -370,7 +371,7 @@ JSON, because text is cheaper to read.
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
-| Memory and money | `memory_read`, `memory_write`, `costs_report` |
+| Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share` (plus `attachments` on `message_send` and `thread_reply`) |
 
 Inside an engine every name is prefixed `canopy_`, so an agent calls

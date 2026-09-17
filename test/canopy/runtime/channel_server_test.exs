@@ -785,9 +785,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     sid = ctx.session.engine_session_id
     assert_receive {:prompted, ^sid, body}, 2_000
 
-    # the agent's notes file exists before its first prompt
-    notes = Canopy.Notes.agent_path(ctx.repository.path, ctx.agent)
-    assert File.read!(notes) =~ "# @#{ctx.agent.name} notes"
+    # the repository's shared notes exist before the first prompt
+    assert File.read!(Canopy.Notes.shared_path(ctx.repository.path)) =~ "# Shared notes"
     assert [%{type: "text", text: text}] = body.parts
     assert text =~ "Message ID: #{message.id}"
     # short messages ride along in the wake prompt, so no read is needed

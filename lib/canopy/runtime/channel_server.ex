@@ -948,7 +948,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp send_prompt(state, session, agent_id, %{text: text, trigger: trigger} = wake) do
     agent = Agents.get!(agent_id)
-    Canopy.Notes.ensure_agent_notes(state.repository.path, agent)
+    Canopy.Notes.ensure_workspace(state.repository.path)
     {mod, es, state} = engine_of(state, session)
     es = mod.prepare(ctx(state), es)
     state = put_engine_state(state, mod, es)

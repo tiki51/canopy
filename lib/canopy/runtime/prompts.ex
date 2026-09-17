@@ -17,7 +17,7 @@ defmodule Canopy.Runtime.Prompts do
 
   @doc "The variables a preamble may use, for the Settings page to list."
   def preamble_variables,
-    do: ~w(display_name name role channel repository_path notes_path shared_notes_path
+    do: ~w(display_name name role channel repository_path notes_path notes
            execution_mode other_repositories memory engine_name engine_notes)
 
   # The user's text when Settings carries one, otherwise what Canopy ships.
@@ -43,8 +43,8 @@ defmodule Canopy.Runtime.Prompts do
       "engine_notes" => engine_notes(agent),
       "channel" => channel.name,
       "repository_path" => repository.path,
-      "notes_path" => Canopy.Notes.agent_path(repository.path, agent),
-      "shared_notes_path" => Canopy.Notes.shared_path(repository.path)
+      "notes_path" => Canopy.Notes.shared_path(repository.path),
+      "notes" => Canopy.Notes.for_prompt(repository.path)
     }
 
     preamble =

@@ -16,7 +16,8 @@ defmodule Canopy.Runtime.PromptsTest do
     assert text =~ "channel #payments"
     assert text =~ "/repo"
     assert text =~ "Role: Primary implementation"
-    assert text =~ "/repo/.canopy/notes/backend.md"
+    # a repository with no notes yet gets told so, not a broken path
+    assert text =~ "The shared notes for this repository are empty so far."
     assert text =~ "This is the only repository registered in Canopy."
 
     with_others =

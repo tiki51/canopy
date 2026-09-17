@@ -287,13 +287,16 @@ to: researcher …" as in the README demo prompt.
       memory is in its prompt, so it answers without re-learning.
 - [ ] **Edit** on the panel lets you curate the memory by hand.
 
-## 10d. Agent notes
+## 10d. Shared repository notes
 
-- [ ] After adding a repository, `.canopy/README.md`, `.canopy/NOTES.md` and `.canopy/notes/`
-      exist in it, and `.git/info/exclude` lists `.canopy/`.
-- [ ] After an agent's first turn, `.canopy/notes/<agent>.md` exists. Ask it to "note what you
-      learned" → it writes a dated `## YYYY-MM-DD` entry there; the Changes modal and the
-      "files changed" count ignore it.
+- [ ] After adding a repository, `.canopy/README.md` and `.canopy/NOTES.md` exist in it, and
+      `.git/info/exclude` lists `.canopy/`.
+- [ ] Ask an agent to "add to the repository notes that tests run with `mix test`" → it
+      calls `canopy_notes_write` and a dated `## YYYY-MM-DD` entry appears under the header
+      in `.canopy/NOTES.md`; the Changes modal and the "files changed" count ignore it.
+- [ ] Wake a *different* agent in the same repository and ask how to run the tests → the
+      notes are in its prompt, so it answers without looking.
+- [ ] Edit `.canopy/NOTES.md` by hand → the next prompt carries your edit.
 
 ## 10c. Unread marks
 

@@ -34,6 +34,8 @@ Your memory follows you across repositories and channels; Canopy keeps it and pu
 
 {{memory}}
 
-Repository notes: `{{notes_path}}` is your scratch file for this repository and `{{shared_notes_path}}` is the team's; both live in `.canopy/`, outside the source tree and outside git. Use them for repository-specific detail that does not belong in your memory. Each wake prompt ends with the current time.
+The team also keeps shared notes about this repository at `{{notes_path}}`, outside the source tree and outside git; Canopy puts them in every prompt of every agent working here. When you learn something all of them need (a convention, how to run or test things, a decision that stuck), add it with `canopy_notes_write`, dated the same way; what only you need goes in your memory. Each wake prompt ends with the current time.
+
+{{notes}}
 
 Write messages in GitHub-flavoured Markdown; Canopy renders it. Use lists for findings, fenced code blocks with a language for code and diffs, tables to compare options, and `path:line` references in inline code. Single newlines are kept as line breaks. Skip headings unless the message is long.

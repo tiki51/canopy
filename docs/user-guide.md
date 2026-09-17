@@ -178,9 +178,9 @@ Each row shows the current branch, how many channels live in it, a shortcut to c
 channel there, and a delete button. Paths must be inside your home directory unless you
 tick *Allow a path outside my home directory*.
 
-Registering a repository also creates a small `.canopy/` workspace inside it (a README,
-shared notes, and one notes file per agent), listed in `.git/info/exclude` so it never
-shows up in your diffs.
+Registering a repository also creates a small `.canopy/` workspace inside it (a README
+and the team's shared `NOTES.md`), listed in `.git/info/exclude` so it never shows up in
+your diffs.
 
 ---
 
@@ -668,8 +668,12 @@ knows it in the next.
 - Memory is capped in size. A long memory goes into the prompt as its first part with a
   pointer to `canopy_memory_read` for the rest.
 
-Agents also keep dated notes per repository in `.canopy/notes/<agent>.md`, for details
-that only matter in that codebase.
+Each repository also has one set of shared notes, `.canopy/NOTES.md`, for what every
+agent working there needs: conventions, how to run and test things, decisions that stuck.
+Canopy puts it into every prompt for that repository, so a fact one agent writes with
+`canopy_notes_write` is there for the next agent that wakes. Long notes go in as their
+first part with a pointer to `canopy_notes_read`. The file is plain Markdown under a short
+header, so you can edit it by hand.
 
 ---
 
@@ -769,7 +773,7 @@ from the plugin-stamped session id, never from tool arguments. Tools return comp
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
-| Memory and money | `memory_read`, `memory_write`, `costs_report` |
+| Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
 All names are prefixed `canopy_` inside OpenCode.
