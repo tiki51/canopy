@@ -69,39 +69,62 @@ Every agent picks its engine individually, so a Claude Code `@backend` and an Op
 **Complete and in daily use.** Everything below works end to end: channels and DMs,
 named agents on either engine, streaming telemetry, permission and question cards, diffs,
 threads, delegation, handoffs, scheduled tasks, agent memory and notes, shared files,
-cost reporting with an auditor agent, and a 30-tool MCP server. It is a single-user,
+cost reporting with an auditor agent, and a 33-tool MCP server. It installs from Homebrew
+on Apple Silicon Macs or runs from source anywhere Elixir does. It is a single-user,
 single-machine tool by design. There is no login and it binds to loopback.
 
 ## Requirements
 
-- **Elixir 1.20 and Erlang/OTP 28.** Both are pinned in `.tool-versions`; `asdf install`
-  (or `mise install`) sets them up. Node 22 is pinned there too and is only needed for the
-  browser end-to-end tests.
 - **Git.** Canopy registers repositories, initialises them if needed, and reads diffs.
 - **At least one engine:**
   - [Claude Code](https://claude.com/claude-code), installed and logged in (`claude` once,
     interactively). Recommended.
   - [OpenCode](https://opencode.ai) 1.18 or newer with a model provider configured.
+- **To run the Homebrew build:** a Mac with Apple Silicon. The formula ships a
+  self-contained release, so no Elixir or Erlang install is needed.
+- **To run from source:** Elixir 1.20 and Erlang/OTP 28. Both are pinned in
+  `.tool-versions`; `asdf install` (or `mise install`) sets them up. Node 22 is pinned
+  there too and is only needed for the browser end-to-end tests.
 
 SQLite ships with the app through `ecto_sqlite3`. There is nothing else to install and no
 external service to run.
 
 ## Quick start
 
-About five minutes from clone to first agent reply.
+About five minutes from install to first agent reply.
 
-### 1. Boot Canopy
+### 1. Install and start Canopy
+
+**Homebrew (Apple Silicon Macs).** The [`tiki51/canopy`](https://github.com/tiki51/homebrew-canopy)
+tap packages the prebuilt release:
 
 ```bash
-git clone <this repository> canopy && cd canopy
-mix setup            # deps, database, assets, twelve starter agents
-mix phx.server       # http://localhost:4000
+brew install tiki51/canopy/canopy
+brew services start tiki51/canopy/canopy   # runs in the background, starts at login
+canopy seed                                # the twelve starter agents
 ```
 
-`mix setup` seeds a starter team: `@backend`, `@reviewer`, `@researcher`, `@test`,
+Open [http://127.0.0.1:4000](http://127.0.0.1:4000). `brew services stop tiki51/canopy/canopy`
+stops it; `canopy start` runs it in the foreground instead, with `Ctrl-C` to quit. The
+database, shared files, and generated secret live under
+`~/Library/Application Support/Canopy`, and the service log is `$(brew --prefix)/var/log/canopy.log`.
+Uninstalling the formula leaves that data in place.
+
+**From source (any platform Elixir runs on).**
+
+```bash
+git clone https://github.com/tiki51/canopy.git && cd canopy
+mix setup                        # deps, database, assets
+mix run priv/repo/seeds.exs      # the twelve starter agents
+mix phx.server                   # http://localhost:4000
+```
+
+The seed step creates a starter team: `@backend`, `@reviewer`, `@researcher`, `@test`,
 `@fullstack`, `@frontend`, `@designer`, `@product-manager`, `@project-manager`,
 `@devops`, `@docs`, and `@auditor` (already set as the cost auditor). Rename them, rewrite
-their prompts, or delete the lot; they are only a starting point.
+their prompts, or delete the lot; they are only a starting point. Seeding is idempotent:
+run it again at any time to add back a missing default without touching the agents you
+changed.
 
 ### 2. Connect an engine
 
@@ -160,10 +183,13 @@ agent by name (`@reviewer`) to wake that one instead.
 That is the whole loop. Everything else in this README is about what happens inside it.
 
 > **Sharing it on a trusted network.** Canopy binds to `127.0.0.1` and has no login.
-> `CANOPY_BIND=0.0.0.0 mix phx.server` opts in to all interfaces for one run so you can
-> open it from a tablet on the sofa. Do not do this on a network you do not trust.
+> When running from source, `CANOPY_BIND=0.0.0.0 mix phx.server` opts in to all interfaces
+> for one run so you can open it from a tablet on the sofa. Do not do this on a network you
+> do not trust. The Homebrew build always stays on loopback.
 
 ## Try the demo
+
+The demo is a Mix task, so it needs a source checkout (see *From source* above).
 
 ```bash
 mix canopy.demo --engine claude_code   # agents on Claude Code
@@ -206,7 +232,7 @@ git -C tmp/demo-repo checkout -- .
   into every prompt for that repository; agents add to it with `notes_write` (append or
   replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
   adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
-- **A starter team of twelve**, seeded on setup, from `@backend` to `@auditor`.
+- **A starter team of twelve**, created by the seed step, from `@backend` to `@auditor`.
 
 ### Channels, DMs, and who wakes up
 
@@ -343,19 +369,24 @@ identity plugin source. Environment variables cover the rest:
 | `PORT` | HTTP port | `4000` |
 | `CANOPY_URL` | Browser and MCP origin for a production release | `http://127.0.0.1:$PORT` |
 | `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (dev only, no login) | loopback |
-| `CANOPY_DB` | Path to the SQLite database | `canopy_dev.db` in the project |
-| `CANOPY_FILES_DIR` | Where shared files are stored | next to the database, `canopy_dev_files/` |
+| `CANOPY_DB` | Path to the SQLite database (source) | `canopy_dev.db` in the project |
+| `DATABASE_PATH` | Path to the SQLite database (release and Homebrew) | `~/Library/Application Support/Canopy/canopy.db` under Homebrew |
+| `CANOPY_FILES_DIR` | Where shared files are stored | next to the database, `canopy_dev_files/` (source) or `files/` in the state directory (Homebrew) |
+| `CANOPY_STATE_DIR` | Homebrew only: where the database, files, and secret live | `~/Library/Application Support/Canopy` (or `$XDG_DATA_HOME/canopy`) |
 | `CANOPY_MAX_UPLOAD_MB` | Largest file accepted | `25` |
 | `CLAUDE_CONFIG_DIR` | Honoured by `claude` itself; set the config directory in Settings to give agents their own login | your login |
 
 Production releases additionally require `DATABASE_PATH`, `SECRET_KEY_BASE`, and
-`PHX_SERVER=true` (see `config/runtime.exs`). Canopy creates the database directory,
+`PHX_SERVER=true` (see `config/runtime.exs`). The Homebrew `canopy` wrapper sets all three
+for you: it generates and stores the secret on first run and keeps `CANOPY_URL` on
+loopback. Canopy creates the database directory,
 runs migrations when started as a release, and exposes `GET /health` for service checks.
-`CANOPY_URL` must match the origin engines can use to reach Canopy; local Homebrew
-services should keep the loopback default. A plan for running Canopy in Docker is in
+`CANOPY_URL` must match the origin engines can use to reach Canopy; the Homebrew service
+should keep the loopback default. A plan for running Canopy in Docker is in
 [`docs/dockerization-plan.md`](docs/dockerization-plan.md); it is a plan, not a shipped
-image. Maintainers can build and publish the native macOS archive by following
-[`docs/releasing.md`](docs/releasing.md).
+image. Maintainers build and publish the native macOS archive by following
+[`docs/releasing.md`](docs/releasing.md); the Homebrew formula in
+[`tiki51/homebrew-canopy`](https://github.com/tiki51/homebrew-canopy) points at that archive.
 
 ## The tools agents can call
 
@@ -416,7 +447,7 @@ A few rules the codebase keeps to, which also explain its shape:
 ## Development
 
 ```bash
-mix test            # ~460 tests; engines are faked, nothing calls the network
+mix test            # ~480 tests; engines are faked, nothing calls the network
 mix precommit       # compile with warnings as errors, unused deps, format, tests
 ```
 
@@ -464,6 +495,8 @@ USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears (OpenCode) | OpenCode's rules allow the action; set it to `ask` in the repository's OpenCode config |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
+| `brew services start` reports started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; a port already in use or a `CANOPY_URL` that is not loopback stops the release at boot |
+| `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
 
 ## Security notes
 
