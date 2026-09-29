@@ -655,7 +655,7 @@ defmodule CanopyWeb.AgentsLive do
         title="Active agents"
         description="Mention an agent with @name in a channel to wake it. Open one for its channels, schedules, and settings."
       >
-        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50 md:grid">
+        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
           <span />
           <span>Agent</span>
           <span>Role</span>
@@ -669,7 +669,7 @@ defmodule CanopyWeb.AgentsLive do
             <li
               :if={group}
               id={"agents-group-#{Layouts.group_slug(group)}"}
-              class="-mx-2 px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-base-content/50"
+              class="-mx-2 px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-base-content/60"
             >
               {group}
             </li>
@@ -715,7 +715,7 @@ defmodule CanopyWeb.AgentsLive do
                   "relative max-w-full justify-self-start truncate rounded-md font-mono text-xs transition hover:ring-2 hover:ring-primary/40",
                   model_label(agent) && "badge badge-soft badge-primary badge-sm",
                   !model_label(agent) &&
-                    "px-1.5 py-0.5 text-base-content/50 hover:text-base-content"
+                    "px-1.5 py-0.5 text-base-content/60 hover:text-base-content"
                 ]}
               >
                 {model_label(agent) || "default"}
@@ -726,7 +726,7 @@ defmodule CanopyWeb.AgentsLive do
                 class={[
                   "max-w-full justify-self-start truncate rounded-md font-mono text-xs",
                   model_label(agent) && "badge badge-soft badge-primary badge-sm",
-                  !model_label(agent) && "px-1.5 py-0.5 text-base-content/50"
+                  !model_label(agent) && "px-1.5 py-0.5 text-base-content/60"
                 ]}
               >
                 {model_label(agent) || "default"}
@@ -873,7 +873,7 @@ defmodule CanopyWeb.AgentsLive do
           </button>
 
           <div :for={provider <- @providers} class="mt-1">
-            <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+            <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               {provider.name}
             </p>
             <button
@@ -896,7 +896,7 @@ defmodule CanopyWeb.AgentsLive do
                 ]}
               />
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
-              <span class="shrink-0 text-[11px] text-base-content/50">
+              <span class="shrink-0 text-[11px] text-base-content/60">
                 {price_text(pricing(@providers, provider.id, model), @providers, provider.id)}
               </span>
             </button>
@@ -982,25 +982,25 @@ defmodule CanopyWeb.AgentsLive do
                 {initial(@agent)}
               </div>
               <dl class="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
-                <dt class="text-base-content/50">Status</dt>
+                <dt class="text-base-content/60">Status</dt>
                 <dd>
                   <span :if={@agent.active} class="badge badge-sm badge-success badge-soft">active</span>
                   <span :if={!@agent.active} class="badge badge-sm badge-ghost">deactivated</span>
                 </dd>
-                <dt class="text-base-content/50">Role</dt>
+                <dt class="text-base-content/60">Role</dt>
                 <dd>{@agent.role || "—"}</dd>
-                <dt class="text-base-content/50">Engine</dt>
+                <dt class="text-base-content/60">Engine</dt>
                 <dd id="agent-engine">{engine_label(@agent)}</dd>
                 <%= if @agent.engine == "claude_code" do %>
-                  <dt class="text-base-content/50">Permissions</dt>
+                  <dt class="text-base-content/60">Permissions</dt>
                   <dd class="font-mono text-xs">
                     {@agent.permission_mode}{if @agent.effort, do: " · effort #{@agent.effort}"}
                   </dd>
                 <% else %>
-                  <dt class="text-base-content/50">OpenCode agent</dt>
+                  <dt class="text-base-content/60">OpenCode agent</dt>
                   <dd class="font-mono text-xs">{@agent.opencode_agent}</dd>
                 <% end %>
-                <dt class="text-base-content/50">Model</dt>
+                <dt class="text-base-content/60">Model</dt>
                 <dd class="font-mono text-xs">
                   {model_label(@agent) || default_model_label(@agent)}
                   <span
@@ -1011,7 +1011,7 @@ defmodule CanopyWeb.AgentsLive do
                     {agent_price_line(@agent, @providers, @default_models)}
                   </span>
                 </dd>
-                <dt class="text-base-content/50">Spend</dt>
+                <dt class="text-base-content/60">Spend</dt>
                 <dd id="agent-spend" class="text-xs tabular-nums">
                   {Canopy.Costs.money(@agent_spend.today)} today · {Canopy.Costs.money(
                     @agent_spend.week
@@ -1020,7 +1020,7 @@ defmodule CanopyWeb.AgentsLive do
               </dl>
             </div>
             <div :if={@agent.system_prompt} class="mt-4">
-              <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
+              <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/60">
                 System prompt
               </p>
               <pre
@@ -1059,10 +1059,10 @@ defmodule CanopyWeb.AgentsLive do
                   owner
                 </span>
                 <span :if={channel.status == "archived"} class="badge badge-ghost badge-xs">archived</span>
-                <span class="ml-auto truncate text-xs text-base-content/50">{channel.repository.name}</span>
+                <span class="ml-auto truncate text-xs text-base-content/60">{channel.repository.name}</span>
               </li>
             </ul>
-            <p :if={@agent_channels == []} class="text-xs text-base-content/50">
+            <p :if={@agent_channels == []} class="text-xs text-base-content/60">
               Not in any channel yet.
             </p>
           </Layouts.panel>
@@ -1077,7 +1077,7 @@ defmodule CanopyWeb.AgentsLive do
             <:actions>
               <span
                 :if={@memory_updated_at}
-                class="text-[11px] text-base-content/50"
+                class="text-[11px] text-base-content/60"
                 title={DateTime.to_iso8601(@memory_updated_at)}
               >
                 updated {Schedules.relative(@memory_updated_at)}
@@ -1096,7 +1096,7 @@ defmodule CanopyWeb.AgentsLive do
             <div
               :if={!@editing_memory? and @agent_memory == ""}
               id="agent-memory-empty"
-              class="text-xs text-base-content/50"
+              class="text-xs text-base-content/60"
             >
               Nothing remembered yet. It fills in as the agent works, or write the first entry yourself.
             </div>

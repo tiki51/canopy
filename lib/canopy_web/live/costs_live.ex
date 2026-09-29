@@ -204,7 +204,7 @@ defmodule CanopyWeb.CostsLive do
                 ]}
                 style={"height: #{max(2, share(day.cost, Enum.max_by(@by_day, & &1.cost).cost))}%"}
               />
-              <span class="mt-1 text-[9px] text-base-content/40">{Calendar.strftime(day.day, "%d")}</span>
+              <span class="mt-1 text-[9px] text-base-content/60">{Calendar.strftime(day.day, "%d")}</span>
             </div>
           </div>
         </Layouts.panel>
@@ -290,7 +290,7 @@ defmodule CanopyWeb.CostsLive do
               title="Costliest turns"
               description="The single turns that cost the most in the period."
             >
-              <p :if={@top_turns == []} class="text-xs text-base-content/50">
+              <p :if={@top_turns == []} class="text-xs text-base-content/60">
                 Nothing in this period.
               </p>
               <div :if={@top_turns != []} class="overflow-x-auto">
@@ -345,7 +345,7 @@ defmodule CanopyWeb.CostsLive do
             title="Channel spend limits"
             description="Set on a channel's Budget panel. Agents in a channel that reached its limit stay quiet until you raise it."
           >
-            <p :if={@budgets == []} class="text-xs text-base-content/50">No channel has a limit.</p>
+            <p :if={@budgets == []} class="text-xs text-base-content/60">No channel has a limit.</p>
             <ul :if={@budgets != []} class="flex flex-col divide-y divide-base-300">
               <li :for={b <- @budgets} id={"budget-#{b.channel_id}"} class="py-2 text-sm">
                 <div class="flex items-baseline justify-between gap-3">
@@ -374,7 +374,7 @@ defmodule CanopyWeb.CostsLive do
           </Layouts.panel>
         </div>
 
-        <p class="text-xs text-base-content/50">
+        <p class="text-xs text-base-content/60">
           Costs are what each provider reports per turn. Turns that ended in an error or ran on a
           provider that reports nothing count as $0, so treat these as a floor.
         </p>
@@ -391,11 +391,11 @@ defmodule CanopyWeb.CostsLive do
   defp metric(assigns) do
     ~H"""
     <div id={@id}>
-      <dt class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+      <dt class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
         {@label}
       </dt>
       <dd class="mt-0.5 text-lg font-semibold tabular-nums">{@value}</dd>
-      <dd :if={@hint} class="text-[11px] text-base-content/50">{@hint}</dd>
+      <dd :if={@hint} class="text-[11px] text-base-content/60">{@hint}</dd>
     </div>
     """
   end
@@ -462,7 +462,7 @@ defmodule CanopyWeb.CostsLive do
   defp stat(assigns) do
     ~H"""
     <div id={@id} class="rounded-xl border border-base-300 bg-base-200 px-5 py-4">
-      <p class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">{@label}</p>
+      <p class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">{@label}</p>
       <p class="mt-1 text-2xl font-semibold tabular-nums">{Costs.money(@total.cost)}</p>
       <p class="mt-0.5 text-xs text-base-content/60">
         {@total.turns} turns · {@total.tools} tool calls
@@ -506,12 +506,12 @@ defmodule CanopyWeb.CostsLive do
           <div class="mt-1 h-1.5 w-full overflow-hidden rounded bg-base-300">
             <div class="h-full rounded bg-secondary/70" style={"width: #{share(row.cost, @total)}%"} />
           </div>
-          <p class="mt-1 text-[11px] text-base-content/50">
+          <p class="mt-1 text-[11px] text-base-content/60">
             {row.turns} turns · {row.tools} tool calls · {duration(row.duration_ms)}
           </p>
         </li>
       </ul>
-      <p :if={@rows == []} class="text-xs text-base-content/50">Nothing in this period.</p>
+      <p :if={@rows == []} class="text-xs text-base-content/60">Nothing in this period.</p>
       <button
         :if={@hidden > 0}
         type="button"

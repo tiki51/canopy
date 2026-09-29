@@ -16,6 +16,12 @@
       (() => {
         const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 
+        // The browser chrome follows the ground colour of the palette in force.
+        const syncChrome = () => {
+          const bg = getComputedStyle(document.documentElement).getPropertyValue("--color-base-100").trim();
+          if (bg) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg);
+        };
+
         const setTheme = (theme) => {
           if (theme === "system") {
             localStorage.removeItem("phx:theme");
@@ -26,6 +32,7 @@
             document.documentElement.setAttribute("data-theme", theme);
             document.documentElement.setAttribute("data-theme-source", "user");
           }
+          syncChrome();
         };
         if (!document.documentElement.hasAttribute("data-theme")) {
           setTheme(localStorage.getItem("phx:theme") || "system");
@@ -36,8 +43,27 @@
         matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
           if (document.documentElement.getAttribute("data-theme-source") === "system") {
             document.documentElement.setAttribute("data-theme", systemTheme());
+            syncChrome();
           }
         });
+
+        // Palette (Settings → Appearance). Mode and palette are independent; the
+        // palette CSS in app.css applies when both attributes sit on <html>.
+        const PALETTES = ["blue-hour", "moss", "graphite", "ember"];
+        const markPalette = (id) => {
+          document.querySelectorAll("[data-phx-palette]").forEach((el) =>
+            el.setAttribute("aria-checked", String(el.dataset.phxPalette === id)));
+        };
+        const setPalette = (id) => {
+          if (!PALETTES.includes(id)) id = "blue-hour";
+          id === "blue-hour" ? localStorage.removeItem("phx:palette") : localStorage.setItem("phx:palette", id);
+          document.documentElement.setAttribute("data-palette", id);
+          markPalette(id);
+          syncChrome();
+        };
+        setPalette(localStorage.getItem("phx:palette") || "blue-hour");
+        window.addEventListener("storage", (e) => e.key === "phx:palette" && setPalette(e.newValue));
+        window.addEventListener("phx:set-palette", (e) => setPalette(e.target.dataset.phxPalette));
       })();
     </script>
   </head>

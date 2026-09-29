@@ -69,6 +69,9 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("#health-result")).toContainText(/fake/);
     await shot(page, "settings");
 
+    await page.locator("#appearance-panel").scrollIntoViewIfNeeded();
+    await shot(page, "settings-appearance", { clip: { x: 312, y: 0, width: 1128, height: 900 } });
+
     await page.locator("#mcp-panel").scrollIntoViewIfNeeded();
     await shot(page, "settings-mcp");
 
@@ -157,7 +160,7 @@ test.describe("screenshots for the user guide", () => {
     await shot(page, "attachments");
     await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = el.scrollHeight));
     await page.locator("#composer-library").click();
-    await expect(page.locator("#library-documents")).toContainText("enqueue-charge-callers.md");
+    await expect(page.locator("#library-documents")).toContainText("enqueue-paths.md");
     await shot(page, "library-picker");
     await page.locator("#close-library").click();
 

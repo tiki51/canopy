@@ -1033,10 +1033,10 @@ defmodule CanopyWeb.ChannelLive do
         class="border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
       >
         <div class="mb-1 flex items-center gap-2">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
             Scheduled
           </span>
-          <span class="text-xs text-base-content/50">
+          <span class="text-xs text-base-content/60">
             Agents schedule with canopy_schedule_create; ask one to set a reminder or a repeat.
           </span>
         </div>
@@ -1074,7 +1074,7 @@ defmodule CanopyWeb.ChannelLive do
         >
           <div
             id="timeline-empty"
-            class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/50"
+            class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/60"
           >
             <.icon name="hero-chat-bubble-oval-left-ellipsis" class="size-8 opacity-40" />
             Nothing here yet. Say something to wake the owner, or mention an agent.
@@ -1165,7 +1165,7 @@ defmodule CanopyWeb.ChannelLive do
           <%= if Channels.dm?(@channel) do %>
             {Channels.dm_label(@channel)}
             <span
-              class="ml-1 rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/50"
+              class="ml-1 rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/60"
               title="A direct message: only this agent is in the channel"
             >
               dm
@@ -1415,7 +1415,7 @@ defmodule CanopyWeb.ChannelLive do
       class="flex flex-col gap-3 border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
     >
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
           Members
         </span>
         <span
@@ -1461,7 +1461,7 @@ defmodule CanopyWeb.ChannelLive do
         </select>
         <button type="submit" id="add-member" class="btn btn-sm btn-primary">Add</button>
       </form>
-      <p :if={@addable == []} class="text-xs text-base-content/50">
+      <p :if={@addable == []} class="text-xs text-base-content/60">
         Every active agent is already here. Create more on the Agents page.
       </p>
     </section>
@@ -1483,7 +1483,7 @@ defmodule CanopyWeb.ChannelLive do
       class="flex flex-col gap-2 border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
     >
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
           Budget
         </span>
         <span id="budget-spent" class="text-sm tabular-nums">
@@ -1494,7 +1494,7 @@ defmodule CanopyWeb.ChannelLive do
       </div>
       <form id="budget-form" phx-submit="set_spend_limit" class="flex flex-wrap items-center gap-2">
         <label class="input input-sm w-44" for="spend-limit">
-          <span class="text-base-content/50">$</span>
+          <span class="text-base-content/60">$</span>
           <input
             id="spend-limit"
             name="spend_limit"
@@ -1517,7 +1517,7 @@ defmodule CanopyWeb.ChannelLive do
           Remove limit
         </button>
       </form>
-      <p class="text-xs text-base-content/50">
+      <p class="text-xs text-base-content/60">
         The total this channel may spend, all time. Once reached, agents here stay quiet until you
         raise it. Agents can propose a limit when they create a channel; only you change one.
       </p>
@@ -1700,7 +1700,7 @@ defmodule CanopyWeb.ChannelLive do
               />
               <div class="min-w-0">
                 <div class="truncate font-medium" title={doc.filename}>{doc.filename}</div>
-                <div class="text-base-content/50">shared · {Documents.size_label(doc.byte_size)}</div>
+                <div class="text-base-content/60">shared · {Documents.size_label(doc.byte_size)}</div>
               </div>
               <button
                 type="button"
@@ -1732,7 +1732,7 @@ defmodule CanopyWeb.ChannelLive do
                 <div class="truncate font-medium" title={entry.client_name}>{entry.client_name}</div>
                 <div
                   :if={!entry.done? and upload_errors(@uploads.files, entry) == []}
-                  class="text-base-content/50"
+                  class="text-base-content/60"
                 >
                   {entry.progress}%
                 </div>
@@ -1932,7 +1932,7 @@ defmodule CanopyWeb.ChannelLive do
           <div class="flex items-center justify-between px-4 py-3">
             <div class="min-w-0">
               <h2 class="text-sm font-semibold">Working tree changes</h2>
-              <p class="truncate text-[11px] text-base-content/50" title={@repository.path}>
+              <p class="truncate text-[11px] text-base-content/60" title={@repository.path}>
                 {@repository.name}
               </p>
             </div>
@@ -1949,7 +1949,7 @@ defmodule CanopyWeb.ChannelLive do
           <p :if={@changes.error} class="px-4 pb-3 text-xs text-error">{@changes.error}</p>
           <p
             :if={@changes.files == [] and is_nil(@changes.error)}
-            class="px-4 pb-3 text-xs text-base-content/50"
+            class="px-4 pb-3 text-xs text-base-content/60"
           >
             The working tree is clean.
           </p>

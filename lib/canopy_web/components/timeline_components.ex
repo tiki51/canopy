@@ -120,20 +120,20 @@ defmodule CanopyWeb.TimelineComponents do
           </span>
           <span
             :if={@message.kind == "reply"}
-            class="rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/50"
+            class="rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/60"
             title="The agent's final turn text"
           >
             reply
           </span>
           <span
             :if={@inline_reply}
-            class="text-[11px] text-base-content/50"
+            class="text-[11px] text-base-content/60"
             title="A reply in a thread that is not loaded"
           >
             in a thread
           </span>
           <time
-            class="text-[11px] text-base-content/40"
+            class="text-[11px] text-base-content/60"
             title={DateTime.to_iso8601(@message.inserted_at)}
           >
             {short_time(@message.inserted_at)}
@@ -142,7 +142,7 @@ defmodule CanopyWeb.TimelineComponents do
             :if={@repliable}
             type="button"
             id={"reply-#{@message.id}"}
-            class="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-base-content/50 opacity-0 transition hover:bg-base-300/60 hover:text-base-content focus:opacity-100 group-hover:opacity-100"
+            class="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-base-content/60 opacity-0 transition hover:bg-base-300/60 hover:text-base-content focus:opacity-100 group-hover:opacity-100"
             phx-click="reply_in_thread"
             phx-value-id={@message.id}
             title="Reply in a thread"
@@ -212,13 +212,47 @@ defmodule CanopyWeb.TimelineComponents do
       ]}
       style={
         @message.agent && @message.agent.color &&
-          "background-color: #{@message.agent.color}; color: white"
+          "background-color: #{@message.agent.color}; color: #{initial_color(@message.agent.color)}"
       }
       aria-hidden="true"
     >
       {initial(sender_name(@message, @user_name))}
     </div>
     """
+  end
+
+  @doc """
+  The text colour for initials drawn on an agent's own colour: white unless it
+  falls below WCAG AA (4.5:1) on that hex, then whichever of white and Blue
+  Hour navy contrasts more (mid-luminance hues can fail with both).
+  """
+  def initial_color(hex) do
+    # 0.00986 is the relative luminance of #0B1834.
+    case luminance(hex) do
+      {:ok, l} when 1.05 / (l + 0.05) < 4.5 and (l + 0.05) / 0.05986 > 1.05 / (l + 0.05) ->
+        "#0B1834"
+
+      _ ->
+        "white"
+    end
+  end
+
+  defp luminance("#" <> <<r::binary-2, g::binary-2, b::binary-2>>) do
+    with {r, ""} <- Integer.parse(r, 16),
+         {g, ""} <- Integer.parse(g, 16),
+         {b, ""} <- Integer.parse(b, 16) do
+      [lr, lg, lb] = Enum.map([r, g, b], &linear/1)
+      {:ok, 0.2126 * lr + 0.7152 * lg + 0.0722 * lb}
+    else
+      _ -> :error
+    end
+  end
+
+  defp luminance(_hex), do: :error
+
+  defp linear(channel) do
+    c = channel / 255
+    if c <= 0.04045, do: c / 12.92, else: :math.pow((c + 0.055) / 1.055, 2.4)
   end
 
   @doc """
@@ -285,7 +319,7 @@ defmodule CanopyWeb.TimelineComponents do
           <.icon name={document_icon(doc.kind)} class="size-5 shrink-0 text-base-content/60" />
           <span class="min-w-0">
             <span class="block truncate font-medium">{doc.filename}</span>
-            <span class="block text-base-content/50">
+            <span class="block text-base-content/60">
               {String.upcase(doc.kind)} · {Canopy.Documents.size_label(doc.byte_size)}
             </span>
           </span>
@@ -380,7 +414,7 @@ defmodule CanopyWeb.TimelineComponents do
       >
         <Layouts.status_dot status={:busy} />
         <span class="font-medium text-secondary">@{@name} is {Activity.verb(@card)}…</span>
-        <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/50">
+        <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/60">
           <span :if={@card.tool_count > 0}>{@card.tool_count} tools</span>
           <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
           <.chevron />
@@ -388,7 +422,7 @@ defmodule CanopyWeb.TimelineComponents do
       </summary>
       <div class="border-t border-secondary/20 px-4 py-2">
         <.activity_list id={"telemetry-#{@agent_id}"} entries={@card.entries} />
-        <p :if={@card.entries == []} class="text-xs text-base-content/50">
+        <p :if={@card.entries == []} class="text-xs text-base-content/60">
           Waiting for the first tool call…
         </p>
       </div>
@@ -462,7 +496,7 @@ defmodule CanopyWeb.TimelineComponents do
           id={"turn-#{@event.id}-note"}
           class={["border-t border-dashed border-base-300 pt-2", @entries != [] && "mt-2"]}
         >
-          <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40">
+          <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/60">
             Closing note
           </p>
           <.message_text body={@final_text} />
@@ -494,7 +528,7 @@ defmodule CanopyWeb.TimelineComponents do
         </p>
         <span :if={entry.kind != :text} class="min-w-0 truncate">
           <span class="text-base-content">{entry.label}</span>
-          <span :if={entry.detail} class="text-base-content/50">— {entry.detail}</span>
+          <span :if={entry.detail} class="text-base-content/60">— {entry.detail}</span>
         </span>
       </li>
     </ol>
@@ -565,7 +599,7 @@ defmodule CanopyWeb.TimelineComponents do
           <p class="mt-0.5 break-words text-xs text-base-content/75">{s.instruction}</p>
           <p
             :if={s.status == "paused" and s.status_reason}
-            class="mt-0.5 text-[11px] text-base-content/50"
+            class="mt-0.5 text-[11px] text-base-content/60"
           >
             {s.status_reason}
           </p>
@@ -584,7 +618,7 @@ defmodule CanopyWeb.TimelineComponents do
           <.icon name="hero-x-mark-mini" class="size-4" />
         </button>
       </li>
-      <li :if={@schedules == []} class="py-2 text-xs text-base-content/50">{@empty}</li>
+      <li :if={@schedules == []} class="py-2 text-xs text-base-content/60">{@empty}</li>
     </ul>
     """
   end
@@ -903,7 +937,7 @@ defmodule CanopyWeb.TimelineComponents do
           class="border-b border-info/10 px-4 py-3"
         >
           <p class="text-sm font-medium">{question["question"]}</p>
-          <p :if={question["header"]} class="mt-0.5 text-xs text-base-content/50">
+          <p :if={question["header"]} class="mt-0.5 text-xs text-base-content/60">
             {question["header"]}
           </p>
 

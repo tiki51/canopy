@@ -127,7 +127,7 @@ defmodule CanopyWeb.Layouts do
           phx-hook="SidebarScroll"
         >
           <div class="flex items-center justify-between px-4 pt-4 pb-2">
-            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               Channels
             </span>
             <.link
@@ -173,7 +173,8 @@ defmodule CanopyWeb.Layouts do
                   data-active={channel.id == @current_channel_id}
                   class={[
                     "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition",
-                    channel.id == @current_channel_id && "bg-primary/15 text-primary font-medium",
+                    channel.id == @current_channel_id &&
+                      "bg-primary/10 dark:bg-primary/15 text-primary font-medium",
                     channel.id != @current_channel_id &&
                       "text-base-content/80 hover:bg-base-300 hover:text-base-content",
                     channel.status == "archived" && "opacity-50"
@@ -196,7 +197,7 @@ defmodule CanopyWeb.Layouts do
                   />
                 </.link>
               </li>
-              <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/40">
+              <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/60">
                 no channels
               </li>
             </ul>
@@ -205,7 +206,7 @@ defmodule CanopyWeb.Layouts do
               id={"sidebar-archived-#{repository.id}"}
               class="group/arch"
             >
-              <summary class="flex cursor-pointer select-none list-none items-center gap-1 rounded-md px-2 py-1 text-[11px] text-base-content/40 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
+              <summary class="flex cursor-pointer select-none list-none items-center gap-1 rounded-md px-2 py-1 text-[11px] text-base-content/60 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
                 <.icon
                   name="hero-chevron-right-mini"
                   class="size-3 transition-transform group-open/arch:rotate-90"
@@ -230,7 +231,7 @@ defmodule CanopyWeb.Layouts do
           </div>
 
           <div class="mt-2 flex items-center justify-between px-4 pt-2 pb-2">
-            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               Direct messages
             </span>
             <button
@@ -253,7 +254,8 @@ defmodule CanopyWeb.Layouts do
                 title={"#{Canopy.Channels.dm_label(dm)} · #{dm.repository.name}"}
                 class={[
                   "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition",
-                  dm.id == @current_channel_id && "bg-primary/15 text-primary font-medium",
+                  dm.id == @current_channel_id &&
+                    "bg-primary/10 dark:bg-primary/15 text-primary font-medium",
                   dm.id != @current_channel_id &&
                     "text-base-content/80 hover:bg-base-300 hover:text-base-content",
                   dm.status == "archived" && "opacity-50"
@@ -266,13 +268,13 @@ defmodule CanopyWeb.Layouts do
                 <.unread_mark unread={@unread} channel_id={dm.id} current_id={@current_channel_id} />
               </.link>
             </li>
-            <li :if={@dms == []} class="px-2 text-xs text-base-content/40">
+            <li :if={@dms == []} class="px-2 text-xs text-base-content/60">
               Click an agent below to start one
             </li>
           </ul>
 
           <div class="flex items-center justify-between px-4 pt-2 pb-2">
-            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               Agents
             </span>
             <.link
@@ -288,7 +290,7 @@ defmodule CanopyWeb.Layouts do
               <li
                 :if={group}
                 id={"sidebar-group-#{group_slug(group)}"}
-                class="px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-base-content/40 first:pt-0"
+                class="px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-base-content/60 first:pt-0"
               >
                 {group}
               </li>
@@ -300,7 +302,8 @@ defmodule CanopyWeb.Layouts do
                   title={"@#{agent.name}" <> if(agent.role, do: " · " <> agent.role, else: "")}
                   class={[
                     "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition",
-                    @current_path == "/agents/#{agent.id}" && "bg-primary/15 text-primary font-medium",
+                    @current_path == "/agents/#{agent.id}" &&
+                      "bg-primary/10 dark:bg-primary/15 text-primary font-medium",
                     @current_path != "/agents/#{agent.id}" &&
                       "text-base-content/80 hover:bg-base-300 hover:text-base-content"
                   ]}
@@ -312,7 +315,7 @@ defmodule CanopyWeb.Layouts do
                     class={[
                       "min-w-0 truncate text-[11px]",
                       @current_path == "/agents/#{agent.id}" && "text-primary/70",
-                      @current_path != "/agents/#{agent.id}" && "text-base-content/40"
+                      @current_path != "/agents/#{agent.id}" && "text-base-content/60"
                     ]}
                   >
                     {agent.role}
@@ -320,7 +323,7 @@ defmodule CanopyWeb.Layouts do
                   <span
                     :if={Map.get(@schedule_counts, agent.id, 0) > 0}
                     id={"schedules-#{agent.id}"}
-                    class="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] text-base-content/50"
+                    class="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] text-base-content/60"
                     title={"#{Map.get(@schedule_counts, agent.id)} scheduled"}
                   >
                     <.icon name="hero-clock-mini" class="size-3" />
@@ -329,7 +332,7 @@ defmodule CanopyWeb.Layouts do
                 </.link>
               </li>
             <% end %>
-            <li :if={@agents == []} class="px-2 text-xs text-base-content/40">no agents</li>
+            <li :if={@agents == []} class="px-2 text-xs text-base-content/60">no agents</li>
           </ul>
         </aside>
       </div>

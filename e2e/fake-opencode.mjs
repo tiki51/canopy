@@ -12,6 +12,7 @@ const TURN_DELAY = Number(process.env.FAKE_TURN_DELAY_MS || 50);
 const streams = new Set(); // SSE clients on GET /event
 const sessions = new Map(); // id -> {parentID}
 const pendingPermissions = new Map(); // per_id -> resume fn
+const pendingQuestions = new Map(); // que_id -> {request, resume}
 let mcp = null; // {url, headers} learned from POST /mcp
 let counter = 0;
 const nextId = (p) => `${p}_fake${String(++counter).padStart(4, "0")}`;
@@ -96,6 +97,30 @@ async function runTurn(sessionID, text) {
     emit("file.edited", { file: "notes.txt" });
   }
 
+  // "ask me" puts the question tool on hold until the card is answered or
+  // dismissed; the answer comes back as a list of labels per question.
+  let answer = null;
+  if (/\bask me\b/i.test(body)) {
+    const id = nextId("que");
+    const request = {
+      id,
+      sessionID,
+      questions: [{
+        question: "Should the retry key include the attempt number?",
+        header: "Retry key",
+        options: [
+          { label: "Invoice only", description: "Every retry reuses one key, so a charge lands at most once." },
+          { label: "Invoice + attempt", description: "Each retry gets a fresh key; the worker has to dedupe." },
+        ],
+      }],
+      tool: { messageID, callID: nextId("call") },
+    };
+    answer = await new Promise((resume) => {
+      pendingQuestions.set(id, { request, resume });
+      emit("question.asked", request);
+    });
+  }
+
   let reply = "Reply from the fake agent.";
   const delegation = text.match(/Delegation ID: (dl_\S+)/);
   const handoff = text.match(/Handoff ID: (ho_\S+)/);
@@ -126,6 +151,10 @@ async function runTurn(sessionID, text) {
       const created = await mcpCall("schedule_create", { canopy_session_id: sessionID, when: "3s", what: "Run the scheduled check and report." });
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Scheduled it: " + created.split(".")[0] + "." });
       reply = "Scheduled.";
+    } else if (answer) {
+      const choice = answer.flat().join(", ");
+      await mcpCall("message_send", { canopy_session_id: sessionID, text: choice ? `Going with **${choice}**.` : "Skipped the question; keeping the current key." });
+      reply = "Answered.";
     } else {
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
     }
@@ -176,6 +205,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && p === "/session/status") return json(res, 200, {});
     if (req.method === "GET" && p === "/permission") return json(res, 200, []);
+    if (req.method === "GET" && p === "/question") return json(res, 200, [...pendingQuestions.values()].map((q) => q.request));
     if (req.method === "GET" && p === "/vcs/status") return json(res, 200, []);
     let m;
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/prompt_async$/))) {
@@ -197,6 +227,21 @@ const server = http.createServer(async (req, res) => {
       pendingPermissions.delete(m[1]);
       emit("permission.replied", { sessionID: "", requestID: m[1], reply: body.reply });
       if (resume) resume();
+      return json(res, 200, true);
+    }
+    if (req.method === "POST" && (m = p.match(/^\/question\/([^/]+)\/(reply|reject)$/))) {
+      const body = await readBody(req);
+      const pending = pendingQuestions.get(m[1]);
+      if (!pending) return json(res, 404, { error: `fake-opencode: no question ${m[1]}` });
+      pendingQuestions.delete(m[1]);
+      const sessionID = pending.request.sessionID;
+      if (m[2] === "reply") {
+        emit("question.replied", { sessionID, requestID: m[1], answers: body.answers || [] });
+        pending.resume(body.answers || []);
+      } else {
+        emit("question.rejected", { sessionID, requestID: m[1] });
+        pending.resume([]);
+      }
       return json(res, 200, true);
     }
     if (req.method === "GET" && (m = p.match(/^\/session\/([^/]+)\/(children|message|diff)$/))) return json(res, 200, []);

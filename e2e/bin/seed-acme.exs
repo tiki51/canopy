@@ -6,6 +6,12 @@
 # Everything here is written through the same context modules the app uses,
 # then backdated so the Costs page has two weeks of history. It never wakes an
 # agent: messages go through `Canopy.Messages`, not the runtime.
+#
+# With SITE=1 or SITE_VIDEO=1 (the site capture specs) it leaves out today's
+# #payment-retries conversation, the fix in the working tree, and the billing
+# hold: those specs create the channel in the browser and play the story live
+# against the fake engines (e2e/fake-claude, e2e/fake-opencode.mjs).
+# ACME_DIR moves the two repositories (default: tmp/).
 
 import Ecto.Query
 
@@ -29,6 +35,8 @@ alias Canopy.Messages.Message
 alias Canopy.Timeline.Event
 
 root = File.cwd!()
+site? = System.get_env("SITE") == "1" or System.get_env("SITE_VIDEO") == "1"
+repos_dir = System.get_env("ACME_DIR") || Path.join(root, "tmp")
 now = DateTime.utc_now()
 ago = fn minutes -> DateTime.add(now, -round(minutes * 60), :second) end
 
@@ -49,7 +57,7 @@ user = user |> Ecto.Changeset.change(display_name: "Priya") |> Repo.update!()
 # -- Repositories -----------------------------------------------------------------
 
 make_repo = fn name, files ->
-  path = Path.join([root, "tmp", name])
+  path = Path.join(repos_dir, name)
   File.rm_rf!(path)
   File.mkdir_p!(path)
 
@@ -156,20 +164,23 @@ Repo.delete_all(
 {:ok, storefront} = Repositories.create(%{name: "acme-storefront", path: storefront_path})
 
 # Leave the fix in the working tree so the Changes modal has something to show.
-File.write!(
-  Path.join(billing_path, "acme/billing/payments.py"),
-  String.replace(
-    payments_py,
-    "    gateway.charge(invoice.customer_id, invoice.amount_cents)\n",
-    "    if not invoices.claim_charge(invoice_id):\n        log.info(\"charge for %s already in flight\", invoice_id)\n        return\n    gateway.charge(invoice.customer_id, invoice.amount_cents)\n"
+# The site specs leave it to the live story instead.
+unless site? do
+  File.write!(
+    Path.join(billing_path, "acme/billing/payments.py"),
+    String.replace(
+      payments_py,
+      "    gateway.charge(invoice.customer_id, invoice.amount_cents)\n",
+      "    if not invoices.claim_charge(invoice_id):\n        log.info(\"charge for %s already in flight\", invoice_id)\n        return\n    gateway.charge(invoice.customer_id, invoice.amount_cents)\n"
+    )
   )
-)
 
-File.write!(
-  Path.join(billing_path, "tests/test_payments.py"),
-  test_payments_py <>
-    "\n\ndef test_concurrent_retries_charge_once(open_invoice):\n    payments.enqueue_charge(open_invoice.id)\n    payments.enqueue_charge(open_invoice.id)\n    assert open_invoice.charges == 1\n"
-)
+  File.write!(
+    Path.join(billing_path, "tests/test_payments.py"),
+    test_payments_py <>
+      "\n\ndef test_concurrent_retries_charge_once(open_invoice):\n    payments.enqueue_charge(open_invoice.id)\n    payments.enqueue_charge(open_invoice.id)\n    assert open_invoice.charges == 1\n"
+  )
+end
 
 # -- Agents -----------------------------------------------------------------------
 
@@ -179,8 +190,34 @@ set_model = fn name, model_id ->
   agent
 end
 
-backend = set_model.("backend", "claude-haiku-4-5")
-reviewer = set_model.("reviewer", "gpt-5-nano")
+# A mixed team: the two agents that edit and review code run on Claude Code,
+# the rest on OpenCode.
+set_claude = fn name, attrs ->
+  agent = Agents.get_by_name(name)
+
+  {:ok, agent} =
+    Agents.update(
+      agent,
+      Map.merge(%{engine: "claude_code", model_provider: nil, permission_mode: "default"}, attrs)
+    )
+
+  agent
+end
+
+backend =
+  set_claude.("backend", %{
+    model_id: "sonnet",
+    effort: "medium",
+    allowed_tools: "Read\nGrep\nGlob\nBash(pytest:*)\nBash(git diff:*)"
+  })
+
+reviewer =
+  set_claude.("reviewer", %{
+    model_id: "opus",
+    effort: "high",
+    allowed_tools: "Read\nGrep\nGlob\nBash(git diff:*)"
+  })
+
 researcher = set_model.("researcher", "gpt-5-nano")
 test_agent = set_model.("test", "gpt-5-nano")
 
@@ -206,11 +243,17 @@ docs = Agents.get_by_name("docs")
 
 {:ok, _} = Canopy.Costs.Auditor.assign(finops.id)
 
+learned = fn days -> now |> DateTime.to_date() |> Date.add(-days) |> Date.to_iso8601() end
+
 {:ok, _} =
   Memory.put(backend.id, """
+  ## #{learned.(2)}
+  - Charges must be idempotent per invoice: call `invoices.claim_charge` before `gateway.charge`.
   - Priya prefers small PRs: one behaviour change per PR, tests in the same change.
+
+  ## #{learned.(9)}
   - acme-billing runs on Postgres 16; the retry worker deploys with `make deploy-worker`.
-  - Charges must be idempotent per invoice: use `invoices.claim_charge` before `gateway.charge`.
+  - Failed charges land in the `failed_charges` table; the worker drains it every minute.
   """)
 
 {:ok, _} =
@@ -221,10 +264,14 @@ docs = Agents.get_by_name("docs")
 
 # -- Helpers -----------------------------------------------------------------------
 
-model_of = fn agent -> "opencode/#{agent.model_id}" end
+model_of = fn
+  %{engine: "claude_code"} = agent -> agent.model_id
+  agent -> "opencode/#{agent.model_id}"
+end
 
 price = fn
-  "claude-haiku-4-5" -> {1.0, 5.0, 0.1}
+  "opus" -> {5.0, 25.0, 0.5}
+  "sonnet" -> {3.0, 15.0, 0.3}
   _ -> {0.05, 0.4, 0.005}
 end
 
@@ -323,19 +370,26 @@ end
 # Engaged before any schedule exists, so releasing it later pauses and resumes
 # nothing and the channel timelines stay clean.
 
-:ok = Canopy.Hold.engage("OpenCode reported: insufficient balance for opencode/claude-haiku-4-5")
+unless site?,
+  do: :ok = Canopy.Hold.engage("OpenCode reported: insufficient balance for opencode/gpt-5-nano")
 
 # -- Channels -----------------------------------------------------------------------
 
-{:ok, retries} =
-  Channels.create(%{
-    repository_id: billing.id,
-    name: "payment-retries",
-    topic: "Invoices are occasionally charged twice",
-    owner_agent_id: backend.id,
-    agent_ids: [researcher.id, reviewer.id, test_agent.id],
-    task_title: "Stop duplicate charges from the retry paths"
-  })
+# The site specs create #payment-retries themselves, in the browser.
+retries =
+  unless site? do
+    {:ok, retries} =
+      Channels.create(%{
+        repository_id: billing.id,
+        name: "payment-retries",
+        topic: "Invoices are occasionally charged twice",
+        owner_agent_id: backend.id,
+        agent_ids: [researcher.id, reviewer.id, test_agent.id],
+        task_title: "Stop duplicate charges from the retry paths"
+      })
+
+    retries
+  end
 
 {:ok, pdf_export} =
   Channels.create(%{
@@ -390,6 +444,8 @@ history = [
   {retries, researcher, "agent"},
   {reviewer_dm, reviewer, "user"}
 ]
+
+history = Enum.reject(history, fn {channel, _, _} -> is_nil(channel) end)
 
 for day <- 14..1//-1, _ <- 1..(2 + :rand.uniform(5)) do
   {channel, agent, trigger} = Enum.random(history)
@@ -633,312 +689,326 @@ stamp.(pdf_export.id, days_ago.(1, 15))
 
 # -- #payment-retries: today's conversation --------------------------------------------
 
-{:ok, retries} = Channels.set_spend_limit(retries, 5.0)
-stamp.(retries.id, ago.(126))
+if site? do
+  # The retry log Priya attaches from the library when the site spec posts the task.
+  {:ok, _} =
+    Canopy.Documents.create(%{
+      filename: "support-ticket-4821.png",
+      mime: "image/png",
+      source: {:path, Path.expand("../fixtures/retry-log.png", __DIR__)},
+      user_id: user.id,
+      caption: "Retry log for inv_88213 from the billing admin"
+    })
+end
 
-# Priya attaches the admin screenshot from the support ticket; the runtime
-# would send it to @backend as an image part.
-{:ok, ticket_shot} =
-  Canopy.Documents.create(%{
-    filename: "support-ticket-4821.png",
-    mime: "image/png",
-    source: {:path, Path.expand("../fixtures/retry-log.png", __DIR__)},
-    user_id: user.id,
-    origin_channel_id: retries.id,
-    caption: "Retry log for inv_88213 from the billing admin"
+unless site? do
+  {:ok, retries} = Channels.set_spend_limit(retries, 5.0)
+  stamp.(retries.id, ago.(126))
+
+  # Priya attaches the admin screenshot from the support ticket; the runtime
+  # would send it to @backend as an image part.
+  {:ok, ticket_shot} =
+    Canopy.Documents.create(%{
+      filename: "support-ticket-4821.png",
+      mime: "image/png",
+      source: {:path, Path.expand("../fixtures/retry-log.png", __DIR__)},
+      user_id: user.id,
+      origin_channel_id: retries.id,
+      caption: "Retry log for inv_88213 from the billing admin"
+    })
+
+  {:ok, _} =
+    Messages.post_user_message(
+      retries.id,
+      user.id,
+      "Support has three reports this week of an invoice charged twice, always after a failed webhook. Here is the retry log from ticket #4821. Read `payments.py` and `retry_worker.py` and post a root-cause summary. Don't change any files yet.",
+      attachments: [ticket_shot.id]
+    )
+
+  stamp.(retries.id, ago.(124))
+
+  turn.(retries, backend, %{
+    trigger: "user",
+    steps: 3,
+    context: 18_400,
+    duration_ms: 48_300,
+    activity: [
+      tool.("read", "acme/billing/payments.py"),
+      tool.("read", "acme/billing/retry_worker.py"),
+      tool.("grep", "enqueue_charge"),
+      tool.("canopy_message_send", nil)
+    ],
+    final_text: "Posted the root cause and asked @researcher to confirm the caller list."
   })
 
-{:ok, _} =
-  Messages.post_user_message(
-    retries.id,
-    user.id,
-    "Support has three reports this week of an invoice charged twice, always after a failed webhook. Here is the retry log from ticket #4821. Read `payments.py` and `retry_worker.py` and post a root-cause summary. Don't change any files yet.",
-    attachments: [ticket_shot.id]
-  )
+  {:ok, _} =
+    Messages.post_agent_message(
+      retries.id,
+      backend.id,
+      """
+      **Root cause.** Two independent retry paths can both call `enqueue_charge` for the same invoice, and the only guard is `invoice.status == "paid"`, which is set *after* the gateway call returns:
 
-stamp.(retries.id, ago.(124))
+      1. `retry_worker.py:7` pops failed jobs every minute and re-enqueues them.
+      2. `webhooks.py:5` re-enqueues on every `payment_failed` event, including the retried attempt's own failure event.
 
-turn.(retries, backend, %{
-  trigger: "user",
-  steps: 3,
-  context: 18_400,
-  duration_ms: 48_300,
-  activity: [
-    tool.("read", "acme/billing/payments.py"),
-    tool.("read", "acme/billing/retry_worker.py"),
-    tool.("grep", "enqueue_charge"),
-    tool.("canopy_message_send", nil)
-  ],
-  final_text: "Posted the root cause and asked @researcher to confirm the caller list."
-})
+      When the gateway is slow, both run inside the same window:
 
-{:ok, _} =
-  Messages.post_agent_message(
-    retries.id,
-    backend.id,
-    """
-    **Root cause.** Two independent retry paths can both call `enqueue_charge` for the same invoice, and the only guard is `invoice.status == "paid"`, which is set *after* the gateway call returns:
+      ```python
+      if invoice.status == "paid":   # both callers see "open"
+          return
+      gateway.charge(...)            # charged twice
+      invoices.mark_paid(invoice_id)
+      ```
 
-    1. `retry_worker.py:7` pops failed jobs every minute and re-enqueues them.
-    2. `webhooks.py:5` re-enqueues on every `payment_failed` event, including the retried attempt's own failure event.
+      Before I propose a fix I want the full list of callers. Delegating that to @researcher.
+      """
+    )
 
-    When the gateway is slow, both run inside the same window:
+  stamp.(retries.id, ago.(122))
 
-    ```python
-    if invoice.status == "paid":   # both callers see "open"
-        return
-    gateway.charge(...)            # charged twice
-    invoices.mark_paid(invoice_id)
-    ```
+  {:ok, delegation} =
+    Delegations.create(%{
+      channel_id: retries.id,
+      task_id: retries.task.id,
+      from_agent_id: backend.id,
+      to_agent_id: researcher.id,
+      description: "List every code path that can call enqueue_charge, with file and line."
+    })
 
-    Before I propose a fix I want the full list of callers. Delegating that to @researcher.
-    """
-  )
+  stamp.(retries.id, ago.(121))
 
-stamp.(retries.id, ago.(122))
-
-{:ok, delegation} =
-  Delegations.create(%{
-    channel_id: retries.id,
-    task_id: retries.task.id,
-    from_agent_id: backend.id,
-    to_agent_id: researcher.id,
-    description: "List every code path that can call enqueue_charge, with file and line."
+  turn.(retries, researcher, %{
+    trigger: "delegation",
+    steps: 2,
+    context: 11_200,
+    duration_ms: 31_000,
+    activity: [
+      tool.("grep", "enqueue_charge"),
+      tool.("read", "acme/admin/replay.py"),
+      tool.("canopy_task_update", nil)
+    ]
   })
 
-stamp.(retries.id, ago.(121))
+  # The researcher shares its full write-up as a file rather than a long post.
+  {:ok, callers_doc} =
+    Canopy.Documents.create(%{
+      filename: "enqueue-paths.md",
+      source:
+        {:binary,
+         """
+         # Callers of `enqueue_charge`
 
-turn.(retries, researcher, %{
-  trigger: "delegation",
-  steps: 2,
-  context: 11_200,
-  duration_ms: 31_000,
-  activity: [
-    tool.("grep", "enqueue_charge"),
-    tool.("read", "acme/admin/replay.py"),
-    tool.("canopy_task_update", nil)
-  ]
-})
+         Every code path that can enqueue a charge for an invoice, with the guard it relies on.
 
-# The researcher shares its full write-up as a file rather than a long post.
-{:ok, callers_doc} =
-  Canopy.Documents.create(%{
-    filename: "enqueue-charge-callers.md",
-    source:
-      {:binary,
-       """
-       # Callers of `enqueue_charge`
+         | # | Call site | Trigger | Guard before the call |
+         |---|---|---|---|
+         | 1 | `acme/billing/retry_worker.py:7` | cron, every minute | none (re-enqueues every failed job) |
+         | 2 | `acme/billing/webhooks.py:5` | `payment_failed` webhook | none (fires for the retry's own failure too) |
+         | 3 | `acme/admin/replay.py:17` | support's manual replay tool | operator confirmation only |
 
-       Every code path that can enqueue a charge for an invoice, with the guard it relies on.
+         ## Notes
 
-       | # | Call site | Trigger | Guard before the call |
-       |---|---|---|---|
-       | 1 | `acme/billing/retry_worker.py:7` | cron, every minute | none (re-enqueues every failed job) |
-       | 2 | `acme/billing/webhooks.py:5` | `payment_failed` webhook | none (fires for the retry's own failure too) |
-       | 3 | `acme/admin/replay.py:17` | support's manual replay tool | operator confirmation only |
+         - 1 and 2 overlap whenever the gateway is slow: the worker pops the job while the
+           failure webhook for the same attempt is still in flight.
+         - 3 is rare but has the same race with 1; a replay during the worker's minute can
+           double-charge in the same way.
+         - `invoices.mark_paid` runs after `gateway.charge` returns, so every caller sees
+           `status == "open"` until the first charge completes.
 
-       ## Notes
+         Recommendation: one idempotency key per invoice attempt, checked before the gateway
+         call, and a `charging` status set before the call rather than after.
+         """},
+      agent_id: researcher.id,
+      origin_channel_id: retries.id,
+      caption: "Full caller list with the guard each path relies on"
+    })
 
-       - 1 and 2 overlap whenever the gateway is slow: the worker pops the job while the
-         failure webhook for the same attempt is still in flight.
-       - 3 is rare but has the same race with 1; a replay during the worker's minute can
-         double-charge in the same way.
-       - `invoices.mark_paid` runs after `gateway.charge` returns, so every caller sees
-         `status == "open"` until the first charge completes.
+  {:ok, _} =
+    Messages.post_agent_message(
+      retries.id,
+      researcher.id,
+      "Full caller list attached; the short version is in the task result.",
+      attachments: [callers_doc.id]
+    )
 
-       Recommendation: one idempotency key per invoice attempt, checked before the gateway
-       call, and a `charging` status set before the call rather than after.
-       """},
-    agent_id: researcher.id,
-    origin_channel_id: retries.id,
-    caption: "Full caller list with the guard each path relies on"
+  {:ok, _} =
+    Delegations.complete(
+      delegation,
+      "Three callers: retry_worker.py:7, webhooks.py:5, and admin/replay.py:17 (the manual replay tool support uses)."
+    )
+
+  stamp.(retries.id, ago.(118))
+
+  turn.(retries, backend, %{
+    trigger: "delegation",
+    steps: 2,
+    context: 21_900,
+    duration_ms: 26_400,
+    activity: [tool.("canopy_message_send", nil), tool.("canopy_task_update", nil)],
+    final_text: "Plan posted; task moved to working."
   })
 
-{:ok, _} =
-  Messages.post_agent_message(
-    retries.id,
-    researcher.id,
-    "Full caller list attached; the short version is in the task result.",
-    attachments: [callers_doc.id]
-  )
+  {:ok, plan} =
+    Messages.post_agent_message(
+      retries.id,
+      backend.id,
+      """
+      Three callers confirmed, so fixing the callers one by one is fragile. **Proposal:** make `enqueue_charge` itself idempotent.
 
-{:ok, _} =
-  Delegations.complete(
-    delegation,
-    "Three callers: retry_worker.py:7, webhooks.py:5, and admin/replay.py:17 (the manual replay tool support uses)."
-  )
+      - Add `invoices.claim_charge(invoice_id)`: an `UPDATE … WHERE charge_claimed_at IS NULL` that returns whether this caller won.
+      - Call it before `gateway.charge`; losers log and return.
+      - Release the claim if the gateway raises, so a real failure can still be retried.
 
-stamp.(retries.id, ago.(118))
+      One migration, ~20 lines in `payments.py`, one new test. @reviewer, does the claim approach look right to you before I start?
+      """
+    )
 
-turn.(retries, backend, %{
-  trigger: "delegation",
-  steps: 2,
-  context: 21_900,
-  duration_ms: 26_400,
-  activity: [tool.("canopy_message_send", nil), tool.("canopy_task_update", nil)],
-  final_text: "Plan posted; task moved to working."
-})
+  stamp.(retries.id, ago.(116))
+  {:ok, _} = Tasks.update(retries.task, %{status: "working"}, agent_id: backend.id)
+  stamp.(retries.id, ago.(116))
 
-{:ok, plan} =
-  Messages.post_agent_message(
-    retries.id,
-    backend.id,
-    """
-    Three callers confirmed, so fixing the callers one by one is fragile. **Proposal:** make `enqueue_charge` itself idempotent.
-
-    - Add `invoices.claim_charge(invoice_id)`: an `UPDATE … WHERE charge_claimed_at IS NULL` that returns whether this caller won.
-    - Call it before `gateway.charge`; losers log and return.
-    - Release the claim if the gateway raises, so a real failure can still be retried.
-
-    One migration, ~20 lines in `payments.py`, one new test. @reviewer, does the claim approach look right to you before I start?
-    """
-  )
-
-stamp.(retries.id, ago.(116))
-{:ok, _} = Tasks.update(retries.task, %{status: "working"}, agent_id: backend.id)
-stamp.(retries.id, ago.(116))
-
-turn.(retries, reviewer, %{
-  trigger: "agent",
-  steps: 2,
-  context: 13_600,
-  duration_ms: 22_000,
-  activity: [tool.("read", "acme/billing/payments.py"), tool.("canopy_thread_reply", nil)]
-})
-
-{:ok, _} =
-  Messages.thread_reply(
-    plan.id,
-    {:agent, reviewer.id},
-    "Looks right. Two asks: key the claim on `invoice_id` only (not attempt id), and make the release path a `finally` so a timeout does not leave the claim stuck."
-  )
-
-stamp.(retries.id, ago.(113))
-
-{:ok, _} =
-  Schedules.create(%{
-    channel_id: retries.id,
-    agent_id: backend.id,
-    created_by_agent_id: backend.id,
-    instruction: "Check the failed-charge queue depth and post here if it is above 50",
-    when: "0 9 * * 1-5"
+  turn.(retries, reviewer, %{
+    trigger: "agent",
+    steps: 2,
+    context: 13_600,
+    duration_ms: 22_000,
+    activity: [tool.("read", "acme/billing/payments.py"), tool.("canopy_thread_reply", nil)]
   })
 
-stamp.(retries.id, ago.(112))
+  {:ok, _} =
+    Messages.thread_reply(
+      plan.id,
+      {:agent, reviewer.id},
+      "Looks right. Two asks: key the claim on `invoice_id` only (not attempt id), and make the release path a `finally` so a timeout does not leave the claim stuck."
+    )
 
-{:ok, _} =
-  Messages.post_user_message(
-    retries.id,
-    user.id,
-    "Go ahead with the claim approach, including @reviewer's two notes. Keep the PR small."
-  )
+  stamp.(retries.id, ago.(113))
 
-stamp.(retries.id, ago.(64))
+  {:ok, _} =
+    Schedules.create(%{
+      channel_id: retries.id,
+      agent_id: backend.id,
+      created_by_agent_id: backend.id,
+      instruction: "Check the failed-charge queue depth and post here if it is above 50",
+      when: "0 9 * * 1-5"
+    })
 
-turn.(retries, backend, %{
-  trigger: "user",
-  steps: 5,
-  context: 26_800,
-  duration_ms: 142_000,
-  files: ["acme/billing/payments.py", "acme/billing/invoices.py", "tests/test_payments.py"],
-  activity: [
-    tool.("read", "acme/billing/invoices.py"),
-    tool.("edit", "acme/billing/invoices.py"),
-    file.("acme/billing/invoices.py"),
-    tool.("edit", "acme/billing/payments.py"),
-    file.("acme/billing/payments.py"),
-    tool.("edit", "tests/test_payments.py"),
-    file.("tests/test_payments.py"),
-    tool.("bash", "pytest tests/test_payments.py -q"),
-    tool.("canopy_message_send", nil),
-    tool.("canopy_handoff_task", nil)
-  ],
-  final_text: "Fix and test in the working tree; handed to @reviewer."
-})
+  stamp.(retries.id, ago.(112))
 
-{:ok, _} =
-  Messages.post_agent_message(
-    retries.id,
-    backend.id,
-    """
-    Done, in the working tree:
+  {:ok, _} =
+    Messages.post_user_message(
+      retries.id,
+      user.id,
+      "Go ahead with the claim approach, including @reviewer's two notes. Keep the PR small."
+    )
 
-    - `invoices.claim_charge` with the `UPDATE … RETURNING` guard, keyed on `invoice_id`.
-    - `enqueue_charge` claims first, releases in a `finally` when the gateway raises.
-    - New test `test_concurrent_retries_charge_once`.
+  stamp.(retries.id, ago.(64))
 
-    ```text
-    $ pytest tests/test_payments.py -q
-    15 passed in 2.1s
-    ```
-
-    Handing this to @reviewer for a second pair of eyes before we open the PR.
-    """
-  )
-
-stamp.(retries.id, ago.(61))
-
-{:ok, handoff} =
-  Handoffs.request(%{
-    channel_id: retries.id,
-    task_id: retries.task.id,
-    from_agent_id: backend.id,
-    to_agent_id: reviewer.id,
-    summary: "Idempotent enqueue_charge via invoices.claim_charge; 15 tests pass.",
-    reason: "needs a second pair of eyes before the PR",
-    suggested_next_step:
-      "Review the diff, then ask @test for a load test if the claim query looks hot."
+  turn.(retries, backend, %{
+    trigger: "user",
+    steps: 5,
+    context: 26_800,
+    duration_ms: 142_000,
+    files: ["acme/billing/payments.py", "acme/billing/invoices.py", "tests/test_payments.py"],
+    activity: [
+      tool.("read", "acme/billing/invoices.py"),
+      tool.("edit", "acme/billing/invoices.py"),
+      file.("acme/billing/invoices.py"),
+      tool.("edit", "acme/billing/payments.py"),
+      file.("acme/billing/payments.py"),
+      tool.("edit", "tests/test_payments.py"),
+      file.("tests/test_payments.py"),
+      tool.("bash", "pytest tests/test_payments.py -q"),
+      tool.("canopy_message_send", nil),
+      tool.("canopy_handoff_task", nil)
+    ],
+    final_text: "Fix and test in the working tree; handed to @reviewer."
   })
 
-stamp.(retries.id, ago.(61))
-{:ok, _} = Handoffs.accept(handoff)
-stamp.(retries.id, ago.(58))
+  {:ok, _} =
+    Messages.post_agent_message(
+      retries.id,
+      backend.id,
+      """
+      Done, in the working tree:
 
-turn.(retries, reviewer, %{
-  trigger: "handoff",
-  steps: 3,
-  context: 19_300,
-  duration_ms: 54_000,
-  activity: [
-    tool.("canopy_handoff_get", nil),
-    tool.("bash", "git diff"),
-    tool.("read", "tests/test_payments.py"),
-    tool.("canopy_message_send", nil)
-  ]
-})
+      - `invoices.claim_charge` with the `UPDATE … RETURNING` guard, keyed on `invoice_id`.
+      - `enqueue_charge` claims first, releases in a `finally` when the gateway raises.
+      - New test `test_concurrent_retries_charge_once`.
 
-{:ok, _} =
-  Messages.post_agent_message(
-    retries.id,
-    reviewer.id,
-    """
-    Reviewed the diff. Approving with two small notes, neither blocking:
+      ```text
+      $ pytest tests/test_payments.py -q
+      15 passed in 2.1s
+      ```
 
-    1. `claim_charge` should also skip invoices in `void` status, not just `paid`.
-    2. The new test uses a real thread pool; a fake gateway with a latch would be faster and deterministic.
+      Handing this to @reviewer for a second pair of eyes before we open the PR.
+      """
+    )
 
-    Ready for a PR once Priya is happy.
-    """
-  )
+  stamp.(retries.id, ago.(61))
 
-stamp.(retries.id, ago.(53))
+  {:ok, handoff} =
+    Handoffs.request(%{
+      channel_id: retries.id,
+      task_id: retries.task.id,
+      from_agent_id: backend.id,
+      to_agent_id: reviewer.id,
+      summary: "Idempotent enqueue_charge via invoices.claim_charge; 15 tests pass.",
+      reason: "needs a second pair of eyes before the PR",
+      suggested_next_step:
+        "Review the diff, then ask @test for a load test if the claim query looks hot."
+    })
 
-{:ok, _} =
-  Messages.post_user_message(retries.id, user.id, "Great work all. I'll open the PR from here.")
+  stamp.(retries.id, ago.(61))
+  {:ok, _} = Handoffs.accept(handoff)
+  stamp.(retries.id, ago.(58))
 
-stamp.(retries.id, ago.(12))
+  turn.(retries, reviewer, %{
+    trigger: "handoff",
+    steps: 3,
+    context: 19_300,
+    duration_ms: 54_000,
+    activity: [
+      tool.("canopy_handoff_get", nil),
+      tool.("bash", "git diff"),
+      tool.("read", "tests/test_payments.py"),
+      tool.("canopy_message_send", nil)
+    ]
+  })
 
-turn.(retries, reviewer, %{
-  trigger: "user",
-  steps: 1,
-  context: 20_100,
-  duration_ms: 6_000,
-  passed: true,
-  note: "nothing to add",
-  activity: [tool.("canopy_pass", nil)]
-})
+  {:ok, _} =
+    Messages.post_agent_message(
+      retries.id,
+      reviewer.id,
+      """
+      Reviewed the diff. Approving with two small notes, neither blocking:
 
-stamp.(retries.id, ago.(11))
+      1. `claim_charge` should also skip invoices in `void` status, not just `paid`.
+      2. The new test uses a real thread pool; a fake gateway with a latch would be faster and deterministic.
+
+      Ready for a PR once Priya is happy.
+      """
+    )
+
+  stamp.(retries.id, ago.(53))
+
+  {:ok, _} =
+    Messages.post_user_message(retries.id, user.id, "Great work all. I'll open the PR from here.")
+
+  stamp.(retries.id, ago.(12))
+
+  turn.(retries, reviewer, %{
+    trigger: "user",
+    steps: 1,
+    context: 20_100,
+    duration_ms: 6_000,
+    passed: true,
+    note: "nothing to add",
+    activity: [tool.("canopy_pass", nil)]
+  })
+
+  stamp.(retries.id, ago.(11))
+end
 
 # -- DM with @reviewer ---------------------------------------------------------------
 
@@ -983,7 +1053,7 @@ stamp.(reviewer_dm.id, days_ago.(1, 9))
   Messages.post_user_message(
     finops_dm.id,
     user.id,
-    Canopy.Costs.Auditor.prompt(finops, "scheduled tasks and the haiku model on @backend")
+    Canopy.Costs.Auditor.prompt(finops, "scheduled tasks and the sonnet model on @backend")
   )
 
 stamp.(finops_dm.id, ago.(35))
@@ -1003,7 +1073,7 @@ turn.(finops_dm, finops, %{
     """
     I read this week's report. Ranked by expected savings:
 
-    1. **Move @backend's routine turns to gpt-5-nano** (about 55% of the week). Haiku is 20x the price per token; keep it for edits in `#payment-retries` and let nano handle acknowledgements and status posts. Expected saving: roughly a third of the weekly total.
+    1. **Move @backend's routine turns to haiku** (about 55% of the week are acknowledgements and status posts). Sonnet is 3x the price per token; keep it for edits in `#payment-retries`. Expected saving: roughly a third of the weekly total.
     2. **Widen the daily latency schedule in `#checkout-latency`** from every day to weekdays. It fires with 27k tokens of context each time and has flagged nothing in a week. Saving: small, but it is pure waste.
     3. **Leave the `#invoice-pdf-export` limit where it is** until the multi-page case is scoped; it hit the limit after one long turn, which suggests the task needs splitting rather than more budget.
 

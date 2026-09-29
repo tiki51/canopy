@@ -202,7 +202,7 @@ defmodule CanopyWeb.DmPicker do
                   </label>
                 </li>
               </ul>
-              <p class="mt-1.5 text-[11px] text-base-content/50">
+              <p class="mt-1.5 text-[11px] text-base-content/60">
                 A plain message in a DM wakes every agent in it; mention one to address it alone.
               </p>
             </fieldset>

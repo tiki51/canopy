@@ -152,6 +152,22 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert has_element?(view, "#plugin-path", "canopy.js")
   end
 
+  test "the appearance panel offers the three modes and every palette", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    assert has_element?(view, "#appearance-panel")
+
+    for mode <- ~w(system light dark) do
+      assert has_element?(view, "#appearance-mode-#{mode}[data-phx-theme='#{mode}']")
+    end
+
+    for id <- ~w(blue-hour moss graphite ember) do
+      assert has_element?(view, "#palette-#{id}[role=radio][data-phx-palette='#{id}']")
+      assert has_element?(view, "#palette-#{id} [data-theme=light][data-palette='#{id}']")
+      assert has_element?(view, "#palette-#{id} [data-theme=dark][data-palette='#{id}']")
+    end
+  end
+
   describe "collaboration prompt" do
     alias Canopy.Runtime.Prompts
 

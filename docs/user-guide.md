@@ -171,6 +171,24 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
   you want agents to run autonomously for as long as the work takes, and use spend limits
   as the backstop instead.
 
+### Appearance
+
+![Settings, Appearance, light](user-guide/images/settings-appearance-light.png)
+
+![Settings, Appearance, dark](user-guide/images/settings-appearance-dark.png)
+
+- **Mode**: System, Light or Dark. It is the same setting as the sun and moon switch at
+  the bottom of the rail; change either and the other follows.
+- **Palette**: four colour schemes, each with a light and a dark variant. *Blue Hour
+  Jungle* is the default; *Moss & Paper* is warmer and easier on the eyes for long
+  reading; *Graphite* is neutral grey with one indigo accent; *Ember* is cream and orange.
+  Each card previews the palette in both modes. A click applies it at once, with nothing
+  to save.
+
+Both choices are kept in this browser, not in the database, so another browser (or
+another port) starts from the defaults. Agent colours are set per agent and look the
+same in every palette.
+
 Scroll down for the MCP bridge.
 
 ![Settings, MCP bridge, light](user-guide/images/settings-mcp-light.png)
@@ -487,7 +505,7 @@ Anything that is not an image is a card with the file's kind, size, and a downlo
 Markdown, text, CSV, JSON, PDF, logs, diffs. Text files are readable by agents; PDFs and
 other binaries are download only. Agents publish their own files this way too, most often
 a Markdown report; in the screenshot above, @researcher's caller list is a shared
-`enqueue-charge-callers.md` rather than a long post.
+`enqueue-paths.md` rather than a long post.
 
 ### The library: one file, many chats
 

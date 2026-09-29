@@ -40,6 +40,22 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page)).toContainText(/finished/);
   });
 
+  test("a question renders a card with its options and the answer resumes the agent", async ({ page }) => {
+    await createChannel(page);
+    await send(page, "Pick a retry key for enqueue_charge, but ask me first.");
+
+    const card = page.locator('section[id^="question-"]').first();
+    await expect(card).toContainText("Should the retry key include the attempt number?");
+    await expect(card).toContainText("Invoice only");
+    await expect(card).toContainText("Invoice + attempt");
+
+    await card.getByLabel("Invoice + attempt").check();
+    await card.locator('[id$="-send"]').click();
+    await expect(card).toBeHidden();
+    await expect(timeline(page)).toContainText("Going with Invoice + attempt.");
+    await expect(timeline(page)).toContainText(/finished/);
+  });
+
   test("/delegate runs the delegate in a child session and wakes the owner with the result", async ({ page }) => {
     await createChannel(page);
     await send(page, "/delegate @researcher list every enqueue path");

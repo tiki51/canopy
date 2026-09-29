@@ -289,7 +289,7 @@ defmodule CanopyWeb.ChannelLive.New do
                 <%= for {group, agents} <- Canopy.Agents.grouped(@agents) do %>
                   <li
                     :if={group}
-                    class="pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/50 sm:col-span-2"
+                    class="pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 sm:col-span-2"
                   >
                     {group}
                   </li>
@@ -341,7 +341,7 @@ defmodule CanopyWeb.ChannelLive.New do
               min="0.01"
               step="0.01"
             />
-            <p class="-mt-1 text-xs text-base-content/50">
+            <p class="-mt-1 text-xs text-base-content/60">
               The total this channel may spend. Once reached, agents here stay quiet until you raise
               it. Only you can change it later.
             </p>

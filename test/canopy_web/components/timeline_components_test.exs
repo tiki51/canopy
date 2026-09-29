@@ -14,6 +14,16 @@ defmodule CanopyWeb.TimelineComponentsTest do
     """)
   end
 
+  test "avatar initials switch to navy where white would fail contrast" do
+    assert TimelineComponents.initial_color("#1e40af") == "white"
+    assert TimelineComponents.initial_color("#7c3aed") == "white"
+    assert TimelineComponents.initial_color("#ca8a04") == "#0B1834"
+    assert TimelineComponents.initial_color("#0891B2") == "#0B1834"
+    # Mid grey fails AA with both; white (4.3:1) still beats navy (4.2:1).
+    assert TimelineComponents.initial_color("#7a7a7a") == "white"
+    assert TimelineComponents.initial_color("not a colour") == "white"
+  end
+
   test "markdown renders lists, code, tables and line breaks" do
     html =
       render_body("""

@@ -93,16 +93,89 @@
   --noise: 0;
 }
 
-/* Rare accents from the palette, for agent identity only (avatars, dots, markers). */
-:root {
-  --color-orchid: #6841C4;
-  --color-gold: #7E5A11;
-  --color-coral: #B34A31;
+/* Palettes. Blue Hour Jungle is the base light/dark theme above; the rest
+   override tokens when <html data-palette="…"> is set (Settings → Appearance,
+   applied by the <head> script in root.html.heex). Selectors need both
+   attributes on one element so the Appearance preview cards can scope a
+   palette locally. Add a palette here and in CanopyWeb.SettingsLive @palettes
+   and the PALETTES list in root.html.heex. */
+
+/* Moss & Paper */
+[data-palette="moss"][data-theme="light"] {
+  --color-base-100: #F4F2EC; --color-base-200: #FCFBF8; --color-base-300: #DAD6CB;
+  --color-base-content: #12160F;
+  --color-primary: #3F6B34;   --color-primary-content: #FFFFFF;
+  --color-secondary: #8A5A2B; --color-secondary-content: #FFFFFF;
+  --color-accent: #6B5B95;    --color-accent-content: #FFFFFF;
+  --color-neutral: #F4F2EC;   --color-neutral-content: #12160F;
+  --color-info: #2F6690;      --color-info-content: #FFFFFF;
+  --color-success: #3F6B34;   --color-success-content: #FFFFFF;
+  --color-warning: #8A6410;   --color-warning-content: #FFFFFF;
+  --color-error: #B23A3A;     --color-error-content: #FFFFFF;
 }
-[data-theme="dark"] {
-  --color-orchid: #A98BEF;
-  --color-gold: #D6A85F;
-  --color-coral: #F28C78;
+[data-palette="moss"][data-theme="dark"] {
+  --color-base-100: #141712; --color-base-200: #1C201A; --color-base-300: #343A30;
+  --color-base-content: #E8E6DD;
+  --color-primary: #9DCB7E;   --color-primary-content: #10180B;
+  --color-secondary: #D9A56B; --color-secondary-content: #1A1006;
+  --color-accent: #B7A6E0;    --color-accent-content: #14102A;
+  --color-neutral: #141712;   --color-neutral-content: #E8E6DD;
+  --color-info: #7FB2D9;      --color-info-content: #0A1620;
+  --color-success: #9DCB7E;   --color-success-content: #10180B;
+  --color-warning: #E0B45A;   --color-warning-content: #1A1200;
+  --color-error: #EE7B72;     --color-error-content: #1A0507;
+}
+
+/* Graphite */
+[data-palette="graphite"][data-theme="light"] {
+  --color-base-100: #F4F5F7; --color-base-200: #FFFFFF; --color-base-300: #DCDFE4;
+  --color-base-content: #16181D;
+  --color-primary: #3B4BD8;   --color-primary-content: #FFFFFF;
+  --color-secondary: #4B5563; --color-secondary-content: #FFFFFF;
+  --color-accent: #8B3FC9;    --color-accent-content: #FFFFFF;
+  --color-neutral: #F4F5F7;   --color-neutral-content: #16181D;
+  --color-info: #1D5FBF;      --color-info-content: #FFFFFF;
+  --color-success: #1E7A45;   --color-success-content: #FFFFFF;
+  --color-warning: #8A5B00;   --color-warning-content: #FFFFFF;
+  --color-error: #C62F3A;     --color-error-content: #FFFFFF;
+}
+[data-palette="graphite"][data-theme="dark"] {
+  --color-base-100: #0F1012; --color-base-200: #18191C; --color-base-300: #34363C;
+  --color-base-content: #ECEDEF;
+  --color-primary: #8C9BFF;   --color-primary-content: #0B0E2A;
+  --color-secondary: #A5ADBA; --color-secondary-content: #111317;
+  --color-accent: #C99BF2;    --color-accent-content: #1A0B2A;
+  --color-neutral: #0F1012;   --color-neutral-content: #ECEDEF;
+  --color-info: #6FA8FF;      --color-info-content: #06101F;
+  --color-success: #5FD08A;   --color-success-content: #06140B;
+  --color-warning: #E8B75A;   --color-warning-content: #1A1200;
+  --color-error: #F2757D;     --color-error-content: #1A0507;
+}
+
+/* Ember */
+[data-palette="ember"][data-theme="light"] {
+  --color-base-100: #FAF6F1; --color-base-200: #FFFFFF; --color-base-300: #E6DDD2;
+  --color-base-content: #1C130C;
+  --color-primary: #B9470B;   --color-primary-content: #FFFFFF;
+  --color-secondary: #1F6F78; --color-secondary-content: #FFFFFF;
+  --color-accent: #8C3F8F;    --color-accent-content: #FFFFFF;
+  --color-neutral: #FAF6F1;   --color-neutral-content: #1C130C;
+  --color-info: #1F6F78;      --color-info-content: #FFFFFF;
+  --color-success: #2F7A3A;   --color-success-content: #FFFFFF;
+  --color-warning: #8A6410;   --color-warning-content: #FFFFFF;
+  --color-error: #B3261E;     --color-error-content: #FFFFFF;
+}
+[data-palette="ember"][data-theme="dark"] {
+  --color-base-100: #17120E; --color-base-200: #211A15; --color-base-300: #3D332B;
+  --color-base-content: #F3ECE4;
+  --color-primary: #FF8A3D;   --color-primary-content: #1F0D02;
+  --color-secondary: #5CC6CF; --color-secondary-content: #04181A;
+  --color-accent: #E39BE6;    --color-accent-content: #220A23;
+  --color-neutral: #17120E;   --color-neutral-content: #F3ECE4;
+  --color-info: #5CC6CF;      --color-info-content: #04181A;
+  --color-success: #6FD08A;   --color-success-content: #06140B;
+  --color-warning: #E9BC5C;   --color-warning-content: #1A1200;
+  --color-error: #F47C6E;     --color-error-content: #1A0507;
 }
 
 /* Add variants based on LiveView classes */
