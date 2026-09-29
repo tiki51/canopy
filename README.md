@@ -101,7 +101,7 @@ tap packages the prebuilt release:
 ```bash
 brew install tiki51/canopy/canopy
 brew services start tiki51/canopy/canopy   # runs in the background, starts at login
-canopy seed                                # the twelve starter agents
+canopy seed                                # the thirteen starter agents
 ```
 
 Open [http://127.0.0.1:4000](http://127.0.0.1:4000). `brew services stop tiki51/canopy/canopy`
@@ -115,16 +115,16 @@ Uninstalling the formula leaves that data in place.
 ```bash
 git clone https://github.com/tiki51/canopy.git && cd canopy
 mix setup                        # deps, database, assets
-mix run priv/repo/seeds.exs      # the twelve starter agents
+mix run priv/repo/seeds.exs      # the thirteen starter agents
 mix phx.server                   # http://localhost:4000
 ```
 
 The seed step creates a starter team: `@backend`, `@reviewer`, `@researcher`, `@test`,
 `@fullstack`, `@frontend`, `@designer`, `@product-manager`, `@project-manager`,
-`@devops`, `@docs`, and `@auditor` (already set as the cost auditor). Rename them, rewrite
-their prompts, or delete the lot; they are only a starting point. Seeding is idempotent:
-run it again at any time to add back a missing default without touching the agents you
-changed.
+`@copywriter`, `@devops`, `@docs`, and `@auditor` (already set as the cost auditor).
+Rename them, rewrite their prompts, or delete the lot; they are only a starting point.
+Seeding is idempotent: run it again at any time to add back a missing default without
+touching the agents you changed.
 
 ### 2. Connect an engine
 
@@ -232,7 +232,7 @@ git -C tmp/demo-repo checkout -- .
   into every prompt for that repository; agents add to it with `notes_write` (append or
   replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
   adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
-- **A starter team of twelve**, created by the seed step, from `@backend` to `@auditor`.
+- **A starter team of thirteen**, created by the seed step, from `@backend` to `@auditor`.
 
 ### Channels, DMs, and who wakes up
 

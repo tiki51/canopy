@@ -13,6 +13,7 @@ defmodule Canopy.SeedsTest do
     assert Enum.map(Agents.list(), & &1.name) == [
              "auditor",
              "backend",
+             "copywriter",
              "designer",
              "devops",
              "docs",

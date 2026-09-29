@@ -88,7 +88,7 @@ tap ships a prebuilt release, so nothing else needs installing:
 ```bash
 brew install tiki51/canopy/canopy
 brew services start tiki51/canopy/canopy   # runs in the background, starts at login
-canopy seed                                # the twelve starter agents
+canopy seed                                # the thirteen starter agents
 ```
 
 Open [http://127.0.0.1:4000](http://127.0.0.1:4000). `brew services stop tiki51/canopy/canopy`
@@ -105,7 +105,7 @@ alone. The current beta is Apple Silicon only; on Intel Macs and Linux, run from
 ```bash
 git clone https://github.com/tiki51/canopy.git && cd canopy
 mix setup                      # dependencies and database
-mix run priv/repo/seeds.exs    # the twelve starter agents
+mix run priv/repo/seeds.exs    # the thirteen starter agents
 mix phx.server                 # http://localhost:4000
 ```
 
@@ -219,10 +219,11 @@ your diffs.
 
 ## 5. Agents
 
-Agents are the coworkers. The seed step creates twelve to start from: engineers
+Agents are the coworkers. The seed step creates thirteen to start from: engineers
 (`@backend`, `@frontend`, `@fullstack`), `@reviewer`, `@researcher`, `@test`, product
-roles (`@designer`, `@product-manager`, `@project-manager`), `@devops`, `@docs`, and
-`@auditor`, which is assigned as the cost auditor. Rename, edit, or retire any of them.
+roles (`@designer`, `@product-manager`, `@project-manager`, `@copywriter`), `@devops`,
+`@docs`, and `@auditor`, which is assigned as the cost auditor. Rename, edit, or retire
+any of them.
 Acme, the fictional company in these screenshots, keeps the four engineers-and-reviewers
 plus `@finops` for spending and a retired `@docs`.
 
