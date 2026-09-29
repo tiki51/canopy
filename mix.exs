@@ -4,7 +4,7 @@ defmodule Canopy.MixProject do
   def project do
     [
       app: :canopy,
-      version: "0.1.0-beta.1",
+      version: "0.1.0-beta.2",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
