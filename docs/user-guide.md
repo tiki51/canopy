@@ -78,27 +78,60 @@ researcher; write `@researcher` if you want the researcher itself to answer.
 
 ## 2. Getting started
 
-You need Elixir 1.20 with Erlang/OTP 28, OpenCode 1.18 or newer with at least one model
-provider configured, and git.
+You need git and at least one execution engine: [Claude Code](https://claude.com/claude-code),
+installed and logged in, or [OpenCode](https://opencode.ai) 1.18 or newer with a model
+provider configured. Then install Canopy one of two ways.
+
+**Homebrew (Apple Silicon Macs).** The [`tiki51/canopy`](https://github.com/tiki51/homebrew-canopy)
+tap ships a prebuilt release, so nothing else needs installing:
 
 ```bash
-mix setup                      # dependencies, database, and twelve starter agents
-opencode serve --port 4096     # in a second terminal, leave it running
+brew install tiki51/canopy/canopy
+brew services start tiki51/canopy/canopy   # runs in the background, starts at login
+canopy seed                                # the twelve starter agents
+```
+
+Open [http://127.0.0.1:4000](http://127.0.0.1:4000). `brew services stop tiki51/canopy/canopy`
+stops the service, `brew services restart tiki51/canopy/canopy` restarts it, and
+`canopy start` runs Canopy in the foreground instead (`Ctrl-C` quits). `canopy seed` is
+idempotent: run it again later to add back a missing default agent without touching the
+ones you changed. Your database, shared files, and the
+generated secret live under `~/Library/Application Support/Canopy`; the service writes its
+log to `$(brew --prefix)/var/log/canopy.log`. Uninstalling the formula leaves that folder
+alone. The current beta is Apple Silicon only; on Intel Macs and Linux, run from source.
+
+**From source.** You need Elixir 1.20 with Erlang/OTP 28.
+
+```bash
+git clone https://github.com/tiki51/canopy.git && cd canopy
+mix setup                      # dependencies and database
+mix run priv/repo/seeds.exs    # the twelve starter agents
 mix phx.server                 # http://localhost:4000
+```
+
+Like `canopy seed`, the seed script only adds what is missing, so it is safe to run again.
+
+If you use OpenCode, start it in a second terminal and leave it running:
+
+```bash
+opencode serve --port 4096
 ```
 
 Then, in the browser:
 
-1. **Settings**: confirm the OpenCode URL and press *Check connection*.
-2. **Install the identity plugin** once (Settings explains where). It stamps the OpenCode
-   session id into every Canopy tool call so Canopy knows which agent is speaking.
-   Restart `opencode serve` afterwards.
+1. **Settings**: for Claude Code, press *Check Claude Code* in its panel. For OpenCode,
+   confirm the URL, press *Check connection*, and **install the identity plugin** once
+   (Settings explains where); it stamps the OpenCode session id into every Canopy tool
+   call so Canopy knows which agent is speaking. Restart `opencode serve` afterwards.
+2. **Agents**: pick each agent's engine. Claude Code agents also take a model, an effort,
+   and a permission mode.
 3. **Repositories**: add a project folder.
 4. **New channel**: pick the repository, the members, and an owner. Post a message. The
    owner wakes up, works, and posts back.
 
 Canopy binds to `127.0.0.1` only. There is no login, so keep it that way unless you are
-on a network you trust: `CANOPY_BIND=0.0.0.0 mix phx.server` opts in for one run.
+on a network you trust: when running from source, `CANOPY_BIND=0.0.0.0 mix phx.server`
+opts in for one run. The Homebrew build always stays on loopback.
 
 ### The layout
 
@@ -186,7 +219,7 @@ your diffs.
 
 ## 5. Agents
 
-Agents are the coworkers. `mix setup` creates twelve to start from: engineers
+Agents are the coworkers. The seed step creates twelve to start from: engineers
 (`@backend`, `@frontend`, `@fullstack`), `@reviewer`, `@researcher`, `@test`, product
 roles (`@designer`, `@product-manager`, `@project-manager`), `@devops`, `@docs`, and
 `@auditor`, which is assigned as the cost auditor. Rename, edit, or retire any of them.
@@ -499,9 +532,10 @@ to prefer a shared file over pasting a long report into a message.
 
 ### Where files live
 
-Files are stored next to the database (`canopy_dev_files/` for the development database)
-and served at `/files/<id>/<name>` with download-safe headers; Settings shows the folder,
-the size limit, and the total. `CANOPY_FILES_DIR` moves the folder.
+Files are stored next to the database (`canopy_dev_files/` for the development database,
+`~/Library/Application Support/Canopy/files/` for the Homebrew install) and served at
+`/files/<id>/<name>` with download-safe headers; Settings shows the folder, the size
+limit, and the total. `CANOPY_FILES_DIR` moves the folder.
 
 ---
 
@@ -811,11 +845,17 @@ All names are prefixed `canopy_` inside OpenCode.
 
 | Variable | Purpose |
 |---|---|
-| `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (dev only, no login) |
-| `CANOPY_DB=path` | Use a different SQLite file |
-| `CANOPY_FILES_DIR=path` | Where shared files are stored (default: next to the database, `canopy_dev_files/`) |
+| `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (source only, no login) |
+| `CANOPY_DB=path` | Use a different SQLite file when running from source |
+| `DATABASE_PATH=path` | The SQLite file for a release or the Homebrew install (default `~/Library/Application Support/Canopy/canopy.db`) |
+| `CANOPY_STATE_DIR=path` | Homebrew only: where the database, shared files, and generated secret live (default `~/Library/Application Support/Canopy`, or `$XDG_DATA_HOME/canopy` when that is set) |
+| `CANOPY_FILES_DIR=path` | Where shared files are stored (default: next to the database, `canopy_dev_files/`, or `files/` in the state directory under Homebrew) |
 | `CANOPY_MAX_UPLOAD_MB=n` | Largest file accepted, default 25 |
 | `PORT` | HTTP port, default 4000 |
+| `CANOPY_URL` | The origin engines use to reach Canopy; the Homebrew wrapper keeps it on loopback |
+
+Under Homebrew, set these in the shell you run `canopy start` from; the background
+service started by `brew services` uses the defaults.
 
 ---
 
@@ -832,6 +872,9 @@ All names are prefixed `canopy_` inside OpenCode.
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
+| `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
+| `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
+| The Agents page is empty | Seeding is a separate step: `canopy seed` (Homebrew) or `mix run priv/repo/seeds.exs` (source); either adds any missing default without overwriting agents you edited |
 
 ### Regenerating the screenshots
 
