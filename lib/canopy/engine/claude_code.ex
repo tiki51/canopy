@@ -103,6 +103,7 @@ defmodule Canopy.Engine.ClaudeCode do
   defp run(path, args, config_dir) do
     env =
       [{"CLAUDECODE", nil}] ++
+        ClaudeCode.Command.release_env() ++
         if(config_dir, do: [{"CLAUDE_CONFIG_DIR", config_dir}], else: []) ++
         Enum.map(config(:env, []), fn {key, value} -> {to_string(key), to_string(value)} end)
 

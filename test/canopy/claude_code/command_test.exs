@@ -89,6 +89,34 @@ defmodule Canopy.ClaudeCode.CommandTest do
     refute Enum.any?(bare, fn {k, _} -> k == ~c"MCP_TOOL_TIMEOUT" end)
   end
 
+  test "release_env drops the release's directories from PATH and unsets its variables" do
+    root = "/opt/homebrew/Cellar/canopy/1.0/libexec"
+
+    env =
+      Command.release_env(%{
+        "RELEASE_ROOT" => root,
+        "RELEASE_NODE" => "canopy",
+        "PATH" => "#{root}/erts-16.4/bin:#{root}/bin:/Users/u/.asdf/shims:/usr/bin",
+        "BINDIR" => "#{root}/erts-16.4/bin",
+        "ROOTDIR" => root,
+        "SECRET_KEY_BASE" => "secret",
+        "PORT" => "4000",
+        "HOME" => "/Users/u"
+      })
+
+    assert {"PATH", "/Users/u/.asdf/shims:/usr/bin"} in env
+
+    for name <- ~w(RELEASE_ROOT RELEASE_NODE BINDIR ROOTDIR SECRET_KEY_BASE PORT) do
+      assert {name, nil} in env
+    end
+
+    refute Enum.any?(env, fn {k, _} -> k == "HOME" end)
+  end
+
+  test "release_env changes nothing outside a release" do
+    assert Command.release_env(%{"PATH" => "/usr/bin", "PORT" => "4000"}) == []
+  end
+
   test "user_message is one stream-json line with a string or content blocks" do
     line = Command.user_message("hello")
     assert String.ends_with?(line, "\n")

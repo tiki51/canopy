@@ -12,6 +12,8 @@ const TURN_DELAY = Number(process.env.FAKE_TURN_DELAY_MS || 50);
 const streams = new Set(); // SSE clients on GET /event
 const sessions = new Map(); // id -> {parentID}
 const pendingPermissions = new Map(); // per_id -> resume fn
+const aborted = new Set(); // session ids aborted mid-turn (long turns stop early)
+let dialogue = 0; // lines spoken in the load-test back-and-forth (site screenshots)
 const pendingQuestions = new Map(); // que_id -> {request, resume}
 let mcp = null; // {url, headers} learned from POST /mcp
 let counter = 0;
@@ -65,12 +67,99 @@ async function mcpCall(name, args) {
   return content;
 }
 
+// ---- story content for the site screenshots (e2e/tests/site-*.spec.ts) ----------
+const ENQUEUE_PATHS_MD = `# Callers of \`enqueue_charge\`
+
+Every code path that can enqueue a charge for an invoice, with the guard it relies on.
+
+| # | Call site | Trigger | Guard before the call |
+|---|---|---|---|
+| 1 | \`acme/billing/retry_worker.py:7\` | cron, every minute | none (re-enqueues every failed job) |
+| 2 | \`acme/billing/webhooks.py:5\` | \`payment_failed\` webhook | none (fires for the retry's own failure too) |
+| 3 | \`acme/admin/replay.py:17\` | support's manual replay tool | operator confirmation only |
+
+## Notes
+
+- 1 and 2 overlap whenever the gateway is slow: the worker pops the job while the
+  failure webhook for the same attempt is still in flight.
+- 3 is rare but has the same race with 1; a replay during the worker's minute can
+  double-charge in the same way.
+- \`invoices.mark_paid\` runs after \`gateway.charge\` returns, so every caller sees
+  \`status == "open"\` until the first charge completes.
+
+Recommendation: one idempotency key per invoice attempt, checked before the gateway
+call, and a \`charging\` status set before the call rather than after.
+`;
+
+// The load-test back-and-forth between @researcher and @test; each line
+// mentions whoever spoke last, so the channel reaches its chatter limit.
+const DIALOGUE = [
+  "I'd start the load test at 50 concurrent checkouts for five minutes against staging. Can you run it and send me the p95?",
+  "50 is under Tuesday's peak of 80. I'd ramp the load test to 100 over two minutes and hold for five. Fine with you?",
+  "Agreed on 100. Let's also run the load test once with the `priceCart` cache on and once with it off, so we see the difference.",
+  "Two load test runs, then. I'll use the seeded carts from `fixtures/carts.json`; the big ones are where priceCart hurts.",
+  "Good. For the load test, report p50, p95 and the pricing service's own latency, per run.",
+  "Will do. I'll post the load test numbers as a table once both runs finish.",
+  "Thanks. I'll draft the cache change while the load test runs.",
+];
+
 // ---- a scripted agent turn -----------------------------------------------------
 async function runTurn(sessionID, text) {
   const messageID = nextId("msg");
   const part = (extra) => ({ id: nextId("prt"), sessionID, messageID, ...extra });
+  // one tool call, pending -> running (for TURN_DELAY, so the live card shows it) -> completed
+  const tool = async (name, input, title, output = "") => {
+    const callID = nextId("call");
+    const toolID = nextId("prt");
+    const base = { id: toolID, sessionID, messageID, type: "tool", callID, tool: name };
+    const start = Date.now();
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "pending", input: {} } } });
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "running", input, time: { start } } } });
+    await sleep(TURN_DELAY);
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "completed", input, title, output, metadata: {}, time: { start, end: Date.now() } } } });
+  };
+  aborted.delete(sessionID);
   emit("session.status", { sessionID, status: { type: "busy" } });
   await sleep(TURN_DELAY);
+
+  // Site story: @researcher traces every caller of enqueue_charge and reports
+  // back with a Markdown file.
+  if (/Delegation ID: dl_/.test(text) && /enqueue_charge/.test(text)) {
+    await tool("grep", { pattern: "enqueue_charge", path: "acme" }, "enqueue_charge");
+    await tool("read", { filePath: "acme/admin/replay.py" }, "acme/admin/replay.py");
+    const shared = await mcpCall("document_share", { canopy_session_id: sessionID, filename: "enqueue-paths.md", content: ENQUEUE_PATHS_MD, caption: "Full caller list with the guard each path relies on" });
+    const id = (shared.match(/\[(doc_\w+)\]/) || [])[1];
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Full caller list attached; the short version is in the task result.", attachments: id });
+    await mcpCall("task_update", { canopy_session_id: sessionID, status: "completed", result: "Three callers: retry_worker.py:7, webhooks.py:5, and admin/replay.py:17 (the manual replay tool support uses)." });
+    return finishTurn(sessionID, messageID, part, "Reported three callers of enqueue_charge.", 0.0009);
+  }
+
+  const inline = text;
+  // Site "Stop all" shot: a long turn that keeps calling tools until aborted.
+  if (/under load|checkout suite/i.test(inline) && /new Canopy message/i.test(text)) {
+    const steps = [
+      ["bash", { command: "k6 run load/checkout.js --vus 100" }, "k6 run load/checkout.js"],
+      ["read", { filePath: "src/checkout/session.ts" }, "src/checkout/session.ts"],
+      ["grep", { pattern: "priceCart" }, "priceCart"],
+      ["bash", { command: "npm test -- checkout" }, "npm test -- checkout"],
+    ];
+    for (let i = 0; i < 60 && !aborted.has(sessionID); i++) {
+      const [name, input, title] = steps[i % steps.length];
+      await tool(name, input, title);
+    }
+    aborted.delete(sessionID);
+    return;
+  }
+
+  // Site chatter shot: two agents talk a load-test plan through between them.
+  const from = (text.match(/new Canopy message in #\S+ from (@\w+)/) || [])[1];
+  if (/load[- ]test/i.test(inline) && /new Canopy message/i.test(text)) {
+    const other = from || "@test";
+    const line = DIALOGUE[dialogue++ % DIALOGUE.length];
+    await tool("read", { filePath: "load/checkout.js" }, "load/checkout.js");
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: `${other}, ${line}` });
+    return finishTurn(sessionID, messageID, part, "Replied about the load test.", 0.0004);
+  }
 
   // one read tool, pending -> running -> completed
   const callID = nextId("call");
@@ -160,14 +249,19 @@ async function runTurn(sessionID, text) {
     }
   }
 
+  void channel;
+  finishTurn(sessionID, messageID, part, reply, 0.0012);
+}
+
+// The final text, the cost, and back to idle.
+function finishTurn(sessionID, messageID, part, reply, cost) {
   const textID = nextId("prt");
   emit("message.part.updated", { sessionID, part: part({ id: textID, type: "text", text: "", time: { start: Date.now() } }) });
   emit("message.part.delta", { sessionID, messageID, partID: textID, field: "text", delta: reply });
   emit("message.part.updated", { sessionID, part: part({ id: textID, type: "text", text: reply, time: { start: Date.now() - 10, end: Date.now() } }) });
-  emit("message.updated", { info: { id: messageID, sessionID, role: "assistant", cost: 0.0012, tokens: { input: 100, output: 20 }, finish: "stop", time: { created: Date.now(), completed: Date.now() } } });
+  emit("message.updated", { info: { id: messageID, sessionID, role: "assistant", cost, tokens: { input: 100, output: 20 }, finish: "stop", time: { created: Date.now(), completed: Date.now() } } });
   emit("session.status", { sessionID, status: { type: "idle" } });
   emit("session.idle", { sessionID });
-  void channel;
 }
 
 // ---- HTTP surface ---------------------------------------------------------------
@@ -217,6 +311,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && p.match(/^\/session\/([^/]+)\/summarize$/)) { await readBody(req); return json(res, 200, true); }
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/abort$/))) {
+      aborted.add(m[1]);
       emit("session.status", { sessionID: m[1], status: { type: "idle" } });
       emit("session.idle", { sessionID: m[1] });
       return json(res, 200, true);

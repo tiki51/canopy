@@ -19,6 +19,11 @@ defmodule Canopy.ClaudeCode.Command do
 
   @base ~w(-p --output-format stream-json --input-format stream-json --verbose --include-partial-messages)
 
+  # Set by a release's start script and the Homebrew wrapper for Canopy itself.
+  # Agents must not inherit them: `PORT` or `SECRET_KEY_BASE` would reach the
+  # project's own commands. `RELEASE_*` variables are unset too.
+  @release_vars ~w(BINDIR ROOTDIR EMU PROGNAME PHX_SERVER SECRET_KEY_BASE DATABASE_PATH PORT)
+
   @doc """
   Options:
 
@@ -68,12 +73,21 @@ defmodule Canopy.ClaudeCode.Command do
     }
   end
 
-  @doc "The environment for the port: nested-run and updater guards, config dir, MCP timeout."
+  @doc """
+  The environment for the port: nested-run and updater guards, release
+  cleanup, config dir, MCP timeout.
+  """
   def env(opts) do
     base = [
       {~c"CLAUDECODE", false},
       {~c"DISABLE_AUTOUPDATER", ~c"1"}
     ]
+
+    release =
+      Enum.map(release_env(), fn
+        {k, nil} -> {String.to_charlist(k), false}
+        {k, v} -> {String.to_charlist(k), String.to_charlist(v)}
+      end)
 
     config_dir =
       case opts[:config_dir] do
@@ -98,7 +112,36 @@ defmodule Canopy.ClaudeCode.Command do
         {String.to_charlist(k), String.to_charlist(to_string(v))}
       end)
 
-    base ++ config_dir ++ timeout ++ extra
+    base ++ release ++ config_dir ++ timeout ++ extra
+  end
+
+  @doc """
+  Undoes a release's own environment for child processes, as
+  `[{"NAME", value | nil}]` where `nil` unsets. The start script puts the
+  bundled ERTS first on `PATH`, which shadows the project's own `erl` and
+  breaks `mix` in the agent's shell, so directories under `RELEASE_ROOT` are
+  dropped from `PATH`. Empty when Canopy is not running as a release.
+  """
+  def release_env(os_env \\ System.get_env()) do
+    case os_env["RELEASE_ROOT"] do
+      root when is_binary(root) and root != "" ->
+        path =
+          os_env
+          |> Map.get("PATH", "")
+          |> String.split(":")
+          |> Enum.reject(&(&1 == root or String.starts_with?(&1, root <> "/")))
+          |> Enum.join(":")
+
+        unset =
+          for {k, _} <- os_env,
+              String.starts_with?(k, "RELEASE_") or k in @release_vars,
+              do: {k, nil}
+
+        [{"PATH", path} | Enum.sort(unset)]
+
+      _ ->
+        []
+    end
   end
 
   @doc """
