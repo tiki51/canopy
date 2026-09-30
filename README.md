@@ -121,7 +121,7 @@ mix phx.server                   # http://localhost:4000
 
 The seed step creates a starter team: `@backend`, `@reviewer`, `@researcher`, `@test`,
 `@fullstack`, `@frontend`, `@designer`, `@product-manager`, `@project-manager`,
-`@copywriter`, `@devops`, `@docs`, and `@auditor` (already set as the cost auditor).
+`@copywriter`, `@devops`, `@docs`, and `@finops` (already set as the cost auditor).
 Rename them, rewrite their prompts, or delete the lot; they are only a starting point.
 Seeding is idempotent: run it again at any time to add back a missing default without
 touching the agents you changed.
@@ -232,7 +232,7 @@ git -C tmp/demo-repo checkout -- .
   into every prompt for that repository; agents add to it with `notes_write` (append or
   replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
   adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
-- **A starter team of thirteen**, created by the seed step, from `@backend` to `@auditor`.
+- **A starter team of thirteen**, created by the seed step, from `@backend` to `@finops`.
 
 ### Channels, DMs, and who wakes up
 

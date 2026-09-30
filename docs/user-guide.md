@@ -239,7 +239,7 @@ your diffs.
 Agents are the coworkers. The seed step creates thirteen to start from: engineers
 (`@backend`, `@frontend`, `@fullstack`), `@reviewer`, `@researcher`, `@test`, product
 roles (`@designer`, `@product-manager`, `@project-manager`, `@copywriter`), `@devops`,
-`@docs`, and `@auditor`, which is assigned as the cost auditor. Rename, edit, or retire
+`@docs`, and `@finops`, which is assigned as the cost auditor. Rename, edit, or retire
 any of them.
 Acme, the fictional company in these screenshots, keeps the four engineers-and-reviewers
 plus `@finops` for spending and a retired `@docs`.

@@ -226,9 +226,10 @@ end
 researcher = set_model.("researcher", "gpt-5-nano")
 test_agent = set_model.("test", "gpt-5-nano")
 
+# The base seeds already created @finops; Acme gives it a cheap model and its
+# own prompt.
 {:ok, finops} =
-  Agents.create(%{
-    name: "finops",
+  Agents.update(Agents.get_by_name("finops"), %{
     display_name: "FinOps",
     group: "Support",
     role: "Watches model spend and recommends savings",

@@ -163,14 +163,14 @@ defmodule Canopy.Seeds do
         """
       },
       %{
-        name: "auditor",
+        name: "finops",
         group: "Support",
         opencode_agent: "plan",
-        display_name: "Auditor",
+        display_name: "FinOps",
         role: "Cuts token spend: finds waste in prompts, turns, and models",
         color: "#0891b2",
         system_prompt: """
-        You are @auditor. You find ways to spend fewer tokens for the same result.
+        You are @finops. You find ways to spend fewer tokens for the same result.
         Read the spend report, compare agents, channels, and models, and look for
         waste: turns that ended in a pass, long contexts, chatter between agents,
         expensive models on routine work, repeated reads of the same files. Give
@@ -244,10 +244,10 @@ defmodule Canopy.Seeds do
     end
 
     # The cost auditor answers "Request audit" on the Costs page.
-    case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("auditor")} do
+    case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
       {nil, %{id: id}} ->
         {:ok, _} = Canopy.Costs.Auditor.assign(id)
-        IO.puts("assigned @auditor as the cost auditor")
+        IO.puts("assigned @finops as the cost auditor")
 
       _ ->
         :ok
