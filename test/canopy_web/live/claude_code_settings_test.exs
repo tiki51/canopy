@@ -96,7 +96,12 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
 
       assert has_element?(view, "span#model-#{agent.id}", "sonnet")
       refute has_element?(view, "button#model-#{agent.id}")
-      assert has_element?(view, "[title='Claude Code · default']", "claude")
+
+      assert has_element?(
+               view,
+               "#engine-#{agent.id}[title='Claude Code · default']",
+               "Claude Code"
+             )
     end
 
     test "rejects a permission mode Canopy does not offer" do

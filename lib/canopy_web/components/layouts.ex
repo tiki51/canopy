@@ -487,6 +487,7 @@ defmodule CanopyWeb.Layouts do
   attr :title, :string, required: true
   attr :description, :string, default: nil
   attr :class, :any, default: nil
+  slot :subtitle, doc: "a description with markup; replaces `description`"
   slot :actions
   slot :inner_block, required: true
 
@@ -496,7 +497,12 @@ defmodule CanopyWeb.Layouts do
       <div class="flex items-start justify-between gap-4 border-b border-base-300 px-5 py-3">
         <div class="min-w-0">
           <h2 class="text-sm font-semibold">{@title}</h2>
-          <p :if={@description} class="mt-0.5 text-xs text-base-content/60">{@description}</p>
+          <p :if={@subtitle != []} class="mt-0.5 text-xs text-base-content/60">
+            {render_slot(@subtitle)}
+          </p>
+          <p :if={@description && @subtitle == []} class="mt-0.5 text-xs text-base-content/60">
+            {@description}
+          </p>
         </div>
         <div :if={@actions != []} class="flex shrink-0 items-center gap-2">
           {render_slot(@actions)}

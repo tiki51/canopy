@@ -3,7 +3,11 @@
 // It also acts as an MCP client: when a prompt looks like a delegation or a
 // handoff wake-up, it calls Canopy's real MCP tools, the way the plugin-stamped
 // agent would, so browser tests exercise the whole loop.
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 
 const PORT = Number(process.env.FAKE_OPENCODE_PORT || 4396);
 // Pause between the steps of a turn; raise it (FAKE_TURN_DELAY_MS=2500) to
@@ -97,14 +101,288 @@ const DIALOGUE = [
   "I'd start the load test at 50 concurrent checkouts for five minutes against staging. Can you run it and send me the p95?",
   "50 is under Tuesday's peak of 80. I'd ramp the load test to 100 over two minutes and hold for five. Fine with you?",
   "Agreed on 100. Let's also run the load test once with the `priceCart` cache on and once with it off, so we see the difference.",
-  "Two load test runs, then. I'll use the seeded carts from `fixtures/carts.json`; the big ones are where priceCart hurts.",
+  "Two load test runs, then. I'll use the seeded carts from `fixtures/carts.json`; the big ones are where `priceCart` hurts.",
   "Good. For the load test, report p50, p95 and the pricing service's own latency, per run.",
   "Will do. I'll post the load test numbers as a table once both runs finish.",
   "Thanks. I'll draft the cache change while the load test runs.",
 ];
 
+// ---- the #payment-retries story (e2e/tests/site-shots.spec.ts, site-video.spec.ts) ----
+// @backend reads the code and delegates the caller list to @researcher, proposes
+// a fix, asks one question, edits behind a permission card, tests, and hands
+// off to @reviewer, who reviews the real diff. Files change in the channel's
+// repository (the `directory` Canopy sends with each prompt), so the Changes
+// modal shows them. Recording mode ("…fix it…" in the first message) skips the
+// proposal, the question and the permission card, and goes straight to building.
+const PAYMENTS_OLD = `    gateway.charge(invoice.customer_id, invoice.amount_cents)
+    invoices.mark_paid(invoice_id)`;
+const PAYMENTS_NEW = `    if not invoices.claim_charge(invoice_id):
+        log.info("charge for %s already in flight", invoice_id)
+        return
+    try:
+        gateway.charge(invoice.customer_id, invoice.amount_cents)
+        invoices.mark_paid(invoice_id)
+    finally:
+        invoices.release_claim(invoice_id)`;
+const TEST_OLD = `    assert paid_invoice.charges == 1`;
+const TEST_NEW = `    assert paid_invoice.charges == 1
+
+
+def test_concurrent_retries_charge_once(open_invoice, slow_gateway):
+    with slow_gateway.hold():
+        payments.enqueue_charge(open_invoice.id)
+        payments.enqueue_charge(open_invoice.id)
+    assert open_invoice.charges == 1`;
+
+const ROOT_CAUSE = `**Root cause.** Two independent retry paths can both call \`enqueue_charge\` for the same invoice, and the only guard is \`invoice.status == "paid"\`, which is set *after* the gateway call returns:
+
+1. \`retry_worker.py:7\` pops failed jobs every minute and re-enqueues them.
+2. \`webhooks.py:5\` re-enqueues on every \`payment_failed\` event, including the retried attempt's own failure event.
+
+When the gateway is slow, both run inside the same window:
+
+\`\`\`python
+if invoice.status == "paid":   # both callers see "open"
+    return
+gateway.charge(...)            # charged twice
+invoices.mark_paid(invoice_id)
+\`\`\`
+
+Before I propose a fix I want the full list of callers, so I've delegated that to the researcher.`;
+
+const PLAN = `Three callers confirmed, including support's manual replay tool, so fixing the callers one by one is fragile. **Proposal:** make \`enqueue_charge\` itself idempotent.
+
+- Add \`invoices.claim_charge(invoice_id)\`: an \`UPDATE … WHERE charge_claimed_at IS NULL\` that returns whether this caller won.
+- Call it before \`gateway.charge\`; losers log and return.
+- Release the claim in a \`finally\`, so a gateway timeout can't leave it stuck.
+
+One migration, ~20 lines in \`payments.py\`, one new test. Shall I go ahead?`;
+
+const doneMessage = (key) => `Done, in the working tree:
+
+- \`enqueue_charge\` claims the invoice with \`invoices.claim_charge\` before calling the gateway, keyed on ${key}.
+- The claim is released in a \`finally\`, so a gateway timeout can't leave it stuck.
+- New test \`test_concurrent_retries_charge_once\`.
+
+\`\`\`text
+$ pytest tests/test_payments.py -q
+15 passed in 2.1s
+\`\`\`
+
+Handing it to review for a second pair of eyes before we open the PR.`;
+
+const APPROVAL = `Reviewed the diff. Approving with two small notes, neither blocking:
+
+1. \`claim_charge\` should also skip invoices in \`void\` status, not just \`paid\`.
+2. The new test holds a real gateway stub; a fake gateway with a latch would be faster and deterministic.
+
+Ready for a PR once Priya is happy.`;
+
+const QUEUE_CHECK =
+  "**09:00 check:** the failed-charge queue is at 63, above the threshold of 50. 58 of them are `card_declined` for a single merchant, each on a different invoice, so these are genuine declines rather than duplicate retries; the claim fix is holding. Worth a word with support about that merchant.";
+
+const story = new Map(); // sessionID -> {mode: "plan" | "build", phase}
+
+/** The unified diff `edit` would make, as OpenCode puts it in a permission request. */
+function unifiedDiff(file, before, after) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-opencode-"));
+  fs.writeFileSync(path.join(dir, "a"), before);
+  fs.writeFileSync(path.join(dir, "b"), after);
+  let diff = "";
+  try {
+    execFileSync("git", ["diff", "--no-index", "--no-color", "a", "b"], { cwd: dir, encoding: "utf8" });
+  } catch (e) {
+    diff = e.stdout; // exit status 1: the files differ
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return diff.replace(/^diff --git .*\n(index .*\n)?/, "").replace(/^--- a$/m, `--- ${file}`).replace(/^\+\+\+ b$/m, `+++ ${file}`);
+}
+
+async function storyTurn(sessionID, text, cwd) {
+  const messageID = nextId("msg");
+  const part = (extra) => ({ id: nextId("prt"), sessionID, messageID, ...extra });
+  const state = story.get(sessionID) || {};
+  story.set(sessionID, state);
+  const abs = (rel) => path.join(cwd, rel);
+
+  // One tool part: pending -> running for `hold` × FAKE_TURN_DELAY_MS (so the live
+  // card shows it) -> completed. `beforeRun` may block (a permission card) and
+  // return false to fail the call.
+  const tool = async (name, input, title, run, { hold = 1, beforeRun } = {}) => {
+    const callID = nextId("call");
+    const base = { id: nextId("prt"), sessionID, messageID, type: "tool", callID, tool: name };
+    const start = Date.now();
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "pending", input: {} } } });
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "running", input, time: { start } } } });
+    if (beforeRun && !(await beforeRun(callID))) {
+      emit("message.part.updated", { sessionID, part: { ...base, state: { status: "error", input, error: "The user rejected permission to use this specific tool call.", time: { start, end: Date.now() } } } });
+      return { denied: true };
+    }
+    const output = run ? await run() : "";
+    await sleep(Math.max(0, TURN_DELAY * hold - (Date.now() - start)));
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "completed", input, title, output, metadata: {}, time: { start, end: Date.now() } } } });
+    return { output };
+  };
+  const read = (rel, hold = 1) => tool("read", { filePath: abs(rel) }, rel, () => fs.readFileSync(abs(rel), "utf8"), { hold });
+  const grep = (pattern, hold = 1) =>
+    tool("grep", { pattern, path: cwd }, pattern, () => {
+      try {
+        return execFileSync("git", ["grep", "-n", pattern], { cwd, encoding: "utf8" });
+      } catch {
+        return "No files found"; // git grep exits 1 on no match
+      }
+    }, { hold });
+  const bash = (command, output, hold = 1) => tool("bash", { command, description: command }, command, () => (typeof output === "function" ? output() : output), { hold });
+  // Canopy's own tools, through the real MCP server, the way the plugin-stamped agent calls them.
+  const canopy = (name, args = {}) =>
+    tool(`canopy_${name}`, args, name, () => mcpCall(name, { canopy_session_id: sessionID, ...args }), { hold: 0.3 });
+  const edit = (rel, oldString, newString, { ask = false, hold = 1 } = {}) => {
+    const before = fs.readFileSync(abs(rel), "utf8");
+    const after = before.replace(oldString, newString);
+    const beforeRun = ask
+      ? (callID) =>
+          new Promise((resume) => {
+            const id = nextId("per");
+            pendingPermissions.set(id, (reply) => resume(reply !== "reject"));
+            emit("permission.asked", { id, sessionID, permission: "edit", patterns: [rel], metadata: { filepath: abs(rel), diff: unifiedDiff(rel, before, after) }, always: ["*"], tool: { messageID, callID } });
+          })
+      : undefined;
+    return tool("edit", { filePath: abs(rel), oldString, newString }, rel, () => (fs.writeFileSync(abs(rel), after), emit("file.edited", { file: abs(rel) }), ""), { hold, beforeRun });
+  };
+  const done = (reply, cost) => finishTurn(sessionID, messageID, part, reply, cost);
+
+  aborted.delete(sessionID);
+  emit("session.status", { sessionID, status: { type: "busy" } });
+  await sleep(TURN_DELAY / 2);
+
+  const from = text.match(/new Canopy message in #\S+ from (\S+)\./)?.[1];
+  const body = text.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
+  let m;
+
+  // @reviewer takes the handoff, reads the real diff and approves.
+  if ((m = text.match(/Handoff ID: (ho_\S+)/))) {
+    const packet = await canopy("handoff_get", { handoff_id: m[1] });
+    await canopy("handoff_accept", { handoff_id: m[1] });
+    if (!/claim_charge/.test(packet.output || "")) {
+      await canopy("message_send", { text: "Took over the task; reading the handoff and the working tree now." });
+      return done("Accepted the handoff.", 0.004);
+    }
+    await bash("git diff", () => execFileSync("git", ["diff"], { cwd, encoding: "utf8" }) || "(no changes)", 1.2);
+    await read("tests/test_payments.py");
+    await canopy("message_send", { text: APPROVAL });
+    return done("Reviewed the diff; approved with two non-blocking notes.", 0.0834);
+  }
+  if (/accepted your handoff/.test(text)) {
+    await canopy("pass", {});
+    return done("Nothing to do: the handoff was accepted.", 0.0011);
+  }
+  if (/A scheduled task of yours is due/.test(text)) {
+    await grep("failed_charges", 0.6);
+    await canopy("message_send", { text: /failed-charge queue/i.test(text) ? QUEUE_CHECK : "Ran the scheduled check: all green." });
+    return done("Posted the 09:00 queue check.", 0.0142);
+  }
+
+  const build = async (key) => {
+    state.phase = "built";
+    await read("acme/billing/payments.py");
+    const edited = await edit("acme/billing/payments.py", PAYMENTS_OLD, PAYMENTS_NEW, { ask: state.mode === "plan" });
+    if (edited.denied) {
+      await canopy("message_send", { text: "Stopped before changing anything: the edit to `payments.py` was not approved. Tell me how you'd like to proceed." });
+      return done("The edit was not approved; nothing changed.", 0.0093);
+    }
+    await edit("tests/test_payments.py", TEST_OLD, TEST_NEW, { hold: 0.6 });
+    await bash("pytest tests/test_payments.py -q", "...............                                                          [100%]\n15 passed in 2.1s", 1.2);
+    await canopy("message_send", { text: doneMessage(key) });
+    await canopy("handoff_task", {
+      to: "reviewer",
+      summary: `Idempotent enqueue_charge via invoices.claim_charge, keyed on ${key}; 15 tests pass.`,
+      reason: "needs a second pair of eyes before the PR",
+      suggested_next_step: "Review the diff, then ask @test for a load test if the claim query looks hot.",
+    });
+    return done("Fix and test in the working tree; handed to @reviewer.", 0.0612);
+  };
+
+  // The researcher's report and the delegation's completion both wake the owner;
+  // whichever arrives first continues the story, the other is a pass.
+  const research = /Your delegated subtask .* was completed/.test(text) || from === "@researcher";
+  if (research && state.phase === "delegated") {
+    if (state.mode === "build") return build("the invoice only");
+    state.phase = "planned";
+    await canopy("message_send", { text: PLAN });
+    await canopy("task_update", { status: "working" });
+    return done("Proposed an idempotent enqueue_charge; waiting for a go-ahead.", 0.0127);
+  }
+  if (/Your delegated subtask/.test(text) || from?.startsWith("@")) {
+    await canopy("pass", {});
+    return done("Nothing to add.", 0.0009);
+  }
+
+  // Priya's first message: read the code, post the root cause, delegate the caller list.
+  if (/charged twice/i.test(body)) {
+    state.mode = /\bfix it\b/i.test(body) ? "build" : "plan";
+    state.phase = "delegated";
+    await read("acme/billing/payments.py");
+    await read("acme/billing/retry_worker.py");
+    await grep("enqueue_charge");
+    // three tools done: the live card holds on "researching" for the ST-2 still
+    await read("acme/billing/webhooks.py", 2.5);
+    await canopy("message_send", { text: ROOT_CAUSE });
+    await canopy("delegate_task", {
+      to: "researcher",
+      task: "List every code path in acme-billing that can call enqueue_charge, with file and line and the guard each one relies on.",
+    });
+    return done("Posted the root cause; the researcher is tracing every caller of enqueue_charge.", 0.0341);
+  }
+
+  // The go-ahead: ask about the claim key (the question card), then build.
+  if (/\bgo ahead\b/i.test(body) && state.phase === "planned") {
+    const id = nextId("que");
+    const request = {
+      id,
+      sessionID,
+      questions: [{
+        question: "Should the claim key include the attempt number?",
+        header: "Claim key",
+        options: [
+          { label: "Invoice only (Recommended)", description: "One claim per invoice: every retry path competes for it, so a charge lands at most once." },
+          { label: "Invoice + attempt", description: "A fresh claim per attempt; the worker has to dedupe retries itself." },
+        ],
+      }],
+      tool: { messageID, callID: nextId("call") },
+    };
+    let answer = [];
+    await tool("question", { questions: request.questions }, "Asked 1 question", async () => {
+      answer = await new Promise((resume) => {
+        pendingQuestions.set(id, { request, resume });
+        emit("question.asked", request);
+      });
+      return JSON.stringify(answer);
+    }, { hold: 0.2 });
+    return build(/attempt/i.test(answer.flat().join(" ")) ? "the invoice and the attempt number" : "the invoice only");
+  }
+
+  // "every weekday at 09:00, <instruction>" → a cron schedule.
+  if ((m = body.match(/every (weekday|day) at (\d{1,2}):(\d{2}),?\s*(.*)$/is))) {
+    const [, days, hh, mm, rest] = m;
+    const cron = `${Number(mm)} ${Number(hh)} * * ${days.toLowerCase() === "weekday" ? "1-5" : "*"}`;
+    const what = (rest.charAt(0).toUpperCase() + rest.slice(1)).trim().replace(/\.?$/, ".");
+    await canopy("schedule_create", { when: cron, what });
+    const clock = `${hh.padStart(2, "0")}:${mm}`;
+    // not "09:00 check": site-shots waits for that text from the scheduled run itself
+    await canopy("message_send", { text: `Scheduled: every ${days.toLowerCase()} at ${clock}. I'll ${rest.replace(/\.$/, "").replace(/post here if/, "post here only if")}.` });
+    return done(`Scheduled the weekday queue check for ${clock}.`, 0.0088);
+  }
+
+  await read("README.md");
+  await canopy("message_send", { text: "Acknowledged: looking into it now." });
+  return done("Replied.", 0.004);
+}
+
 // ---- a scripted agent turn -----------------------------------------------------
-async function runTurn(sessionID, text) {
+async function runTurn(sessionID, text, cwd) {
+  // The site story's owner and reviewer; @researcher's delegation below is part of it too.
+  if (/ #payment-retries[.\s]/.test(text) && cwd && !/Delegation ID: dl_/.test(text)) return storyTurn(sessionID, text, cwd);
+
   const messageID = nextId("msg");
   const part = (extra) => ({ id: nextId("prt"), sessionID, messageID, ...extra });
   // one tool call, pending -> running (for TURN_DELAY, so the live card shows it) -> completed
@@ -157,7 +435,7 @@ async function runTurn(sessionID, text) {
     const other = from || "@test";
     const line = DIALOGUE[dialogue++ % DIALOGUE.length];
     await tool("read", { filePath: "load/checkout.js" }, "load/checkout.js");
-    await mcpCall("message_send", { canopy_session_id: sessionID, text: `${other}, ${line}` });
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: `${other} ${line}` });
     return finishTurn(sessionID, messageID, part, "Replied about the load test.", 0.0004);
   }
 
@@ -271,7 +549,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && (p === "/global/health" || p === "/api/health")) return json(res, 200, { healthy: true, version: "fake-1.0" });
     if (req.method === "GET" && p === "/config/providers")
-      return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } } } }], default: { opencode: "gpt-5-nano" } });
+      return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } }, "claude-sonnet-5": { cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } }, "claude-opus-5-5": { cost: { input: 5, output: 25, cache: { read: 0.5, write: 6.25 } } } } }], default: { opencode: "gpt-5-nano" } });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
     if (req.method === "GET" && p === "/mcp") return json(res, 200, mcp ? { canopy: { status: "connected" } } : {});
     if (req.method === "POST" && p === "/instance/dispose") { mcp = null; mcpSession = null; return json(res, 200, true); }
@@ -306,7 +584,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const text = (body.parts || []).map((x) => x.text || "").join("\n");
       res.writeHead(204); res.end();
-      runTurn(m[1], text).catch((e) => console.error("[fake-opencode] turn failed", e));
+      runTurn(m[1], text, url.searchParams.get("directory")).catch((e) => console.error("[fake-opencode] turn failed", e));
       return;
     }
     if (req.method === "POST" && p.match(/^\/session\/([^/]+)\/summarize$/)) { await readBody(req); return json(res, 200, true); }
@@ -321,7 +599,7 @@ const server = http.createServer(async (req, res) => {
       const resume = pendingPermissions.get(m[1]);
       pendingPermissions.delete(m[1]);
       emit("permission.replied", { sessionID: "", requestID: m[1], reply: body.reply });
-      if (resume) resume();
+      if (resume) resume(body.reply);
       return json(res, 200, true);
     }
     if (req.method === "POST" && (m = p.match(/^\/question\/([^/]+)\/(reply|reject)$/))) {

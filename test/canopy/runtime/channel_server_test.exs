@@ -277,7 +277,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:chatter, :stopped}, 1_000
 
     assert_receive {:timeline,
-                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "stopped"}}},
                    2_000
 
     assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: note}}},
@@ -285,8 +285,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     assert note =~ "Stopped all agent activity: 1 turn aborted, 1 queued wake dropped"
 
-    assert %{status: "error", last_error: "stopped by the user"} =
-             AgentSessions.get!(ctx.session.id)
+    # the user's stop is not an error: the session is idle, with nothing to report
+    assert %{status: "idle", last_error: nil} = AgentSessions.get!(ctx.session.id)
 
     assert Runtime.stopped?(ctx.channel.id)
     assert Runtime.paused?(ctx.channel.id)
@@ -1072,6 +1072,32 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert {:ok, true} = Runtime.abort(ctx.channel.id, ctx.agent.id)
     assert {:error, :no_session} = ChannelServer.abort(ctx.pid, "agt_nobody")
     assert Runtime.telemetry(ctx.channel.id, "agt_nobody") == []
+  end
+
+  test "an agent's turn aborted by the user closes as stopped, not as an error", ctx do
+    test_pid = self()
+
+    stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+      send(test_pid, {:prompted, sid, body})
+      {:ok, ""}
+    end)
+
+    sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^sid, _}, 2_000
+
+    expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
+    assert {:ok, true} = Runtime.abort(ctx.channel.id, ctx.agent.id)
+
+    # OpenCode reports the abort as an error
+    emit(sid, :agent_error, %{error: %{"data" => %{"message" => "Aborted"}}})
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"outcome" => "stopped"}}},
+                   2_000
+
+    refute_received {:timeline, %{event_type: "agent_error"}}
+    assert %{status: "idle", last_error: nil} = AgentSessions.get!(ctx.session.id)
   end
 
   test "MCP registration is added when missing, and once per boot even when OpenCode still has one" do

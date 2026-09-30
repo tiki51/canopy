@@ -3,12 +3,19 @@ import { defineConfig } from "@playwright/test";
 const canopyPort = Number(process.env.CANOPY_E2E_PORT || 4100);
 const fakePort = Number(process.env.FAKE_OPENCODE_PORT || 4396);
 
-// The site captures (tests/site-*.spec.ts) move the server's clock to
-// mid-morning so the timestamps in the screenshots read like a workday. The
-// spec's own process shares the zone, which it uses to restamp "tomorrow 09:00".
+// The site captures (tests/site-*.spec.ts) move the server's clock so it
+// reads 10:40 now; site-shots then waits for 10:42:00 before the story's first
+// post, so the story's timestamps come out the same on every run. The offset
+// is whole minutes, as a POSIX TZ (Erlang honours it; Node's ICU doesn't), so
+// the spec gets it again as SITE_UTC_OFFSET_MIN for its own local-time maths.
 if ((process.env.SITE === "1" || process.env.SITE_VIDEO === "1") && !process.env.TZ) {
-  const shift = ((10 - new Date().getUTCHours() + 36) % 24) - 12;
-  process.env.TZ = `Etc/GMT${shift >= 0 ? "-" : "+"}${Math.abs(shift)}`;
+  const now = new Date();
+  const offset = ((10 * 60 + 40 - (now.getUTCHours() * 60 + now.getUTCMinutes()) + 2160) % 1440) - 720;
+  const abs = Math.abs(offset);
+  const hm = `${Math.floor(abs / 60)}:${String(abs % 60).padStart(2, "0")}`;
+  // POSIX signs run west-positive: UTC+01:30 is "<+0130>-1:30".
+  process.env.TZ = `<${offset >= 0 ? "+" : "-"}${hm.replace(":", "").padStart(4, "0")}>${offset >= 0 ? "-" : "+"}${hm}`;
+  process.env.SITE_UTC_OFFSET_MIN = String(offset);
 }
 
 export default defineConfig({

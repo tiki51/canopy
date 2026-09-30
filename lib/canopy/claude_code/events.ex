@@ -249,7 +249,7 @@ defmodule Canopy.ClaudeCode.Events do
     do: present(input["description"]) || present(input["command"]) || "Bash"
 
   def title(tool, %{"file_path" => path}, cwd) when tool in @file_tools and is_binary(path),
-    do: relative(path, cwd)
+    do: "#{tool} #{relative(path, cwd)}"
 
   def title(tool, %{"pattern" => pattern}, _cwd)
       when tool in ~w(Grep Glob) and is_binary(pattern), do: "#{tool} #{pattern}"

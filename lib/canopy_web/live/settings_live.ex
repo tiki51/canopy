@@ -336,8 +336,11 @@ defmodule CanopyWeb.SettingsLive do
         <Layouts.panel
           id="claude-panel"
           title="Claude Code"
-          description="Agents on the Claude Code engine run `claude -p` per turn on this machine, with its own login."
         >
+          <:subtitle>
+            Agents on the Claude Code engine run <code>claude -p</code>
+            on this machine, one process per turn, using your Claude login.
+          </:subtitle>
           <.form
             for={@claude_form}
             id="claude-form"

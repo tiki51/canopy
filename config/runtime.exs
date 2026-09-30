@@ -39,11 +39,13 @@ if mb = System.get_env("CANOPY_MAX_UPLOAD_MB") do
 end
 
 if config_env() == :dev do
-  # Reload browser tabs when matching files change.
-  config :canopy, CanopyWeb.Endpoint,
-    live_reload: [
-      web_console_logger: true,
-      patterns: [
+  # Reload browser tabs when matching files change. CANOPY_LIVE_RELOAD=0 turns
+  # it off: the e2e suite sets it, so an edit elsewhere in the checkout can't
+  # reload the page under a running test.
+  patterns =
+    if System.get_env("CANOPY_LIVE_RELOAD") == "0",
+      do: [],
+      else: [
         # Static assets, except user uploads
         ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
         # Gettext translations
@@ -52,7 +54,8 @@ if config_env() == :dev do
         ~r"lib/canopy_web/router\.ex$"E,
         ~r"lib/canopy_web/(controllers|live|components)/.*\.(ex|heex)$"E
       ]
-    ]
+
+  config :canopy, CanopyWeb.Endpoint, live_reload: [web_console_logger: true, patterns: patterns]
 end
 
 if config_env() == :prod do

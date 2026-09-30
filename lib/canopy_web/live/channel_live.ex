@@ -1037,7 +1037,7 @@ defmodule CanopyWeb.ChannelLive do
             Scheduled
           </span>
           <span class="text-xs text-base-content/60">
-            Agents schedule with canopy_schedule_create; ask one to set a reminder or a repeat.
+            Ask an agent to set a reminder or a repeat.
           </span>
         </div>
         <.schedule_list id="channel-schedules" schedules={@schedules} scope={:channel} />
@@ -1085,6 +1085,7 @@ defmodule CanopyWeb.ChannelLive do
             event={event}
             names={@names}
             user_name={@user.display_name}
+            root={repo_root(@channel)}
             replies={thread_replies(@threads, event)}
             thread_open={thread_open?(@open_threads, event)}
             channels={@channel_links}
@@ -1096,6 +1097,7 @@ defmodule CanopyWeb.ChannelLive do
           agent_id={agent_id}
           name={Map.get(@names, agent_id, "agent")}
           card={card}
+          root={repo_root(@channel)}
         />
 
         <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
@@ -1153,6 +1155,9 @@ defmodule CanopyWeb.ChannelLive do
   attr :editing_budget?, :boolean, default: false
   attr :spent, :float, default: 0.0
 
+  defp repo_root(%{repository: %{path: path}}), do: path
+  defp repo_root(_channel), do: nil
+
   defp channel_header(assigns) do
     ~H"""
     <header
@@ -1161,7 +1166,10 @@ defmodule CanopyWeb.ChannelLive do
     >
       <div class="flex min-w-0 items-center gap-2 sm:gap-3">
         <Layouts.menu_button />
-        <h1 id="channel-name" class="flex items-baseline gap-1 truncate text-base font-semibold">
+        <h1
+          id="channel-name"
+          class="flex min-w-0 items-baseline gap-1 overflow-hidden whitespace-nowrap text-base font-semibold sm:shrink-0"
+        >
           <%= if Channels.dm?(@channel) do %>
             {Channels.dm_label(@channel)}
             <span
@@ -1176,7 +1184,7 @@ defmodule CanopyWeb.ChannelLive do
         </h1>
         <p
           :if={@channel.topic && !Channels.dm?(@channel)}
-          class="truncate text-sm text-base-content/60"
+          class="min-w-0 truncate text-sm text-base-content/60"
           id="channel-topic"
         >
           {@channel.topic}
@@ -1976,11 +1984,12 @@ defmodule CanopyWeb.ChannelLive do
           <div class="border-b border-base-300 px-4 py-3 font-mono text-xs text-base-content/70">
             {@changes.selected || "Select a file to see its diff"}
           </div>
-          <pre
+          <.diff_view
             :if={@changes.diff}
             id="file-diff"
-            class="flex-1 overflow-auto px-4 py-3 font-mono text-xs leading-relaxed"
-          ><code>{@changes.diff}</code></pre>
+            diff={@changes.diff}
+            class="flex-1 py-3"
+          />
         </div>
       </div>
     </div>

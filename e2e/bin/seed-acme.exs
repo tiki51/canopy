@@ -10,7 +10,7 @@
 # With SITE=1 or SITE_VIDEO=1 (the site capture specs) it leaves out today's
 # #payment-retries conversation, the fix in the working tree, and the billing
 # hold: those specs create the channel in the browser and play the story live
-# against the fake engines (e2e/fake-claude, e2e/fake-opencode.mjs).
+# against the fake OpenCode (e2e/fake-opencode.mjs).
 # ACME_DIR moves the two repositories (default: tmp/).
 
 import Ecto.Query
@@ -204,19 +204,24 @@ set_claude = fn name, attrs ->
   agent
 end
 
-backend =
-  set_claude.("backend", %{
-    model_id: "sonnet",
-    effort: "medium",
-    allowed_tools: "Read\nGrep\nGlob\nBash(pytest:*)\nBash(git diff:*)"
-  })
-
-reviewer =
-  set_claude.("reviewer", %{
-    model_id: "opus",
-    effort: "high",
-    allowed_tools: "Read\nGrep\nGlob\nBash(git diff:*)"
-  })
+# The site specs play the #payment-retries story live: @backend's and
+# @reviewer's turns on the fake Claude Code (e2e/fake-claude). SITE_ENGINE=opencode
+# moves those two to the fake OpenCode instead (e2e/fake-opencode.mjs scripts them too).
+{backend, reviewer} =
+  if site? and System.get_env("SITE_ENGINE") == "opencode" do
+    {set_model.("backend", "claude-sonnet-5"), set_model.("reviewer", "claude-opus-5-5")}
+  else
+    {set_claude.("backend", %{
+       model_id: "sonnet",
+       effort: "medium",
+       allowed_tools: "Read\nGrep\nGlob\nBash(pytest:*)\nBash(git diff:*)"
+     }),
+     set_claude.("reviewer", %{
+       model_id: "opus",
+       effort: "high",
+       allowed_tools: "Read\nGrep\nGlob\nBash(git diff:*)"
+     })}
+  end
 
 researcher = set_model.("researcher", "gpt-5-nano")
 test_agent = set_model.("test", "gpt-5-nano")
@@ -270,8 +275,8 @@ model_of = fn
 end
 
 price = fn
-  "opus" -> {5.0, 25.0, 0.5}
-  "sonnet" -> {3.0, 15.0, 0.3}
+  model when model in ["opus", "claude-opus-5-5"] -> {5.0, 25.0, 0.5}
+  model when model in ["sonnet", "claude-sonnet-5"] -> {3.0, 15.0, 0.3}
   _ -> {0.05, 0.4, 0.005}
 end
 

@@ -10,7 +10,7 @@
 // OpenCode (e2e/fake-opencode.mjs), so every card, line and diff is the app's
 // own rendering of a real turn. playwright.config.ts moves the server's clock
 // to mid-morning so the timestamps read like a workday.
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Locator, Page } from "@playwright/test";
 import {
   around,
   bottom,
@@ -23,6 +23,8 @@ import {
   shot,
   sidebarChannel,
   sql,
+  waitUntilLocal,
+  wanted,
 } from "./site-helpers";
 
 const enabled = process.env.SITE === "1" && process.env.CANOPY_SEED !== undefined;
@@ -30,6 +32,42 @@ const timeline = (page: Page) => page.locator("#timeline");
 const full = { x: 0, y: 0, width: 1440, height: 900 };
 // The channel pane: everything right of the sidebar.
 const pane = { x: 312, y: 0, width: 1128, height: 900 };
+// A window that leaves the channel pane 720px wide, for docs crops whose text should wrap.
+const narrow = { width: 1032, height: 900 };
+const wide = { width: 1440, height: 900 };
+
+/** Runs `capture` at the 1440 window (for crops that predate the narrow story), then goes back. */
+async function atWide(page: Page, target: Locator, capture: () => Promise<void>) {
+  await page.setViewportSize(wide);
+  await target.scrollIntoViewIfNeeded();
+  await park(page);
+  await capture();
+  await page.setViewportSize(narrow);
+}
+
+/** A card with 20px of background either side and 8px above and below, so no neighbour shows. */
+async function cardCrop(target: Locator) {
+  const clip = await around(target, 20);
+  const box = (await target.boundingBox())!;
+  const y = Math.floor(box.y - 8);
+  return { ...clip, y, height: Math.ceil(box.y + box.height + 8) - y };
+}
+
+/** The channel pane from 16px above `first` to the bottom of `last`. */
+async function fromTo(page: Page, first: Locator, last: Locator) {
+  // The timeline may still be scrolling after a resize: wait until the anchor stops moving.
+  let top = (await first.boundingBox())!;
+  for (let i = 0; i < 30; i++) {
+    await page.waitForTimeout(100);
+    const next = (await first.boundingBox())!;
+    if (next.y === top.y) break;
+    top = next;
+  }
+  const end = (await last.boundingBox())!;
+  const y = Math.max(0, Math.floor(top.y - 16));
+  const width = page.viewportSize()!.width - pane.x;
+  return { x: pane.x, y, width, height: Math.ceil(end.y + end.height) - y };
+}
 
 const agentId = (page: Page, name: string) =>
   page
@@ -46,48 +84,75 @@ test.describe("stills for canopy_site", () => {
     test.setTimeout(900_000);
     await prepare(page);
 
-    // -- D-1: Settings → Claude Code, after a successful check ------------------------
-    await page.goto("/settings");
-    await page.locator("#check-claude").click();
-    await expect(page.locator("#claude-check-result")).toContainText(/logged in/i);
-    await park(page);
-    const claudePanel = page.locator("#claude-panel");
-    await shot(page, "settings-claude-code", () => around(claudePanel, 24));
+    if (wanted("settings-claude-code")) {
+      // -- D-1: Settings → Claude Code, after a successful check ------------------------
+      await page.goto("/settings");
+      await page.locator("#check-claude").click();
+      await expect(page.locator("#claude-check-result")).toContainText(/logged in/i);
+      // The fake binary lives in this checkout (e2e/fake-claude); show where an install puts it.
+      await page.locator("#claude-check-result code").evaluate((el) => (el.textContent = "/Users/priya/.local/bin/claude"));
+      await park(page);
+      const claudePanel = page.locator("#claude-panel");
+      await shot(page, "settings-claude-code", () => around(claudePanel, 24));
+    }
 
-    // -- F-5: a mixed team on the Agents page -----------------------------------------
-    await page.goto("/agents");
-    const roster = page.locator("section", { has: page.locator("#active-agents") }).first();
-    await expect(roster).toContainText("sonnet");
-    await park(page);
-    await shot(page, "agents-mixed-engines", () => around(roster, 24));
+    if (wanted("agents-mixed-engines", "agents-bento")) {
+      // -- F-5: a mixed team on the Agents page -----------------------------------------
+      await page.goto("/agents");
+      const roster = page.locator("section", { has: page.locator("#active-agents") }).first();
+      await expect(roster).toContainText("sonnet");
+      await park(page);
+      await shot(page, "agents-mixed-engines", () => around(roster, 24));
+      // Homepage bento tile: Researcher (OpenCode) over Reviewer (Claude Code) with the next
+      // row bleeding off the bottom, from an 880px panel so Engine sits beside Role.
+      await page.locator("#agents-panel").evaluate((el: HTMLElement) => (el.style.width = "880px"));
+      await shot(page, "agents-bento", async () => {
+        const researcher = page.locator('#active-agents li[id^="agent-"]', { hasText: "@researcher" });
+        const row = (await researcher.boundingBox())!;
+        const name = (await researcher.getByText("Researcher", { exact: true }).boundingBox())!;
+        const engine = (await researcher.locator('[id^="engine-"]').boundingBox())!;
+        const x = Math.floor(row.x - 12);
+        const y = Math.floor(name.y - 4);
+        return { x, y, width: Math.ceil(engine.x + engine.width) - x, height: 190 };
+      });
+      await page.locator("#agents-panel").evaluate((el: HTMLElement) => el.style.removeProperty("width"));
+    }
 
-    // -- F-1: @backend's memory -------------------------------------------------------
-    await page.locator('#active-agents a[href^="/agents/"]', { hasText: "backend" }).first().click();
-    const memory = page.locator("section", { has: page.locator("#agent-memory") }).first();
-    await expect(memory).toContainText("idempotent per invoice");
-    await park(page);
-    await shot(page, "memory-panel", () => around(memory, 24));
+    if (wanted("memory-panel", "agent-edit-claude")) {
+      // -- F-1: @backend's memory -------------------------------------------------------
+      await page.locator('#active-agents a[href^="/agents/"]', { hasText: "backend" }).first().click();
+      const memory = page.locator("section", { has: page.locator("#agent-memory") }).first();
+      await expect(memory).toContainText("idempotent per invoice");
+      await park(page);
+      await shot(page, "memory-panel", () => around(memory, 24));
 
-    // -- D-2: the agent form on Claude Code ---------------------------------------------
-    await page.locator('[id^="edit-agent-"]').click();
-    const form = page.locator("#agent-form");
-    await expect(form).toBeVisible();
-    // From the Engine field to the permissions help text: the Claude Code part of the form.
-    const engine = page.locator("#agent-engine-select");
-    await expect(engine).toHaveValue("claude_code");
-    await engine.evaluate((el) => el.scrollIntoView({ block: "center" }));
-    // Show every allowed tool rather than a scrolled box.
-    await form.locator("textarea[name='agent[allowed_tools]']").evaluate((el: HTMLTextAreaElement) => {
-      el.style.height = `${el.scrollHeight + 4}px`;
-    });
-    await park(page);
-    await shot(page, "agent-edit-claude", async () => {
-      const card = (await form.boundingBox())!;
-      const top = (await page.locator('label[for="agent-engine-select"], label:has(#agent-engine-select)').first().boundingBox())!;
-      const help = (await form.getByText(/Model aliases/).first().boundingBox())!;
-      const y = top.y - 24;
-      return { x: card.x - 24, y, width: card.width + 48, height: help.y + help.height + 16 - y };
-    });
+      // -- D-2: the agent form on Claude Code ---------------------------------------------
+      await page.locator('[id^="edit-agent-"]').click();
+      const form = page.locator("#agent-form");
+      await expect(form).toBeVisible();
+      // From the Engine field to the permissions help text: the Claude Code part of the form,
+      // cropped around its panel so the card edge shows.
+      const panel = page.locator("#agent-form-panel");
+      const engine = page.locator("#agent-engine-select");
+      await expect(engine).toHaveValue("claude_code");
+      await engine.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await park(page);
+      await shot(page, "agent-edit-claude", async () => {
+        // Show every allowed tool rather than a scrolled box (re-applied after each theme switch).
+        await form.locator("textarea[name='agent[allowed_tools]']").evaluate((el: HTMLTextAreaElement) => {
+          el.style.setProperty("height", `${el.scrollHeight + 4}px`, "important");
+          el.style.setProperty("max-height", "none", "important");
+        });
+        // Down to the whole Save button plus 16px, so the crop doesn't cut through it.
+        const save = form.getByRole("button", { name: /Save/ }).first();
+        await panel.getByText(/Model aliases/).first().evaluate((el) => el.scrollIntoView({ block: "center" }));
+        const card = (await panel.boundingBox())!;
+        const top = (await page.locator('label[for="agent-engine-select"], label:has(#agent-engine-select)').first().boundingBox())!;
+        const button = (await save.boundingBox())!;
+        const y = top.y - 24;
+        return { x: card.x - 24, y, width: card.width + 48, height: button.y + button.height + 16 - y };
+      });
+    }
 
     // -- F-7: the new-channel form with a spend limit -----------------------------------
     await page.goto("/channels/new");
@@ -99,8 +164,11 @@ test.describe("stills for canopy_site", () => {
     const owner = page.getByLabel("Initial owner");
     const backendValue = await owner.locator("option", { hasText: "backend" }).first().getAttribute("value");
     await owner.selectOption(backendValue!);
-    await page.getByLabel(/Spend limit/).fill("5");
-    await page.getByLabel(/Spend limit/).blur();
+    const limit = page.getByLabel(/Spend limit/);
+    await limit.fill("5");
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    // The re-render after validation shows the cast float (5.0); show what was typed.
+    await limit.evaluate((el: HTMLInputElement) => (el.value = "5"));
     await park(page);
     const channelForm = page.locator("section, form", { has: page.getByLabel(/Spend limit/) }).first();
     await shot(page, "new-channel-budget", () => around(channelForm, 24));
@@ -113,9 +181,15 @@ test.describe("stills for canopy_site", () => {
     const reviewer = await agentId(page, "reviewer");
 
     // -- ST-1: Priya posts the task with the retry log; @backend wakes -------------------
+    // The story frames are taken in the narrow window: the homepage shows the 720px pane
+    // at about 1:1, so the text stays legible and nothing clips at the right edge.
+    await page.setViewportSize(narrow);
     await page.locator("#composer-library").click();
     await page.locator('#library-documents button', { hasText: "support-ticket-4821.png" }).click();
-    await page.locator("#close-library").click().catch(() => {});
+    // Picking a file closes the library; without a timeout this click would wait out the test.
+    await page.locator("#close-library").click({ timeout: 1_000 }).catch(() => {});
+    // Priya posts at 10:42:00 on every run (playwright.config.ts starts the clock at 10:40).
+    await waitUntilLocal(page, 10, 42);
     await send(
       page,
       "Support has three reports this week of an invoice charged twice, always after a failed webhook. Here is the retry log from ticket #4821. Read `payments.py` and `retry_worker.py` and post a root-cause summary. Don't change any files yet.",
@@ -124,8 +198,10 @@ test.describe("stills for canopy_site", () => {
     await expect(card).toBeVisible({ timeout: 30_000 });
     const image = page.locator('[id^="attachment-"][data-kind="image"] img').first();
     await image.evaluate((el: HTMLImageElement) => el.complete || new Promise((r) => (el.onload = r)));
+    // The composer refocuses after a send; its focus ring shouldn't be in the frame.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await park(page);
-    await shot(page, "first-message", full);
+    await shot(page, "first-message");
 
     // -- ST-2: the live card, three tools in, researching --------------------------------
     await page.locator(`#telemetry-toggle-${backend}`).click();
@@ -133,7 +209,7 @@ test.describe("stills for canopy_site", () => {
     await expect(card).toContainText("is researching");
     await card.scrollIntoViewIfNeeded();
     await park(page);
-    await shot(page, "story-02-working", full);
+    await shot(page, "story-02-working");
 
     // -- ST-3: delegated to @researcher, who reports back with a Markdown file ------------
     await expect(timeline(page)).toContainText("Shall I go ahead?", { timeout: 120_000 });
@@ -142,7 +218,7 @@ test.describe("stills for canopy_site", () => {
     await report.scrollIntoViewIfNeeded();
     await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = el.scrollTop + 160));
     await park(page);
-    await shot(page, "story-03-delegate", full);
+    await shot(page, "story-03-delegate");
 
     // -- F-2: @backend asks a question before building ------------------------------------
     await bottom(page);
@@ -151,7 +227,7 @@ test.describe("stills for canopy_site", () => {
     await expect(question).toContainText("attempt number", { timeout: 60_000 });
     await question.scrollIntoViewIfNeeded();
     await park(page);
-    await shot(page, "question-card", () => around(question, 20));
+    await atWide(page, question, () => shot(page, "question-card", () => cardCrop(question)));
     await question.getByLabel("Invoice only (Recommended)").check();
     await question.locator('[id$="-send"]').click();
     await expect(question).toBeHidden({ timeout: 30_000 });
@@ -161,33 +237,37 @@ test.describe("stills for canopy_site", () => {
     await expect(perm).toContainText("claim_charge", { timeout: 60_000 });
     await perm.scrollIntoViewIfNeeded();
     await park(page);
-    await shot(page, "story-04-permission", full);
-    await shot(page, "story-04-permission-card", () => around(perm, 20));
+    await shot(page, "story-04-permission");
+    await atWide(page, perm, () => shot(page, "story-04-permission-card", () => cardCrop(perm)));
     await page.locator('[id^="permission-"][id$="-always"]').first().click();
     await expect(perm).toBeHidden({ timeout: 30_000 });
 
-    // -- ST-5: the handoff to @reviewer, with the Task panel open --------------------------
+    // -- ST-5: the handoff to @reviewer: the owner badge and the three handoff lines ----------
     await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 120_000 });
     await expect(timeline(page)).toContainText(/accepted/i);
-    await page.locator("#edit-task").click();
-    await expect(page.locator("#task-panel")).toBeVisible();
     await bottom(page);
     await park(page);
-    await shot(page, "story-05-handoff", full);
-    await page.locator("#edit-task").click();
+    await shot(page, "story-05-handoff");
 
     // -- ST-6: the review, the receipt, and the diff -------------------------------------
     await expect(timeline(page)).toContainText("Approving with two small notes", { timeout: 120_000 });
     await expect(page.locator(`#telemetry-${reviewer}`)).toBeHidden({ timeout: 60_000 });
     await page.locator("#toggle-activity").click();
-    const lastTurn = page.locator('#timeline details[id^="turn-"]').last();
+    // @reviewer's review; @backend's pass on the handoff-accepted note comes after it.
+    const lastTurn = page.locator('#timeline details[id^="turn-"]', { hasText: /reviewer.*finished/ }).last();
     await expect(lastTurn).toContainText(/finished/);
     await lastTurn.locator("summary").click();
     await lastTurn.scrollIntoViewIfNeeded();
     await park(page);
+    // From 16px above the "ownership moved" line (never under the channel header) to 16px
+    // below the receipt, above whatever turn starts next.
+    const moved = timeline(page).locator('[id^="line-"]', { hasText: "ownership moved" }).last();
     await shot(page, "story-06-receipt", async () => {
+      const header = (await page.locator("#channel-header").boundingBox())!;
+      const top = (await moved.boundingBox())!;
       const box = (await lastTurn.boundingBox())!;
-      return { x: pane.x, y: Math.max(56, box.y - 260), width: pane.width, height: Math.min(900 - Math.max(56, box.y - 260), box.height + 300) };
+      const y = Math.ceil(Math.max(header.y + header.height + 1, top.y - 16));
+      return { x: pane.x, y, width: narrow.width - pane.x, height: Math.min(900, Math.ceil(box.y + box.height + 16)) - y };
     });
     await page.locator("#toggle-activity").click();
 
@@ -196,9 +276,22 @@ test.describe("stills for canopy_site", () => {
     await page.locator('[id^="changed-file-"]', { hasText: "payments.py" }).first().click();
     await expect(page.locator("#file-diff")).toContainText("claim_charge");
     await park(page);
+    // The homepage's step 06 frame, narrow like the rest of the story; the modal crop below is wide.
+    await shot(page, "story-06-changes-full");
+    await page.setViewportSize(wide);
+    await park(page);
     const modal = page.locator("#changes-modal .modal-box, #changes-modal [role=dialog], #changes-modal > div").first();
-    await shot(page, "story-06-changes", () => around(modal, 0));
-    await shot(page, "story-06-changes-full", full);
+    // The modal from its top to 24px below the last diff line: the empty lower part is left out.
+    await shot(page, "story-06-changes", async () => {
+      const box = (await modal.boundingBox())!;
+      const end = await page.locator("#file-diff").evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return range.getBoundingClientRect().bottom;
+      });
+      const y = Math.floor(box.y);
+      return { x: Math.floor(box.x), y, width: Math.ceil(box.width), height: Math.min(Math.ceil(box.height), Math.ceil(end + 24) - y) };
+    });
     await page.locator("#close-changes").click();
 
     // -- F-6: a weekday schedule -----------------------------------------------------------
@@ -230,18 +323,57 @@ test.describe("stills for canopy_site", () => {
     await park(page);
     await shot(page, "closed-laptop-record", full);
 
-    // -- F-3: an agent at work and one waiting, then Stop all --------------------------------------------
+    // -- F-4: agents talk among themselves until the chatter limit holds them -------------
+    // Runs before F-3: the chatter pushes the seeded history (which has an errored turn)
+    // out of the Stop all frame.
     await sidebarChannel(page, "checkout-latency").click();
     await expect(timeline(page)).toContainText("priceCart");
-    await send(page, "@researcher profile `createSession` under load, and @test run the checkout suite against staging while it does.");
     const researcher = await agentId(page, "researcher");
     const tester = await agentId(page, "test");
+    await send(page, "@researcher agree a load-test plan with @test, then post it here.");
+    await expect(page.locator("#paused-bar")).toContainText("Paused after", { timeout: 180_000 });
+    await expect(page.locator(`#telemetry-${researcher}`)).toBeHidden({ timeout: 30_000 });
+    await expect(page.locator(`#telemetry-${tester}`)).toBeHidden({ timeout: 30_000 });
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await bottom(page);
+    await park(page);
+    // From Priya's prompt down: the back-and-forth, the hold line and the Continue bar.
+    const prompt = timeline(page).locator('[id^="message-"]', { hasText: "agree a load-test plan" }).last();
+    await shot(page, "chatter-hold", async () => {
+      const box = (await prompt.boundingBox())!;
+      const y = Math.max(0, Math.floor(box.y - 16));
+      return { x: pane.x, y, width: pane.width, height: 900 - y };
+    });
+    // The docs crop: a 720px pane so the messages wrap, from the last three agent
+    // messages to the bottom of the Continue bar (no composer).
+    await page.setViewportSize(narrow);
+    await bottom(page);
+    const third = timeline(page).locator('[id^="message-"]', { hasText: "Two load test runs" }).last();
+    await shot(page, "chatter-hold-docs", () => fromTo(page, third.locator(":scope > div").first(), page.locator("#paused-bar")));
+    await page.setViewportSize(wide);
+    await bottom(page);
+
+    // -- F-3: an agent at work and one waiting, then Stop all --------------------------------------------
+    await send(page, "@researcher profile `createSession` under load, and @test run the checkout suite against staging while it does.");
     // One turn runs per channel at a time: @researcher works while @test waits its turn.
     await expect(page.locator(`#telemetry-${researcher}`)).toContainText("tools", { timeout: 30_000 });
     await expect(page.locator('main [data-status="queued"]').first()).toBeVisible({ timeout: 30_000 });
+    // Open the live card so the frame shows what @researcher is doing.
+    const toggle = page.locator(`#telemetry-toggle-${researcher}`);
+    if (await toggle.isVisible()) await toggle.click();
+    await expect(page.locator(`#telemetry-${researcher}`)).toContainText(/\d+ tools/);
     await bottom(page);
     await page.locator("#stop-all").hover();
     await shot(page, "stop-all", pane);
+    // The docs detail: the right end of the header, from the spend button (or the member
+    // pills, whichever starts further left) to the edge, so Stop is the focal point.
+    await shot(page, "stop-all-toolbar", async () => {
+      const header = (await page.locator("#channel-header").boundingBox())!;
+      const budget = (await page.locator("#edit-budget").boundingBox())!;
+      const members = (await page.locator("#members").boundingBox())!;
+      const x = Math.floor(Math.min(budget.x, members.x) - 16);
+      return { x, y: header.y, width: 1440 - x, height: header.height };
+    });
     await page.locator("#stop-all").click();
     await expect(page.locator("#paused-bar")).toContainText("Stopped", { timeout: 30_000 });
     await expect(page.locator(`#telemetry-${researcher}`)).toBeHidden({ timeout: 30_000 });
@@ -250,14 +382,10 @@ test.describe("stills for canopy_site", () => {
     await bottom(page);
     await park(page);
     await shot(page, "stop-all-after", pane);
-
-    // -- F-4: agents talk among themselves until the chatter limit holds them -------------
-    await send(page, "@researcher agree a load-test plan with @test, then post it here.");
-    await expect(page.locator("#paused-bar")).toContainText("Paused after", { timeout: 180_000 });
-    await expect(page.locator(`#telemetry-${researcher}`)).toBeHidden({ timeout: 30_000 });
-    await expect(page.locator(`#telemetry-${tester}`)).toBeHidden({ timeout: 30_000 });
+    // The docs detail: the Stop all notice and the Stopped… Continue bar, in a 720px pane.
+    await page.setViewportSize(narrow);
     await bottom(page);
-    await park(page);
-    await shot(page, "chatter-hold", pane);
+    const notice = timeline(page).locator('[id^="message-"]', { hasText: "Stopped all agent activity" }).last();
+    await shot(page, "stop-all-after-docs", () => fromTo(page, notice, page.locator("#paused-bar")));
   });
 });

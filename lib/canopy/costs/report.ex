@@ -94,6 +94,7 @@ defmodule Canopy.Costs.Report do
 
   defp turn_flags(%{passed: true}), do: ", passed (no reply)"
   defp turn_flags(%{outcome: "error"}), do: ", ended in error"
+  defp turn_flags(%{outcome: "stopped"}), do: ", stopped by the user"
   defp turn_flags(_), do: ""
 
   defp budgets([]),

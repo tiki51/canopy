@@ -92,4 +92,211 @@ defmodule CanopyWeb.TimelineComponentsTest do
   test "a nil body renders nothing" do
     assert render_body(nil) =~ ~s(class="message-body break-words"></div>)
   end
+
+  test "a turn the user stopped reads as stopped, not as an error" do
+    turn = fn outcome ->
+      TimelineComponents.event_text(
+        %{
+          event_type: "agent_turn_completed",
+          agent_id: "agt_1",
+          payload: %{"outcome" => outcome}
+        },
+        %{"agt_1" => "backend"},
+        "Priya"
+      )
+    end
+
+    assert turn.("stopped") =~ "was stopped by Priya"
+    refute turn.("stopped") =~ "error"
+    assert turn.("error") =~ "stopped with an error"
+  end
+
+  test "question events read as sentences, not raw event names" do
+    text = fn type, payload ->
+      TimelineComponents.event_text(
+        %{event_type: type, agent_id: "agt_1", payload: payload},
+        %{"agt_1" => "backend"},
+        "Priya"
+      )
+    end
+
+    assert text.("question_requested", %{"headers" => ["Claim key"]}) ==
+             "@backend asked a question"
+
+    assert text.("question_resolved", %{"status" => "answered", "by" => "user"}) ==
+             "Priya answered @backend's question"
+
+    assert text.("question_resolved", %{"status" => "answered"}) == "question answered"
+
+    assert text.("question_resolved", %{"status" => "rejected", "by" => "user"}) ==
+             "Priya dismissed @backend's question"
+  end
+
+  test "paths inside the repository read relative to its root" do
+    root = "/Users/me/tmp/acme-billing"
+
+    assert TimelineComponents.relative_paths("#{root}/acme/billing/payments.py", root) ==
+             "acme/billing/payments.py"
+
+    assert TimelineComponents.relative_paths("cd #{root} && pytest #{root}/tests", root <> "/") ==
+             "pytest tests"
+
+    assert TimelineComponents.relative_paths(~s(cd "#{root}" && mix test), root) == "mix test"
+
+    assert TimelineComponents.relative_paths("cd #{root}/acme && pytest", root) ==
+             "cd acme && pytest"
+
+    assert TimelineComponents.relative_paths("ls #{root}", root) == "ls ."
+
+    assert TimelineComponents.relative_paths("/Users/me/tmp/acme-billing-2/x.py", root) ==
+             "/Users/me/tmp/acme-billing-2/x.py"
+
+    assert TimelineComponents.relative_paths("#{root}/a.py", nil) == "#{root}/a.py"
+  end
+
+  test "the activity list hides step rows and drops a detail that repeats the title" do
+    root = "/Users/me/tmp/acme-billing"
+
+    event = %{
+      id: "evt_1",
+      event_type: "agent_turn_completed",
+      agent_id: "agt_1",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      payload: %{
+        "outcome" => "ok",
+        "activity" => [
+          %{
+            "key" => "t1",
+            "kind" => "tool",
+            "label" => "Read acme/billing/payments.py",
+            "detail" => "#{root}/acme/billing/payments.py"
+          },
+          %{
+            "key" => "file-#{root}/acme/billing/payments.py",
+            "kind" => "file",
+            "label" => "payments.py",
+            "detail" => "#{root}/acme/billing/payments.py"
+          },
+          %{
+            "key" => "step-1",
+            "kind" => "step",
+            "label" => "step tool_use",
+            "detail" => "218 tokens"
+          },
+          %{
+            "key" => "t2",
+            "kind" => "tool",
+            "label" => "Run tests",
+            "detail" => "pytest #{root}/tests"
+          }
+        ]
+      }
+    }
+
+    assigns = %{event: event, root: root}
+
+    html =
+      rendered_to_string(~H"""
+      <TimelineComponents.timeline_item
+        id="e1"
+        event={@event}
+        names={%{"agt_1" => "backend"}}
+        user_name="Priya"
+        root={@root}
+      />
+      """)
+
+    assert html =~ "Read acme/billing/payments.py"
+    assert html =~ ~s(<span class="text-base-content">acme/billing/payments.py</span>)
+    refute html =~ "/Users/me"
+    refute html =~ "— acme/billing/payments.py"
+    refute html =~ ">payments.py<"
+    assert html =~ "— pytest tests"
+    refute html =~ "step tool_use"
+    refute html =~ "218 tokens"
+  end
+
+  test "a detail the row doesn't need is dropped" do
+    redundant? = &TimelineComponents.redundant_detail?/2
+
+    assert redundant?.("Grep enqueue_charge", "enqueue_charge")
+    assert redundant?.("Read acme/billing/payments.py", "acme/billing/payments.py")
+    assert redundant?.("pytest -q", "pytest -q")
+    assert redundant?.("canopy handoff_get", "ho_01M3P6W96MG9ABCDEFGHJKMNPQ")
+    assert redundant?.("canopy message_send", "Reviewed the diff. Approving.")
+    assert redundant?.("canopy_thread_reply", "Done.")
+
+    refute redundant?.("Run tests", "pytest tests")
+    refute redundant?.("Run the tests", "test")
+    refute redundant?.("acme/billing/payments.py", "payments.py")
+    refute redundant?.("canopy messages_search", "claim key")
+    refute redundant?.("canopy handoff_get", nil)
+  end
+
+  test "a row labelled with a file's name shows its path instead" do
+    assert TimelineComponents.path_label("payments.py", "acme/billing/payments.py") ==
+             {"acme/billing/payments.py", nil}
+
+    assert TimelineComponents.path_label("Run tests", "pytest tests") ==
+             {"Run tests", "pytest tests"}
+
+    assert TimelineComponents.path_label("s.py", "acme/billing/payments.py") ==
+             {"s.py", "acme/billing/payments.py"}
+
+    assert TimelineComponents.path_label("", "acme/") == {"", "acme/"}
+    assert TimelineComponents.path_label("patch", nil) == {"patch", nil}
+  end
+
+  test "the receipt leaves the closing note out of its activity list" do
+    note = "Reviewed the diff. Approving with two small notes."
+
+    event = %{
+      id: "evt_2",
+      event_type: "agent_turn_completed",
+      agent_id: "agt_1",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      payload: %{
+        "outcome" => "ok",
+        "final_text" => note,
+        "activity" => [
+          %{"key" => "text-1", "kind" => "text", "label" => "Reading the diff first."},
+          %{"key" => "t1", "kind" => "tool", "label" => "canopy message_send", "detail" => note},
+          %{"key" => "text-2", "kind" => "text", "label" => note},
+          %{"key" => "step-1", "kind" => "step", "label" => "step end_turn"}
+        ]
+      }
+    }
+
+    assigns = %{event: event}
+
+    html =
+      rendered_to_string(~H"""
+      <TimelineComponents.timeline_item
+        id="e2"
+        event={@event}
+        names={%{"agt_1" => "backend"}}
+        user_name="Priya"
+      />
+      """)
+
+    assert html =~ "Reading the diff first."
+    assert html =~ "canopy message_send"
+    refute html =~ ~s(id="turn-evt_2-text-2")
+    refute html =~ "— #{note}"
+    assert html =~ "Closing note"
+  end
+
+  test "diffs tint added and removed lines" do
+    assigns = %{diff: "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n same\n"}
+
+    html =
+      rendered_to_string(~H"""
+      <TimelineComponents.diff_view id="d" diff={@diff} />
+      """)
+
+    assert html =~ ~s(data-diff="add"><span class="text-success">+</span>new</span>)
+    assert html =~ ~s(data-diff="del"><span class="text-error">-</span>old</span>)
+    assert html =~ ~s(class="block px-4 bg-success/10")
+    assert html =~ ~s(class="block px-4 bg-error/10")
+  end
 end

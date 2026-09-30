@@ -37,42 +37,61 @@ defmodule Canopy.Runtime.Activity do
 
   @spec fold(Event.t(), card) :: card
   def fold(%Event{type: :tool_started, data: data}, card) do
-    put_entry(card, %{
-      key: data[:call_id] || data[:part_id] || unique_key(),
-      kind: :tool,
+    key = data[:call_id] || data[:part_id] || unique_key()
+    started = Enum.find(card.entries, %{}, &(&1.key == key))
+
+    card
+    |> count_call(started)
+    |> put_entry(%{
+      key: key,
+      kind: Map.get(started, :kind, :tool),
       status: :running,
       label: present(data[:title]) || present(data[:tool]) || "tool",
       detail: short_input(data[:input]),
       tool: present(data[:tool]),
-      command: command_of(data[:input])
+      command: command_of(data[:input]),
+      path: edited_path(data[:tool], data[:input]) || Map.get(started, :path)
     })
   end
 
   def fold(%Event{type: :tool_completed, data: data}, card) do
+    key = data[:call_id] || data[:part_id] || unique_key()
+    started = Enum.find(card.entries, %{}, &(&1.key == key))
+
     entry = %{
-      key: data[:call_id] || data[:part_id] || unique_key(),
-      kind: :tool,
+      key: key,
+      kind: Map.get(started, :kind, :tool),
       status: if(data[:status] == :error, do: :error, else: :ok),
       label: present(data[:title]) || present(data[:tool]) || "tool",
       detail: present(data[:error]) || short_input(data[:input]),
       tool: present(data[:tool]),
-      command: command_of(data[:input])
+      command: command_of(data[:input]),
+      path: edited_path(data[:tool], data[:input]) || Map.get(started, :path)
     }
 
-    card = put_entry(card, entry)
-    %{card | tool_count: card.tool_count + 1}
+    card |> count_call(started) |> put_entry(entry)
   end
 
+  # A change to the file an edit call just wrote marks that call's row instead
+  # of adding a second one (`Edit a.py`, then `a.py — a.py`); a change nothing
+  # on the card explains gets its own row.
   def fold(%Event{type: :file_changed, data: %{path: path}}, card) do
-    put_entry(card, %{
-      key: "file-" <> path,
-      kind: :file,
-      status: :ok,
-      label: Path.basename(path),
-      detail: path,
-      tool: nil,
-      command: nil
-    })
+    case card.entries |> Enum.reverse() |> Enum.find(&(Map.get(&1, :path) == path)) do
+      %{key: key} ->
+        entries = Enum.map(card.entries, &if(&1.key == key, do: %{&1 | kind: :file}, else: &1))
+        %{card | entries: entries}
+
+      nil ->
+        put_entry(card, %{
+          key: "file-" <> path,
+          kind: :file,
+          status: :ok,
+          label: Path.basename(path),
+          detail: path,
+          tool: nil,
+          command: nil
+        })
+    end
   end
 
   # OpenCode sends the same step-finish part more than once; the part id keeps
@@ -173,12 +192,15 @@ defmodule Canopy.Runtime.Activity do
   @doc """
   The card without a closing text entry. A turn's final text is posted as the
   agent's reply, or kept on the turn card as its recap, so on the finished
-  card it would show twice.
+  card it would show twice. Step rows after it (the model call that wrote it)
+  don't count as coming after it.
   """
   @spec drop_trailing_text(card) :: card
   def drop_trailing_text(%{entries: entries} = card) do
-    case List.last(entries) do
-      %{kind: :text} -> %{card | entries: Enum.drop(entries, -1)}
+    {steps, rest} = entries |> Enum.reverse() |> Enum.split_while(&(&1.kind == :step))
+
+    case rest do
+      [%{kind: :text} | earlier] -> %{card | entries: Enum.reverse(earlier, Enum.reverse(steps))}
       _ -> card
     end
   end
@@ -261,6 +283,17 @@ defmodule Canopy.Runtime.Activity do
         command
       )
 
+  # The file an edit call writes, so a file change can mark that call's row
+  # (which keeps the mark, and the path, through the call's later updates).
+  @edit_tools ~w(edit write multiedit notebookedit)
+
+  defp edited_path(tool, input) when is_binary(tool) and is_map(input) do
+    if String.downcase(tool) in @edit_tools,
+      do: Enum.find(Map.take(input, ~w(file_path filePath)) |> Map.values(), &is_binary/1)
+  end
+
+  defp edited_path(_tool, _input), do: nil
+
   defp command_of(%{"command" => c}) when is_binary(c), do: String.slice(c, 0, 200)
   defp command_of(%{command: c}) when is_binary(c), do: String.slice(c, 0, 200)
   defp command_of(_), do: nil
@@ -306,6 +339,13 @@ defmodule Canopy.Runtime.Activity do
 
   defp atom_in(_, _, default), do: default
 
+  # A call counts from its first event, so the header matches the rows while
+  # one is still running; its later updates don't count again.
+  defp count_call(card, started) when map_size(started) == 0,
+    do: %{card | tool_count: card.tool_count + 1}
+
+  defp count_call(card, _started), do: card
+
   defp put_entry(card, %{key: key} = entry) do
     entries =
       if Enum.any?(card.entries, &(&1.key == key)),
@@ -326,7 +366,7 @@ defmodule Canopy.Runtime.Activity do
 
   defp short_input(input) when is_map(input) do
     value =
-      Enum.find_value(~w(filePath path command pattern description query url), fn key ->
+      Enum.find_value(~w(filePath file_path path command pattern description query url), fn key ->
         case Map.get(input, key) do
           v when is_binary(v) and v != "" -> v
           _ -> nil
@@ -337,7 +377,9 @@ defmodule Canopy.Runtime.Activity do
           _ -> nil
         end
 
-    value && truncate(value, 80)
+    # Long enough to keep a whole absolute path, so the view can still make it
+    # repository-relative; the row itself clips with CSS.
+    value && truncate(value, 240)
   end
 
   defp short_input(_), do: nil

@@ -101,6 +101,49 @@ defmodule Canopy.Runtime.ActivityTest do
              |> Activity.drop_trailing_text()
              |> Activity.to_payload()
              |> Activity.from_payload()
+
+    # the step that wrote the closing text doesn't shield it
+    with_step =
+      Activity.fold(ev(:step_completed, %{part_id: "s1", reason: "end_turn"}), card)
+
+    assert [%{kind: :text}, %{kind: :tool}, %{kind: :step}] =
+             Activity.drop_trailing_text(with_step).entries
+  end
+
+  test "a file change marks the edit call that made it instead of adding a row" do
+    path = "/r/acme/billing/payments.py"
+    input = %{"file_path" => path}
+
+    running =
+      Activity.fold_all([
+        ev(:tool_started, %{call_id: "c1", tool: "Read", title: "Read a", input: input}),
+        ev(:tool_completed, %{call_id: "c1", tool: "Read", title: "Read a", status: :ok}),
+        ev(:tool_started, %{call_id: "c2", tool: "Edit", title: "Edit a", input: input}),
+        # OpenCode can report the file before the call finishes, without its input
+        ev(:file_changed, %{path: path})
+      ])
+
+    # the running call counts, so the header matches the rows
+    assert running.tool_count == 2
+
+    card =
+      Enum.reduce(
+        [
+          ev(:tool_completed, %{call_id: "c2", tool: "Edit", title: "Edit a", status: :ok}),
+          ev(:file_changed, %{path: path}),
+          ev(:file_changed, %{path: "/r/notes.txt"})
+        ],
+        running,
+        &Activity.fold/2
+      )
+
+    assert [
+             %{key: "c1", kind: :tool, label: "Read a"},
+             %{key: "c2", kind: :file, status: :ok, label: "Edit a"},
+             %{kind: :file, label: "notes.txt", detail: "/r/notes.txt"}
+           ] = card.entries
+
+    assert card.tool_count == 2
   end
 
   test "payload round-trip keeps entries and normalises unknown values" do

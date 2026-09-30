@@ -23,8 +23,8 @@ defmodule Canopy.ClaudeCode.EventsTest do
     assert started == [
              {"Bash", "Check git status"},
              {"Glob", "Glob calc.py"},
-             {"Read", "calc.py"},
-             {"Edit", "calc.py"},
+             {"Read", "Read calc.py"},
+             {"Edit", "Edit calc.py"},
              {"ToolSearch", "ToolSearch"},
              {"mcp__spike__echo", "mcp__spike__echo"},
              {"AskUserQuestion", "AskUserQuestion"}

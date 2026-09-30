@@ -277,9 +277,19 @@ defmodule Canopy.Runtime.ChannelServer do
       nil ->
         {:reply, {:error, :no_session}, state}
 
+      # The engine reports the abort later, as an error (OpenCode) or a clean
+      # finish (Claude Code); the mark makes either close the turn as stopped.
       session ->
         {mod, es, state} = engine_of(state, session)
-        {:reply, mod.abort(ctx(state), es, session), state}
+
+        case mod.abort(ctx(state), es, session) do
+          {:ok, _} = ok ->
+            {:reply, ok,
+             update_turn(state, session.engine_session_id, &Map.put(&1, :stopped?, true))}
+
+          error ->
+            {:reply, error, state}
+        end
     end
   end
 
@@ -312,7 +322,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
     state =
       Enum.reduce(turns, state, fn {sid, turn}, acc ->
-        abort_turn(acc, sid, turn, "stopped by the user")
+        abort_turn(acc, sid, turn, :stopped)
       end)
 
     aborted = map_size(turns)
@@ -587,12 +597,13 @@ defmodule Canopy.Runtime.ChannelServer do
         "Ended #{agent_name}'s turn: #{reason}. Mention the agent again to retry."
       )
 
-    abort_turn(state, sid, turn, reason)
+    abort_turn(state, sid, turn, {:error, reason})
   end
 
-  # Tells the engine to abort the turn and closes it here with the reason as
-  # its error, without waiting for the engine's report.
-  defp abort_turn(state, sid, turn, reason) do
+  # Tells the engine to abort the turn and closes it here with `outcome`
+  # (`:stopped` for the user's stop, `{:error, reason}` otherwise), without
+  # waiting for the engine's report.
+  defp abort_turn(state, sid, turn, outcome) do
     {mod, es, state} = engine_of(state, turn.session)
 
     case mod.abort(ctx(state), es, turn.session) do
@@ -602,7 +613,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
     case Map.get(state.index, sid) do
       nil -> %{state | turns: Map.delete(state.turns, sid)}
-      who -> state |> clear_stale_prompts(sid) |> finish_turn(sid, who, {:error, reason})
+      who -> state |> clear_stale_prompts(sid) |> finish_turn(sid, who, outcome)
     end
   end
 
@@ -1340,7 +1351,17 @@ defmodule Canopy.Runtime.ChannelServer do
        do: state
 
   defp handle_execution(%{type: :agent_error, data: %{error: error}} = event, who, state) do
-    reason = error_message(error)
+    if Map.get(state.turns[event.session_id], :stopped?) do
+      # the engine's report of an abort the user asked for is not an error
+      finish_turn(state, event.session_id, who, :stopped)
+    else
+      record_agent_error(state, event, who, error_message(error))
+    end
+  end
+
+  defp handle_execution(_event, _who, state), do: state
+
+  defp record_agent_error(state, event, who, reason) do
     if Canopy.Hold.billing_error?(reason), do: Canopy.Hold.engage(reason)
 
     {:ok, _} =
@@ -1354,8 +1375,6 @@ defmodule Canopy.Runtime.ChannelServer do
     finish_turn(state, event.session_id, who, {:error, reason})
   end
 
-  defp handle_execution(_event, _who, state), do: state
-
   defp finish_turn(state, sid, who, outcome) do
     case Map.pop(state.turns, sid) do
       {nil, _} ->
@@ -1363,13 +1382,16 @@ defmodule Canopy.Runtime.ChannelServer do
 
       {turn, turns} ->
         state = %{state | turns: turns}
+        # the user's Abort, however the engine reported it
+        outcome = if Map.get(turn, :stopped?), do: :stopped, else: outcome
         # reload: the struct captured at prompt time still says "idle", so a
         # changeset built from it would see no change
         session = AgentSessions.get!(turn.session.id)
 
         {:ok, _} =
           case outcome do
-            :ok -> AgentSessions.set_status(session, "idle")
+            # the user stopped it: nothing went wrong, the session is idle
+            ok when ok in [:ok, :stopped] -> AgentSessions.set_status(session, "idle")
             {:error, reason} -> AgentSessions.set_status(session, "error", reason)
           end
 
@@ -1394,7 +1416,7 @@ defmodule Canopy.Runtime.ChannelServer do
               "files" => MapSet.to_list(turn.files),
               "cost" => turn.cost,
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
-              "outcome" => if(outcome == :ok, do: "ok", else: "error"),
+              "outcome" => outcome_label(outcome),
               "model" => turn_model(who.agent_id),
               "delegation_id" => who.delegation_id,
               "activity" => activity,
@@ -1415,7 +1437,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
         broadcast(
           state,
-          {:agent_status, who.agent_id, if(outcome == :ok, do: :idle, else: :error)}
+          {:agent_status, who.agent_id, if(match?({:error, _}, outcome), do: :error, else: :idle)}
         )
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
@@ -1436,6 +1458,10 @@ defmodule Canopy.Runtime.ChannelServer do
         end
     end
   end
+
+  defp outcome_label(:ok), do: "ok"
+  defp outcome_label(:stopped), do: "stopped"
+  defp outcome_label({:error, _}), do: "error"
 
   # The DM now works in another repository. Once nothing is in flight, forget
   # every session (they belong to the old directory), reload the channel, and
@@ -1668,7 +1694,7 @@ defmodule Canopy.Runtime.ChannelServer do
   defp resolve_if_pending(request, _reply), do: {:ok, request}
 
   defp resolve_question_if_pending(%{status: "pending"} = request, outcome),
-    do: QuestionRequests.resolve(request, outcome)
+    do: QuestionRequests.resolve(request, outcome, by: "user")
 
   defp resolve_question_if_pending(request, _outcome), do: {:ok, request}
 

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Boots Canopy for the Playwright suite on its own SQLite database and port,
-# pointed at the fake OpenCode server. Invoked by playwright.config.ts.
+# pointed at the fake OpenCode server, with the fake Claude Code
+# (e2e/fake-claude/claude) first on PATH. Invoked by playwright.config.ts.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+export PATH="$PWD/e2e/fake-claude:$PATH"
+# Run from inside Canopy (an agent's shell) this would be the real library;
+# e2e documents belong next to the e2e database.
+unset CANOPY_FILES_DIR
 export MIX_ENV=dev
+# Other work in this checkout must not reload the page under a running test.
+export CANOPY_LIVE_RELOAD=0
 export PORT="${CANOPY_E2E_PORT:-4100}"
 export CANOPY_DB="${CANOPY_DB:-$PWD/canopy_e2e.db}"
 export PHX_SERVER=true

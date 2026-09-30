@@ -74,6 +74,19 @@ defmodule CanopyWeb.AgentsLiveTest do
       assert has_element?(view, "#active-agents #agent-#{sleepy.id}")
       assert has_element?(view, "#sidebar-agent-#{sleepy.id}")
     end
+
+    test "the engine column names each agent's engine, and the OpenCode agent beside it", %{
+      conn: conn
+    } do
+      oc = Fixtures.agent_fixture(%{name: "oc", opencode_agent: "build"})
+      cc = Fixtures.agent_fixture(%{name: "cc", engine: "claude_code"})
+
+      {:ok, view, html} = live(conn, ~p"/agents")
+
+      refute html =~ "OpenCode agent"
+      assert view |> element("#engine-#{oc.id}") |> render() =~ ~r/OpenCode<span[^>]*> · build/
+      assert has_element?(view, "#engine-#{cc.id}", "Claude Code")
+    end
   end
 
   describe "the agent page" do

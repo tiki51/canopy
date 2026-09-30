@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The e2e stand-in for the `claude` binary: bin/server.sh puts this directory
+# first on PATH, so Canopy's default binary name ("claude") resolves here.
+exec "${NODE:-node}" "$(dirname "$0")/claude.mjs" "$@"

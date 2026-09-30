@@ -630,7 +630,7 @@ defmodule CanopyWeb.AgentsLive do
     ~H"""
     <Layouts.page
       title="Agents"
-      subtitle="Named coworkers backed by OpenCode agents and a role prompt"
+      subtitle="Named coworkers backed by Claude Code or OpenCode and a role prompt"
       max_width="max-w-none"
     >
       <:actions>
@@ -655,11 +655,11 @@ defmodule CanopyWeb.AgentsLive do
         title="Active agents"
         description="Mention an agent with @name in a channel to wake it. Open one for its channels, schedules, and settings."
       >
-        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
+        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
           <span />
           <span>Agent</span>
           <span>Role</span>
-          <span>OpenCode agent</span>
+          <span>Engine</span>
           <span>Model</span>
           <span title="Active schedules">Sched.</span>
           <span />
@@ -679,7 +679,7 @@ defmodule CanopyWeb.AgentsLive do
             <li
               :for={agent <- agents}
               id={"agent-#{agent.id}"}
-              class="group relative -mx-2 flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_6rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
+              class="group relative -mx-2 flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
             >
               <.link navigate={~p"/agents/#{agent.id}"} class="absolute inset-0 rounded-lg">
                 <span class="sr-only">Open {agent.display_name}</span>
@@ -695,14 +695,18 @@ defmodule CanopyWeb.AgentsLive do
                 {agent.role || "—"}
               </p>
               <span
-                class="badge badge-ghost badge-sm justify-self-start font-mono"
+                id={"engine-#{agent.id}"}
+                class="min-w-0 truncate text-sm"
                 title={
                   if agent.engine == "claude_code",
                     do: "Claude Code · #{agent.permission_mode}",
-                    else: "OpenCode agent"
+                    else: "OpenCode · agent #{agent.opencode_agent}"
                 }
               >
-                {if agent.engine == "claude_code", do: "claude", else: agent.opencode_agent}
+                {engine_label(agent)}<span
+                  :if={agent.engine == "opencode"}
+                  class="text-base-content/60"
+                > · {agent.opencode_agent}</span>
               </span>
               <button
                 :if={agent.engine == "opencode"}
@@ -1072,7 +1076,7 @@ defmodule CanopyWeb.AgentsLive do
           <Layouts.panel
             id="agent-memory-panel"
             title="Memory"
-            description="What this agent carries across repositories and channels. It goes into every prompt; the agent updates it with canopy_memory_write, and you can edit it here."
+            description="What this agent carries across repositories and channels. It goes into every prompt. The agent keeps it current, and you can edit it here."
           >
             <:actions>
               <span

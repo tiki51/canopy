@@ -578,7 +578,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       })
 
       assert has_element?(view, "#telemetry-#{agent.id}-c1", "Read lib/a.ex")
-      assert has_element?(view, "#telemetry-#{agent.id}", "1 tools")
+      assert has_element?(view, "#telemetry-#{agent.id}", "1 tool")
+      refute has_element?(view, "#telemetry-#{agent.id}", "1 tools")
       assert has_element?(view, "#telemetry-#{agent.id}", "Looking closer.")
 
       broadcast_telemetry(channel.id, agent.id, :text_done, %{

@@ -2,9 +2,9 @@
 
 Canopy is a local-first, Slack-like workspace for AI coding agents. You give agents names
 and roles, put them in channels tied to your repositories, and talk to them the way you
-would talk to teammates. Agents read the channel, work in their own OpenCode session, post
+would talk to teammates. Agents read the channel, work in their own private session, post
 back, delegate to each other, hand work off, schedule follow-ups, and remember what they
-learn. Everything runs on your machine; OpenCode is the only execution engine.
+learn. Everything runs on your machine; each agent uses either Claude Code or OpenCode.
 
 This guide walks through every feature with screenshots from a fictional company, Acme,
 whose billing team is chasing an invoice that gets charged twice. Every screen is shown in
@@ -42,10 +42,9 @@ Four ideas explain almost everything on screen.
 
 - **A repository** is a local git folder. Agents run inside it. Every channel belongs to
   exactly one repository.
-- **An agent** is a named coworker: a role, a system prompt, an OpenCode agent (`build`,
-  `plan`, and so on), and optionally a model. Agents are shared across repositories.
+- **An agent** is a named coworker: a role, a system prompt, an execution engine (Claude Code or OpenCode), and for OpenCode agents, an OpenCode agent type (`build`, `plan`, and so on). Agents are shared across repositories.
 - **A channel** is one task in one repository with a set of member agents and one owner.
-  Each member gets its own private OpenCode session per channel, so what it learns in
+  Each member gets its own private engine session per channel, so what it learns in
   `#payment-retries` does not leak into `#checkout-latency`.
 - **The timeline** is the durable record of a channel: your messages, agent posts,
   and events such as "started working", "delegated", "handed off", or "spend limit reached".
@@ -582,7 +581,7 @@ and the card closes into a finished line.
 
 ### Permissions
 
-When OpenCode's rules say *ask* for an action, the agent pauses and a permission card
+When an agent's engine is configured to ask for an action, the agent pauses and a permission card
 appears in the channel with the permission, the file pattern, and the diff.
 
 ![Permission card, light](user-guide/images/permission-card-light.png)
@@ -590,10 +589,10 @@ appears in the channel with the permission, the file pattern, and the diff.
 ![Permission card, dark](user-guide/images/permission-card-dark.png)
 
 **Once** allows this action, **Always** allows it for the rest of the session, **Reject**
-refuses and the agent reports that it could not proceed. Answering from the OpenCode
-terminal instead also clears the card, because Canopy follows OpenCode's events rather
-than its own state. Which actions ask is up to OpenCode's configuration, for example
-`{ "permission": { "edit": "ask" } }` in the repository's `.opencode/opencode.json`.
+refuses and the agent reports that it could not proceed. For OpenCode agents, answering from the OpenCode
+terminal instead also clears the card. Which actions ask is up to each agent's configuration:
+for Claude Code agents, the allowlist in Settings; for OpenCode agents, the configuration in
+the repository's `.opencode/opencode.json` (for example, `{ "permission": { "edit": "ask" } }`).
 
 ### Passing
 
@@ -733,7 +732,7 @@ header, so you can edit it by hand.
 ## 13. Costs
 
 The Costs page (banknotes icon in the rail) shows what your agents spend, from the
-per-turn cost each model provider reports through OpenCode.
+per-turn cost each model provider reports.
 
 ![Costs, light](user-guide/images/costs-light.png)
 
@@ -761,7 +760,7 @@ ran on a provider that reports nothing, count as zero, so treat the totals as a 
 
 Context is most of the bill. Canopy keeps it small in four ways:
 
-- OpenCode compacts an agent's session once a turn's model calls pass 40k tokens of
+- Each engine compacts an agent's session once a turn's model calls pass 40k tokens of
   context (a "session was compacted" line appears with Activity on).
 - `canopy_messages_read` returns only what is new since the agent last read the channel,
   with long bodies shortened and `canopy_message_get` for the full text.
@@ -806,8 +805,8 @@ Canopy has four brakes, from gentlest to firmest.
 
    ![Spend limit reached, dark](user-guide/images/spend-limit-reached-dark.png)
 
-4. **The billing hold**, which Canopy engages itself when OpenCode reports an empty
-   balance. See [Settings](#the-billing-hold).
+4. **The billing hold**, which Canopy engages itself when an engine reports an empty
+   balance or quota. See [Settings](#the-billing-hold).
 
 ---
 
@@ -815,9 +814,7 @@ Canopy has four brakes, from gentlest to firmest.
 
 ### Tools agents can call
 
-Canopy registers itself with OpenCode as an MCP server the first time an agent is
-prompted in a repository, and again after a restart or an upgrade. Agent identity comes
-from the plugin-stamped session id, never from tool arguments. Tools return compact text.
+Canopy provides the same tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
 
 | Area | Tools |
 |---|---|
@@ -829,7 +826,7 @@ from the plugin-stamped session id, never from tool arguments. Tools return comp
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
-All names are prefixed `canopy_` inside OpenCode.
+Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude Code agents.
 
 ### Composer
 
@@ -850,6 +847,7 @@ All names are prefixed `canopy_` inside OpenCode.
 | `@agent started working` | A turn began (Activity view only) |
 | `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card |
 | `@agent passed: note` | The agent chose not to reply |
+| `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
 | `@agent stopped with an error` | The turn failed; the pill's dot is red |
 | `@a delegated to @b: …` / `completed the delegation` | A delegation and its result |
 | `handed this task to` / `accepted the handoff` / `ownership moved` | A handoff |

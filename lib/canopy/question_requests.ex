@@ -60,9 +60,9 @@ defmodule Canopy.QuestionRequests do
   @doc """
   Resolves a pending question. `{:answered, answers}` carries one list of chosen
   labels per question, in question order; `:rejected` means the user declined to
-  answer.
+  answer. `by: "user"` records that the local user answered it from the card.
   """
-  def resolve(%QuestionRequest{} = request, outcome) do
+  def resolve(%QuestionRequest{} = request, outcome, opts \\ []) do
     attrs =
       case outcome do
         {:answered, answers} ->
@@ -83,7 +83,8 @@ defmodule Canopy.QuestionRequests do
         payload: %{
           "headers" => headers(r),
           "status" => r.status,
-          "answers" => r.answers
+          "answers" => r.answers,
+          "by" => opts[:by]
         }
       }
     end)

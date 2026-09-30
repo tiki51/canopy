@@ -63,6 +63,13 @@ export async function around(target: Locator, pad = 20, extra: Partial<Clip> = {
 }
 
 /**
+ * SITE_SHOTS=name,name… captures only those shots (the story still plays in
+ * full), so a re-shoot doesn't overwrite stills that are already signed off.
+ */
+const only = process.env.SITE_SHOTS?.split(",").map((s) => s.trim()).filter(Boolean);
+export const wanted = (...names: string[]) => !only || names.some((n) => only.includes(n));
+
+/**
  * One capture per theme: <name>-dark.png and <name>-light.png. `clip` may be a
  * function so a crop is measured after the theme switch (heights can differ).
  */
@@ -72,6 +79,7 @@ export async function shot(
   clip?: Clip | (() => Promise<Clip>),
   themes: Theme[] = ["dark", "light"],
 ) {
+  if (!wanted(name)) return;
   for (const t of themes) {
     await theme(page, t);
     await page.waitForTimeout(150);
@@ -83,7 +91,9 @@ export async function shot(
 
 /** Runs SQL against the e2e database (the server keeps running; SQLite is in WAL mode). */
 export function sql(statement: string): string {
-  return execFileSync("sqlite3", [db, statement], { encoding: "utf8" }).trim();
+  // The messages table's update trigger writes to the messages_fts virtual
+  // table, which the sqlite3 CLI refuses unless the schema is trusted.
+  return execFileSync("sqlite3", ["-cmd", "PRAGMA trusted_schema=ON", db, statement], { encoding: "utf8" }).trim();
 }
 
 /** ISO timestamp in the format the app stores (microseconds, Z). */
@@ -91,11 +101,26 @@ export const iso = (d: Date) => d.toISOString().replace(/\.(\d{3})Z$/, ".$1000Z"
 
 /** Local wall-clock hour → UTC Date, for the server's TZ (see playwright.config.ts). */
 export function localAt(daysFromToday: number, hour: number, minute = 0): Date {
-  const offsetMin = -new Date().getTimezoneOffset(); // this process shares the server's TZ
+  // The config passes the offset along: Node ignores the POSIX TZ it gives the server.
+  const offsetMin = Number(process.env.SITE_UTC_OFFSET_MIN ?? -new Date().getTimezoneOffset());
   const now = new Date();
   const local = new Date(now.getTime() + offsetMin * 60_000);
   const utcMidnightOfLocalDay = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + daysFromToday);
   return new Date(utcMidnightOfLocalDay + (hour * 60 + minute - offsetMin) * 60_000);
+}
+
+/**
+ * Waits until the server's clock reads hour:minute:00 today, so what follows is
+ * stamped the same on every run. If that has passed (a slow boot), waits for the
+ * next whole minute instead: the minutes shift, but the gaps between them don't.
+ */
+export async function waitUntilLocal(page: Page, hour: number, minute: number) {
+  let target = localAt(0, hour, minute).getTime();
+  if (target < Date.now()) {
+    target = Math.ceil(Date.now() / 60_000) * 60_000;
+    console.warn(`site capture: server clock already past ${hour}:${String(minute).padStart(2, "0")}; the story's minutes will differ from the copy`);
+  }
+  await page.waitForTimeout(target - Date.now() + 200);
 }
 
 export const sidebarChannel = (page: Page, name: string) =>

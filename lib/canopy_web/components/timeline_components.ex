@@ -25,6 +25,10 @@ defmodule CanopyWeb.TimelineComponents do
   attr :channels, :map, default: %{}, doc: "channel name => id, for #channel links in bodies"
   attr :thread_open, :boolean, default: false
 
+  attr :root, :string,
+    default: nil,
+    doc: "the repository path; tool paths inside it show relative"
+
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
     <div id={@id}>
@@ -45,8 +49,11 @@ defmodule CanopyWeb.TimelineComponents do
   def timeline_item(%{event: %{event_type: "agent_turn_completed"}} = assigns) do
     assigns =
       assigns
-      |> assign(:entries, Activity.from_payload(assigns.event.payload["activity"]))
       |> assign(:final_text, assigns.event.payload["final_text"])
+      |> then(fn assigns ->
+        entries = visible(Activity.from_payload(assigns.event.payload["activity"]))
+        assign(assigns, :entries, drop_closing_note(entries, assigns.final_text))
+      end)
 
     ~H"""
     <div id={@id} data-activity={activity_class(@event)}>
@@ -56,6 +63,7 @@ defmodule CanopyWeb.TimelineComponents do
         user_name={@user_name}
         entries={@entries}
         final_text={@final_text}
+        root={@root}
       />
     </div>
     """
@@ -399,8 +407,11 @@ defmodule CanopyWeb.TimelineComponents do
   attr :agent_id, :string, required: true
   attr :name, :string, required: true
   attr :card, :map, required: true
+  attr :root, :string, default: nil
 
   def telemetry_card(assigns) do
+    assigns = assign(assigns, :entries, visible(assigns.card.entries))
+
     ~H"""
     <details
       id={"telemetry-#{@agent_id}"}
@@ -415,14 +426,14 @@ defmodule CanopyWeb.TimelineComponents do
         <Layouts.status_dot status={:busy} />
         <span class="font-medium text-secondary">@{@name} is {Activity.verb(@card)}…</span>
         <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/60">
-          <span :if={@card.tool_count > 0}>{@card.tool_count} tools</span>
+          <span :if={@card.tool_count > 0}>{count(@card.tool_count, "tool")}</span>
           <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
           <.chevron />
         </span>
       </summary>
       <div class="border-t border-secondary/20 px-4 py-2">
-        <.activity_list id={"telemetry-#{@agent_id}"} entries={@card.entries} />
-        <p :if={@card.entries == []} class="text-xs text-base-content/60">
+        <.activity_list id={"telemetry-#{@agent_id}"} entries={@entries} root={@root} />
+        <p :if={@entries == []} class="text-xs text-base-content/60">
           Waiting for the first tool call…
         </p>
       </div>
@@ -439,6 +450,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :user_name, :string, required: true
   attr :entries, :list, default: []
   attr :final_text, :string, default: nil
+  attr :root, :string, default: nil
 
   def turn_card(%{entries: [], final_text: nil} = assigns) do
     ~H"""
@@ -490,7 +502,7 @@ defmodule CanopyWeb.TimelineComponents do
         <span class="h-px flex-1 bg-base-300/70" />
       </summary>
       <div class="px-4 pb-2 pt-1">
-        <.activity_list id={"turn-#{@event.id}"} entries={@entries} />
+        <.activity_list id={"turn-#{@event.id}"} entries={@entries} root={@root} />
         <div
           :if={@final_text}
           id={"turn-#{@event.id}-note"}
@@ -508,8 +520,12 @@ defmodule CanopyWeb.TimelineComponents do
 
   attr :id, :string, required: true
   attr :entries, :list, required: true
+  attr :root, :string, default: nil
 
   defp activity_list(assigns) do
+    assigns =
+      assign(assigns, :entries, Enum.map(assigns.entries, &relative_entry(&1, assigns.root)))
+
     ~H"""
     <ol :if={@entries != []} class="flex flex-col gap-0.5 font-mono text-xs">
       <li
@@ -534,6 +550,75 @@ defmodule CanopyWeb.TimelineComponents do
     </ol>
     """
   end
+
+  # Step rows ("step tool_use — 218 tokens") are model-call bookkeeping; Costs
+  # counts them, the activity list leaves them out.
+  defp visible(entries), do: Enum.reject(entries, &(&1.kind == :step))
+
+  # The turn's closing text is shown under the card as its closing note; the
+  # same text in the activity list would say it twice.
+  defp drop_closing_note(entries, final_text) when is_binary(final_text) do
+    note = String.trim(final_text)
+
+    Enum.reject(entries, fn entry ->
+      entry.kind == :text and
+        (String.trim(entry.label) == note or
+           (String.ends_with?(entry.label, "…") and
+              String.starts_with?(note, String.trim(String.trim_trailing(entry.label, "…")))))
+    end)
+  end
+
+  defp drop_closing_note(entries, _final_text), do: entries
+
+  # Paths inside the channel's repository read relative to its root, so rows
+  # never show the user's home directory; a detail the row doesn't need goes.
+  defp relative_entry(%{kind: :text} = entry, _root), do: entry
+
+  defp relative_entry(entry, root) do
+    {label, detail} =
+      path_label(relative_paths(entry.label, root), relative_paths(entry.detail, root))
+
+    %{entry | label: label, detail: if(redundant_detail?(label, detail), do: nil, else: detail)}
+  end
+
+  # A changed-file row is labelled with the file's name and carries its path
+  # (`payments.py — acme/billing/payments.py`); the path alone says both.
+  @doc false
+  def path_label(label, detail) when is_binary(detail) and label != "" do
+    if String.ends_with?(detail, "/" <> label), do: {detail, nil}, else: {label, detail}
+  end
+
+  def path_label(label, detail), do: {label, detail}
+
+  # A detail is noise when the label already ends with it (`Grep foo — foo`,
+  # `Read a.py — a.py`), when it is an internal id (`canopy handoff_get —
+  # ho_01M3…`), or when it is the text of a message the channel already shows
+  # (`canopy message_send — …`).
+  @doc false
+  def redundant_detail?(_label, nil), do: false
+
+  def redundant_detail?(label, detail) do
+    label == detail or String.ends_with?(label, " " <> detail) or
+      Regex.match?(~r/^[a-z]+_[0-9A-Z]{20,}$/, detail) or
+      Regex.match?(~r/^canopy[ _](message_send|thread_reply)$/, label)
+  end
+
+  @doc false
+  def relative_paths(text, root) when is_binary(text) and is_binary(root) do
+    case String.trim_trailing(root, "/") do
+      "" ->
+        text
+
+      root ->
+        text
+        |> String.replace(root <> "/", "")
+        |> then(&Regex.replace(~r/#{Regex.escape(root)}(?=$|[\s"'`)])/, &1, "."))
+        # Agents already run in the repository, so a leading `cd <root> &&` says nothing.
+        |> then(&Regex.replace(~r/^\s*cd\s+(["']?)\.\1\s*&&\s*/, &1, ""))
+    end
+  end
+
+  def relative_paths(text, _root), do: text
 
   # Entry keys carry paths; ids must stay selector-safe.
   defp dom_key(key), do: Regex.replace(~r/[^A-Za-z0-9_-]+/, key, "-")
@@ -682,13 +767,53 @@ defmodule CanopyWeb.TimelineComponents do
           </button>
         </div>
       </div>
-      <pre
+      <.diff_view
         :if={is_binary(@request.metadata["diff"]) and @request.metadata["diff"] != ""}
-        class="max-h-72 overflow-auto border-t border-warning/20 bg-base-100/60 px-4 py-2 font-mono text-xs leading-relaxed"
-      ><code>{@request.metadata["diff"]}</code></pre>
+        id={"permission-#{@request.id}-diff"}
+        diff={@request.metadata["diff"]}
+        class="max-h-72 border-t border-warning/20 bg-base-100/60 py-2"
+      />
     </section>
     """
   end
+
+  @doc "A unified diff with added and removed lines tinted."
+  attr :id, :string, required: true
+  attr :diff, :string, required: true
+  attr :class, :any, default: nil
+
+  def diff_view(assigns) do
+    assigns = assign(assigns, :lines, diff_lines(assigns.diff))
+
+    ~H"""
+    <pre id={@id} class={["overflow-auto font-mono text-xs leading-relaxed", @class]}><code class="block w-max min-w-full"><span :for={{kind, sign, rest} <- @lines} class={["block px-4", diff_row_class(kind)]} data-diff={kind}><span class={diff_sign_class(kind)}>{sign}</span>{rest}</span></code></pre>
+    """
+  end
+
+  defp diff_lines(diff) do
+    diff
+    |> String.trim_trailing("\n")
+    |> String.split("\n")
+    |> Enum.map(fn
+      "+++" <> _ = line -> {:meta, "", line}
+      "---" <> _ = line -> {:meta, "", line}
+      "+" <> rest -> {:add, "+", rest}
+      "-" <> rest -> {:del, "-", rest}
+      "@@" <> _ = line -> {:hunk, "", line}
+      "" -> {:ctx, "", " "}
+      line -> {:ctx, "", line}
+    end)
+  end
+
+  defp diff_row_class(:add), do: "bg-success/10"
+  defp diff_row_class(:del), do: "bg-error/10"
+  defp diff_row_class(:hunk), do: "text-info"
+  defp diff_row_class(:meta), do: "text-base-content/60"
+  defp diff_row_class(_), do: nil
+
+  defp diff_sign_class(:add), do: "text-success"
+  defp diff_sign_class(:del), do: "text-error"
+  defp diff_sign_class(_), do: nil
 
   # -- Handoff banners ---------------------------------------------------------
 
@@ -771,6 +896,7 @@ defmodule CanopyWeb.TimelineComponents do
       "agent_turn_completed" ->
         verb =
           cond do
+            p["outcome"] == "stopped" -> "was stopped by #{user}"
             p["outcome"] != "ok" -> "stopped with an error"
             p["passed"] -> "passed" <> suffix(p["note"])
             true -> "finished"
@@ -864,6 +990,16 @@ defmodule CanopyWeb.TimelineComponents do
 
       "permission_resolved" ->
         "#{p["permission"]} permission #{permission_status(p["status"])}"
+
+      "question_requested" ->
+        "#{agent} asked a question"
+
+      "question_resolved" ->
+        verb = if p["status"] == "rejected", do: "dismissed", else: "answered"
+
+        if p["by"] == "user",
+          do: "#{user} #{verb} #{agent}'s question",
+          else: "question #{verb}"
 
       other ->
         "#{agent} · #{other}"
@@ -1059,6 +1195,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("schedule_fired"), do: "hero-bell-alert-mini"
   defp event_icon("schedule_" <> _), do: "hero-clock-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"
+  defp event_icon("question_" <> _), do: "hero-question-mark-circle-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 
   defp event_tone(%{event_type: "agent_error"}), do: "error"

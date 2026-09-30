@@ -77,9 +77,13 @@ defmodule Canopy.Schedules.When do
   def local_offset_seconds do
     utc = DateTime.utc_now() |> DateTime.to_naive() |> NaiveDateTime.truncate(:second)
     local = NaiveDateTime.local_now()
-    # round to the minute: the two clocks are read a moment apart
-    div(NaiveDateTime.diff(local, utc, :second) + 30, 60) * 60
+    # the two clocks are read a moment apart
+    nearest_minute(NaiveDateTime.diff(local, utc, :second))
   end
+
+  # round/1, not div/2: div truncates toward zero, so west of UTC it came out a minute short.
+  @doc false
+  def nearest_minute(seconds), do: round(seconds / 60) * 60
 
   def to_local_naive(%DateTime{} = dt),
     do: dt |> DateTime.to_naive() |> NaiveDateTime.add(local_offset_seconds(), :second)

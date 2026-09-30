@@ -1,9 +1,13 @@
 // Records the story run for the canopy_site homepage (design review §9.2): one
-// session at 1280×800, 2x, dark, no cursor, and two cuts from it, each as WebM
-// and MP4 with a poster frame, written to canopy_site/public/images:
+// session at 1032×900, 2x, dark, no cursor (the geometry of the narrow site
+// stills, so the conversation pane is 720 CSS px wide and its text stays ≥11px in
+// the homepage's story frame), and two cuts from it, each as WebM and MP4 with a
+// poster frame, written to canopy_site/public/images:
 //
-//   story-02-working.{webm,mp4} + -poster.jpg   6–8s: the live card goes researching → building → testing
-//   full-run.{webm,mp4} + -poster.jpg            the whole run, message to review
+//   story-02-working.{webm,mp4} + -poster.jpg   6–8s: the live card goes researching → building → testing,
+//                                               cropped to the pane at 4:3; the poster is its last frame
+//   full-run.{webm,mp4} + -poster.jpg            the whole run, message to review; the poster is the
+//                                               root cause and delegation, with @backend researching
 //
 // Only runs when SITE_VIDEO=1, and needs ffmpeg with libx264 and libvpx-vp9
 // (on PATH, or FFMPEG=/path/to/ffmpeg):
@@ -24,17 +28,19 @@ import { dismissFlash, mediaDir, park, prepare } from "./site-helpers";
 const enabled = process.env.SITE_VIDEO === "1" && process.env.CANOPY_SEED !== undefined;
 const ffmpeg = process.env.FFMPEG || "ffmpeg";
 
+// Top level: launch options can't be set inside a describe (they need their own worker).
+test.use({
+  viewport: null,
+  launchOptions: { args: ["--force-device-scale-factor=2", "--window-size=1032,900"] },
+});
+
 test.describe("recording for canopy_site", () => {
   test.skip(!enabled, "set SITE_VIDEO=1 and CANOPY_SEED=e2e/bin/seed-acme.exs to record");
-  test.use({
-    viewport: null,
-    launchOptions: { args: ["--force-device-scale-factor=2", "--window-size=1280,800"] },
-  });
 
   test("record the story run", async ({ page }, info) => {
     test.setTimeout(300_000);
     await prepare(page);
-    expect(await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio])).toEqual([1280, 800, 2]);
+    expect(await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio])).toEqual([1032, 900, 2]);
 
     // Set up off camera: the channel, as the story's first step would have it.
     await page.goto("/channels/new");
@@ -66,7 +72,8 @@ test.describe("recording for canopy_site", () => {
       frames.push({ file, t: metadata.timestamp! });
       await cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
     });
-    await cdp.send("Page.startScreencast", { format: "jpeg", quality: 95, maxWidth: 2560, maxHeight: 1600 });
+    // Full device size (2064×1800): a smaller cap scales frames down, breaking the crop and even dimensions.
+    await cdp.send("Page.startScreencast", { format: "jpeg", quality: 95, maxWidth: 2064, maxHeight: 1800 });
     const now = () => Date.now() / 1000;
     await page.waitForTimeout(1200);
     const start = now();
@@ -95,8 +102,22 @@ test.describe("recording for canopy_site", () => {
       await park(page);
     }
     await expect(card).toContainText("is building", { timeout: 30_000 });
+    // The edit to payments.py asks first (acme's @backend runs in default mode); approve it.
+    const perm = page.locator('section[id^="permission-"]').first();
+    await expect(perm).toContainText("claim_charge", { timeout: 30_000 });
+    await page.waitForTimeout(1200);
+    await page.locator('[id^="permission-"][id$="-always"]').first().click();
+    await expect(perm).toBeHidden({ timeout: 30_000 });
     await expect(card).toContainText("is testing", { timeout: 30_000 });
     const testing = now();
+    // ST-2 keeps only the conversation pane, at 4:3, ending just under the live card (which grows upwards).
+    const crop = await page.evaluate((id) => {
+      const x = document.getElementById("timeline-scroll")!.getBoundingClientRect().left;
+      const w = innerWidth - x;
+      const h = Math.round((w * 3) / 4);
+      const bottom = Math.min(innerHeight, document.getElementById(id)!.getBoundingClientRect().bottom + 12);
+      return { x, y: Math.max(0, bottom - h), w, h };
+    }, `telemetry-${backend}`);
 
     // The handoff, the owner badge, and the review.
     await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 60_000 });
@@ -118,16 +139,21 @@ test.describe("recording for canopy_site", () => {
     run("-f", "concat", "-safe", "0", "-i", listFile, "-vf", "fps=30,format=yuv420p", "-c:v", "libx264", "-crf", "10", "-preset", "veryfast", master);
 
     const t0 = frames[0].t;
+    const even = (n: number) => 2 * Math.round(n); // CSS px → device px, even for yuv420p
+    const cropFilter = `crop=${even(crop.w)}:${even(crop.h)}:${even(crop.x)}:${even(crop.y)}`;
     const cuts = {
-      // from a beat into "researching" to just after "testing" appears
-      "story-02-working": { from: researching + 1.0 - t0, to: Math.min(testing + 1.5, researching + 9) - t0, poster: 0.2 },
-      "full-run": { from: Math.max(0, start - 0.5 - t0), to: end - t0, poster: 0 },
-    };
+      // from a beat into "researching" to just after "testing" appears; the poster is the last frame,
+      // which is also the homepage's static (reduced-motion) state
+      "story-02-working": { from: researching + 1.0 - t0, to: Math.min(testing + 1.5, researching + 9) - t0, poster: "end", vf: [cropFilter] },
+      "full-run": { from: Math.max(0, start - 0.5 - t0), to: end - t0, poster: researching + 1.2 - t0, vf: [] },
+    } as const;
     for (const [name, cut] of Object.entries(cuts)) {
       const span = ["-ss", cut.from.toFixed(2), "-to", cut.to.toFixed(2), "-i", master];
-      run(...span, "-an", "-c:v", "libx264", "-crf", "23", "-preset", "slow", "-pix_fmt", "yuv420p", "-movflags", "+faststart", `${mediaDir}/${name}.mp4`);
-      run(...span, "-an", "-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0", "-row-mt", "1", "-deadline", "good", "-cpu-used", "2", `${mediaDir}/${name}.webm`);
-      run("-ss", (cut.from + cut.poster).toFixed(2), "-i", master, "-frames:v", "1", "-q:v", "3", `${mediaDir}/${name}-poster.jpg`);
+      const vf = cut.vf.length ? ["-vf", cut.vf.join(",")] : [];
+      const poster = cut.poster === "end" ? cut.to - 0.05 : cut.poster;
+      run(...span, ...vf, "-an", "-c:v", "libx264", "-crf", "23", "-preset", "slow", "-pix_fmt", "yuv420p", "-movflags", "+faststart", `${mediaDir}/${name}.mp4`);
+      run(...span, ...vf, "-an", "-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0", "-row-mt", "1", "-deadline", "good", "-cpu-used", "2", `${mediaDir}/${name}.webm`);
+      run("-ss", poster.toFixed(2), "-i", master, ...vf, "-frames:v", "1", "-q:v", "3", `${mediaDir}/${name}-poster.jpg`);
       console.log(`${name}: ${(cut.to - cut.from).toFixed(1)}s`);
     }
   });

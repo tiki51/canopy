@@ -29,6 +29,15 @@ defmodule Canopy.Schedules.WhenTest do
     assert reason =~ "could not read"
   end
 
+  test "the local offset rounds to the nearest minute on both sides of UTC" do
+    assert When.nearest_minute(-25_200) == -25_200
+    assert When.nearest_minute(-25_201) == -25_200
+    assert When.nearest_minute(-4_799) == -4_800
+    assert When.nearest_minute(19_801) == 19_800
+    assert When.nearest_minute(19_799) == 19_800
+    assert rem(When.local_offset_seconds(), 60) == 0
+  end
+
   test "cron expressions, in local time, at least five minutes apart" do
     assert {:recurring, "0 9 * * 1-5", first} = When.parse("0 9 * * 1-5", @now)
     local = When.to_local_naive(first)
