@@ -92,21 +92,35 @@ defmodule Canopy.Runtime.PromptsTest do
     assert text =~ ~s(- "Include the attempt number?": Yes)
     assert text =~ ~s(- "Anything else?": keep it short, and fast)
 
-    child = Prompts.answer_message("pm", one, [[]], delegation_id: "dl_01ABC", as_message?: true)
-
-    assert child =~
-             ~s[your question "Include the attempt number?": (no answer) (delegation dl_01ABC)]
-
-    assert child =~ "reported the question as declined"
+    declined = Prompts.answer_message("pm", one, [[]], as_message?: true)
+    assert declined =~ ~s[your question "Include the attempt number?": (no answer)\n]
+    assert declined =~ "reported the question as declined"
+    refute declined =~ "(delegation"
   end
 
   test "a late approval is a message saying what was approved and to do it now" do
     assert Prompts.approval_message("pm", %{permission: "Bash", patterns: ["make test"]}, :always) ==
              "@pm Approved: Bash make test (always). You can do it now."
 
-    assert Prompts.approval_message("pm", %{permission: "edit", patterns: []}, :once,
-             delegation_id: "dl_01ABC"
-           ) == "@pm Approved: edit (once). You can do it now. (delegation dl_01ABC)"
+    assert Prompts.approval_message("pm", %{permission: "edit", patterns: []}, :once) ==
+             "@pm Approved: edit (once). You can do it now."
+  end
+
+  test "the pending-delegation reminder lists each delegation and how to report it" do
+    assert Prompts.pending_delegations("payments", []) == ""
+
+    one = Prompts.pending_delegations("payments", [%{id: "dl_1", from: "@pm", description: "a"}])
+    assert one =~ ~s{You have a pending delegation in #payments:\n- dl_1 from @pm ("a")}
+    assert one =~ ~s(canopy_task_update with status "completed", a result, and its delegation id)
+
+    two =
+      Prompts.pending_delegations("payments", [
+        %{id: "dl_1", from: "@pm", description: "a"},
+        %{id: "dl_2", from: "Steven", description: "line one\nline two"}
+      ])
+
+    assert two =~ "You have pending delegations in #payments:"
+    assert two =~ ~s{- dl_2 from Steven ("line one line two")}
   end
 
   defp agent_with(opencode_agent) do

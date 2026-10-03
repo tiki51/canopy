@@ -3,11 +3,12 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
   Update the channel task: status (open, working, blocked, completed), result,
   title, or description.
 
-  If you are working on a delegated subtask, this reports on the delegation
-  instead of the channel task: status "completed" (or a bare result) completes
-  the delegation with your result, "blocked" marks it failed with your result as
-  the reason, and the agent who delegated it is notified. Only the task owner
-  changes the channel task itself.
+  If you have a delegated subtask pending in the channel, this reports on the
+  delegation instead of the channel task: status "completed" (or a bare result)
+  completes the delegation with your result, "blocked" marks it failed with
+  your result as the reason, and whoever delegated it is notified. With several
+  pending, pass `delegation` (its id, or `dl_` plus its first eight
+  characters) to say which. Only the task owner changes the channel task itself.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -15,6 +16,8 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
   alias Canopy.{Delegations, Tasks}
   alias Canopy.Tasks.Task
   alias Canopy.MCP.{Format, Tool}
+
+  @pending ~w(requested working)
 
   schema do
     field :canopy_session_id, :string, description: Tool.identity_description()
@@ -26,6 +29,11 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
 
     field :title, :string, description: "New task title."
     field :description, :string, description: "New task description."
+
+    field :delegation, :string,
+      description:
+        "The delegation you are reporting on: its id or short form (dl_ plus 8 characters). " <>
+          "Needed when you have several pending."
   end
 
   @impl true
@@ -33,9 +41,10 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, channel} <- Tool.resolve_channel(ctx, Map.get(params, :channel)),
            {:ok, attrs} <- attrs(params) do
-        case pending_delegation(ctx, channel) do
-          nil -> update_task(channel, attrs, ctx)
-          delegation -> report_delegation(delegation, attrs, channel)
+        case pending_delegation(ctx, channel, Tool.blank_to_nil(Map.get(params, :delegation))) do
+          {:ok, nil} -> update_task(channel, attrs, ctx)
+          {:ok, delegation} -> report_delegation(delegation, attrs, channel)
+          {:error, _} = error -> error
         end
       end
     end)
@@ -133,10 +142,60 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
     end
   end
 
-  # A child session reports on its own delegation; a root session only on one
-  # the user handed it. Another session's delegation is never closed from here.
-  defp pending_delegation(ctx, channel) do
-    Delegations.get_by_child_session(ctx.session.id) ||
-      List.first(Delegations.list_pending_root_for(channel.id, ctx.agent.id))
+  # The delegation a call reports on. Named: that one, if it is pending and
+  # addressed to the caller. Unnamed: the caller's only pending delegation in
+  # the channel; with several, the caller has to say which; with none, the
+  # call is about the channel task. Identity is the session's, never the model's.
+  defp pending_delegation(ctx, channel, nil) do
+    case Delegations.list_pending_for(channel.id, ctx.agent.id) do
+      [] ->
+        {:ok, nil}
+
+      [delegation] ->
+        {:ok, delegation}
+
+      pending ->
+        {:error,
+         "you have #{length(pending)} pending delegations in ##{channel.name} " <>
+           "(#{Enum.map_join(pending, ", ", &describe/1)}); pass `delegation` with the one you are reporting on."}
+    end
+  end
+
+  # A short id can match several delegations made within the same second;
+  # the caller's own pending one among them is the one meant.
+  defp pending_delegation(ctx, channel, ref) do
+    matches = Delegations.matching(channel.id, ref)
+
+    mine =
+      Enum.filter(matches, &(&1.to_agent_id == ctx.agent.id and &1.status in @pending))
+
+    case {mine, matches} do
+      {[delegation], _} ->
+        {:ok, delegation}
+
+      {[_, _ | _] = several, _} ->
+        {:error,
+         "#{ref} matches #{length(several)} of your delegations (#{Enum.map_join(several, ", ", & &1.id)}); pass the full id."}
+
+      {[], []} ->
+        {:error, "no delegation #{ref} in ##{channel.name}"}
+
+      {[], [%{to_agent_id: to} = delegation]} when to != ctx.agent.id ->
+        {:error,
+         "delegation [#{delegation.id}] is addressed to #{Format.agent_ref(delegation.to_agent)}, not to you"}
+
+      {[], [delegation]} ->
+        {:error, "delegation [#{delegation.id}] is already #{delegation.status}"}
+
+      {[], several} ->
+        {:error,
+         "#{ref} matches #{length(several)} delegations, none of them pending for you; pass the full id."}
+    end
+  end
+
+  defp describe(delegation) do
+    description = delegation.description |> Format.single_line() |> Format.truncate(60)
+
+    "#{delegation.id} \"#{description}\""
   end
 end

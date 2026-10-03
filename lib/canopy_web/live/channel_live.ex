@@ -17,7 +17,6 @@ defmodule CanopyWeb.ChannelLive do
     Agents,
     Channels,
     Costs,
-    Delegations,
     Documents,
     Messages,
     Handoffs,
@@ -506,24 +505,13 @@ defmodule CanopyWeb.ChannelLive do
     |> assign_cards()
   end
 
-  # What the pending cards imply, worked out once per change: the delegation a
-  # child session's card names (so it is not mistaken for the agent's main
-  # session asking), and the agents still blocked on a card (the banner above
-  # the composer and the composer's hint).
+  # What the pending cards imply, worked out once per change: the agents still
+  # blocked on a card (the banner above the composer and the composer's hint).
   defp assign_cards(socket) do
     %{pending_questions: questions, pending_permissions: permissions, names: names} =
       socket.assigns
 
-    child_ids =
-      (questions ++ permissions)
-      |> Enum.map(& &1.agent_session)
-      |> Enum.filter(&match?(%{parent_session_id: parent} when is_binary(parent), &1))
-      |> Enum.map(& &1.id)
-      |> Enum.uniq()
-
-    socket
-    |> assign(:card_delegations, Delegations.ids_by_child_session(child_ids))
-    |> assign(:waiting_on_user, waiting_on_user(questions, permissions, names))
+    assign(socket, :waiting_on_user, waiting_on_user(questions, permissions, names))
   end
 
   # The agents a pending card still blocks (not detached), for the banner
@@ -1174,13 +1162,11 @@ defmodule CanopyWeb.ChannelLive do
           :for={request <- @pending_permissions}
           request={request}
           names={@names}
-          delegation_id={Map.get(@card_delegations, request.agent_session_id)}
         />
         <.question_card
           :for={request <- @pending_questions}
           request={request}
           names={@names}
-          delegation_id={Map.get(@card_delegations, request.agent_session_id)}
         />
       </div>
 

@@ -558,26 +558,22 @@ defmodule Canopy.Runtime.ChannelServerTest do
     refute_received {:agent_status, _, :queued}
   end
 
-  describe "one turn per agent" do
+  describe "one session per agent" do
     setup ctx do
       test_pid = self()
 
-      reviewer_root =
+      reviewer_session =
         Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
-
-      stub(OC, :create_session, fn _dir, %{parentID: _}, _opts ->
-        {:ok, %{"id" => "ses_child_" <> Fixtures.unique_suffix()}}
-      end)
 
       stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
         send(test_pid, {:prompted, sid, body})
         {:ok, ""}
       end)
 
-      %{reviewer_sid: reviewer_root.engine_session_id}
+      %{reviewer_session: reviewer_session, reviewer_sid: reviewer_session.engine_session_id}
     end
 
-    defp delegate_to_reviewer(ctx) do
+    defp delegate_to_reviewer(ctx, description \\ "trace every enqueue path") do
       {:ok, delegation} =
         Delegations.create(%{
           channel_id: ctx.channel.id,
@@ -585,7 +581,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
           from_agent_id: ctx.agent.id,
           to_agent_id: ctx.reviewer.id,
           parent_session_id: ctx.session.id,
-          description: "trace every enqueue path"
+          description: description
         })
 
       delegation
@@ -593,31 +589,110 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     defp prompt_text(%{parts: [%{text: text} | _]}), do: text
 
-    test "with serialization off, a delegate's main session waits for its child session's turn",
+    test "an agent's delegation runs in the delegate's own session; completion wakes the delegator",
          ctx do
-      {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
-      reviewer_sid = ctx.reviewer_sid
+      %{reviewer_sid: reviewer_sid} = ctx
+      owner_sid = ctx.session.engine_session_id
 
       delegation = delegate_to_reviewer(ctx)
-      assert_receive {:prompted, "ses_child_" <> _ = child_sid, _}, 2_000
-
-      # the user talks to the reviewer about something else: its main session
-      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} a quick one")
-      refute_receive {:prompted, ^reviewer_sid, _}, 300
-      refute_received {:agent_status, _, :queued}
-      assert Runtime.status(ctx.channel.id)[ctx.reviewer.id] == :busy
-      assert [{{:root, _}, _}] = :sys.get_state(ctx.pid).waiting
-
-      emit(child_sid, :agent_completed, %{})
       assert_receive {:prompted, ^reviewer_sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ "Delegation ID: #{delegation.id}"
+      assert text =~ "trace every enqueue path"
+      # the task is in the wake itself, not in a reminder
+      refute text =~ "pending delegation"
 
-      # still working: the main session is told not to start on it
-      assert prompt_text(body) =~ "You are also working on this delegation"
-      assert prompt_text(body) =~ "- #{delegation.id} (\"trace every enqueue path\")"
-      assert :sys.get_state(ctx.pid).waiting == []
+      delegation = Delegations.get!(delegation.id)
+      assert delegation.status == "working"
+      assert delegation.child_session_id == ctx.reviewer_session.id
+
+      assert [_] =
+               Enum.filter(
+                 AgentSessions.list_for_channel(ctx.channel.id),
+                 &(&1.agent_id == ctx.reviewer.id)
+               )
+
+      emit(reviewer_sid, :text_done, %{message_id: "m", part_id: "p", text: "Found three paths."})
+      emit(reviewer_sid, :agent_completed, %{})
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "agent_turn_completed",
+                        payload: %{"delegation_id" => did, "delegation_ids" => [did]}
+                      }},
+                     2_000
+
+      assert did == delegation.id
+
+      {:ok, _} = Delegations.complete(delegation, "Found three paths.")
+      assert_receive {:prompted, ^owner_sid, body}, 2_000
+      assert prompt_text(body) =~ "completed by @#{ctx.reviewer.name}"
+      assert prompt_text(body) =~ "Found three paths."
     end
 
-    test "with serialization off, the delegator's mention of the delegate goes to the child session",
+    test "a delegation for a delegate mid-turn queues on its session and starts after the turn",
+         ctx do
+      {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
+      %{reviewer_sid: reviewer_sid} = ctx
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} the logs?")
+      assert_receive {:prompted, ^reviewer_sid, _}, 2_000
+
+      delegation = delegate_to_reviewer(ctx)
+      refute_receive {:prompted, _, _}, 300
+      assert %{queues: %{^reviewer_sid => [wake]}} = :sys.get_state(ctx.pid)
+      assert wake.delegation_ids == [delegation.id]
+      # marked working when it goes out, not while it waits
+      assert Delegations.get!(delegation.id).status == "requested"
+
+      emit(reviewer_sid, :agent_completed, %{})
+
+      # the message turn carried no delegation
+      assert_receive {:timeline,
+                      %{event_type: "agent_turn_completed", payload: %{"delegation_id" => nil}}},
+                     2_000
+
+      assert_receive {:prompted, ^reviewer_sid, body}, 2_000
+      assert prompt_text(body) =~ "Delegation ID: #{delegation.id}"
+      assert Delegations.get!(delegation.id).status == "working"
+    end
+
+    test "two delegations waiting for a busy delegate merge, keeping both tasks", ctx do
+      {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
+      %{reviewer_sid: reviewer_sid} = ctx
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} the logs?")
+      assert_receive {:prompted, ^reviewer_sid, _}, 2_000
+
+      first = delegate_to_reviewer(ctx)
+      second = delegate_to_reviewer(ctx, "and every retry path")
+      refute_receive {:prompted, _, _}, 300
+
+      emit(reviewer_sid, :agent_completed, %{})
+      assert_receive {:prompted, ^reviewer_sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ "Delegation ID: #{first.id}"
+      assert text =~ "trace every enqueue path"
+      assert text =~ "Delegation ID: #{second.id}"
+      assert text =~ "and every retry path"
+      refute text =~ "Other messages arrived"
+      assert Delegations.get!(first.id).status == "working"
+      assert Delegations.get!(second.id).status == "working"
+
+      emit(reviewer_sid, :agent_completed, %{})
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "agent_turn_completed",
+                        payload: %{"delegation_id" => did, "delegation_ids" => [_, _] = dids}
+                      }},
+                     2_000
+
+      assert did == first.id
+      assert dids == [first.id, second.id]
+    end
+
+    test "the delegator's mention of the delegate queues one wake on its one session, and the reminder rides on it until the delegation is done",
          ctx do
       {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
       %{reviewer_sid: reviewer_sid} = ctx
@@ -626,9 +701,9 @@ defmodule Canopy.Runtime.ChannelServerTest do
       {:ok, _} = Runtime.post_user_message(ctx.channel.id, "get the queue traced")
       assert_receive {:prompted, ^owner_sid, _}, 2_000
 
-      # mid-turn the owner delegates (the child starts at once), then posts about it
-      delegate_to_reviewer(ctx)
-      assert_receive {:prompted, "ses_child_" <> _ = child_sid, _}, 2_000
+      # mid-turn the owner delegates (the delegate starts at once), then posts about it
+      delegation = delegate_to_reviewer(ctx)
+      assert_receive {:prompted, ^reviewer_sid, _}, 2_000
 
       {:ok, post} =
         Messages.post_agent_message(
@@ -639,12 +714,27 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
       emit(owner_sid, :agent_completed, %{})
       refute_receive {:prompted, _, _}, 300
-      assert %{queues: %{^child_sid => [_]}} = :sys.get_state(ctx.pid)
+      assert %{queues: %{^reviewer_sid => [_]}, waiting: []} = :sys.get_state(ctx.pid)
 
-      emit(child_sid, :agent_completed, %{})
-      assert_receive {:prompted, ^child_sid, body}, 2_000
-      assert prompt_text(body) =~ "Message ID: #{post.id}"
-      refute_receive {:prompted, ^reviewer_sid, _}, 300
+      emit(reviewer_sid, :agent_completed, %{})
+      assert_receive {:prompted, ^reviewer_sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ "Message ID: #{post.id}"
+      assert text =~ "You have a pending delegation in ##{ctx.channel.name}:"
+      assert text =~ ~s{- #{delegation.id} from @#{ctx.agent.name} ("trace every enqueue path")}
+      emit(reviewer_sid, :agent_completed, %{})
+      refute_receive {:prompted, _, _}, 300
+
+      # done: the next prompt carries no reminder
+      {:ok, _} = Delegations.complete(Delegations.get!(delegation.id), "two paths")
+      assert_receive {:prompted, ^owner_sid, _}, 2_000
+      emit(owner_sid, :agent_completed, %{})
+
+      {:ok, _} =
+        Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} thanks, one more")
+
+      assert_receive {:prompted, ^reviewer_sid, body}, 2_000
+      refute prompt_text(body) =~ "pending delegation"
     end
 
     test "one turn at a time: a delegation and the delegator's mention of it make one wake",
@@ -656,6 +746,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert_receive {:prompted, ^owner_sid, _}, 2_000
 
       delegation = delegate_to_reviewer(ctx)
+      second = delegate_to_reviewer(ctx, "and every retry path")
 
       {:ok, post} =
         Messages.post_agent_message(
@@ -665,19 +756,45 @@ defmodule Canopy.Runtime.ChannelServerTest do
         )
 
       refute_receive {:prompted, _, _}, 300
+      assert [{{:root, _}, _}] = :sys.get_state(ctx.pid).waiting
 
       emit(owner_sid, :agent_completed, %{})
-      assert_receive {:prompted, "ses_child_" <> _ = child_sid, body}, 2_000
+      assert_receive {:prompted, ^reviewer_sid, body}, 2_000
       text = prompt_text(body)
       assert text =~ "Delegation ID: #{delegation.id}"
       assert text =~ "trace every enqueue path"
+      assert text =~ "Delegation ID: #{second.id}"
       assert text =~ "arrived while it waited (Message ID: #{post.id})"
       refute text =~ "canopy_pass"
 
-      emit(child_sid, :agent_completed, %{})
+      emit(reviewer_sid, :agent_completed, %{})
       refute_receive {:prompted, _, _}, 300
-      refute_received {:prompted, ^reviewer_sid, _}
     end
+  end
+
+  test "child sessions left from before are not attached; the agent's next wake starts its own session",
+       ctx do
+    child =
+      Fixtures.session_fixture(%{
+        channel: ctx.channel,
+        agent_id: ctx.reviewer.id,
+        parent_session_id: ctx.session.id
+      })
+
+    Runtime.stop_channel(ctx.channel.id)
+    {:ok, pid} = Runtime.ensure_channel(ctx.channel.id, start_stream: false)
+    state = :sys.get_state(pid)
+    refute Map.has_key?(state.index, child.engine_session_id)
+    refute Map.has_key?(state.sessions, ctx.reviewer.id)
+
+    expect(OC, :create_session, fn _dir, body, _opts ->
+      refute Map.has_key?(body, :parentID)
+      {:ok, %{"id" => "ses_reviewer"}}
+    end)
+
+    expect_prompt(self())
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} hello")
+    assert_receive {:prompted, "ses_reviewer", _}, 2_000
   end
 
   test "a billing error engages the hold; held channels drop wakes with one note; release lets a message wake again",
@@ -1100,53 +1217,6 @@ defmodule Canopy.Runtime.ChannelServerTest do
     emit(sid, :approval_resolved, %{request_id: "per_123", reply: "once"})
     Process.sleep(50)
     assert PermissionRequests.get!(pr.id).status == "once"
-  end
-
-  test "a delegation creates a child session under the delegator and wakes the delegate; completion wakes the delegator",
-       ctx do
-    reviewer = ctx.reviewer
-    parent_sid = ctx.session.engine_session_id
-    test_pid = self()
-
-    expect(OC, :create_session, fn _dir, %{parentID: ^parent_sid, agent: "build"}, _opts ->
-      {:ok, %{"id" => "ses_child_1"}}
-    end)
-
-    expect_prompt(test_pid, 2)
-
-    {:ok, delegation} =
-      Delegations.create(%{
-        channel_id: ctx.channel.id,
-        task_id: ctx.task.id,
-        from_agent_id: ctx.agent.id,
-        to_agent_id: reviewer.id,
-        description: "trace every enqueue path"
-      })
-
-    assert_receive {:prompted, "ses_child_1", %{parts: [%{text: text}]}}, 2_000
-    assert text =~ "Delegation ID: #{delegation.id}"
-    assert text =~ "trace every enqueue path"
-
-    delegation = Delegations.get!(delegation.id)
-    assert delegation.status == "working"
-    child = AgentSessions.get!(delegation.child_session_id)
-    assert child.parent_session_id == ctx.session.id
-    assert child.agent_id == reviewer.id
-
-    # the delegate finishes its turn: reply stored under the reviewer, then completes the delegation
-    emit("ses_child_1", :text_done, %{message_id: "m", part_id: "p", text: "Found three paths."})
-    emit("ses_child_1", :agent_completed, %{})
-
-    assert_receive {:timeline,
-                    %{event_type: "agent_turn_completed", payload: %{"delegation_id" => did}}},
-                   2_000
-
-    assert did == delegation.id
-
-    {:ok, _} = Delegations.complete(delegation, "Found three paths.")
-    assert_receive {:prompted, ^parent_sid, %{parts: [%{text: wake}]}}, 2_000
-    assert wake =~ "completed by @#{reviewer.name}"
-    assert wake =~ "Found three paths."
   end
 
   test "a handoff wakes the target, and acceptance wakes the previous owner", ctx do

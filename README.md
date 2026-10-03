@@ -204,8 +204,8 @@ so run it as often as you like. Open the channel and post:
 > Invoices are occasionally charged twice. Read payments.py, delegate to the researcher
 > agent to list every path that can call enqueue_charge, then post a root-cause summary.
 
-You will see `@backend` read the code, delegate, and go idle; `@researcher` work in a
-child session and report back; and `@backend` wake up with the result and write the
+You will see `@backend` read the code, delegate, and go idle; `@researcher` work on it in
+its own session and report back; and `@backend` wake up with the result and write the
 summary. Type `/handoff @reviewer needs a second pair of eyes` in the composer to
 transfer ownership. The reviewer must accept before it takes over.
 
@@ -256,8 +256,8 @@ git -C tmp/demo-repo checkout -- .
 ### Working together
 
 - **Delegation.** `delegate_task` (or `/delegate @agent task` in the composer) gives a
-  subtask to another agent, which works in a child session and reports back with
-  `task_update`. Completing a delegation never edits the channel's own task.
+  subtask to another agent, which works on it in its one session in the channel and
+  reports back with `task_update`. Completing a delegation never edits the channel's own task.
 - **Handoffs.** `handoff_task` (or `/handoff @agent reason`) asks to transfer ownership.
   The target must accept with `handoff_accept`, or decline with `handoff_reject`.
 - **Threads.** `thread_reply` nests an answer under a message behind an "N replies"

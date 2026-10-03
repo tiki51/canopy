@@ -14,7 +14,7 @@ const PORT = Number(process.env.FAKE_OPENCODE_PORT || 4396);
 // keep an agent visibly "working" long enough for a screenshot.
 const TURN_DELAY = Number(process.env.FAKE_TURN_DELAY_MS || 50);
 const streams = new Set(); // SSE clients on GET /event
-const sessions = new Map(); // id -> {parentID}
+const sessions = new Map(); // id -> {parentID, title}
 const pendingPermissions = new Map(); // per_id -> resume fn
 const aborted = new Set(); // session ids aborted mid-turn (long turns stop early)
 let dialogue = 0; // lines spoken in the load-test back-and-forth (site screenshots)
@@ -551,6 +551,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/config/providers")
       return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } }, "claude-sonnet-5": { cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } }, "claude-opus-5-5": { cost: { input: 5, output: 25, cache: { read: 0.5, write: 6.25 } } } } }], default: { opencode: "gpt-5-nano" } });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
+    // Test-only: every session Canopy created, for specs that check how many it made.
+    if (req.method === "GET" && p === "/__fake/sessions") return json(res, 200, [...sessions].map(([id, s]) => ({ id, ...s })));
     if (req.method === "GET" && p === "/mcp") return json(res, 200, mcp ? { canopy: { status: "connected" } } : {});
     if (req.method === "POST" && p === "/instance/dispose") { mcp = null; mcpSession = null; return json(res, 200, true); }
     if (req.method === "POST" && p === "/mcp") {

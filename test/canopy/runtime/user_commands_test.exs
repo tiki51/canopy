@@ -3,7 +3,7 @@ defmodule Canopy.Runtime.UserCommandsTest do
 
   import Mox
 
-  alias Canopy.{Delegations, Fixtures, Handoffs, Runtime, Timeline}
+  alias Canopy.{AgentSessions, Delegations, Fixtures, Handoffs, Runtime, Timeline}
   alias Canopy.OpenCode.ClientMock, as: OC
 
   setup :set_mox_global
@@ -77,12 +77,13 @@ defmodule Canopy.Runtime.UserCommandsTest do
     assert Canopy.Channels.get!(ctx.channel.id).owner_agent_id == ctx.reviewer.id
   end
 
-  test "/delegate posts a note, creates a delegation from the owner, and wakes the delegate in a child session",
+  test "/delegate posts a note, creates a delegation from the owner, and wakes the delegate's own session",
        ctx do
     test_pid = self()
 
-    expect(OC, :create_session, fn _dir, %{parentID: _}, _opts ->
-      {:ok, %{"id" => "ses_child_x"}}
+    expect(OC, :create_session, fn _dir, body, _opts ->
+      refute Map.has_key?(body, :parentID)
+      {:ok, %{"id" => "ses_rev"}}
     end)
 
     expect(OC, :prompt_async, fn _dir, sid, body, _opts ->
@@ -98,12 +99,16 @@ defmodule Canopy.Runtime.UserCommandsTest do
 
     assert delegation.from_agent_id == ctx.agent.id
     assert delegation.description == "trace every enqueue path"
-    assert_receive {:prompted, "ses_child_x", %{parts: [%{text: text}]}}, 2_000
+    assert_receive {:prompted, "ses_rev", %{parts: [%{text: text}]}}, 2_000
     assert text =~ "Delegation ID: #{delegation.id}"
-    assert Delegations.get!(delegation.id).status == "working"
+    delegation = Delegations.get!(delegation.id)
+    assert delegation.status == "working"
+
+    assert delegation.child_session_id ==
+             AgentSessions.get_root(ctx.channel.id, ctx.reviewer.id).id
   end
 
-  test "/delegate with no owner runs in the delegate's root session", ctx do
+  test "/delegate with no owner comes from the user and runs in the delegate's session", ctx do
     {:ok, _} = Canopy.Channels.update(ctx.channel, %{owner_agent_id: nil})
     test_pid = self()
 

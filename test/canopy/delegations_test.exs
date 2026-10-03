@@ -31,18 +31,11 @@ defmodule Canopy.DelegationsTest do
     assert [%{id: ^id}] = Delegations.list_pending_for(channel.id, delegate.id)
     assert [] = Delegations.list_pending_for(channel.id, agent.id)
 
-    child =
-      session_fixture(%{channel: channel, agent_id: delegate.id, parent_session_id: session.id})
-
-    assert {:ok, delegation} = Delegations.start(delegation, child.id)
+    # the delegate works on it in its own session in the channel
+    delegate_session = session_fixture(%{channel: channel, agent_id: delegate.id})
+    assert {:ok, delegation} = Delegations.start(delegation, delegate_session.id)
     assert delegation.status == "working"
-    assert Delegations.get_by_child_session(child.id).id == delegation.id
-    # the batch lookup the channel's cards use: one query for every child session
-    assert Delegations.ids_by_child_session([child.id, session.id]) == %{
-             child.id => delegation.id
-           }
-
-    assert Delegations.ids_by_child_session([]) == %{}
+    assert delegation.child_session_id == delegate_session.id
 
     assert {:ok, delegation} = Delegations.complete(delegation, "Yes, in two places")
     assert delegation.status == "completed"
@@ -51,27 +44,25 @@ defmodule Canopy.DelegationsTest do
     assert_receive {:timeline, %Timeline.Event{event_type: "delegation_completed"} = event}
     assert event.payload["result"] == "Yes, in two places"
     assert [] = Delegations.list_pending_for(channel.id, delegate.id)
-    # a finished delegation no longer names its child session's cards
-    assert Delegations.ids_by_child_session([child.id]) == %{}
   end
 
-  test "only the user's delegations run in the delegate's root session", ctx do
+  test "matching finds a delegation in the channel by id or short id", ctx do
     %{channel: channel, agent: agent, delegate: delegate} = ctx
 
-    {:ok, from_user} =
-      Delegations.create(%{channel_id: channel.id, to_agent_id: delegate.id, description: "a"})
-
-    {:ok, _from_agent} =
+    {:ok, delegation} =
       Delegations.create(%{
         channel_id: channel.id,
         from_agent_id: agent.id,
         to_agent_id: delegate.id,
-        description: "b"
+        description: "a"
       })
 
-    id = from_user.id
-    assert [%{id: ^id}] = Delegations.list_pending_root_for(channel.id, delegate.id)
-    assert length(Delegations.list_pending_for(channel.id, delegate.id)) == 2
+    id = delegation.id
+    assert [%{id: ^id}] = Delegations.matching(channel.id, id)
+    assert [%{id: ^id}] = Delegations.matching(channel.id, " " <> String.slice(id, 0, 11) <> " ")
+    # shorter than the short form, or in another channel: no match
+    assert [] = Delegations.matching(channel.id, String.slice(id, 0, 6))
+    assert [] = Delegations.matching(channel_fixture().id, id)
   end
 
   test "fail records delegation_failed and self-delegation is rejected", ctx do

@@ -132,7 +132,7 @@ defmodule Canopy.Runtime.RouterTest do
     assert [] = Router.wakeups(message_event(%{}), ctx(%{owner_agent_id: nil}))
   end
 
-  test "delegation_created wakes the delegate in a child session" do
+  test "delegation_created wakes the delegate's own session, whoever delegated" do
     ev = %Event{
       event_type: "delegation_created",
       ref_id: "dl_1",
@@ -143,10 +143,26 @@ defmodule Canopy.Runtime.RouterTest do
       }
     }
 
-    assert [{{:child, "dl_1"}, text}] = Router.wakeups(ev, ctx())
+    assert [{{:root, @reviewer}, text}] = Router.wakeups(ev, ctx())
     assert text =~ "@backend delegated"
     assert text =~ "Delegation ID: dl_1"
     assert text =~ "trace enqueue paths"
+    assert text =~ ~s(delegation "dl_1")
+
+    from_user = put_in(ev.payload["from_agent_id"], nil)
+    assert [{{:root, @reviewer}, text}] = Router.wakeups(from_user, ctx())
+    assert text =~ "Steven delegated"
+  end
+
+  test "a message about a delegation wakes the delegate's own session" do
+    event =
+      message_event(%{
+        agent_id: @backend,
+        mentions: [@reviewer],
+        body: "@reviewer re dl_01M3P41N, also check the retries"
+      })
+
+    assert [{{:root, @reviewer}, _}] = Router.wakeups(event, ctx())
   end
 
   test "delegation_completed wakes the delegator with the result" do
@@ -222,43 +238,5 @@ defmodule Canopy.Runtime.RouterTest do
 
     [{{:root, @backend}, plain}] = Router.wakeups(message_event(%{}), ctx())
     assert is_binary(plain)
-  end
-
-  describe "a message to an agent working on a delegation" do
-    @dl "dl_01M3P41NP63ABCDEFGHJKMNPQR"
-    @other_dl "dl_01M3P5RKNTVYABCDEFGHJKMNP"
-
-    defp delegating_ctx(pending \\ [%{id: @dl, from_agent_id: @backend}]),
-      do: ctx(%{pending_children: %{@reviewer => pending}})
-
-    test "from the delegator goes to the child session" do
-      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "@reviewer FYI"})
-      assert [{{:child, @dl}, _}] = Router.wakeups(event, delegating_ctx())
-    end
-
-    test "citing the delegation's id or short id goes to the child session, from anyone" do
-      for body <- ["about #{@dl}", "about dl_01M3P41N, the retries"] do
-        event = message_event(%{mentions: [@reviewer], body: "@reviewer #{body}"})
-        assert [{{:child, @dl}, _}] = Router.wakeups(event, delegating_ctx())
-      end
-    end
-
-    test "from the user without the id stays on the main session" do
-      event = message_event(%{mentions: [@reviewer], body: "@reviewer something else"})
-      assert [{{:root, @reviewer}, _}] = Router.wakeups(event, delegating_ctx())
-    end
-
-    test "from a delegator of two of them, without an id, stays on the main session" do
-      pending = [
-        %{id: @dl, from_agent_id: @backend},
-        %{id: @other_dl, from_agent_id: @backend}
-      ]
-
-      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "@reviewer hi"})
-      assert [{{:root, @reviewer}, _}] = Router.wakeups(event, delegating_ctx(pending))
-
-      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "re #{@other_dl}"})
-      assert [{{:child, @other_dl}, _}] = Router.wakeups(event, delegating_ctx(pending))
-    end
   end
 end

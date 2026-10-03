@@ -3,6 +3,7 @@ defmodule Canopy.MCP.Tools.TasksTest do
 
   import Canopy.Fixtures
   import Canopy.MCPHelpers
+  import Ecto.Query, only: [from: 2]
 
   alias Canopy.{Delegations, Tasks, Timeline}
   alias Canopy.MCP.Tools.{TaskGet, TaskUpdate}
@@ -14,17 +15,22 @@ defmodule Canopy.MCP.Tools.TasksTest do
     Map.merge(ctx, %{delegate: delegate, delegate_session: delegate_session})
   end
 
-  # The child session an agent's delegation runs in, as the channel server starts it.
-  defp start_child(ctx, delegation) do
-    child =
-      session_fixture(%{
-        channel: ctx.channel,
-        agent_id: delegation.to_agent_id,
-        parent_session_id: ctx.session.id
-      })
+  defp delegate(ctx, description, attrs \\ %{}) do
+    {:ok, delegation} =
+      Delegations.create(
+        Map.merge(
+          %{
+            channel_id: ctx.channel.id,
+            task_id: ctx.task.id,
+            from_agent_id: ctx.agent.id,
+            to_agent_id: ctx.delegate.id,
+            description: description
+          },
+          attrs
+        )
+      )
 
-    {:ok, delegation} = Delegations.start(delegation, child.id)
-    {child, delegation}
+    delegation
   end
 
   describe "task_get" do
@@ -82,32 +88,25 @@ defmodule Canopy.MCP.Tools.TasksTest do
     end
 
     test "a delegate reports on its delegation and never changes the channel task", ctx do
-      {:ok, delegation} =
-        Delegations.create(%{
-          channel_id: ctx.channel.id,
-          task_id: ctx.task.id,
-          from_agent_id: ctx.agent.id,
-          to_agent_id: ctx.delegate.id,
-          parent_session_id: ctx.session.id,
-          description: "Check the index"
-        })
-
-      {child, _} = start_child(ctx, delegation)
+      delegation = delegate(ctx, "Check the index", %{parent_session_id: ctx.session.id})
+      # as the channel server starts it: in the delegate's own session
+      {:ok, _} = Delegations.start(delegation, ctx.delegate_session.id)
+      session = ctx.delegate_session
       Timeline.subscribe(ctx.channel.id)
       task_before = Tasks.for_channel(ctx.channel.id)
 
-      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, child)
+      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, session)
       assert text =~ "still working on delegation [#{delegation.id}]"
       assert Delegations.get!(delegation.id).status == "working"
 
-      assert {:error, reason} = call(TaskUpdate, %{title: "New title"}, child)
+      assert {:error, reason} = call(TaskUpdate, %{title: "New title"}, session)
       assert reason =~ "Only the task owner"
 
       assert {:ok, text} =
                call(
                  TaskUpdate,
                  %{status: "completed", result: "Index missing on invoice_id"},
-                 child
+                 session
                )
 
       assert text =~
@@ -151,47 +150,98 @@ defmodule Canopy.MCP.Tools.TasksTest do
       assert delegation.result == "No access to the staging db"
     end
 
-    test "a delegate reporting a bare result completes the delegation through its child session",
-         ctx do
-      {:ok, delegation} =
-        Delegations.create(%{
-          channel_id: ctx.channel.id,
-          from_agent_id: ctx.agent.id,
-          to_agent_id: ctx.delegate.id,
-          description: "Look at the logs"
-        })
+    test "a delegate reporting a bare result completes its delegation", ctx do
+      delegation = delegate(ctx, "Look at the logs")
 
-      {child, _} = start_child(ctx, delegation)
+      assert {:ok, text} =
+               call(TaskUpdate, %{result: "Logs show a double enqueue"}, ctx.delegate_session)
 
-      assert {:ok, text} = call(TaskUpdate, %{result: "Logs show a double enqueue"}, child)
       assert text =~ "delegation [#{delegation.id}] completed"
       assert Delegations.get!(delegation.id).result == "Logs show a double enqueue"
     end
 
-    test "the delegate's root session leaves an agent's delegation to its child session", ctx do
-      {:ok, working} =
-        Delegations.create(%{
-          channel_id: ctx.channel.id,
-          from_agent_id: ctx.agent.id,
-          to_agent_id: ctx.delegate.id,
-          description: "Check the index"
-        })
+    test "with several pending, a delegate names the one it reports on", ctx do
+      first = delegate(ctx, "Check the index")
+      # one from the user too: every pending delegation counts
+      second = delegate(ctx, "Then the logs", %{from_agent_id: nil})
 
-      {_child, _} = start_child(ctx, working)
+      assert {:error, reason} =
+               call(TaskUpdate, %{status: "completed", result: "done"}, ctx.delegate_session)
 
-      # not started yet: it still belongs to the child session it will wake
-      {:ok, requested} =
-        Delegations.create(%{
-          channel_id: ctx.channel.id,
-          from_agent_id: ctx.agent.id,
-          to_agent_id: ctx.delegate.id,
-          description: "Then the logs"
-        })
+      assert reason =~ "you have 2 pending delegations in ##{ctx.channel.name}"
+      assert reason =~ ~s(#{first.id} "Check the index")
+      assert reason =~ ~s(#{second.id} "Then the logs")
+      assert reason =~ "pass `delegation`"
+      assert Delegations.get!(first.id).status == "requested"
+      assert Delegations.get!(second.id).status == "requested"
 
-      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, ctx.delegate_session)
-      assert text =~ "updated task in ##{ctx.channel.name}"
-      assert Delegations.get!(working.id).status == "working"
-      assert Delegations.get!(requested.id).status == "requested"
+      assert {:ok, text} =
+               call(
+                 TaskUpdate,
+                 %{status: "completed", result: "logs clean", delegation: second.id},
+                 ctx.delegate_session
+               )
+
+      assert text =~ "delegation [#{second.id}] completed; the channel will be notified."
+      assert Delegations.get!(second.id).status == "completed"
+      assert Delegations.get!(first.id).status == "requested"
+
+      # one left: no need to name it
+      assert {:ok, text} = call(TaskUpdate, %{result: "index fine"}, ctx.delegate_session)
+      assert text =~ "delegation [#{first.id}] completed"
+    end
+
+    test "a named delegation must be pending and addressed to the caller", ctx do
+      delegation = delegate(ctx, "Check the index")
+
+      assert {:error, reason} =
+               call(TaskUpdate, %{result: "mine now", delegation: delegation.id}, ctx)
+
+      assert reason ==
+               "delegation [#{delegation.id}] is addressed to @#{ctx.delegate.name}, not to you"
+
+      assert {:error, reason} =
+               call(TaskUpdate, %{result: "x", delegation: "dl_nothing"}, ctx.delegate_session)
+
+      assert reason == "no delegation dl_nothing in ##{ctx.channel.name}"
+
+      # the short form agents cite (dl_ plus eight characters) is shared by
+      # delegations made within a second; the caller's own one is meant
+      other =
+        delegate(ctx, "Not yours", %{from_agent_id: ctx.delegate.id, to_agent_id: ctx.agent.id})
+
+      short = String.slice(delegation.id, 0, 11)
+
+      Canopy.Repo.update_all(
+        from(d in Canopy.Delegations.Delegation, where: d.id == ^other.id),
+        set: [id: short <> String.duplicate("Z", 18)]
+      )
+
+      assert {:error, reason} =
+               call(
+                 TaskUpdate,
+                 %{status: "working", delegation: short <> "U"},
+                 ctx.delegate_session
+               )
+
+      assert reason =~ "no delegation"
+
+      assert {:ok, text} =
+               call(TaskUpdate, %{status: "working", delegation: short}, ctx.delegate_session)
+
+      assert text =~ "still working on delegation [#{delegation.id}]"
+
+      {:ok, _} = Delegations.complete(delegation, "done")
+
+      assert {:error, reason} =
+               call(
+                 TaskUpdate,
+                 %{result: "again", delegation: delegation.id},
+                 ctx.delegate_session
+               )
+
+      assert reason == "delegation [#{delegation.id}] is already completed"
+      assert Delegations.get!(delegation.id).result == "done"
     end
 
     test "the owner completing the task does not touch delegations addressed to others", ctx do

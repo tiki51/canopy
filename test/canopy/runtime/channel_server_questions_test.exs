@@ -449,37 +449,34 @@ defmodule Canopy.Runtime.ChannelServerQuestionsTest do
     refute_receive {:timeline, %{event_type: "message"}}, 200
   end
 
-  test "a late answer to a delegate's question cites the delegation and reaches its child session",
+  test "a late answer to a delegate's question mentions it and reaches the session doing the work",
        ctx do
     test_pid = self()
-
-    stub(OC, :create_session, fn _dir, %{parentID: _}, _opts ->
-      {:ok, %{"id" => "ses_child_" <> Fixtures.unique_suffix()}}
-    end)
+    helper_session = Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.helper.id})
+    helper_sid = helper_session.engine_session_id
 
     expect(OC, :prompt_async, fn _dir, sid, _body, _opts ->
-      send(test_pid, {:child_prompted, sid})
+      send(test_pid, {:delegate_prompted, sid})
       {:ok, ""}
     end)
 
-    {:ok, delegation} =
+    {:ok, _} =
       Delegations.create(%{
         channel_id: ctx.channel.id,
         task_id: ctx.task.id,
         from_agent_id: ctx.agent.id,
         to_agent_id: ctx.helper.id,
-        parent_session_id: ctx.session.id,
         description: "trace every enqueue path"
       })
 
-    assert_receive {:child_prompted, "ses_child_" <> _ = child_sid}, 2_000
-    ask(child_sid, "que_child")
-    end_turn(child_sid)
+    assert_receive {:delegate_prompted, ^helper_sid}, 2_000
+    ask(helper_sid, "que_delegate")
+    end_turn(helper_sid)
 
     [request] = QuestionRequests.pending_for_channel(ctx.channel.id)
     flush_timeline()
 
-    expect(OC, :reply_question, fn _dir, "que_child", _answers, _opts ->
+    expect(OC, :reply_question, fn _dir, "que_delegate", _answers, _opts ->
       {:error, {:http, 404, %{}}}
     end)
 
@@ -490,10 +487,10 @@ defmodule Canopy.Runtime.ChannelServerQuestionsTest do
 
     assert_receive {:timeline, %{event_type: "message", message: message}}, 2_000
     assert message.body =~ "@#{ctx.helper.name} Answer to your question"
-    assert message.body =~ "(delegation #{delegation.id})"
+    refute message.body =~ "(delegation"
 
-    # the child session that asked, not the delegate's main session
-    assert_receive {:woken, ^child_sid, body}, 2_000
+    # the delegate's one session, where the delegated work is
+    assert_receive {:woken, ^helper_sid, body}, 2_000
     assert text_of(body) =~ "Keep as is"
   end
 
@@ -736,40 +733,6 @@ defmodule Canopy.Runtime.ChannelServerQuestionsTest do
       assert_receive {:woken, ^sid, body}, 2_000
       assert text_of(body) =~ "any news?"
       assert :sys.get_state(ctx.pid).chatter == chatter
-    end
-
-    test "a delegate's child waiting on the user still holds the delegate's main session",
-         ctx do
-      test_pid = self()
-
-      expect(OC, :prompt_async, fn _dir, sid, _body, _opts ->
-        send(test_pid, {:child_prompted, sid})
-        {:ok, ""}
-      end)
-
-      {:ok, _} =
-        Delegations.create(%{
-          channel_id: ctx.channel.id,
-          task_id: ctx.task.id,
-          from_agent_id: ctx.agent.id,
-          to_agent_id: ctx.helper.id,
-          parent_session_id: ctx.session.id,
-          description: "trace every enqueue path"
-        })
-
-      assert_receive {:child_prompted, child_sid}, 2_000
-      ask(child_sid, "que_child")
-
-      # one turn per agent: the helper's main session waits for its child
-      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.helper.name} a quick one")
-      refute_receive {:woken, _, _}, 200
-      assert [{{:root, _}, _}] = :sys.get_state(ctx.pid).waiting
-      assert Runtime.status(ctx.channel.id)[ctx.helper.id] == :awaiting_user
-
-      expect_wake()
-      end_turn(child_sid)
-      assert_receive {:woken, root_sid, _}, 2_000
-      refute root_sid == child_sid
     end
   end
 end

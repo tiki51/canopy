@@ -218,8 +218,7 @@ defmodule Canopy.Runtime.Prompts do
   agent's question tool could no longer take: the turn that asked had ended or
   stopped waiting, or (`as_message?: true`) the engine could not take a typed
   answer in place and reported the question as declined. It mentions the
-  agent, so it wakes it like any message; `delegation_id:` cites the
-  delegation when a delegate's session asked, so it reaches that session.
+  agent, so it wakes it like any message.
   """
   def answer_message(agent_name, questions, answers, opts \\ []) do
     pairs = Enum.zip(questions, answers)
@@ -242,7 +241,7 @@ defmodule Canopy.Runtime.Prompts do
           "\n\n(The question tool could not take an answer in my own words, so it reported the question as declined. This is my answer.)",
         else: ""
 
-    "@#{agent_name} #{answer}#{delegation_ref(opts)}#{note}"
+    "@#{agent_name} #{answer}#{note}"
   end
 
   defp answer_text(chosen) do
@@ -257,12 +256,7 @@ defmodule Canopy.Runtime.Prompts do
   agent's permission prompt could no longer take. The approval cannot reach
   the call that asked, so the agent is told to do it now.
   """
-  def approval_message(
-        agent_name,
-        %{permission: permission, patterns: patterns},
-        reply,
-        opts \\ []
-      ) do
+  def approval_message(agent_name, %{permission: permission, patterns: patterns}, reply) do
     target =
       case List.wrap(patterns) do
         [] -> ""
@@ -271,15 +265,7 @@ defmodule Canopy.Runtime.Prompts do
 
     scope = if reply == :always, do: "always", else: "once"
 
-    "@#{agent_name} Approved: #{permission}#{target} (#{scope}). You can do it now." <>
-      delegation_ref(opts)
-  end
-
-  defp delegation_ref(opts) do
-    case opts[:delegation_id] do
-      id when is_binary(id) -> " (delegation #{id})"
-      _ -> ""
-    end
+    "@#{agent_name} Approved: #{permission}#{target} (#{scope}). You can do it now."
   end
 
   def delegation(%{channel: channel, from: from, delegation_id: delegation_id, task: task}) do
@@ -288,7 +274,7 @@ defmodule Canopy.Runtime.Prompts do
     Delegation ID: #{delegation_id}
     Task: #{task}
 
-    Use the Canopy tools for any context you need. When done, call canopy_task_update with status "completed" and a concise result so #{from} can continue.
+    Use the Canopy tools for any context you need. When done, call canopy_task_update with status "completed", a concise result, and delegation "#{delegation_id}" so #{from} can continue.
     #{time_line()}
     """
   end
@@ -306,13 +292,13 @@ defmodule Canopy.Runtime.Prompts do
       "\nOther messages arrived while this delegation waited; canopy_messages_read returns them.\n"
 
   @doc """
-  Appended to a wake for an agent's main session while the same agent works
-  on delegations in separate sessions of this channel, so it does not start
-  the same work twice.
+  Appended to a prompt for an agent with delegations still pending in the
+  channel, so the work stays in view after its context is compacted. Each
+  delegation is `%{id, description, from}`, `from` already a display name.
   """
-  def delegation_in_progress([]), do: ""
+  def pending_delegations(_channel, []), do: ""
 
-  def delegation_in_progress(delegations) do
+  def pending_delegations(channel, delegations) do
     lines =
       Enum.map_join(delegations, "\n", fn d ->
         description =
@@ -320,14 +306,14 @@ defmodule Canopy.Runtime.Prompts do
           |> Canopy.MCP.Format.single_line()
           |> Canopy.MCP.Format.truncate(200)
 
-        "- #{d.id} (\"#{description}\")"
+        "- #{d.id} from #{d.from} (\"#{description}\")"
       end)
 
     """
 
-    You are also working on #{if length(delegations) == 1, do: "this delegation", else: "these delegations"} in a separate delegated session:
+    You have #{if length(delegations) == 1, do: "a pending delegation", else: "pending delegations"} in ##{channel}:
     #{lines}
-    Don't start that work here. If this message is about it, say it is in progress.
+    When one is done, call canopy_task_update with status "completed", a result, and its delegation id.
     """
   end
 

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, uniq } from "./helpers";
 
 test.describe("channel collaboration", () => {
   test("a user message wakes the owner: telemetry, an agent post via MCP, the reply, and a turn summary", async ({ page }) => {
@@ -56,8 +56,9 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page)).toContainText(/finished/);
   });
 
-  test("/delegate runs the delegate in a child session and wakes the owner with the result", async ({ page }) => {
-    await createChannel(page);
+  test("/delegate runs the delegate in its own session and wakes the owner with the result", async ({ page }) => {
+    const name = uniq("chan");
+    await createChannel(page, name);
     await send(page, "/delegate @researcher list every enqueue path");
 
     await expect(timeline(page)).toContainText(/delegat/i);
@@ -65,6 +66,12 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page)).toContainText("Delegated work finished.");
     await expect(timeline(page)).toContainText("Found two enqueue paths.");
     await expect(timeline(page)).toContainText("Delegation result received; wrapping up.");
+
+    // one session per agent in the channel: no child sessions
+    const res = await page.request.get(`http://127.0.0.1:${process.env.FAKE_OPENCODE_PORT || 4396}/__fake/sessions`);
+    const sessions = ((await res.json()) as { parentID: string | null; title: string }[]).filter((s) => s.title?.startsWith(`#${name} `));
+    expect(sessions.filter((s) => s.parentID)).toEqual([]);
+    expect(sessions.map((s) => s.title).sort()).toEqual([`#${name} · @backend`, `#${name} · @researcher`]);
   });
 
   test("/handoff asks the target, who accepts through MCP, and the owner badge changes", async ({ page }) => {

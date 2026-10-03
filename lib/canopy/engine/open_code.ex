@@ -46,15 +46,6 @@ defmodule Canopy.Engine.OpenCode do
   def create_session(ctx, state, agent, opts) do
     body = %{title: Keyword.get(opts, :title), agent: agent.opencode_agent || "build"}
 
-    # A child of an OpenCode session is created under it; a parent on another
-    # engine has no OpenCode id, so the child is a root session there and the
-    # delegation link lives in Canopy alone.
-    body =
-      case Keyword.get(opts, :parent) do
-        %{engine: "opencode", engine_session_id: parent_id} -> Map.put(body, :parentID, parent_id)
-        _ -> body
-      end
-
     case client().create_session(ctx.repository.path, body, state.client_opts) do
       {:ok, %{"id" => id}} -> {:ok, %{engine_session_id: id}}
       {:ok, other} -> {:error, {:unexpected, other}}

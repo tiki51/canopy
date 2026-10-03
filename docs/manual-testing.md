@@ -161,7 +161,7 @@ In the composer:
 ![Delegation](screenshots/09-delegation.png)
 
 - [ ] A subtle system note (`Delegated to @researcher: …`) and a `delegated` line.
-- [ ] @researcher goes busy **in a child session** (its own working card), @backend stays idle.
+- [ ] @researcher goes busy in its own channel session (its working card), @backend stays idle.
 - [ ] When the researcher calls `canopy_task_update` with a result, a `delegation completed` line
       appears with the result, and @backend wakes up with it (a second `started working` line).
 - [ ] The channel task itself is unchanged: delegates never edit it.

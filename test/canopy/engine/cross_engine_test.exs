@@ -75,7 +75,7 @@ defmodule Canopy.Engine.CrossEngineTest do
     {:ok, Map.merge(scenario, %{coder: coder, log: log})}
   end
 
-  test "an OpenCode owner delegates to a Claude Code agent: a Claude child session, linked to the parent",
+  test "an OpenCode owner delegates to a Claude Code agent: the work runs in the delegate's Claude session",
        ctx do
     {:ok, delegation} =
       Delegations.create(%{
@@ -95,11 +95,11 @@ defmodule Canopy.Engine.CrossEngineTest do
 
     assert did == delegation.id
 
-    child = AgentSessions.get!(Delegations.get!(delegation.id).child_session_id)
-    assert child.engine == "claude_code"
-    assert child.agent_id == ctx.coder.id
-    assert child.parent_session_id == ctx.session.id
-    assert is_binary(child.mcp_token)
+    session = AgentSessions.get!(Delegations.get!(delegation.id).child_session_id)
+    assert session.id == AgentSessions.get_root(ctx.channel.id, ctx.coder.id).id
+    assert session.engine == "claude_code"
+    assert is_nil(session.parent_session_id)
+    assert is_binary(session.mcp_token)
 
     stdin =
       ctx.log
@@ -111,7 +111,7 @@ defmodule Canopy.Engine.CrossEngineTest do
     assert stdin =~ "list every retry path"
   end
 
-  test "a Claude Code owner delegates to an OpenCode agent: the OpenCode child has no parent id",
+  test "a Claude Code owner delegates to an OpenCode agent: the delegate's own OpenCode session",
        ctx do
     test_pid = self()
     helper = Fixtures.agent_fixture(%{name: "helper" <> Fixtures.unique_suffix()})
@@ -129,7 +129,7 @@ defmodule Canopy.Engine.CrossEngineTest do
 
     expect(OC, :create_session, fn _dir, body, _opts ->
       send(test_pid, {:created, body})
-      {:ok, %{"id" => "ses_helper_child"}}
+      {:ok, %{"id" => "ses_helper"}}
     end)
 
     expect(OC, :prompt_async, fn _dir, sid, _body, _opts ->
@@ -155,11 +155,13 @@ defmodule Canopy.Engine.CrossEngineTest do
 
     assert_receive {:created, body}, 5_000
     refute Map.has_key?(body, :parentID)
-    assert_receive {:prompted, "ses_helper_child"}, 5_000
+    assert_receive {:prompted, "ses_helper"}, 5_000
 
-    child = Enum.find(AgentSessions.list_for_channel(channel.id), &(&1.agent_id == helper.id))
-    assert child.engine == "opencode"
-    assert child.parent_session_id == owner_session.id
+    assert [session] =
+             Enum.filter(AgentSessions.list_for_channel(channel.id), &(&1.agent_id == helper.id))
+
+    assert session.engine == "opencode"
+    assert is_nil(session.parent_session_id)
   end
 
   test "a scheduled wake runs a Claude Code turn with the scheduled trigger", ctx do

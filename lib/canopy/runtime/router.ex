@@ -3,8 +3,8 @@ defmodule Canopy.Runtime.Router do
   Pure decisions about which agents a timeline event should wake, and with what
   prompt. Keeping this out of the GenServer makes the routing rules unit-testable.
 
-  Returns a list of `{target, text}` where target is `{:root, agent_id}` or
-  `{:child, delegation}` (a delegate working in a child session).
+  Returns a list of `{target, text}` where target is `{:root, agent_id}`: the
+  agent's one engine session in the channel.
   """
 
   alias Canopy.Runtime.Prompts
@@ -15,12 +15,6 @@ defmodule Canopy.Runtime.Router do
   function `agent_id -> %Agent{} | nil` for display names, and `thread_root`
   (`message_id -> message | nil`). Targets without an agent (for example the
   previous owner of a user-initiated handoff) are dropped.
-
-  `pending_children` (optional) maps an agent id to the pending delegations
-  it is doing in child sessions, as `%{id: delegation_id, from_agent_id: id}`.
-  A message to such an agent goes to the child session when it cites the
-  delegation's id (or its short form, `dl_` plus eight characters), or when
-  its sender is the delegator of exactly one of them.
   """
   def wakeups(event, ctx) do
     event
@@ -93,16 +87,13 @@ defmodule Canopy.Runtime.Router do
 
     targets
     |> Enum.uniq()
-    |> Enum.map(&{session_target(&1, message, ctx), wake})
+    |> Enum.map(&{{:root, &1}, wake})
   end
 
+  # Whoever delegated, the delegate does the work in its own session.
   defp do_wakeups(%Event{event_type: "delegation_created", payload: p} = ev, ctx) do
-    # A delegation from an agent runs in a child session under the delegator; one
-    # from the user (no delegator) runs in the delegate's own root session.
-    target = if p["from_agent_id"], do: {:child, ev.ref_id}, else: {:root, p["to_agent_id"]}
-
     [
-      {target,
+      {{:root, p["to_agent_id"]},
        Prompts.delegation(%{
          channel: ctx.channel.name,
          from: name(ctx, p["from_agent_id"]),
@@ -161,36 +152,6 @@ defmodule Canopy.Runtime.Router do
   end
 
   defp do_wakeups(_event, _ctx), do: []
-
-  # A message about a delegation goes to the child session doing it, so the
-  # delegate hears the follow-up where the work is and its root session does
-  # not start on the same task. The user talking to the agent means its main
-  # session unless they cite the delegation.
-  defp session_target(agent_id, message, ctx) do
-    pending = ctx |> Map.get(:pending_children, %{}) |> Map.get(agent_id, [])
-    body = Map.get(message, :body) || ""
-
-    cited =
-      case Enum.filter(pending, &String.contains?(body, &1.id)) do
-        [] -> Enum.filter(pending, &String.contains?(body, short_id(&1.id)))
-        full -> full
-      end
-
-    from_sender =
-      Enum.filter(
-        pending,
-        &(is_binary(message.agent_id) and &1.from_agent_id == message.agent_id)
-      )
-
-    case {cited, from_sender} do
-      {[delegation], _} -> {:child, delegation.id}
-      {[], [delegation]} -> {:child, delegation.id}
-      _ -> {:root, agent_id}
-    end
-  end
-
-  # How agents usually cite a delegation: `dl_` and the first eight characters.
-  defp short_id(id), do: String.slice(id, 0, 11)
 
   defp documents_of(message) do
     case Map.get(message, :documents) do

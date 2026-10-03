@@ -17,7 +17,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   Permission and question prompts. A turn whose engine holds a tool call open
   on a card is marked as awaiting the user (`:awaiting_user`). It still holds
-  its agent (two sessions of one agent never run at once), but under
+  its session (the agent's later wakes queue behind it), but under
   `serialize_turns` it no longer holds the channel: other agents' wakes start
   while it waits. When the answer comes and the blocked turn resumes, another
   turn may already be running; that is the one sanctioned overlap of
@@ -79,11 +79,9 @@ defmodule Canopy.Runtime.ChannelServer do
     engine_opts: [],
     # engine module => the adapter's own state for this channel
     engines: %{},
-    # agent_id => %AgentSession{} (root sessions)
+    # agent_id => %AgentSession{}: one session per agent in the channel
     sessions: %{},
-    # delegation_id => %AgentSession{} (child sessions)
-    child_sessions: %{},
-    # engine_session_id => %{agent_id, delegation_id | nil}
+    # engine_session_id => %{agent_id}
     index: %{},
     # engine_session_id => turn accumulator while busy
     turns: %{},
@@ -100,8 +98,7 @@ defmodule Canopy.Runtime.ChannelServer do
     stopped?: false,
     # a DM moved to another repository: applied once no turn is in flight
     pending_switch?: false,
-    # wakes waiting for the channel's one turn at a time (serialize_turns),
-    # or for another session of the same agent to finish its turn
+    # wakes waiting for the channel's one turn at a time (serialize_turns)
     waiting: [],
     # the hold reason this channel already posted a note for (one note per hold)
     hold_noted: nil,
@@ -211,21 +208,14 @@ defmodule Canopy.Runtime.ChannelServer do
     state = attach_engines(state)
 
     # Turns in flight are not restored: a server restarted mid-turn does not
-    # know that turn, so the one-turn-per-agent gate cannot hold a wake behind
-    # it. Rebuilding turns from sessions marked busy would need the engine's
-    # word that they still run; the gap is accepted.
-    Enum.reduce(AgentSessions.list_for_channel(state.channel.id), state, fn session, acc ->
-      case session.parent_session_id do
-        nil ->
-          acc |> put_root(session)
-
-        _ ->
-          case Delegations.get_by_child_session(session.id) do
-            %{id: did} -> put_child(acc, did, session)
-            _ -> acc
-          end
-      end
-    end)
+    # know that turn, so a wake for its agent is not queued behind it.
+    # Rebuilding turns from sessions marked busy would need the engine's word
+    # that they still run; the gap is accepted. Child sessions, left from when
+    # an agent's delegations ran in sessions of their own, are never woken.
+    state.channel.id
+    |> AgentSessions.list_for_channel()
+    |> Enum.filter(&is_nil(&1.parent_session_id))
+    |> Enum.reduce(state, &put_root(&2, &1))
   end
 
   @impl true
@@ -397,9 +387,8 @@ defmodule Canopy.Runtime.ChannelServer do
     do: {:reply, state.telemetry |> Map.get(agent_id, []) |> Enum.reverse(), state}
 
   def handle_call(:status, _from, state) do
-    # An agent working in any of its sessions is busy, even with a wake for
-    # another of its sessions waiting behind that turn; one blocked on a card
-    # is shown as waiting on the user, whatever its other sessions do.
+    # An agent with a turn in flight is busy, even with a wake waiting in line
+    # for it; one blocked on a card is shown as waiting on the user.
     idle = Map.new(state.sessions, fn {agent_id, _session} -> {agent_id, :idle} end)
     queued = Map.new(waiting_agent_ids(state), &{&1, :queued})
     busy = Map.new(state.turns, fn {_sid, turn} -> {turn.agent_id, :busy} end)
@@ -457,7 +446,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
     wakes =
       Enum.map(Router.wakeups(event, ctx), fn {target, wake} ->
-        {target, wake |> wake_message(trigger) |> put_message_id(event)}
+        {target, wake |> wake_message(trigger) |> put_message_id(event) |> put_delegation(event)}
       end)
 
     state =
@@ -775,12 +764,6 @@ defmodule Canopy.Runtime.ChannelServer do
       Canopy.Settings.serialize_turns?() and running_turns(state) > 0 ->
         enqueue_waiting(state, target, text)
 
-      # One turn per agent, whatever serialize_turns says: a delegate working
-      # in a child session must not start its root session too (or the other
-      # way round), or two processes of one agent edit the same tree at once.
-      busy_elsewhere?(state, target) ->
-        enqueue_waiting(state, target, text)
-
       true ->
         chatter = if counted?(text), do: state.chatter, else: state.chatter + 1
         do_wake(%{state | chatter: chatter}, target, Map.delete(text, :counted?))
@@ -830,11 +813,11 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  # An agent already working in another session stays shown as busy; its
-  # waiting wake follows when that turn ends.
+  # An agent already working stays shown as busy; its waiting wake follows
+  # when that turn ends.
   defp enqueue_waiting(state, target, text) do
     state = %{state | waiting: put_once(state.waiting, target, text)}
-    agent_id = target_agent_id(state, target)
+    agent_id = target_agent_id(target)
 
     if agent_id && not agent_busy?(state, agent_id),
       do: broadcast(state, {:agent_status, agent_id, :queued})
@@ -856,7 +839,8 @@ defmodule Canopy.Runtime.ChannelServer do
   # start from, and the agent reads everything new when it wakes, so the text
   # is the newer wake's plus a line saying it stands for more. A delegation
   # carries its task, so a delegation wake keeps its text and the message
-  # follows it. Attachments from both ride along.
+  # follows it; two delegation wakes keep both texts, in order, so no task is
+  # lost. Attachments from both ride along.
   defp merge_wake(old, new) do
     attachments =
       (Map.get(old, :attachments, []) ++ Map.get(new, :attachments, []))
@@ -864,6 +848,11 @@ defmodule Canopy.Runtime.ChannelServer do
 
     merged =
       case {Map.get(old, :trigger), Map.get(new, :trigger)} do
+        {"delegation", "delegation"} ->
+          old
+          |> Map.put(:text, old.text <> "\n" <> new.text)
+          |> Map.put(:delegation_ids, delegation_ids(old) ++ delegation_ids(new))
+
         {"delegation", trigger} when trigger != "delegation" ->
           Map.put(old, :text, old.text <> Prompts.delegation_followup(Map.get(new, :message_id)))
 
@@ -885,26 +874,19 @@ defmodule Canopy.Runtime.ChannelServer do
       else: start_free_waiting(state)
   end
 
-  # One turn at a time: the first in line whose agent is free starts once no
-  # turn is running (turns waiting on the user do not count). An entry whose
-  # agent still has a turn in another session (waiting on the user, say) keeps
-  # its place. A wake that cannot start (held, dropped, its session failed, or
-  # queued on a session that is waiting) leaves the channel free, so the next
-  # in line is tried until one runs.
+  # One turn at a time: the first in line starts once no turn is running
+  # (turns waiting on the user do not count). A wake that cannot start (held,
+  # dropped, its session failed, or queued on a session that is waiting on the
+  # user) leaves the channel free, so the next in line is tried until one runs.
   defp start_first_waiting(state) do
-    if running_turns(state) > 0 do
-      state
-    else
-      case Enum.split_while(state.waiting, fn {t, _} -> busy_elsewhere?(state, t) end) do
-        {_held, []} ->
-          state
+    case {running_turns(state), state.waiting} do
+      {0, [{target, text} | rest]} ->
+        %{state | waiting: rest}
+        |> wake_within_budget(target, text)
+        |> start_next_waiting()
 
-        {held, [{target, text} | rest]} ->
-          state
-          |> Map.put(:waiting, held ++ rest)
-          |> wake_within_budget(target, text)
-          |> start_next_waiting()
-      end
+      _ ->
+        state
     end
   end
 
@@ -912,65 +894,17 @@ defmodule Canopy.Runtime.ChannelServer do
   defp running_turns(state),
     do: Enum.count(state.turns, fn {_sid, turn} -> not awaiting?(turn) end)
 
-  # Turns run side by side: every waiting wake whose agent is free starts, in
-  # order, one per agent; the rest keep their place in line.
+  # Turns run side by side: every waiting wake goes out, in order; one for an
+  # agent still working queues on its session.
   defp start_free_waiting(state) do
-    {state, _started} =
-      Enum.reduce(state.waiting, {%{state | waiting: []}, MapSet.new()}, fn
-        {target, text} = entry, {acc, started} ->
-          agent_id = target_agent_id(acc, target)
-
-          if MapSet.member?(started, agent_id) or busy_elsewhere?(acc, target),
-            do: {%{acc | waiting: acc.waiting ++ [entry]}, started},
-            else: {wake_within_budget(acc, target, text), MapSet.put(started, agent_id)}
-      end)
-
-    state
-  end
-
-  defp waiting_agent_ids(state),
-    do:
-      state.waiting
-      |> Enum.map(fn {t, _} -> target_agent_id(state, t) end)
-      |> Enum.reject(&is_nil/1)
-
-  # The agent a wake target belongs to: a root target names it, a child target
-  # names the delegation whose delegate it is.
-  defp target_agent_id(_state, {:root, agent_id}), do: agent_id
-
-  defp target_agent_id(state, {:child, delegation_id}) do
-    case Map.get(state.child_sessions, delegation_id) do
-      %{agent_id: id} ->
-        id
-
-      nil ->
-        case Delegations.get(delegation_id) do
-          %{to_agent_id: id} -> id
-          _ -> nil
-        end
-    end
-  end
-
-  # The engine session a wake target would prompt, when it exists yet.
-  defp target_session_id(state, {:root, agent_id}),
-    do: state.sessions |> Map.get(agent_id) |> engine_session_id()
-
-  defp target_session_id(state, {:child, delegation_id}),
-    do: state.child_sessions |> Map.get(delegation_id) |> engine_session_id()
-
-  defp engine_session_id(%{engine_session_id: sid}), do: sid
-  defp engine_session_id(nil), do: nil
-
-  # The target's agent has a turn in flight in a different session. A wake for
-  # the session that is busy itself queues on that session instead (prompt/4).
-  defp busy_elsewhere?(state, target) do
-    agent_id = target_agent_id(state, target)
-    sid = target_session_id(state, target)
-
-    Enum.any?(state.turns, fn {turn_sid, turn} ->
-      turn.agent_id == agent_id and turn_sid != sid
+    Enum.reduce(state.waiting, %{state | waiting: []}, fn {target, text}, acc ->
+      wake_within_budget(acc, target, text)
     end)
   end
+
+  defp waiting_agent_ids(state), do: Enum.map(state.waiting, fn {t, _} -> target_agent_id(t) end)
+
+  defp target_agent_id({:root, agent_id}), do: agent_id
 
   defp pause(state, limit, held) do
     {:ok, _} =
@@ -1037,7 +971,7 @@ defmodule Canopy.Runtime.ChannelServer do
       entries == [] ->
         state
 
-      # another turn of the same agent (a child session) is still running
+      # the agent's session is compacting: the wakes go out once that ends
       agent_busy?(state, agent_id) ->
         state
 
@@ -1083,6 +1017,15 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp put_message_id(wake, _event), do: wake
 
+  # A delegation wake remembers its delegation, so the turn it starts is
+  # attributed to it and the delegation is marked working when it goes out.
+  defp put_delegation(wake, %Timeline.Event{event_type: "delegation_created", ref_id: id}),
+    do: Map.put(wake, :delegation_ids, [id])
+
+  defp put_delegation(wake, _event), do: wake
+
+  defp delegation_ids(wake), do: Map.get(wake, :delegation_ids, [])
+
   defp trigger_of(%Timeline.Event{event_type: "message", message: %{agent_id: nil}}), do: "user"
   defp trigger_of(%Timeline.Event{event_type: "message"}), do: "agent"
   defp trigger_of(%Timeline.Event{event_type: "delegation_" <> _}), do: "delegation"
@@ -1096,22 +1039,6 @@ defmodule Canopy.Runtime.ChannelServer do
 
       {:error, reason, state} ->
         record_error(state, agent_id, "could not start session: #{inspect(reason)}")
-    end
-  end
-
-  defp do_wake(state, {:child, delegation_id}, text) do
-    delegation = Delegations.get!(delegation_id)
-
-    with {:ok, parent, state} <- ensure_root_session(state, delegation.from_agent_id),
-         {:ok, child, state} <- ensure_child_session(state, delegation, parent) do
-      prompt(state, child, delegation.to_agent_id, text)
-    else
-      {:error, reason, state} ->
-        record_error(
-          state,
-          delegation.to_agent_id,
-          "could not start child session: #{inspect(reason)}"
-        )
     end
   end
 
@@ -1138,35 +1065,58 @@ defmodule Canopy.Runtime.ChannelServer do
     es = mod.prepare(ctx(state), es)
     state = put_engine_state(state, mod, es)
     plan = materialize_attachments(state, Map.get(wake, :attachments, []))
+    ids = delegation_ids(wake)
+    # before the prompt: a quick delegate may report back before it returns
+    start_delegations(ids, session)
 
     prompt = %{
-      text: text <> delegations_elsewhere(state, session, agent_id),
+      text: text <> pending_delegations(state, agent_id, ids),
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       attachments: plan
     }
 
     case mod.send_prompt(ctx(state), es, session, agent, prompt) do
       {:ok, %{attachments: attachments}} ->
-        begin_turn(state, session, agent_id, trigger, attachments)
+        begin_turn(state, session, agent_id, trigger, attachments, ids)
 
       {:error, reason} ->
         record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
     end
   end
 
-  # A main session is told what the agent's delegated sessions in this channel
-  # are doing, read when the prompt goes out so a wake that waited is current.
-  defp delegations_elsewhere(state, %{parent_session_id: nil}, agent_id) do
-    state.channel.id
-    |> Delegations.list_pending_children()
-    |> Enum.filter(&(&1.to_agent_id == agent_id))
-    |> Prompts.delegation_in_progress()
+  # The delegations a wake carries are worked on in the delegate's session from
+  # now on; one already working (or finished) is left as it is.
+  defp start_delegations(ids, session) do
+    Enum.each(ids, fn id ->
+      case Delegations.get(id) do
+        %{status: "requested"} = delegation ->
+          {:ok, _} = Delegations.start(delegation, session.id)
+
+        _ ->
+          :ok
+      end
+    end)
   end
 
-  defp delegations_elsewhere(_state, _child_session, _agent_id), do: ""
+  # Every prompt reminds the agent of the delegations it still has open in
+  # the channel, read when the prompt goes out so a wake that waited is
+  # current; the ones this wake hands over are already spelled out in it.
+  defp pending_delegations(state, agent_id, except) do
+    pending =
+      state.channel.id
+      |> Delegations.list_pending_for(agent_id)
+      |> Enum.reject(&(&1.id in except))
+      |> Enum.map(fn d ->
+        from = if d.from_agent, do: "@" <> d.from_agent.name, else: Users.local().display_name
+        %{id: d.id, description: d.description, from: from}
+      end)
+
+    Prompts.pending_delegations(state.channel.name, pending)
+  end
 
   # The engine accepted a prompt: the session is busy until it reports done.
-  defp begin_turn(state, session, agent_id, trigger, attachments) do
+  # `delegation_ids` are the delegations the wake handed over, if any.
+  defp begin_turn(state, session, agent_id, trigger, attachments, delegation_ids \\ []) do
     {:ok, _} = AgentSessions.set_status(session, "busy")
     broadcast(state, {:agent_status, agent_id, :busy})
 
@@ -1202,6 +1152,7 @@ defmodule Canopy.Runtime.ChannelServer do
       steps: 0,
       tokens: %{},
       trigger: trigger,
+      delegation_ids: delegation_ids,
       # documents sent along in the prompt; they stay in the session's context
       attachments: attachments
     }
@@ -1253,60 +1204,13 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp ensure_child_session(state, delegation, parent) do
-    case Map.get(state.child_sessions, delegation.id) do
-      %AgentSessions.AgentSession{} = child ->
-        {:ok, child, state}
-
-      nil ->
-        agent = Agents.get!(delegation.to_agent_id)
-        title = "##{state.channel.name} · @#{agent.name} (delegated)"
-        {mod, es, state} = engine_of(state, agent)
-
-        with {:ok, attrs} <-
-               mod.create_session(ctx(state), es, agent, title: title, parent: parent),
-             {:ok, child} <-
-               AgentSessions.create(
-                 Map.merge(attrs, %{
-                   channel_id: state.channel.id,
-                   agent_id: delegation.to_agent_id,
-                   engine: agent.engine,
-                   parent_session_id: parent.id
-                 })
-               ),
-             {:ok, _} <- Delegations.start(delegation, child.id) do
-          {:ok, child, put_child(state, delegation.id, child)}
-        else
-          {:error, reason} -> {:error, reason, state}
-        end
-    end
-  end
-
   defp put_root(state, session) do
     state = subscribe_once(state, session)
 
     %{
       state
       | sessions: Map.put(state.sessions, session.agent_id, session),
-        index:
-          Map.put(state.index, session.engine_session_id, %{
-            agent_id: session.agent_id,
-            delegation_id: nil
-          })
-    }
-  end
-
-  defp put_child(state, delegation_id, session) do
-    state = subscribe_once(state, session)
-
-    %{
-      state
-      | child_sessions: Map.put(state.child_sessions, delegation_id, session),
-        index:
-          Map.put(state.index, session.engine_session_id, %{
-            agent_id: session.agent_id,
-            delegation_id: delegation_id
-          })
+        index: Map.put(state.index, session.engine_session_id, %{agent_id: session.agent_id})
     }
   end
 
@@ -1673,7 +1577,9 @@ defmodule Canopy.Runtime.ChannelServer do
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => outcome_label(outcome),
               "model" => turn_model(who.agent_id),
-              "delegation_id" => who.delegation_id,
+              # the delegations the turn was woken for: the first, and all
+              "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
+              "delegation_ids" => Map.get(turn, :delegation_ids, []),
               "activity" => activity,
               "passed" => is_binary(turn.passed),
               "note" => turn.passed,
@@ -1712,8 +1618,8 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  # A wake for another of the agent's sessions waiting behind this turn shows
-  # the agent queued rather than idle until it starts.
+  # A wake for the agent waiting in line shows it queued rather than idle
+  # until it starts.
   defp status_after_turn(_state, _who, {:error, _}), do: :error
 
   defp status_after_turn(state, who, _outcome) do
@@ -1752,7 +1658,6 @@ defmodule Canopy.Runtime.ChannelServer do
       | channel: channel,
         repository: repository,
         sessions: %{},
-        child_sessions: %{},
         index: %{},
         queues: %{},
         telemetry: %{},
@@ -1825,15 +1730,8 @@ defmodule Canopy.Runtime.ChannelServer do
         state = %{state | queues: Map.put(state.queues, sid, rest)}
 
         if Canopy.Settings.serialize_turns?() and running_turns(state) > 0,
-          do: enqueue_waiting(state, session_target(state, sid, agent_id), counted(next)),
+          do: enqueue_waiting(state, {:root, agent_id}, counted(next)),
           else: send_prompt(state, session, agent_id, next)
-    end
-  end
-
-  defp session_target(state, sid, agent_id) do
-    case Map.get(state.index, sid) do
-      %{delegation_id: did} when is_binary(did) -> {:child, did}
-      _ -> {:root, agent_id}
     end
   end
 
@@ -1953,15 +1851,11 @@ defmodule Canopy.Runtime.ChannelServer do
     %{state | telemetry: Map.put(state.telemetry, agent_id, events)}
   end
 
-  defp session_for(state, sid) do
-    Enum.find_value(state.sessions, fn {_, s} -> s.engine_session_id == sid && s end) ||
-      Enum.find_value(state.child_sessions, fn {_, s} -> s.engine_session_id == sid && s end)
-  end
+  defp session_for(state, sid),
+    do: Enum.find_value(state.sessions, fn {_, s} -> s.engine_session_id == sid && s end)
 
-  defp session_for_id(state, id) do
-    Enum.find_value(state.sessions, fn {_, s} -> s.id == id && s end) ||
-      Enum.find_value(state.child_sessions, fn {_, s} -> s.id == id && s end)
-  end
+  defp session_for_id(state, id),
+    do: Enum.find_value(state.sessions, fn {_, s} -> s.id == id && s end)
 
   # -- Helpers ----------------------------------------------------------------
 
@@ -1972,15 +1866,8 @@ defmodule Canopy.Runtime.ChannelServer do
       owner_agent_id: state.channel.owner_agent_id,
       user_name: Users.local().display_name,
       lookup: &Agents.get/1,
-      thread_root: &Messages.get/1,
-      pending_children: pending_children(state)
+      thread_root: &Messages.get/1
     }
-  end
-
-  defp pending_children(state) do
-    state.channel.id
-    |> Delegations.list_pending_children()
-    |> Enum.group_by(& &1.to_agent_id, &%{id: &1.id, from_agent_id: &1.from_agent_id})
   end
 
   defp maybe_refresh_channel(%{event_type: type}, state)
@@ -2093,13 +1980,7 @@ defmodule Canopy.Runtime.ChannelServer do
     do: QuestionRequests.resolve(request, :rejected, by: "user")
 
   defp deliver_late_answer(state, %{status: "pending"} = request, {:answered, answers}, opts) do
-    body =
-      Prompts.answer_message(
-        asker_name(request),
-        request.questions,
-        answers,
-        [delegation_id: asker_delegation(state, request)] ++ opts
-      )
+    body = Prompts.answer_message(asker_name(request), request.questions, answers, opts)
 
     with {:ok, message} <- Messages.post_user_message(state.channel.id, Users.local().id, body) do
       QuestionRequests.resolve(request, {:answered, answers},
@@ -2116,10 +1997,7 @@ defmodule Canopy.Runtime.ChannelServer do
     do: PermissionRequests.resolve(request, :reject)
 
   defp deliver_late_permission(state, %{status: "pending"} = request, reply) do
-    body =
-      Prompts.approval_message(asker_name(request), request, reply,
-        delegation_id: asker_delegation(state, request)
-      )
+    body = Prompts.approval_message(asker_name(request), request, reply)
 
     with {:ok, message} <- Messages.post_user_message(state.channel.id, Users.local().id, body) do
       PermissionRequests.resolve(request, reply, delivered: "message", message_id: message.id)
@@ -2130,23 +2008,6 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp asker_name(%{agent_session: %{agent: %{name: name}}}), do: name
   defp asker_name(%{agent_session: %{agent_id: id}}), do: agent_name(id)
-
-  # A delegate's child session asked: the message cites the delegation, so the
-  # router sends it to that session rather than the agent's main one.
-  defp asker_delegation(state, %{agent_session: %{engine_session_id: sid, id: id}}) do
-    case Map.get(state.index, sid) do
-      %{delegation_id: did} when is_binary(did) ->
-        did
-
-      _ ->
-        case Delegations.get_by_child_session(id) do
-          %{id: did} -> did
-          nil -> nil
-        end
-    end
-  end
-
-  defp asker_delegation(_state, _request), do: nil
 
   # OpenCode sends one list of chosen labels per question; older payloads used a
   # bare string per question.

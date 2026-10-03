@@ -717,7 +717,6 @@ defmodule CanopyWeb.TimelineComponents do
   """
   attr :request, :map, required: true
   attr :names, :map, required: true
-  attr :delegation_id, :string, default: nil, doc: "set when a delegate's child session asks"
 
   def permission_card(assigns) do
     ~H"""
@@ -733,9 +732,6 @@ defmodule CanopyWeb.TimelineComponents do
         <.icon name="hero-shield-exclamation" class="size-5 text-warning" />
         <div class="min-w-0 flex-1 text-sm">
           <span class="font-medium">@{requester_name(@request, @names)}</span>
-          <span :if={@delegation_id} class="text-base-content/60">
-            (delegated {@delegation_id})
-          </span>
           {if @request.detached_at, do: "asked for", else: "asks for"}
           <span class="font-semibold">{@request.permission}</span>
           permission
@@ -937,6 +933,9 @@ defmodule CanopyWeb.TimelineComponents do
       "delegation_failed" ->
         "#{to} could not complete the delegation for #{from}" <> suffix(p["result"])
 
+      "delegation_cancelled" ->
+        p["note"] || "#{to}'s delegation from #{from} was cancelled"
+
       "handoff_requested" ->
         "#{from} handed this task to #{to}" <> suffix(p["reason"] || p["summary"])
 
@@ -1081,7 +1080,6 @@ defmodule CanopyWeb.TimelineComponents do
   """
   attr :request, :map, required: true
   attr :names, :map, required: true
-  attr :delegation_id, :string, default: nil, doc: "set when a delegate's child session asks"
 
   def question_card(assigns) do
     ~H"""
@@ -1100,9 +1098,6 @@ defmodule CanopyWeb.TimelineComponents do
           <.icon name="hero-question-mark-circle" class="size-5 text-info" />
           <div class="min-w-0 flex-1">
             <span class="font-medium">@{requester_name(@request, @names)}</span>
-            <span :if={@delegation_id} class="text-base-content/60">
-              (delegated {@delegation_id})
-            </span>
             <span :if={!@request.detached_at}>needs a decision to carry on</span>
             <span :if={@request.detached_at} id={"question-#{@request.id}-detached"}>
               stopped waiting. Your answer will be sent to it as a message.

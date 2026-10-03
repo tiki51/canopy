@@ -11,7 +11,7 @@ defmodule Canopy.AgentSessions do
 
   @identity_preloads [:agent, channel: [:repository]]
 
-  @doc "Returns the agent's root session in a channel, or nil."
+  @doc "Returns the agent's session in a channel (its root session), or nil."
   def get_root(channel_id, agent_id) do
     Repo.one(
       from s in AgentSession,

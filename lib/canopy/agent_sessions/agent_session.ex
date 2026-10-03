@@ -2,8 +2,10 @@ defmodule Canopy.AgentSessions.AgentSession do
   @moduledoc """
   One engine session owned by an agent inside a channel.
 
-  Each agent has exactly one root session (no parent) per channel; delegations
-  create child sessions that point at the delegator's session.
+  Each agent has exactly one root session (no parent) per channel, and does
+  all its work there, delegations included. Child sessions (with a parent)
+  are left from when an agent's delegations ran in sessions of their own;
+  they are kept for history and costs but never woken.
   """
 
   use Ecto.Schema

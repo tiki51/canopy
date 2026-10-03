@@ -14,7 +14,7 @@ defmodule Canopy.Timeline.Event do
   @event_types ~w(
     message
     agent_started agent_turn_completed agent_error session_reset session_compacted
-    delegation_created delegation_completed delegation_failed
+    delegation_created delegation_completed delegation_failed delegation_cancelled
     handoff_requested handoff_accepted handoff_rejected
     task_updated owner_changed
     member_added member_removed channel_archived channel_reopened repository_switched

@@ -75,8 +75,8 @@ defmodule Canopy.Engine do
   @callback prepare(ctx, engine_state) :: engine_state
 
   @doc """
-  Creates a session for the agent; `opts` may carry `title:` and `parent:` (a
-  session). Returns the attributes to store on the `agent_sessions` row:
+  Creates a session for the agent; `opts` may carry `title:`. Returns the
+  attributes to store on the `agent_sessions` row:
   `engine_session_id`, plus whatever the engine needs later (`mcp_token`).
   """
   @callback create_session(ctx, engine_state, agent, opts :: keyword()) ::

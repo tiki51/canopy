@@ -34,10 +34,14 @@ defmodule Canopy.Delegations do
     |> commit()
   end
 
-  @doc "Marks the delegation as working and stores the delegate's child session."
-  def start(%Delegation{} = delegation, child_session_id) do
+  @doc """
+  Marks the delegation as working in the delegate's session. The column is
+  still named `child_session_id` from when delegations ran in child sessions;
+  it now holds the delegate's one session in the channel.
+  """
+  def start(%Delegation{} = delegation, session_id) do
     delegation
-    |> Delegation.changeset(%{status: "working", child_session_id: child_session_id})
+    |> Delegation.changeset(%{status: "working", child_session_id: session_id})
     |> Repo.update()
     |> preload()
   end
@@ -72,52 +76,20 @@ defmodule Canopy.Delegations do
   end
 
   @doc """
-  Pending delegations to `agent_id` in a channel that run in the delegate's
-  root session: the user's, which have no delegator and no child session. An
-  agent's delegation belongs to the child session it wakes, even before that
-  session exists, so the delegate's root session never reports on it.
+  Delegations in a channel whose id is `ref`, or starts with it when `ref` is
+  at least the short form agents cite (`dl_` plus eight characters).
   """
-  def list_pending_root_for(channel_id, agent_id) do
+  def matching(channel_id, ref) when is_binary(ref) do
+    ref = String.trim(ref)
+    prefix? = String.length(ref) >= 11
+
     Repo.all(
       from d in Delegation,
         where:
-          d.channel_id == ^channel_id and d.to_agent_id == ^agent_id and
-            d.status in ^@pending and is_nil(d.from_agent_id) and is_nil(d.child_session_id),
+          d.channel_id == ^channel_id and
+            (d.id == ^ref or
+               (^prefix? and fragment("substr(?, 1, ?) = ?", d.id, ^String.length(ref), ^ref))),
         order_by: [asc: d.id],
-        preload: ^@preloads
-    )
-  end
-
-  @doc """
-  Pending delegations in a channel from one agent to another: each runs, or
-  will run, in a child session of its delegate.
-  """
-  def list_pending_children(channel_id) do
-    Repo.all(
-      from d in Delegation,
-        where:
-          d.channel_id == ^channel_id and d.status in ^@pending and not is_nil(d.from_agent_id),
-        order_by: [asc: d.id]
-    )
-  end
-
-  @doc "Child session id => pending delegation id, for the given child session ids."
-  def ids_by_child_session([]), do: %{}
-
-  def ids_by_child_session(session_ids) do
-    from(d in Delegation,
-      where: d.child_session_id in ^session_ids and d.status in ^@pending,
-      select: {d.child_session_id, d.id}
-    )
-    |> Repo.all()
-    |> Map.new()
-  end
-
-  @doc "The pending delegation whose child session is `session_id`, if any."
-  def get_by_child_session(session_id) do
-    Repo.one(
-      from d in Delegation,
-        where: d.child_session_id == ^session_id and d.status in ^@pending,
         preload: ^@preloads
     )
   end
