@@ -117,6 +117,41 @@ defmodule Canopy.SchedulesTest do
     refute_enqueued(worker: Worker, args: %{schedule_id: schedule.id})
   end
 
+  test "a fired schedule for a routed agent runs on its light model and says so", ctx do
+    test_pid = self()
+
+    {:ok, _} =
+      Agents.update(ctx.agent, %{
+        model_provider: "opencode",
+        model_id: "big",
+        routing_enabled: true,
+        light_model_provider: "opencode",
+        light_model_id: "small"
+      })
+
+    expect(OC, :prompt_async, fn _dir, sid, body, _opts ->
+      send(test_pid, {:prompted, sid, body})
+      {:ok, ""}
+    end)
+
+    {:ok, _schedule} = Schedules.create(attrs(ctx, %{when: "1s"}))
+    assert %{success: 1} = drain()
+
+    sid = ctx.session.engine_session_id
+    assert_receive {:prompted, ^sid, %{model: %{modelID: "small"}}}, 2_000
+
+    Phoenix.PubSub.broadcast(
+      Canopy.PubSub,
+      Canopy.OpenCode.EventStream.session_topic(sid),
+      {:engine_event, %Canopy.Engine.Event{type: :agent_completed, session_id: sid, data: %{}}}
+    )
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
+    assert payload["wake_kind"] == "scheduled"
+    assert payload["profile"] == "light"
+    assert payload["trigger"] == "scheduled"
+  end
+
   test "a recurring schedule re-enqueues its next run after firing", ctx do
     test_pid = self()
 

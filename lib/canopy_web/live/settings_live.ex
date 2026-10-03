@@ -3,7 +3,8 @@ defmodule CanopyWeb.SettingsLive do
   Settings: the OpenCode server URL (with a connection check), the Claude Code
   binary (with a version and login check), the `gh` binary GitHub watches use
   (with the same check), each engine's default model (and
-  Claude Code's default effort) with how many agents use it, the local user's display name,
+  Claude Code's default effort) with how many agents use it, each engine's
+  light model for model routing (experimental), the local user's display name,
   appearance (light/dark mode and colour palette, kept in the browser), the
   collaboration preamble every agent is given, and the MCP section (identity
   plugin source, endpoint URL, token).
@@ -19,6 +20,7 @@ defmodule CanopyWeb.SettingsLive do
   alias CanopyWeb.{AppearanceComponents, NotifyComponents, PresetComponents}
 
   @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
+  @opencode_light_fields {:opencode_light_provider, :opencode_light_model}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -127,7 +129,9 @@ defmodule CanopyWeb.SettingsLive do
     "claude_config_dir",
     "claude_max_budget_usd",
     "claude_default_model",
-    "claude_default_effort"
+    "claude_default_effort",
+    "claude_light_model",
+    "claude_light_effort"
   ]
 
   def handle_event("validate_claude", %{"setting" => params}, socket) do
@@ -427,12 +431,22 @@ defmodule CanopyWeb.SettingsLive do
   # provider means OpenCode's own default, whatever the (disabled, so maybe
   # unsubmitted) model select still holds.
   defp opencode_attrs(params) do
-    attrs =
-      Map.take(params, ["opencode_url", "opencode_default_provider", "opencode_default_model"])
+    params
+    |> Map.take([
+      "opencode_url",
+      "opencode_default_provider",
+      "opencode_default_model",
+      "opencode_light_provider",
+      "opencode_light_model"
+    ])
+    |> pair_model("opencode_default_provider", "opencode_default_model")
+    |> pair_model("opencode_light_provider", "opencode_light_model")
+  end
 
-    case Map.fetch(attrs, "opencode_default_provider") do
-      {:ok, provider} when provider in [nil, ""] -> Map.put(attrs, "opencode_default_model", nil)
-      {:ok, _provider} -> Map.put_new(attrs, "opencode_default_model", nil)
+  defp pair_model(attrs, provider_key, model_key) do
+    case Map.fetch(attrs, provider_key) do
+      {:ok, provider} when provider in [nil, ""] -> Map.put(attrs, model_key, nil)
+      {:ok, _provider} -> Map.put_new(attrs, model_key, nil)
       :error -> attrs
     end
   end
@@ -440,10 +454,13 @@ defmodule CanopyWeb.SettingsLive do
   # Only a default being changed is checked against OpenCode's list: one that
   # stopped working shows "(not configured)" but must not block saving the URL.
   defp validate_default(changeset, providers) do
-    if Ecto.Changeset.changed?(changeset, :opencode_default_provider) or
-         Ecto.Changeset.changed?(changeset, :opencode_default_model),
-       do: Providers.validate(changeset, providers, @opencode_default_fields),
-       else: changeset
+    Enum.reduce([@opencode_default_fields, @opencode_light_fields], changeset, fn {p, m} =
+                                                                                    fields,
+                                                                                  acc ->
+      if Ecto.Changeset.changed?(acc, p) or Ecto.Changeset.changed?(acc, m),
+        do: Providers.validate(acc, providers, fields),
+        else: acc
+    end)
   end
 
   # From the saved server URL.
@@ -477,6 +494,10 @@ defmodule CanopyWeb.SettingsLive do
 
       Ecto.Changeset.changed?(changeset, :claude_default_effort) ->
         default_saved("claude_code", "effort")
+
+      Ecto.Changeset.changed?(changeset, :claude_light_model) or
+          Ecto.Changeset.changed?(changeset, :claude_light_effort) ->
+        "Saved. Routed agents without a light model of their own use it from their next light turn."
 
       true ->
         "Claude Code settings saved."
@@ -601,6 +622,61 @@ defmodule CanopyWeb.SettingsLive do
                 />
               <% end %>
             </div>
+            <div id="opencode-light" class="grid gap-3 sm:grid-cols-2">
+              <%= if @providers != [] do %>
+                <.input
+                  field={@opencode_form[:opencode_light_provider]}
+                  type="select"
+                  id="opencode-light-provider"
+                  label="Light provider (routing, experimental)"
+                  prompt="No light model"
+                  options={
+                    Providers.provider_options(
+                      @providers,
+                      @opencode_form[:opencode_light_provider].value
+                    )
+                  }
+                />
+                <.input
+                  field={@opencode_form[:opencode_light_model]}
+                  type="select"
+                  id="opencode-light-model"
+                  label="Light model"
+                  prompt={
+                    if blank?(@opencode_form[:opencode_light_provider].value),
+                      do: "Pick a provider first",
+                      else: "Pick a model"
+                  }
+                  options={
+                    Providers.model_options(
+                      @providers,
+                      @opencode_form[:opencode_light_provider].value,
+                      @opencode_form[:opencode_light_model].value
+                    )
+                  }
+                  disabled={blank?(@opencode_form[:opencode_light_provider].value)}
+                />
+              <% else %>
+                <.input
+                  field={@opencode_form[:opencode_light_provider]}
+                  type="select"
+                  id="opencode-light-provider"
+                  label="Light provider (routing, experimental)"
+                  prompt={unavailable_prompt(@providers_state)}
+                  options={List.wrap(@setting.opencode_light_provider)}
+                  disabled
+                />
+                <.input
+                  field={@opencode_form[:opencode_light_model]}
+                  type="select"
+                  id="opencode-light-model"
+                  label="Light model"
+                  prompt={unavailable_prompt(@providers_state)}
+                  options={List.wrap(@setting.opencode_light_model)}
+                  disabled
+                />
+              <% end %>
+            </div>
             <p
               :if={@providers == [] and @providers_state == :error}
               id="opencode-default-unavailable"
@@ -703,6 +779,24 @@ defmodule CanopyWeb.SettingsLive do
                 options={Agent.efforts()}
               />
             </div>
+            <div id="claude-light" class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_light_model]}
+                type="select"
+                id="claude-light-model"
+                label="Light model (routing, experimental)"
+                prompt="No light model"
+                options={Agent.claude_models()}
+              />
+              <.input
+                field={@claude_form[:claude_light_effort]}
+                type="select"
+                id="claude-light-effort"
+                label="Light effort"
+                prompt="Claude Code picks"
+                options={Agent.efforts()}
+              />
+            </div>
             <div class="flex flex-col gap-1">
               <.default_usage
                 id="claude-model-usage"
@@ -726,7 +820,9 @@ defmodule CanopyWeb.SettingsLive do
             </div>
             <p class="text-xs text-base-content/60">
               Agents without a model or effort of their own use the defaults, from their next
-              turn; set one per agent on its edit form to override.
+              turn; set one per agent on its edit form to override. The light model is used
+              only by agents with model routing turned on (experimental, unverified until the
+              Phase 0 spike; every agent starts with it off).
               Leave the config directory empty to use your own Claude Code login and settings
               (your personal MCP servers are still kept out of agent sessions; the repository's
               <code class="font-mono">.mcp.json</code>

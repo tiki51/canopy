@@ -34,13 +34,18 @@ defmodule Canopy.Engine do
 
   @typedoc """
   What to send: the wake text, the system text Canopy assembled for this turn,
-  and the attachment plan (documents already materialised under the repository,
-  each marked `:part` to ride along in the prompt or `:path` to be read from disk).
+  the attachment plan (documents already materialised under the repository,
+  each marked `:part` to ride along in the prompt or `:path` to be read from
+  disk), and the profile the turn runs on (model routing, experimental):
+  `:main` (the default when absent) or `:light`. The adapter resolves the
+  model and effort with `Canopy.Agents.effective_profile/3`; the system text
+  and tool list never change with the profile, so the prompt cache holds.
   """
   @type prompt :: %{
-          text: String.t(),
-          system: String.t(),
-          attachments: [{Canopy.Documents.Document.t(), :part | :path}]
+          required(:text) => String.t(),
+          required(:system) => String.t(),
+          required(:attachments) => [{Canopy.Documents.Document.t(), :part | :path}],
+          optional(:profile) => :main | :light
         }
 
   @typedoc """
@@ -124,15 +129,23 @@ defmodule Canopy.Engine do
   @callback reconcile(ctx, engine_state) :: reconciliation
 
   @doc """
-  How the Costs page names the model an agent runs on: the effective model
-  (`Canopy.Agents.effective_model/1`, the agent's own or its engine's default
-  from Settings), so an inherited model and the same model chosen per agent
-  share one label. The engine's own wording when neither is set.
+  How the Costs page names the model an agent runs on for a profile: the
+  effective model (`Canopy.Agents.effective_profile/3`; for `:main` the
+  agent's own or its engine's default from Settings), so an inherited model
+  and the same model chosen per agent share one label. The engine's own
+  wording when neither is set. Adapters default the profile to `:main`.
   """
-  @callback model_label(agent) :: String.t()
+  @callback model_label(agent, :main | :light) :: String.t()
 
   @doc "Context (tokens per model call) above which a session is compacted after its turn."
   @callback context_cap() :: pos_integer()
+
+  @doc """
+  True when a turn's error says the model it ran on does not exist (a
+  model the engine or provider does not know). Model routing pauses an
+  agent's routing when its light model fails this way.
+  """
+  @callback model_error?(reason :: String.t()) :: boolean()
 
   @doc """
   The MCP servers this engine gives agents in a repository, for the
@@ -215,7 +228,7 @@ defmodule Canopy.Engine do
               {:ok, transcript_page}
               | {:error, :not_found | :unreachable | :unsupported | term()}
 
-  @optional_callbacks mcp_inventory: 2, steer: 4, transcript: 3
+  @optional_callbacks mcp_inventory: 2, steer: 4, transcript: 3, model_error?: 1
 
   # -- Dispatch ---------------------------------------------------------------
 

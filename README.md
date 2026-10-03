@@ -234,6 +234,9 @@ git -C tmp/demo-repo checkout -- .
 - **A default model per engine.** Pick one in Settings for Claude Code (with a default
   effort) and one for OpenCode; agents without a model of their own follow it, and any
   agent can override it.
+- **Model routing (experimental, off).** An agent can run cheap wakes (scheduled checks,
+  delegation reports, acknowledgements) on a light model and escalate real work to its main
+  one with `escalate`; unverified until the engines' model-switch behaviour is measured.
 - **Memory that follows the agent.** Every agent keeps one Markdown memory that Canopy
   puts into every prompt, so what it learns in one repository is still there in the next.
   Agents update it with `memory_write` (append or replace) and read it with `memory_read`.

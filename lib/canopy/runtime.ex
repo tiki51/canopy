@@ -425,7 +425,7 @@ defmodule Canopy.Runtime do
     end
   end
 
-  @doc "The label of the model the agent runs on (its own, or its engine's default)."
+  @doc "The label of the model the agent runs on (its own, or its engine's default), on its main profile."
   def model_label(agent_id) do
     case Canopy.Agents.get(agent_id) do
       nil -> nil
@@ -441,6 +441,19 @@ defmodule Canopy.Runtime do
     case Supervisor.whereis(channel_id) do
       nil -> {:error, :no_turn}
       pid -> ChannelServer.pass(pid, engine_session_id, reason)
+    end
+  end
+
+  @doc """
+  The agent in `engine_session_id` asks for its main model (model routing):
+  on a light turn, the turn ends without a reply and the wake runs again on
+  main (`{:ok, :escalating}`); on a main turn nothing changes (`{:ok,
+  :main}`). `{:error, :no_turn}` when nothing is in flight.
+  """
+  def escalate(channel_id, engine_session_id, reason \\ nil) do
+    case Supervisor.whereis(channel_id) do
+      nil -> {:error, :no_turn}
+      pid -> ChannelServer.escalate(pid, engine_session_id, reason)
     end
   end
 

@@ -35,6 +35,7 @@ defmodule Canopy.MCP.Server do
   component(Tools.DmStart, name: "dm_start")
   component(Tools.DmSwitchRepository, name: "dm_switch_repository")
   component(Tools.Pass, name: "pass")
+  component(Tools.Escalate, name: "escalate")
   component(Tools.ChannelCreate, name: "channel_create")
   component(Tools.ChannelAddMembers, name: "channel_add_members")
   component(Tools.ChannelRemoveMembers, name: "channel_remove_members")
@@ -64,7 +65,7 @@ defmodule Canopy.MCP.Server do
   @tool_names ~w(
     channels_list channel_get messages_read message_get messages_search message_send thread_reply react
     task_get task_update agents_list delegate_task handoff_task handoff_get
-    handoff_accept handoff_reject dm_start pass channel_create channel_add_members
+    handoff_accept handoff_reject dm_start pass escalate channel_create channel_add_members
     channel_remove_members channel_brief_set schedule_create schedules_list schedule_cancel memory_read memory_write
     notes_read notes_write
     dm_switch_repository costs_report documents_list document_get document_share permission

@@ -22,6 +22,18 @@ defmodule Canopy.Settings do
     :opencode_default_provider,
     :opencode_default_model
   ]
+  # The same, for the light model routed agents run cheap wakes on.
+  @light_model_fields %{
+    "claude_code" => {nil, :claude_light_model},
+    "opencode" => {:opencode_light_provider, :opencode_light_model}
+  }
+  @light_effort_fields %{"claude_code" => :claude_light_effort}
+  @light_fields [
+    :claude_light_model,
+    :claude_light_effort,
+    :opencode_light_provider,
+    :opencode_light_model
+  ]
 
   @doc "Returns the settings row, creating it with defaults and a fresh token if needed."
   def get do
@@ -41,7 +53,8 @@ defmodule Canopy.Settings do
   @doc """
   Updates the settings. A changed `user_display_name` is copied to the local
   user row so message attribution stays in sync; a changed default model or
-  effort is broadcast as `{:settings, :default_models_changed}`.
+  effort is broadcast as `{:settings, :default_models_changed}`, a changed
+  light model or effort as `{:settings, :light_profiles_changed}`.
   """
   def update(attrs) do
     changeset = Setting.changeset(get(), attrs)
@@ -59,9 +72,12 @@ defmodule Canopy.Settings do
         end
       end)
 
-    with {:ok, _} <- result,
-         true <- Enum.any?(@default_fields, &Ecto.Changeset.changed?(changeset, &1)) do
-      broadcast_defaults_changed()
+    with {:ok, _} <- result do
+      if Enum.any?(@default_fields, &Ecto.Changeset.changed?(changeset, &1)),
+        do: broadcast_defaults_changed()
+
+      if Enum.any?(@light_fields, &Ecto.Changeset.changed?(changeset, &1)),
+        do: Phoenix.PubSub.broadcast(Canopy.PubSub, topic(), {:settings, :light_profiles_changed})
     end
 
     result
@@ -149,6 +165,66 @@ defmodule Canopy.Settings do
     end
   end
 
+  # -- Light models (model routing, experimental) -------------------------------
+
+  @doc """
+  The light profile a routed agent of `engine` with no light model of its own
+  runs cheap wakes on, as `%{model_provider, model_id, effort}`; all nil when
+  none is set. Claude Code has no provider, OpenCode no effort.
+  """
+  def light_profile(engine, setting \\ nil) when is_binary(engine) do
+    setting = setting || get()
+
+    {provider, model} = Map.get(@light_model_fields, engine, {nil, nil})
+    effort = Map.get(@light_effort_fields, engine)
+
+    %{
+      model_provider: provider && Map.get(setting, provider),
+      model_id: model && Map.get(setting, model),
+      effort: effort && Map.get(setting, effort)
+    }
+  end
+
+  @doc "`light_profile/1` for every engine, keyed by engine name."
+  def light_profiles do
+    setting = get()
+    Map.new(Canopy.Engine.names(), &{&1, light_profile(&1, setting)})
+  end
+
+  @doc """
+  Sets an engine's light profile from `%{model_provider, model_id, effort}`
+  (nils clear; keys left out are left alone; Claude Code ignores the
+  provider, OpenCode the effort). Validated like the default model.
+  Broadcasts `{:settings, :light_profiles_changed}`.
+  """
+  def put_light_profile(engine, attrs) when is_binary(engine) and is_map(attrs) do
+    case Map.fetch(@light_model_fields, engine) do
+      {:ok, {provider, model}} ->
+        effort = Map.get(@light_effort_fields, engine)
+
+        [
+          {provider, :model_provider},
+          {model, :model_id},
+          {effort, :effort}
+        ]
+        |> Enum.flat_map(fn
+          {nil, _key} ->
+            []
+
+          {field, key} ->
+            if has_attr?(attrs, key), do: [{field, fetch_attr(attrs, key)}], else: []
+        end)
+        |> Map.new()
+        |> update()
+
+      :error ->
+        unsupported(engine, :model_id, "has no light model")
+    end
+  end
+
+  defp has_attr?(attrs, key),
+    do: Map.has_key?(attrs, key) or Map.has_key?(attrs, Atom.to_string(key))
+
   defp fetch_attr(attrs, key), do: Map.get(attrs, key, Map.get(attrs, Atom.to_string(key)))
 
   defp unsupported(engine, field, message) do
@@ -191,8 +267,8 @@ defmodule Canopy.Settings do
   end
 
   @doc """
-  PubSub topic for settings changes: `{:settings, :mcp_token_rotated}` and
-  `{:settings, :default_models_changed}`.
+  PubSub topic for settings changes: `{:settings, :mcp_token_rotated}`,
+  `{:settings, :default_models_changed}`, and `{:settings, :light_profiles_changed}`.
   """
   def topic, do: "settings"
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, topic())

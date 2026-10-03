@@ -906,10 +906,20 @@ defmodule Canopy.Runtime.Activity do
             do: %{key: "step-#{i}", tokens: integer(tokens) || 0, cost: 0.0}
           ),
         files: files,
-        model: string(payload["model"]),
+        model: model_text(payload),
         version: if(meta["v"] == 2, do: 2, else: 1)
     }
   end
+
+  # A light turn (model routing) names its model as such.
+  defp model_text(%{"profile" => "light"} = payload) do
+    case string(payload["model"]) do
+      nil -> "light model"
+      model -> model <> " · light"
+    end
+  end
+
+  defp model_text(payload), do: string(payload["model"])
 
   # A first-version row has no category: its label's first word ("Read
   # lib/a.ex", "Edit a.py") is the tool, when it names one.

@@ -763,6 +763,8 @@ defmodule CanopyWeb.TimelineComponents do
     cond do
       p["outcome"] != "ok" -> nil
       p["passed"] && present?(p["note"]) -> nil
+      # the light model handed the wake to the main one
+      p["escalated"] -> nil
       true -> "routine"
     end
   end
@@ -1049,6 +1051,14 @@ defmodule CanopyWeb.TimelineComponents do
             @tone != "error" && "text-base-content/70"
           ]}>
             {@text}
+          </span>
+          <span
+            :if={@event.payload["profile"] == "light"}
+            id={"turn-#{@event.id}-light"}
+            class="badge badge-info badge-soft badge-xs shrink-0"
+            title={"Ran on the agent's light model (model routing): #{@event.payload["model"]}"}
+          >
+            light model
           </span>
           <span
             :if={@first_error}
@@ -2460,6 +2470,8 @@ defmodule CanopyWeb.TimelineComponents do
           cond do
             p["outcome"] == "stopped" -> "was stopped by #{user}"
             p["outcome"] == "interrupted" -> "was interrupted by #{user}"
+            p["escalated"] -> "escalated to its main model"
+            p["outcome"] != "ok" and p["profile"] == "light" -> "hit an error on its light model"
             p["outcome"] != "ok" -> "stopped with an error"
             p["passed"] -> "passed" <> suffix(p["note"])
             true -> "finished"

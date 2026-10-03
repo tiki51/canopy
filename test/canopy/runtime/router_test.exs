@@ -556,4 +556,43 @@ defmodule Canopy.Runtime.RouterTest do
     assert text =~
              "This is step `review` of the bug-fix playbook (run pbr_1).\nTask: review the fix"
   end
+
+  describe "reason/3 (model routing)" do
+    test "a mention" do
+      %{message: m} = message_event(%{agent_id: @reviewer, mentions: [@backend]})
+      assert Router.reason(m, @backend, ctx()) == :mention
+    end
+
+    test "an unaddressed agent post reaching the owner" do
+      %{message: m} = message_event(%{agent_id: @reviewer})
+
+      assert [{{:root, @backend}, _}] =
+               Router.wakeups(%Event{event_type: "message", message: m}, ctx())
+
+      assert Router.reason(m, @backend, ctx()) == :owner_fallback
+    end
+
+    test "the other side of a thread" do
+      ctx = ctx(%{thread_last_agent: replies([{"msg_0", @reviewer}])})
+
+      %{message: m} =
+        message_event(%{
+          id: "msg_2",
+          agent_id: @backend,
+          thread_id: "msg_root",
+          kind: "thread_reply"
+        })
+
+      assert [{{:root, @reviewer}, _}] =
+               Router.wakeups(%Event{event_type: "message", message: m}, ctx)
+
+      assert Router.reason(m, @reviewer, ctx) == :thread_author
+    end
+
+    test "a user's unaddressed message in a DM" do
+      dm = ctx(%{channel: %{name: "dm", kind: "dm"}})
+      %{message: m} = message_event(%{})
+      assert Router.reason(m, @reviewer, dm) == :dm
+    end
+  end
 end

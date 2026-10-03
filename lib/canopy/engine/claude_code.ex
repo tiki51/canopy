@@ -155,7 +155,11 @@ defmodule Canopy.Engine.ClaudeCode do
   def send_prompt(ctx, state, session, agent, %{text: text} = prompt) do
     {blocks, attached} = content(text, Map.get(prompt, :attachments, []))
 
-    with {:ok, _pid} <- start_turn(ctx, state, session, agent, blocks, system: prompt.system) do
+    with {:ok, _pid} <-
+           start_turn(ctx, state, session, agent, blocks,
+             system: prompt.system,
+             profile: Map.get(prompt, :profile, :main)
+           ) do
       {:ok, %{attachments: attached}}
     end
   end
@@ -185,9 +189,12 @@ defmodule Canopy.Engine.ClaudeCode do
     end
   end
 
+  # Always on the main profile: compaction after a light turn re-warms the
+  # main model's cache.
   @impl true
   def compact(ctx, state, session, agent) do
-    with {:ok, _pid} <- start_turn(ctx, state, session, agent, "/compact", compact?: true) do
+    with {:ok, _pid} <-
+           start_turn(ctx, state, session, agent, "/compact", compact?: true, profile: :main) do
       {:ok, :turn}
     end
   end
@@ -237,15 +244,36 @@ defmodule Canopy.Engine.ClaudeCode do
     end
   end
 
-  # The alias the agent runs on, its own or Canopy's default; Claude Code's own
-  # default otherwise.
+  # The alias the agent runs on for the profile, its own or Canopy's default;
+  # Claude Code's own default otherwise.
   @impl true
-  def model_label(agent) do
-    case Agents.effective_model(agent) do
+  def model_label(agent, profile \\ :main) do
+    case resolve_profile(agent, profile, nil) do
       %{model_id: model} when is_binary(model) -> model
       _ -> "claude default"
     end
   end
+
+  # An unknown alias or model id, as the CLI or the API words it. Unverified
+  # live (Phase 0 of the Model Routing plan).
+  @impl true
+  def model_error?(reason) when is_binary(reason),
+    do:
+      Regex.match?(
+        ~r/model.{0,40}(not.found|not_found|invalid|unknown|does not exist|not available)|(unknown|invalid) model/i,
+        reason
+      )
+
+  def model_error?(_reason), do: false
+
+  # A light profile that does not resolve (routing turned off meanwhile) runs on main.
+  defp resolve_profile(agent, :light, settings),
+    do:
+      Agents.effective_profile(agent, :light, settings) ||
+        Agents.effective_profile(agent, :main, settings)
+
+  defp resolve_profile(agent, _main, settings),
+    do: Agents.effective_profile(agent, :main, settings)
 
   @impl true
   def context_cap, do: @context_cap
@@ -406,10 +434,10 @@ defmodule Canopy.Engine.ClaudeCode do
       system_file = write_system(dir, opts[:system])
       mcp_file = write_mcp_config(dir, fresh.mcp_token, ctx.repository.path)
       seen? = fresh.last_seen_at != nil
-      # the agent's own model and effort, else the defaults from Settings; nil
-      # leaves the flag off and Claude Code picks
-      %{model_id: model} = Agents.effective_model(agent, settings)
-      %{effort: effort} = Agents.effective_effort(agent, settings)
+      # the profile's model and effort (main: the agent's own, else the
+      # defaults from Settings); nil leaves the flag off and Claude Code picks
+      %{model_id: model, effort: effort} =
+        resolve_profile(agent, Keyword.get(opts, :profile, :main), settings)
 
       command = fn flag ->
         Command.build(

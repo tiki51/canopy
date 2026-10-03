@@ -191,4 +191,50 @@ defmodule Canopy.SettingsTest do
       assert Presets.get("nope") == nil
     end
   end
+
+  describe "light profiles (model routing)" do
+    test "round trip, nil when unset" do
+      assert Settings.light_profile("claude_code") == %{
+               model_provider: nil,
+               model_id: nil,
+               effort: nil
+             }
+
+      assert {:ok, _} =
+               Settings.put_light_profile("claude_code", %{model_id: "haiku", effort: "low"})
+
+      assert {:ok, _} =
+               Settings.put_light_profile("opencode", %{
+                 model_provider: "opencode",
+                 model_id: "small"
+               })
+
+      assert Settings.light_profiles() == %{
+               "claude_code" => %{model_provider: nil, model_id: "haiku", effort: "low"},
+               "opencode" => %{model_provider: "opencode", model_id: "small", effort: nil}
+             }
+
+      # keys left out are left alone; nils clear
+      assert {:ok, _} = Settings.put_light_profile("claude_code", %{effort: nil})
+      assert Settings.light_profile("claude_code").model_id == "haiku"
+      assert Settings.light_profile("claude_code").effort == nil
+    end
+
+    test "validated like the default models" do
+      assert {:error, cs} = Settings.put_light_profile("claude_code", %{model_id: "gpt"})
+      assert %{claude_light_model: [_]} = errors_on(cs)
+      assert {:error, cs} = Settings.put_light_profile("claude_code", %{effort: "huge"})
+      assert %{claude_light_effort: [_]} = errors_on(cs)
+      assert {:error, cs} = Settings.put_light_profile("opencode", %{model_id: "small"})
+      assert %{opencode_light_provider: [_]} = errors_on(cs)
+      assert {:error, _} = Settings.put_light_profile("nope", %{model_id: "x"})
+    end
+
+    test "a change is broadcast, separately from the default models" do
+      Settings.subscribe()
+      {:ok, _} = Settings.put_light_profile("claude_code", %{model_id: "haiku"})
+      assert_receive {:settings, :light_profiles_changed}
+      refute_receive {:settings, :default_models_changed}, 50
+    end
+  end
 end

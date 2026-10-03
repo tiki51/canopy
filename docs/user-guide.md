@@ -326,6 +326,11 @@ filled in.
   an agent that already names a model keeps it until you press the button or pick
   *Default* for it. A changed default reaches every inheriting agent on its next turn; a
   turn already running keeps its model.
+- **Light model (routing, experimental)**: in each engine panel, the cheaper model (and,
+  for Claude Code, effort) that agents with [model routing](#model-routing-experimental)
+  turned on use for cheap wakes when they have no light model of their own. *No light
+  model* means routing does nothing for those agents. Every agent starts with routing off,
+  so this setting changes nothing until you turn routing on for one.
 - **GitHub**: the `gh` binary [GitHub watches](#watching-github) run (`gh` on your `PATH`,
   or a path). *Check gh* reports its version and whether it is logged in; watches need gh
   2.0 or later and a `gh auth login`. Canopy stores no GitHub token.
@@ -597,6 +602,37 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   agent wants to run appears as a permission card in the channel; the Canopy tools are
   always allowed. Each turn runs `claude -p` on this machine in the repository, resuming
   the agent's own session, and the agent's questions arrive as question cards.
+
+- **Model routing (experimental)**: off for every agent, and labelled *unverified until the
+  Phase 0 spike*: the engine behaviour it relies on (switching models inside one session,
+  and what that does to the prompt cache) has not been checked against the real Claude
+  Code and OpenCode yet. See [Model routing](#model-routing-experimental) before you turn
+  it on.
+
+#### Model routing (experimental)
+
+With **Run cheap wakes on a light model** ticked, the agent runs some wakes on its **light
+model** (and, on Claude Code, **light effort**) instead of its main one. *Default (…)*
+follows the light model in Settings; with none there and none here, routing does nothing
+and the agent page says *Routing is on but no light model is set*.
+
+What goes light: scheduled checks, delegation reports coming back, accepted handoffs,
+unaddressed agent posts that reach the agent as channel owner, and short agent
+acknowledgements ("thanks", "LGTM", 👍). What never does: your own messages (late answers
+and approvals included), delegated tasks, playbook steps and nudges, GitHub watches, lock
+grants, and handoff requests. A light wake also stays on the main model while the
+session's main prompt cache is still warm (it ran within the last five minutes on a large
+context), because a cold light model re-reading the whole context costs more than staying
+put. A light turn's prompt tells the agent it is on its light model; when the wake needs
+real work it calls `canopy_escalate`, posts nothing, and Canopy runs the same wake again on
+the main model right away (ahead of anything else waiting, without counting against the
+chatter budget). A light turn that fails is retried once on the main model the same way.
+
+A rule pauses on its own when, of an agent's last 20 light turns of one kind, at least 10
+exist and 35% or more escalated: each escalation pays for two turns. The agent page lists
+paused rules (*Routing paused for scheduled wakes: 8 of 20 escalated*) with **Resume**,
+and a light model the engine does not know pauses routing for every wake. The agent page
+also shows the recent light turns and escalations per wake kind.
 
 Changing the model or the prompt takes effect on the agent's next turn; no reset needed,
 and the same goes for a new default in Settings. Switching an agent's engine clears its
@@ -1304,6 +1340,20 @@ An agent woken for something that needs no answer, such as "thanks, all good", c
 Acknowledgements do not bounce between agents. When the sender is waiting to know the
 message was seen, the agent may first react to it (`canopy_react`, ✅ or 👍) and then pass.
 
+### Light turns and escalation
+
+Only for an agent with [model routing](#model-routing-experimental) turned on
+(experimental, off by default). A wake that ran on the agent's light model shows a
+**light model** badge on its activity card, and the live card names the model with
+` · light`. When the light model decides the wake needs real work it escalates: its turn
+ends without a reply, the timeline says `@agent escalated to its main model`, and a second
+turn starts at once on the main model with the same wake; its card is a normal one.
+Neither the light turn nor the re-run is held back by the one-at-a-time line, and the
+re-run does not count against the chatter budget again. A channel at its spend limit, or
+under the billing hold, stops the re-run like any other wake. A message you send to an
+agent on a light turn waits for that turn to end and then runs on the main model, even
+with the interrupt setting on.
+
 ### One at a time and the chatter budget
 
 Within a channel, agents take turns. An agent woken while another works waits in order
@@ -1756,8 +1806,17 @@ From the top:
 - **By agent, by channel, by model, by trigger**: the breakdowns, with channels linked.
   *Trigger* is what woke the agent: your messages, agent messages, delegations, handoffs,
   or scheduled tasks. Long lists show six rows with a toggle for the rest.
+- **Model routing (experimental)**: off for every agent until you turn it on. Once an
+  agent is routed, the card shows the routed agents, the light turns, how often they
+  escalated, and an estimated net saving (what the light turns saved against the agent's
+  main turns of the same kind, minus the escalated turns and the cache re-reads after a
+  switch), and any rules that paused. Below it, **Routing candidates** shows, from the
+  turns you already have, which kinds of wake routing would send to a light model and
+  about what that would have saved. Both are estimates: list prices for Claude Code
+  models, OpenCode's catalogue prices, and cache warmth guessed from turn timing.
 - **Costliest turns**: the single turns that cost the most, with who, where, what woke
-  them, tool calls, model calls, context, and time.
+  them, tool calls, model calls, context, and time; *light* and *escalated* badges mark
+  routed turns.
 - **Channel spend limits**: every channel with a limit, red when reached.
 
 A finishing turn updates the numbers without a reload. Turns that ended in an error, or
@@ -1823,6 +1882,15 @@ Canopy has four brakes, from gentlest to firmest.
 4. **The billing hold**, which Canopy engages itself when an engine reports an empty
    balance or quota. See [Settings](#the-billing-hold).
 
+**Model routing (experimental)** is a fifth lever, off until you try it: an agent whose
+scheduled checks or owner-fallback wakes mostly pass (the Routing candidates section on
+the Costs page says which) can run them on a light model. It pays when the agent's main
+cache is cold anyway (a check that fires after minutes of quiet, a delegation report after
+long delegate work) and does nothing in a busy channel, where the main cache stays warm and
+Canopy keeps the wake on the main model. It is unverified until the engines' behaviour on a
+model switch has been measured, so watch its escalation rate and net saving on the Costs
+page; a rule whose light turns keep escalating pauses on its own.
+
 ---
 
 ## 16. Reference
@@ -1834,7 +1902,7 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Area | Tools |
 |---|---|
 | Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search` (messages, turn summaries and files across your channels), `message_get`, `task_get`, `agents_list` |
-| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass` |
+| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass`, `escalate` (experimental: on a light turn, re-run the wake on the main model; on a main turn it does nothing) |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create` (with an optional `brief`), `channel_add_members`, `channel_remove_members`, `channel_brief_set` (the owner only; replaces the whole brief, never clears it), `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel`, `watch_create` (a GitHub watch; listed and cancelled as a schedule) |
@@ -1935,6 +2003,9 @@ Reactions leave no line: they show as chips under the message.
 | `<you> interrupted @agent` / `@agent was interrupted by <you>` | Experimental: you pressed Interrupt now; a new turn starts with your message |
 | `@agent finished · took 1 message mid-turn · …` | Experimental: the turn read your message mid-turn |
 | `@agent stopped with an error` | The turn failed; the pill's dot is red |
+| *light model* badge on a turn | Experimental: the turn ran on the agent's light model ([model routing](#model-routing-experimental)) |
+| `@agent escalated to its main model` | Experimental: the light turn handed the wake to the main model; the next turn runs it |
+| `@agent hit an error on its light model` | Experimental: the light turn failed; the wake runs again once on the main model |
 | `@a delegated to @b: …` / `completed the delegation` | A delegation and its result |
 | `handed this task to` / `accepted the handoff` / `ownership moved` | A handoff |
 | `updated the task · status → working` | A task change |
@@ -1991,6 +2062,7 @@ service started by `brew services` uses the defaults.
 | OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
+| The agent page says "Routing paused for scheduled wakes: 8 of 20 escalated" | Model routing (experimental) stopped sending that kind of wake to the light model because most of them needed the main one anyway. Leave it paused, or press **Resume** to try again from now; "every wake" means the light model itself failed (check its name in Settings or on the edit form) |
 | An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its pill: every prompt, tool call and result |
 | The transcript says Claude Code no longer has the session | Claude Code deletes session files after `cleanupPeriodDays` (30 by default, in its `settings.json`); Canopy keeps no copy |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |

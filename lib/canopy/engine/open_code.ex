@@ -88,9 +88,10 @@ defmodule Canopy.Engine.OpenCode do
       tools: %{"canopy_*" => true}
     }
 
-    # The agent's own model, else Canopy's OpenCode default; with neither the
-    # OpenCode agent's (or the server's) own default applies.
-    case Agents.effective_model(agent) do
+    # The profile's model (main: the agent's own, else Canopy's OpenCode
+    # default); with neither the OpenCode agent's (or the server's) own
+    # default applies. OpenCode has no effort: a profile routes the model only.
+    case resolve_profile(agent, Map.get(prompt, :profile, :main)) do
       %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
         Map.put(body, :model, %{providerID: p, modelID: m})
 
@@ -301,15 +302,29 @@ defmodule Canopy.Engine.OpenCode do
     end
   end
 
-  # "provider/model" the agent runs on, its own or Canopy's default; OpenCode's
-  # own default otherwise.
+  # "provider/model" the agent runs on for the profile, its own or Canopy's
+  # default; OpenCode's own default otherwise.
   @impl true
-  def model_label(agent) do
-    case Agents.effective_model(agent) do
+  def model_label(agent, profile \\ :main) do
+    case resolve_profile(agent, profile) do
       %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) -> p <> "/" <> m
       _ -> "opencode default"
     end
   end
+
+  @impl true
+  def model_error?(reason) when is_binary(reason),
+    do:
+      String.contains?(reason, "ProviderModelNotFoundError") or
+        Regex.match?(~r/model.{0,40}not found/i, reason)
+
+  def model_error?(_reason), do: false
+
+  # A light profile that does not resolve (routing turned off meanwhile) runs on main.
+  defp resolve_profile(agent, :light),
+    do: Agents.effective_profile(agent, :light) || Agents.effective_profile(agent, :main)
+
+  defp resolve_profile(agent, _main), do: Agents.effective_profile(agent, :main)
 
   @impl true
   def context_cap, do: Canopy.Runtime.ChannelServer.context_cap()
@@ -605,8 +620,9 @@ defmodule Canopy.Engine.OpenCode do
     }
   end
 
+  # Always the main profile, whatever the turn before ran on.
   defp compaction_model(agent, state) do
-    case Agents.effective_model(agent) do
+    case Agents.effective_profile(agent, :main) do
       %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
         {p, m}
 

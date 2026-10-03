@@ -45,6 +45,20 @@ config :canopy, :github, []
 # Settings; this config only carries overrides (tests point `binary` at a fake).
 config :canopy, :claude_code, []
 
+# Model routing (experimental, off until the Phase 0 spike). How long a
+# provider's prompt cache is taken to stay warm (the cache-warmth guard), and
+# Claude list prices per million tokens for the routing estimates only (Claude
+# Code's real costs stay the CLI's total_cost_usd). Prices from the claude-api
+# reference, 2026-06; a cache write is the 5-minute write, 1.25x input.
+config :canopy, :routing_cache_ttl_ms, 300_000
+
+config :canopy, :claude_list_prices, %{
+  "haiku" => %{input: 1.0, output: 5.0, cache_read: 0.10, cache_write: 1.25},
+  "sonnet" => %{input: 2.0, output: 10.0, cache_read: 0.20, cache_write: 2.5},
+  "opus" => %{input: 4.0, output: 20.0, cache_read: 0.20, cache_write: 5.0},
+  "fable" => %{input: 10.0, output: 50.0, cache_read: 0.25, cache_write: 12.5}
+}
+
 # Configure the endpoint
 config :canopy, CanopyWeb.Endpoint,
   url: [host: "localhost"],

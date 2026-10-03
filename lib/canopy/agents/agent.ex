@@ -41,6 +41,12 @@ defmodule Canopy.Agents.Agent do
     field :allowed_tools, :string
     field :color, :string
     field :active, :boolean, default: true
+    # Model routing (experimental): cheap wakes run on the light model and
+    # effort; nil inherits the engine's light default from Settings
+    field :routing_enabled, :boolean, default: false
+    field :light_model_provider, :string
+    field :light_model_id, :string
+    field :light_effort, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -61,7 +67,11 @@ defmodule Canopy.Agents.Agent do
       :effort,
       :allowed_tools,
       :color,
-      :active
+      :active,
+      :routing_enabled,
+      :light_model_provider,
+      :light_model_id,
+      :light_effort
     ])
     |> update_change(:name, &normalize_name/1)
     |> update_change(:group, &normalize_group/1)
@@ -71,9 +81,12 @@ defmodule Canopy.Agents.Agent do
     |> validate_inclusion(:permission_mode, @permission_modes)
     |> update_change(:effort, &blank_to_nil/1)
     |> validate_inclusion(:effort, @efforts)
+    |> update_change(:light_effort, &blank_to_nil/1)
+    |> validate_inclusion(:light_effort, @efforts)
     |> update_change(:allowed_tools, &blank_to_nil/1)
     |> validate_claude_code()
     |> validate_model()
+    |> validate_light_model()
     |> validate_format(:name, @name_regex,
       message: "must be lowercase letters, digits, dashes or underscores"
     )
@@ -126,6 +139,7 @@ defmodule Canopy.Agents.Agent do
     if get_field(changeset, :engine) == "claude_code" do
       changeset
       |> put_change(:model_provider, nil)
+      |> put_change(:light_model_provider, nil)
       |> validate_required([:permission_mode])
     else
       changeset
@@ -145,6 +159,30 @@ defmodule Canopy.Agents.Agent do
       |> get_field(:engine)
       |> model_errors(get_field(changeset, :model_provider), get_field(changeset, :model_id))
       |> Enum.reduce(changeset, fn {field, message}, acc -> add_error(acc, field, message) end)
+    else
+      changeset
+    end
+  end
+
+  # The light model follows the main model's rules (`model_errors/3`), checked
+  # the same way: only when it or the engine changes.
+  defp validate_light_model(changeset) do
+    changeset =
+      changeset
+      |> update_change(:light_model_provider, &blank_to_nil/1)
+      |> update_change(:light_model_id, &blank_to_nil/1)
+
+    if Enum.any?([:engine, :light_model_provider, :light_model_id], &changed?(changeset, &1)) do
+      changeset
+      |> get_field(:engine)
+      |> model_errors(
+        get_field(changeset, :light_model_provider),
+        get_field(changeset, :light_model_id)
+      )
+      |> Enum.reduce(changeset, fn
+        {:model_provider, message}, acc -> add_error(acc, :light_model_provider, message)
+        {:model_id, message}, acc -> add_error(acc, :light_model_id, message)
+      end)
     else
       changeset
     end

@@ -410,6 +410,37 @@ defmodule Canopy.Runtime.Prompts do
   end
 
   @doc """
+  Appended to the wake text of a light turn (model routing): the agent is on
+  its cheaper model and escalates real work. Only in the wake text, never in
+  the system text, which stays byte-identical across profiles so the prompt
+  cache holds.
+  """
+  def light_note do
+    "\nYou are on your light model for this wake. If it needs real work (editing files, running commands, investigating, or a substantive reply), call canopy_escalate with a few words on why and stop; Canopy re-runs this wake on your main model. Otherwise handle it briefly or call canopy_pass.\n"
+  end
+
+  @doc """
+  Put before the wake a light turn escalated (`reason`: the agent's words,
+  or nil), when it runs again on the main model.
+  """
+  def escalated(reason) do
+    why =
+      if is_binary(reason) and String.trim(reason) != "",
+        do: " (#{String.trim(reason)})",
+        else: ""
+
+    "You escalated this wake from your light model#{why}; you are on your main model now. Your light turn is in this session's history: carry on from there and do the work.\n\n"
+  end
+
+  @doc """
+  Put before the wake a light turn failed on (`reason`: the error), when it
+  runs again on the main model.
+  """
+  def light_failed(reason) do
+    "Your light model hit an error on this wake (#{reason}); you are on your main model now. Handle the wake below.\n\n"
+  end
+
+  @doc """
   Appended to a delegation wake that a message about it joined before the
   delegate started: the message to read, without a second set of instructions.
   """

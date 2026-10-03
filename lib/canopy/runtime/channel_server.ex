@@ -77,9 +77,20 @@ defmodule Canopy.Runtime.ChannelServer do
   Interrupt now, which aborts the turn), it is sent again as the agent's next
   turn. Off by default (`Canopy.Settings.interrupt_on_mention?/0`).
 
-  The MCP tools rarely call this process (`canopy_pass`, and lock tools asking
-  for the turn in flight); they write through contexts and the resulting
-  timeline events arrive here like any other.
+  Model routing (experimental, `Canopy.Runtime.Routing`). Every wake carries
+  its kinds (one per wake merged into it); when its prompt goes out, an agent
+  with routing on may run it on its light profile. A light turn's wake text
+  says so, and the agent can call `canopy_escalate`: the turn then ends
+  without a reply and the same wake runs again on main, ahead of anything
+  else waiting (it is the same work continuing), already counted against the
+  chatter budget, still subject to the hold and the spend limit. A light turn
+  that fails is re-run once on main the same way. A light turn takes no
+  steered messages: they wait and run on main. With routing off (every
+  agent, by default) every wake runs on main and nothing above applies.
+
+  The MCP tools rarely call this process (`canopy_pass`, `canopy_escalate`,
+  and lock tools asking for the turn in flight); they write through contexts
+  and the resulting timeline events arrive here like any other.
   """
 
   use GenServer
@@ -106,7 +117,7 @@ defmodule Canopy.Runtime.ChannelServer do
   alias Canopy.Engine.Event
   alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.QuestionRequests.QuestionRequest
-  alias Canopy.Runtime.{Activity, Prompts, Router}
+  alias Canopy.Runtime.{Activity, Prompts, Router, Routing}
   alias Canopy.Timeline.ActivityDetails
 
   @reconcile_grace_ms 15_000
@@ -178,7 +189,12 @@ defmodule Canopy.Runtime.ChannelServer do
     steered_ends: %{},
     # the run of turns in progress, nil while the channel is quiet:
     # %{id, ref, started_at, agent_ids, turns, errors, trigger} (see Quiet)
-    run: nil
+    run: nil,
+    # model routing: engine_session_id => %{main, light, context, profile},
+    # when the session's last main and light turns ended (monotonic ms), the
+    # context of its last turn, and the profile it ran on. Lost on restart,
+    # which costs one cold-cache guess.
+    routing_cache: %{}
   ]
 
   defstruct @fields
@@ -251,6 +267,15 @@ defmodule Canopy.Runtime.ChannelServer do
 
   def pass(server, engine_session_id, reason),
     do: GenServer.call(server, {:pass, engine_session_id, reason})
+
+  @doc """
+  The agent on a light turn asks for its main model: the turn ends without a
+  reply and the wake runs again on main. `{:ok, :escalating}` for a light
+  turn, `{:ok, :main}` when the turn already runs on main (nothing changes),
+  `{:error, :no_turn}` when nothing is in flight.
+  """
+  def escalate(server, engine_session_id, reason),
+    do: GenServer.call(server, {:escalate, engine_session_id, reason})
 
   def continue(server), do: GenServer.call(server, :continue)
 
@@ -593,6 +618,20 @@ defmodule Canopy.Runtime.ChannelServer do
       else: {:reply, {:error, :no_turn}, state}
   end
 
+  def handle_call({:escalate, sid, reason}, _from, state) do
+    case Map.get(state.turns, sid) do
+      nil ->
+        {:reply, {:error, :no_turn}, state}
+
+      %{profile: :light} ->
+        {:reply, {:ok, :escalating},
+         update_turn(state, sid, &Map.put_new(&1, :escalate, reason || ""))}
+
+      _main ->
+        {:reply, {:ok, :main}, state}
+    end
+  end
+
   # The user pressed Continue: the held wakeups run, against a fresh budget.
   def handle_call(:continue, _from, state) do
     held = state.paused || []
@@ -634,7 +673,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
     wakes =
       Enum.map(Router.wakeups(event, ctx), fn {target, wake} ->
-        {target, wake |> wake_message(trigger) |> put_message_id(event) |> put_delegation(event)}
+        {target,
+         wake
+         |> wake_message(trigger)
+         |> put_message_id(event)
+         |> put_delegation(event)
+         |> put_wake_kind(event, target, ctx)}
       end)
 
     state =
@@ -698,6 +742,10 @@ defmodule Canopy.Runtime.ChannelServer do
   # A default model changed: nothing to do, every turn re-reads its agent and
   # the adapter resolves the default then.
   def handle_info({:settings, :default_models_changed}, state), do: {:noreply, state}
+
+  # Likewise a light model, or a routing rule paused or resumed: read when the
+  # next prompt goes out.
+  def handle_info({:settings, :light_profiles_changed}, state), do: {:noreply, state}
 
   # A turn ends when the engine reports the session idle. If that never arrives —
   # the stream dropped it, or the session died still holding an open tool call —
@@ -1120,11 +1168,14 @@ defmodule Canopy.Runtime.ChannelServer do
   # follows it; two delegation wakes keep both texts, in order, so no task is
   # lost. A lock grant has no text of its own (it is written when the prompt
   # goes out): it rides along on the other wake, and the lock claims of both
-  # are handed over. Attachments from both ride along.
+  # are handed over. Attachments from both ride along, and so do the kinds of
+  # both (model routing: any part that needs the main model keeps it there).
   defp merge_wake(old, new) do
     attachments =
       (Map.get(old, :attachments, []) ++ Map.get(new, :attachments, []))
       |> Enum.uniq_by(fn {document, _mode} -> document.id end)
+
+    keeps_text? = keeps_text?(old) or keeps_text?(new)
 
     merged =
       case {Map.get(old, :trigger), Map.get(new, :trigger)} do
@@ -1136,8 +1187,9 @@ defmodule Canopy.Runtime.ChannelServer do
 
         # A schedule, a watch, or a playbook wake (a start, an approval, a
         # nudge) carries what it is about in its text, like a delegation: the
-        # two texts are kept, in order, and the turn is a channel turn.
-        {a, b} when a in @automation_triggers or b in @automation_triggers ->
+        # two texts are kept, in order, and the turn is a channel turn. So
+        # does an escalated wake running again on the main model.
+        _ when keeps_text? ->
           new
           |> Map.put(:text, scoped_text(old, nil) <> "\n" <> scoped_text(new, nil))
           |> Map.delete(:channel_text)
@@ -1163,12 +1215,20 @@ defmodule Canopy.Runtime.ChannelServer do
     thread_id = merged_thread(old, new)
 
     merged
+    |> Map.put(:kinds, wake_kinds(old) ++ wake_kinds(new))
+    |> Map.put(:escalation, escalation?(old) or escalation?(new))
     |> Map.put(:attachments, attachments)
     |> Map.put(:lock_claim_ids, Enum.uniq(lock_claim_ids(old) ++ lock_claim_ids(new)))
     |> Map.put(:sources, sources)
     |> Map.put(:thread_id, thread_id)
     |> scope_merged(thread_id, sources)
   end
+
+  defp keeps_text?(wake),
+    do: Map.get(wake, :trigger) in @automation_triggers or escalation?(wake)
+
+  # A wake a light turn escalated (or failed on), running again on main.
+  defp escalation?(wake), do: Map.get(wake, :escalation, false) == true
 
   # The messages a wake stands for, as `[{message_id, thread_id | nil}]`.
   defp sources(wake), do: Map.get(wake, :sources, [])
@@ -1383,6 +1443,41 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp delegation_ids(wake), do: Map.get(wake, :delegation_ids, [])
 
+  # What kind of wake this is, for model routing and the turn summary: from
+  # the event, the router's reason for the target, and (agent messages only)
+  # whether the message reads as an acknowledgement. A merged wake keeps one
+  # `{kind, ack}` per part in `kinds`.
+  defp put_wake_kind(wake, event, {:root, agent_id}, ctx) do
+    facts =
+      case event do
+        %Timeline.Event{event_type: "message", message: %{} = message} ->
+          ack? =
+            is_binary(message.agent_id) and Routing.ack?(Map.get(message, :body)) and
+              documents_of(message) == []
+
+          Routing.event_kind(event, Router.reason(message, agent_id, ctx), ack?)
+
+        _ ->
+          Routing.event_kind(event, nil, nil)
+      end
+
+    wake
+    |> Map.merge(facts)
+    |> Map.put(:kinds, [{facts.wake_kind, facts.ack == true}])
+  end
+
+  defp documents_of(message) do
+    case Map.get(message, :documents) do
+      docs when is_list(docs) -> docs
+      _ -> []
+    end
+  end
+
+  # A wake Canopy sent on its own account (a schedule, a watch, a playbook, a
+  # lock grant) has no event behind it: its kind comes from its trigger.
+  defp wake_kinds(wake),
+    do: Map.get(wake, :kinds) || [{Routing.kind_for_trigger(Map.get(wake, :trigger)), false}]
+
   defp trigger_of(%Timeline.Event{event_type: "message", message: %{agent_id: nil}}), do: "user"
   defp trigger_of(%Timeline.Event{event_type: "message"}), do: "agent"
   defp trigger_of(%Timeline.Event{event_type: "delegation_" <> _}), do: "delegation"
@@ -1401,7 +1496,9 @@ defmodule Canopy.Runtime.ChannelServer do
   defp steerable?(state, {:root, agent_id}, %{steer?: true} = wake) do
     with %{} = session <- Map.get(state.sessions, agent_id),
          %{} = turn <- Map.get(state.turns, session.engine_session_id) do
-      turn.trigger != "compact" and not Map.get(turn, :stopped?, false) and
+      # a light turn takes no steers: the message waits and runs on main
+      turn.trigger != "compact" and Map.get(turn, :profile, :main) != :light and
+        not Map.get(turn, :stopped?, false) and
         not Map.get(turn, :interrupted?, false) and
         Map.get(turn, :thread_id) == Map.get(wake, :thread_id) and
         can_steer?(Engine.for(session))
@@ -1727,15 +1824,20 @@ defmodule Canopy.Runtime.ChannelServer do
     # before the prompt: a quick delegate may report back before it returns
     start_delegations(ids, session)
     {brief_note, state} = brief_note(state, session)
+    # decided now, not when the wake queued: on its merged form and the
+    # session's cache as it stands
+    kinds = wake_kinds(wake)
+    {profile, rule} = route(state, session, agent, Map.put(wake, :kinds, kinds))
 
     prompt = %{
       text:
         text <>
           locks <>
           pending_delegations(state, agent_id, ids) <>
-          playbook_note(state, agent_id) <> brief_note,
+          playbook_note(state, agent_id) <> brief_note <> light_note(profile),
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
-      attachments: plan
+      attachments: plan,
+      profile: profile
     }
 
     case mod.send_prompt(ctx(state), es, session, agent, prompt) do
@@ -1743,13 +1845,36 @@ defmodule Canopy.Runtime.ChannelServer do
         begin_turn(state, session, agent_id, trigger, attachments,
           delegation_ids: ids,
           lock_claim_ids: claims,
-          thread_id: Map.get(wake, :thread_id)
+          thread_id: Map.get(wake, :thread_id),
+          profile: profile,
+          route_rule: rule,
+          kinds: kinds,
+          wake: wake
         )
 
       {:error, reason} ->
         record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
     end
   end
+
+  # Model routing: the profile the wake runs on. An agent with routing off
+  # (the default) runs every wake on main, without a look at anything else.
+  defp route(_state, _session, %{routing_enabled: enabled}, _wake) when enabled != true,
+    do: {:main, "off"}
+
+  defp route(state, session, agent, wake) do
+    Routing.route(wake, %{
+      enabled?: true,
+      light?: Agents.effective_profile(agent, :light) != nil,
+      paused: Agents.paused_kinds(agent.id),
+      cache: Map.get(state.routing_cache, session.engine_session_id, %{}),
+      now: System.monotonic_time(:millisecond),
+      ttl: Routing.cache_ttl_ms()
+    })
+  end
+
+  defp light_note(:light), do: Prompts.light_note()
+  defp light_note(_main), do: ""
 
   # The delegations a wake carries are worked on in the delegate's session from
   # now on; one already working (or finished) is left as it is.
@@ -1847,9 +1972,13 @@ defmodule Canopy.Runtime.ChannelServer do
   # Options: `delegation_ids`, the delegations the wake handed over;
   # `lock_claim_ids`, the granted locks the turn now owns; `thread_id`, the
   # thread the turn works for (nil: the channel); `adopted`, a run the engine
-  # started on its own for a late steer.
+  # started on its own for a late steer; model routing's `profile` (default
+  # `:main`), `route_rule`, `kinds`, and `wake` (kept so an escalation can
+  # run it again).
   defp begin_turn(state, session, agent_id, trigger, attachments, opts \\ []) do
     delegation_ids = Keyword.get(opts, :delegation_ids, [])
+    profile = Keyword.get(opts, :profile, :main)
+    wake = Keyword.get(opts, :wake)
     lock_claim_ids = Keyword.get(opts, :lock_claim_ids, [])
     adopted? = Keyword.get(opts, :adopted, false)
     thread_id = Keyword.get(opts, :thread_id)
@@ -1920,11 +2049,27 @@ defmodule Canopy.Runtime.ChannelServer do
       # the engine message ids of the turn's first and last model calls, so
       # the transcript can find the turn ({first, last}, nil before any)
       engine_message_ids: nil,
-      adopted?: adopted?
+      adopted?: adopted?,
+      # model routing: the profile the turn runs on and why, the wake's kinds,
+      # the wake itself on a light turn (an escalation runs it again), and
+      # whether the session ran on the other profile last time
+      profile: profile,
+      route_rule: Keyword.get(opts, :route_rule),
+      kinds: Keyword.get(opts, :kinds) || [{Routing.kind_for_trigger(trigger), false}],
+      wake: if(profile == :light, do: wake),
+      wake_facts: wake && Map.take(wake, [:wake_reason, :ack]),
+      fallback?: wake != nil and Map.get(wake, :fallback, false) == true,
+      model_switch?:
+        match?(
+          %{profile: p} when p != profile,
+          Map.get(state.routing_cache, session.engine_session_id)
+        )
     }
 
-    {model, _source} = turn_model(agent_id)
-    card = Map.put(Activity.new(System.system_time(:millisecond)), :model, model)
+    {model, _source} = turn_model(agent_id, profile)
+
+    card =
+      Map.put(Activity.new(System.system_time(:millisecond)), :model, card_model(model, profile))
 
     %{
       state
@@ -2546,10 +2691,18 @@ defmodule Canopy.Runtime.ChannelServer do
         # changeset built from it would see no change
         session = AgentSessions.get!(turn.session.id)
 
+        # model routing: a light turn that escalated, or failed, runs its
+        # wake again on main (nil for every other turn)
+        rerun = light_rerun(turn, outcome)
+
         {:ok, _} =
           case outcome do
             # the user stopped it: nothing went wrong, the session is idle
             ok when ok in [:ok, :stopped, :interrupted] ->
+              AgentSessions.set_status(session, "idle")
+
+            # the main model takes the wake over: not an error left standing
+            {:error, _reason} when rerun != nil ->
               AgentSessions.set_status(session, "idle")
 
             {:error, reason} ->
@@ -2563,10 +2716,12 @@ defmodule Canopy.Runtime.ChannelServer do
           (Map.get(state.telemetry, who.agent_id) || Activity.new())
           |> Activity.drop_trailing_text()
 
-        reply_id = if reply_text(turn), do: Canopy.ID.generate("msg")
+        # a wake that runs again on main gets its reply from there
+        reply_id = if is_nil(rerun) and reply_text(turn), do: Canopy.ID.generate("msg")
         message_ids = Enum.reverse(Map.get(turn, :message_ids, [])) ++ List.wrap(reply_id)
 
-        {model, model_source} = turn_model(who.agent_id)
+        profile = Map.get(turn, :profile, :main)
+        {model, model_source} = turn_model(who.agent_id, profile)
         thread_id = Map.get(turn, :thread_id)
 
         # The rows' details go in with the summary, so a view that opens a
@@ -2611,6 +2766,7 @@ defmodule Canopy.Runtime.ChannelServer do
               "engine_message_ids" => message_ids_payload(Map.get(turn, :engine_message_ids))
             }
             |> then(&if Map.get(turn, :adopted?), do: Map.put(&1, "adopted", true), else: &1)
+            |> Map.merge(routing_payload(turn))
         }
 
         {:ok, %{summary: summary}} =
@@ -2625,6 +2781,9 @@ defmodule Canopy.Runtime.ChannelServer do
           |> Canopy.Repo.transaction()
 
         Timeline.broadcast(summary)
+        note_light_turn(state, turn, who, outcome)
+        # checked once the turn's own cost is in
+        {rerun, state} = rerun_allowed(state, rerun)
 
         # The final text is the reply only when the agent said nothing through
         # the tools; after a message_send it is a recap, kept on the card.
@@ -2635,7 +2794,8 @@ defmodule Canopy.Runtime.ChannelServer do
         Locks.release_turn(session.id, Map.get(turn, :ref))
         if awaiting?(turn), do: Locks.touch(state.repository.id, session.id)
 
-        broadcast(state, {:agent_status, who.agent_id, status_after_turn(state, who, outcome)})
+        status = if rerun, do: :busy, else: status_after_turn(state, who, outcome)
+        broadcast(state, {:agent_status, who.agent_id, status})
         broadcast_turn_thread(state, who.agent_id, nil)
         if Map.get(turn, :steers, []) != [], do: broadcast(state, {:steer, who.agent_id, nil})
 
@@ -2645,8 +2805,13 @@ defmodule Canopy.Runtime.ChannelServer do
           state
           |> redeliver_steers(turn, outcome)
           |> note_steered_end(sid, turn, outcome)
+          |> note_routing_cache(sid, turn)
 
         state = if outcome == :ok, do: maybe_compact(state, session, turn, who), else: state
+
+        # the re-run goes out before the wakes this turn's posts caused, which
+        # then wait for it like for a compaction
+        state = send_rerun(state, session, who, turn, rerun)
 
         state = release_deferred(state, who.agent_id)
 
@@ -2664,9 +2829,155 @@ defmodule Canopy.Runtime.ChannelServer do
               state |> drain_queue(session, who.agent_id) |> start_next_waiting()
           end
 
-        note_run_turn(state, turn, outcome)
+        # a light turn's error the main model takes over is not the run's error
+        note_run_turn(state, turn, if(rerun, do: :ok, else: outcome))
     end
   end
+
+  # -- Model routing ------------------------------------------------------------
+
+  # Whether a finished light turn runs its wake again on main: `{:escalated,
+  # reason}` after canopy_escalate, `{:fallback, error}` after an error (not a
+  # billing error, which engages the hold), nil otherwise. Not after the
+  # user's Stop or Interrupt now, and not past the hold, the spend limit, or
+  # a stopped channel (each says so as it would for any wake).
+  defp light_rerun(turn, outcome) do
+    cond do
+      Map.get(turn, :profile) != :light or outcome in [:stopped, :interrupted] ->
+        nil
+
+      is_binary(Map.get(turn, :escalate)) ->
+        {:escalated, turn.escalate}
+
+      match?({:error, _}, outcome) and not Canopy.Hold.billing_error?(elem(outcome, 1)) ->
+        {:fallback, elem(outcome, 1)}
+
+      true ->
+        nil
+    end
+  end
+
+  defp rerun_allowed(state, rerun) do
+    cond do
+      is_nil(rerun) -> {nil, state}
+      state.stopped? -> {nil, state}
+      Canopy.Hold.active?() -> {nil, note_hold(state)}
+      over_spend_limit?(state) -> {nil, note_spend_limit(state)}
+      true -> {rerun, state}
+    end
+  end
+
+  # The re-run joins the front of the session's queue (merged with a wake
+  # already there) and, unless a compaction is running on the session, goes
+  # out now; under serialize_turns with another turn running it waits at the
+  # head of the line.
+  defp send_rerun(state, _session, _who, _turn, nil), do: state
+
+  defp send_rerun(state, session, who, turn, rerun) do
+    sid = session.engine_session_id
+    wake = rerun_wake(turn.wake, rerun)
+
+    queue =
+      case Map.get(state.queues, sid, []) do
+        [] -> [wake]
+        [queued | more] -> [merge_wake(wake, queued) | more]
+      end
+
+    state = %{state | queues: Map.put(state.queues, sid, queue)}
+
+    if Map.has_key?(state.turns, sid) or state.pending_switch?,
+      do: state,
+      else: drain_queue(state, session, who.agent_id)
+  end
+
+  # The light turn's wake, told why it runs again; already counted against
+  # the chatter budget, it neither counts again nor pauses the channel.
+  defp rerun_wake(wake, {why, reason}) do
+    preface =
+      if why == :escalated, do: Prompts.escalated(reason), else: Prompts.light_failed(reason)
+
+    wake
+    |> Map.update!(:text, &(preface <> &1))
+    |> then(
+      &if &1[:channel_text],
+        do: Map.update!(&1, :channel_text, fn t -> preface <> t end),
+        else: &1
+    )
+    |> Map.drop([:lock_claim_ids, :playbook_check, :steer?])
+    |> Map.merge(%{
+      kinds: [{"escalation", false}],
+      wake_kind: "escalation",
+      escalation: true,
+      fallback: why == :fallback
+    })
+    |> counted()
+  end
+
+  # What the summary says about routing. Every turn records its wake kind
+  # (and, for one message, why it woke the agent and whether it read as an
+  # acknowledgement) and its profile; the rest only when it applies.
+  defp routing_payload(turn) do
+    kinds = turn |> Map.get(:kinds, []) |> Enum.map(&elem(&1, 0))
+    facts = Map.get(turn, :wake_facts) || %{}
+    single? = length(kinds) == 1
+
+    %{
+      "wake_kind" => List.last(kinds),
+      "wake_kinds" => if(length(Enum.uniq(kinds)) > 1, do: Enum.uniq(kinds)),
+      "wake_reason" => if(single?, do: Map.get(facts, :wake_reason)),
+      "ack" => if(single?, do: Map.get(facts, :ack)),
+      "profile" => Atom.to_string(Map.get(turn, :profile, :main)),
+      "route_rule" => Map.get(turn, :route_rule),
+      "escalated" =>
+        (Map.get(turn, :profile) == :light and is_binary(Map.get(turn, :escalate))) || nil,
+      "fallback" => Map.get(turn, :fallback?) || nil,
+      "model_switch" => Map.get(turn, :model_switch?) || nil
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  # When the session's last main and light turns ended, the context it now
+  # carries, and the profile it ran on: the cache-warmth guard and the
+  # model_switch flag read them.
+  defp note_routing_cache(state, sid, turn) do
+    profile = Map.get(turn, :profile, :main)
+    entry = Map.get(state.routing_cache, sid, %{})
+
+    entry =
+      entry
+      |> Map.put(profile, System.monotonic_time(:millisecond))
+      |> Map.put(:profile, profile)
+      |> then(&if turn.context > 0, do: Map.put(&1, :context, turn.context), else: &1)
+
+    %{state | routing_cache: Map.put(state.routing_cache, sid, entry)}
+  end
+
+  # After a light turn's summary: its rule pauses when too many of its recent
+  # light turns escalated (`Canopy.Costs.Routing`), and every rule pauses when
+  # the light model itself failed (a model the engine does not know).
+  defp note_light_turn(state, %{profile: :light} = turn, who, outcome) do
+    case outcome do
+      {:error, reason} ->
+        {mod, _es, _state} = engine_of(state, turn.session)
+
+        if Code.ensure_loaded?(mod) and function_exported?(mod, :model_error?, 1) and
+             mod.model_error?(reason) do
+          Agents.pause_routing(who.agent_id, "*", "the light model failed: #{reason}")
+        end
+
+      _ ->
+        :ok
+    end
+
+    turn.kinds
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.each(&Canopy.Costs.Routing.check_pause(who.agent_id, &1))
+  rescue
+    e -> Logger.warning("routing check failed: #{Exception.message(e)}")
+  end
+
+  defp note_light_turn(_state, _turn, _who, _outcome), do: :ok
 
   # A wake for the agent waiting in line shows it queued rather than idle
   # until it starts.
@@ -2755,9 +3066,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp final_text(_turn), do: nil
 
-  # The last text part of the turn is the agent's reply, unless it passed or
-  # already posted through the tools; earlier parts are narration.
-  defp reply_text(%{passed: nil, posted?: false} = turn), do: final_text(turn)
+  # The last text part of the turn is the agent's reply, unless it passed,
+  # escalated, or already posted through the tools; earlier parts are narration.
+  defp reply_text(%{passed: nil, posted?: false} = turn) do
+    if Map.has_key?(turn, :escalate), do: nil, else: final_text(turn)
+  end
+
   defp reply_text(_turn), do: nil
 
   # A turn working for a thread answers in that thread.
@@ -2774,18 +3088,28 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  # The engine's label for the model the agent runs on, and whether that is the
-  # agent's own choice, its engine's default from Settings, or the engine's pick.
-  defp turn_model(agent_id) do
+  # The engine's label for the model the agent runs on for the profile, and
+  # whether that is the agent's own choice, its engine's default from
+  # Settings, or the engine's pick.
+  defp turn_model(agent_id, profile) do
     case Agents.get(agent_id) do
       nil ->
         {"unknown", nil}
 
       agent ->
-        {Engine.for(agent).model_label(agent),
-         Atom.to_string(Agents.effective_model(agent).source)}
+        source =
+          case profile == :light && Agents.effective_profile(agent, :light) do
+            %{source: source} -> source
+            _ -> Agents.effective_model(agent).source
+          end
+
+        {Engine.for(agent).model_label(agent, profile), Atom.to_string(source)}
     end
   end
+
+  # The live card names a light turn's model as such.
+  defp card_model(model, :light), do: model <> " · light"
+  defp card_model(model, _main), do: model
 
   # The wake that queued on the session while its turn ran. Under
   # serialize_turns, with another turn running (one that started while this
@@ -2801,10 +3125,31 @@ defmodule Canopy.Runtime.ChannelServer do
       [next | rest] ->
         state = %{state | queues: Map.put(state.queues, sid, rest)}
 
-        if Canopy.Settings.serialize_turns?() and running_turns(state) > 0,
-          do: enqueue_waiting(state, {:root, agent_id}, counted(next)),
-          else: send_prompt(state, session, agent_id, next)
+        cond do
+          not Canopy.Settings.serialize_turns?() or running_turns(state) == 0 ->
+            send_prompt(state, session, agent_id, next)
+
+          # the same work continuing: ahead of everything already in line
+          escalation?(next) ->
+            enqueue_first(state, {:root, agent_id}, counted(next))
+
+          true ->
+            enqueue_waiting(state, {:root, agent_id}, counted(next))
+        end
     end
+  end
+
+  defp enqueue_first(state, target, wake) do
+    wake =
+      case List.keyfind(state.waiting, target, 0) do
+        nil -> wake
+        {_, waiting} -> merge_wake(wake, waiting)
+      end
+
+    state = %{state | waiting: [{target, wake} | List.keydelete(state.waiting, target, 0)]}
+    agent_id = target_agent_id(target)
+    unless agent_busy?(state, agent_id), do: broadcast(state, {:agent_status, agent_id, :queued})
+    state
   end
 
   # A wake already counted against the chatter budget: it neither counts again

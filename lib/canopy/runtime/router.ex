@@ -41,6 +41,34 @@ defmodule Canopy.Runtime.Router do
     |> Enum.reject(fn {{_kind, id}, _text} -> is_nil(id) end)
   end
 
+  @doc """
+  Why a message woke `agent_id` (one of the targets `wakeups/2` returned):
+  `:mention`, `:thread_author` (the other side of a thread), `:dm` (the user
+  talking to everyone in a DM), or `:owner_fallback` (an unaddressed message
+  reaching the owner). Model routing records it and routes on it.
+  """
+  def reason(%{} = message, agent_id, ctx) do
+    cond do
+      agent_id in List.wrap(message.mentions) ->
+        :mention
+
+      not is_nil(message.thread_id) and message.kind != "reply" and
+          thread_side?(message, agent_id, ctx) ->
+        :thread_author
+
+      is_nil(message.agent_id) and dm?(ctx) ->
+        :dm
+
+      true ->
+        :owner_fallback
+    end
+  end
+
+  # A thread reply's target that is not the owner fallback: its counterpart.
+  defp thread_side?(message, agent_id, ctx) do
+    thread_counterpart(message, ctx, message.agent_id) == [agent_id]
+  end
+
   # Notes left by user commands never wake anyone; the command's own event does.
   defp do_wakeups(%Event{event_type: "message", message: %{kind: "system"}}, _ctx), do: []
 

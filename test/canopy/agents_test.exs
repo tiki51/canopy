@@ -190,4 +190,100 @@ defmodule Canopy.AgentsTest do
       refute_receive {:settings, :default_models_changed}, 50
     end
   end
+
+  describe "model routing" do
+    test "routing starts off for every new agent" do
+      refute agent_fixture().routing_enabled
+      refute agent_fixture(%{engine: "claude_code"}).routing_enabled
+    end
+
+    test "effective_profile(:main) is today's model and effort" do
+      cc = agent_fixture(%{engine: "claude_code", model_id: "sonnet", effort: "high"})
+
+      assert Agents.effective_profile(cc, :main) == %{
+               model_provider: nil,
+               model_id: "sonnet",
+               effort: "high",
+               source: :agent
+             }
+    end
+
+    test "effective_profile(:light) is the agent's own, else the Settings light default" do
+      cc = agent_fixture(%{engine: "claude_code", model_id: "sonnet"})
+      assert Agents.effective_profile(cc, :light) == nil
+
+      {:ok, _} =
+        Canopy.Settings.put_light_profile("claude_code", %{model_id: "haiku", effort: "low"})
+
+      assert Agents.effective_profile(cc, :light) ==
+               %{model_provider: nil, model_id: "haiku", effort: "low", source: :default}
+
+      {:ok, own} = Agents.update(cc, %{light_model_id: "opus", light_effort: "medium"})
+
+      assert Agents.effective_profile(own, :light) ==
+               %{model_provider: nil, model_id: "opus", effort: "medium", source: :agent}
+    end
+
+    test "an effort alone keeps the main model" do
+      cc = agent_fixture(%{engine: "claude_code", model_id: "sonnet", effort: "high"})
+      {:ok, cc} = Agents.update(cc, %{light_effort: "low"})
+
+      assert Agents.effective_profile(cc, :light) ==
+               %{model_provider: nil, model_id: "sonnet", effort: "low", source: :agent}
+    end
+
+    test "a light profile equal to main is nil: routing is a no-op" do
+      cc = agent_fixture(%{engine: "claude_code", model_id: "haiku", effort: "low"})
+      {:ok, cc} = Agents.update(cc, %{light_model_id: "haiku", light_effort: "low"})
+      assert Agents.effective_profile(cc, :light) == nil
+      refute Agents.routed?(%{cc | routing_enabled: true})
+    end
+
+    test "OpenCode routes the model only" do
+      oc = agent_fixture(%{model_provider: "opencode", model_id: "big"})
+
+      {:ok, oc} =
+        Agents.update(oc, %{
+          light_model_provider: "opencode",
+          light_model_id: "small",
+          light_effort: "low"
+        })
+
+      assert Agents.effective_profile(oc, :light) ==
+               %{model_provider: "opencode", model_id: "small", effort: nil, source: :agent}
+    end
+
+    test "the light fields are validated like the main ones" do
+      cc = agent_fixture(%{engine: "claude_code"})
+      assert {:error, cs} = Agents.update(cc, %{light_model_id: "gpt"})
+      assert %{light_model_id: ["must be one of fable, opus, sonnet, haiku"]} = errors_on(cs)
+      assert {:error, cs} = Agents.update(cc, %{light_effort: "huge"})
+      assert %{light_effort: [_]} = errors_on(cs)
+
+      oc = agent_fixture()
+      assert {:error, cs} = Agents.update(oc, %{light_model_id: "small"})
+      assert %{light_model_provider: ["pick a provider for this model"]} = errors_on(cs)
+    end
+
+    test "pause and resume a rule" do
+      agent = agent_fixture()
+      Canopy.Settings.subscribe()
+
+      assert {:ok, pause} = Agents.pause_routing(agent.id, "scheduled", "9 of 20 escalated")
+      assert pause.paused_at
+      assert_receive {:settings, :light_profiles_changed}
+      assert Agents.paused_kinds(agent.id) == MapSet.new(["scheduled"])
+      assert Agents.routing_window_start(agent.id, "scheduled") == nil
+
+      # a second pause keeps the first reason
+      assert {:ok, %{reason: "9 of 20 escalated"}} =
+               Agents.pause_routing(agent.id, "scheduled", "other")
+
+      assert {:ok, resumed} = Agents.resume_routing(agent.id, "scheduled")
+      assert is_nil(resumed.paused_at)
+      assert Agents.paused_kinds(agent.id) == MapSet.new()
+      assert %DateTime{} = Agents.routing_window_start(agent.id, "scheduled")
+      assert {:error, :not_paused} = Agents.resume_routing(agent.id, "scheduled")
+    end
+  end
 end

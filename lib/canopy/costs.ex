@@ -122,6 +122,12 @@ defmodule Canopy.Costs do
     |> then(&((&1 || 0) / 1))
   end
 
+  # Model routing's numbers live in `Canopy.Costs.Routing`.
+  defdelegate wake_profile(since), to: Canopy.Costs.Routing
+  defdelegate by_route(since), to: Canopy.Costs.Routing
+  defdelegate routing_savings(since), to: Canopy.Costs.Routing
+  defdelegate rule_stats(agent_id), to: Canopy.Costs.Routing
+
   @doc "Spend per wake trigger (user, agent, delegation, handoff, scheduled, …) since `since`."
   def by_trigger(since \\ nil) do
     base(since)
@@ -259,6 +265,9 @@ defmodule Canopy.Costs do
         outcome: p["outcome"],
         passed: p["passed"] == true,
         model: p["model"],
+        # model routing: a turn on the light model, and one that escalated
+        profile: p["profile"],
+        escalated: p["escalated"] == true,
         at: e.inserted_at
       }
     end)

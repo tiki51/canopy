@@ -8,7 +8,9 @@ defmodule Canopy.Templates.AgentTemplate do
   The frontmatter is engine-neutral where it can be: `mode` (`plan` or
   `build`) says what the agent may do, and `attrs/2` turns it into the
   engine's own setting when the engine-specific key is absent. `model` is a
-  Claude Code alias (`opus`) or an OpenCode `provider/model`.
+  Claude Code alias (`opus`) or an OpenCode `provider/model`. Model routing
+  (experimental) travels as `routing: true`, `light_model` (the same kind of
+  model as `model`), and `light_effort` (Claude Code only).
 
   `decode/2` checks the file (frontmatter, version, kind, field types); the
   agent's own rules (name, enums, models) stay with `Agent.changeset/2`.
@@ -29,9 +31,9 @@ defmodule Canopy.Templates.AgentTemplate do
   @max_header_bytes 16_000
 
   @text_keys ~w(name display_name role group color mode engine model effort permission_mode
-                opencode_agent memory exported_from)
-  @known_keys ["canopy_template", "kind", "allowed_tools" | @text_keys]
-  @claude_code_keys ~w(permission_mode effort allowed_tools)
+                opencode_agent memory exported_from light_model light_effort)
+  @known_keys ["canopy_template", "kind", "allowed_tools", "routing" | @text_keys]
+  @claude_code_keys ~w(permission_mode effort allowed_tools light_effort)
   @opencode_keys ~w(opencode_agent)
 
   defstruct name: nil,
@@ -46,6 +48,9 @@ defmodule Canopy.Templates.AgentTemplate do
             permission_mode: nil,
             allowed_tools: nil,
             opencode_agent: nil,
+            routing: false,
+            light_model: nil,
+            light_effort: nil,
             system_prompt: nil,
             memory: nil,
             seed: false,
@@ -81,11 +86,17 @@ defmodule Canopy.Templates.AgentTemplate do
             model: agent.model_id,
             effort: agent.effort,
             permission_mode: agent.permission_mode,
-            allowed_tools: Agent.allowed_tools_list(agent)
+            allowed_tools: Agent.allowed_tools_list(agent),
+            light_model: agent.light_model_id,
+            light_effort: agent.light_effort
           ]
 
         _ ->
-          [model: opencode_model(agent), opencode_agent: agent.opencode_agent]
+          [
+            model: opencode_model(agent),
+            opencode_agent: agent.opencode_agent,
+            light_model: opencode_model(agent.light_model_provider, agent.light_model_id)
+          ]
       end
 
     fields =
@@ -98,7 +109,8 @@ defmodule Canopy.Templates.AgentTemplate do
         group: agent.group,
         color: agent.color,
         mode: mode && Atom.to_string(mode),
-        engine: agent.engine
+        engine: agent.engine,
+        routing: if(agent.routing_enabled, do: true)
       ] ++
         engine_fields ++
         [memory: memory && "included", exported_from: Canopy.Templates.exported_from()]
@@ -113,10 +125,10 @@ defmodule Canopy.Templates.AgentTemplate do
     Frontmatter.document(fields, body)
   end
 
-  defp opencode_model(%Agent{model_provider: p, model_id: m}) when is_binary(p) and is_binary(m),
-    do: "#{p}/#{m}"
+  defp opencode_model(%Agent{model_provider: p, model_id: m}), do: opencode_model(p, m)
 
-  defp opencode_model(_agent), do: nil
+  defp opencode_model(p, m) when is_binary(p) and is_binary(m), do: "#{p}/#{m}"
+  defp opencode_model(_p, _m), do: nil
 
   # -- Reading ------------------------------------------------------------------
 
@@ -168,6 +180,7 @@ defmodule Canopy.Templates.AgentTemplate do
         tools_error(data["allowed_tools"]) ++
         mode_error(data["mode"]) ++
         seed_error(data["seed"]) ++
+        routing_error(data["routing"]) ++
         if(blank?(data["name"]), do: ["name is missing"], else: [])
 
     if errors == [] do
@@ -187,6 +200,9 @@ defmodule Canopy.Templates.AgentTemplate do
          permission_mode: trimmed(data["permission_mode"]),
          allowed_tools: tools(data["allowed_tools"]),
          opencode_agent: trimmed(data["opencode_agent"]),
+         routing: data["routing"] == true,
+         light_model: trimmed(data["light_model"]),
+         light_effort: trimmed(data["light_effort"]),
          system_prompt: prompt,
          memory: memory,
          seed: data["seed"] == true,
@@ -275,6 +291,10 @@ defmodule Canopy.Templates.AgentTemplate do
   defp mode_error(mode) when is_binary(mode), do: ["mode must be plan or build"]
   defp mode_error(_), do: []
 
+  defp routing_error(nil), do: []
+  defp routing_error(value) when is_boolean(value), do: []
+  defp routing_error(_), do: ["routing must be true or false"]
+
   defp seed_error(nil), do: []
   defp seed_error(value) when is_boolean(value), do: []
   defp seed_error(_), do: ["seed must be true or false"]
@@ -353,7 +373,11 @@ defmodule Canopy.Templates.AgentTemplate do
       model_provider: nil,
       model_id: nil,
       effort: nil,
-      allowed_tools: nil
+      allowed_tools: nil,
+      routing_enabled: t.routing,
+      light_model_provider: nil,
+      light_model_id: nil,
+      light_effort: nil
     }
 
     {engine_attrs, notices} = engine_attrs(t, engine, own?)
@@ -384,13 +408,30 @@ defmodule Canopy.Templates.AgentTemplate do
            ]}
       end
 
+    {light_model, light_notices} =
+      cond do
+        not own? or is_nil(t.light_model) ->
+          {nil, []}
+
+        t.light_model in Agent.claude_models() ->
+          {t.light_model, []}
+
+        true ->
+          {nil,
+           [
+             "light_model #{t.light_model} isn't a Claude Code model here; using the default light model"
+           ]}
+      end
+
     {%{
        permission_mode: permission_mode,
        effort: own? && t.effort,
        allowed_tools: own? && t.allowed_tools && Enum.join(t.allowed_tools, "\n"),
-       model_id: model
+       model_id: model,
+       light_model_id: light_model,
+       light_effort: own? && t.light_effort
      }
-     |> Map.new(fn {k, v} -> {k, if(v == false, do: nil, else: v)} end), notices}
+     |> Map.new(fn {k, v} -> {k, if(v == false, do: nil, else: v)} end), notices ++ light_notices}
   end
 
   defp engine_attrs(t, _opencode, own?) do
@@ -418,7 +459,28 @@ defmodule Canopy.Templates.AgentTemplate do
            ["model #{t.model} isn't an OpenCode provider/model; using the default model"]}
       end
 
-    {%{opencode_agent: opencode_agent, model_provider: provider, model_id: model}, notices}
+    {light_provider, light_model, light_notices} =
+      case own? && t.light_model && String.split(t.light_model, "/", parts: 2) do
+        [p, m] when p != "" and m != "" ->
+          {p, m, []}
+
+        value when value in [nil, false] ->
+          {nil, nil, []}
+
+        _ ->
+          {nil, nil,
+           [
+             "light_model #{t.light_model} isn't an OpenCode provider/model; using the default light model"
+           ]}
+      end
+
+    {%{
+       opencode_agent: opencode_agent,
+       model_provider: provider,
+       model_id: model,
+       light_model_provider: light_provider,
+       light_model_id: light_model
+     }, notices ++ light_notices}
   end
 
   # A setting the chosen engine has no use for is named, never silently lost.
@@ -427,6 +489,7 @@ defmodule Canopy.Templates.AgentTemplate do
       [
         {"permission_mode", t.permission_mode},
         {"effort", t.effort},
+        {"light_effort", t.light_effort},
         {"allowed_tools", t.allowed_tools},
         {"opencode_agent", t.opencode_agent}
       ]

@@ -7,7 +7,8 @@ defmodule Canopy.Templates.AgentTemplateTest do
   alias Canopy.Templates.AgentTemplate
 
   @fields ~w(name display_name role group color system_prompt engine opencode_agent model_provider
-             model_id permission_mode effort allowed_tools)a
+             model_id permission_mode effort allowed_tools routing_enabled light_model_provider
+             light_model_id light_effort)a
 
   # export → decode → attrs → changeset gives back the agent's own fields
   defp round_trip(agent) do
@@ -24,6 +25,45 @@ defmodule Canopy.Templates.AgentTemplateTest do
   defp own(agent), do: Map.take(agent, @fields)
 
   describe "round trip" do
+    test "model routing travels: routing, light model, light effort" do
+      claude =
+        Fixtures.agent_fixture(%{
+          name: "router",
+          engine: "claude_code",
+          model_id: "sonnet",
+          routing_enabled: true,
+          light_model_id: "haiku",
+          light_effort: "low",
+          system_prompt: "Route."
+        })
+
+      {attrs, text} = round_trip(claude)
+      assert attrs == own(claude)
+      assert text =~ "routing: true"
+      assert text =~ "light_model: haiku"
+      assert text =~ "light_effort: low"
+
+      opencode =
+        Fixtures.agent_fixture(%{
+          name: "oc-router",
+          routing_enabled: true,
+          light_model_provider: "opencode",
+          light_model_id: "small",
+          system_prompt: "Route."
+        })
+
+      {attrs, text} = round_trip(opencode)
+      assert attrs == own(opencode)
+      assert text =~ "light_model: opencode/small"
+      refute text =~ "light_effort"
+    end
+
+    test "routing off is left out of the file" do
+      agent = Fixtures.agent_fixture(%{name: "plain", system_prompt: "Plain."})
+      refute AgentTemplate.encode(agent) =~ "routing"
+      refute AgentTemplate.encode(agent) =~ "light_"
+    end
+
     test "an OpenCode agent with a model of its own" do
       agent =
         Fixtures.agent_fixture(%{

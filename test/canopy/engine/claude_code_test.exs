@@ -442,6 +442,143 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     end
   end
 
+  describe "model routing (experimental)" do
+    defp argv_lines(log) do
+      log |> File.read!() |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "ARGV "))
+    end
+
+    setup ctx do
+      {:ok, coder} =
+        Canopy.Agents.update(ctx.coder, %{
+          model_id: "sonnet",
+          effort: "high",
+          light_model_id: "haiku",
+          light_effort: "low"
+        })
+
+      {:ok, coder: coder}
+    end
+
+    test "with routing off the turn runs on main, the prompt untouched", ctx do
+      Runtime.wake_scheduled(ctx.channel.id, ctx.coder.id, "Check the queue.")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "sonnet"
+      assert payload["profile"] == "main"
+      assert [line] = argv_lines(ctx.log)
+      assert line =~ "--model sonnet"
+      assert line =~ "--effort high"
+      assert [stdin] = stdin_lines(ctx.log)
+      assert stdin =~ ~s("text":"Check the queue.")
+      refute stdin =~ "light model"
+    end
+
+    test "a light turn passes the light model and effort; the next main turn the main ones",
+         ctx do
+      {:ok, _} = Canopy.Agents.update(ctx.coder, %{routing_enabled: true})
+
+      Runtime.wake_scheduled(ctx.channel.id, ctx.coder.id, "Check the queue.")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "haiku"
+      assert payload["profile"] == "light"
+      assert [line] = argv_lines(ctx.log)
+      assert line =~ "--model haiku"
+      assert line =~ "--effort low"
+      assert [stdin] = stdin_lines(ctx.log)
+      assert stdin =~ "You are on your light model for this wake"
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} please rename")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+      assert payload["profile"] == "main"
+      assert payload["model_switch"] == true
+      assert [_, second] = argv_lines(ctx.log)
+      assert second =~ "--resume"
+      assert second =~ "--model sonnet"
+      assert second =~ "--effort high"
+    end
+
+    test "a compaction after a light turn runs on main", ctx do
+      {:ok, _} = Canopy.Agents.update(ctx.coder, %{routing_enabled: true})
+      config = Application.fetch_env!(:canopy, :claude_code)
+      script = Path.join(Path.dirname(ctx.log), "big.jsonl")
+
+      File.write!(
+        script,
+        Enum.map_join(
+          [
+            %{
+              type: "stream_event",
+              session_id: "SESSION_ID",
+              event: %{
+                type: "message_start",
+                message: %{
+                  id: "msg_big",
+                  usage: %{
+                    input_tokens: 10,
+                    cache_read_input_tokens: 130_000,
+                    cache_creation_input_tokens: 0
+                  }
+                }
+              }
+            },
+            %{
+              type: "assistant",
+              session_id: "SESSION_ID",
+              message: %{id: "msg_big", content: [%{type: "text", text: "All green."}]}
+            },
+            %{
+              type: "stream_event",
+              session_id: "SESSION_ID",
+              event: %{
+                type: "message_delta",
+                delta: %{stop_reason: "end_turn"},
+                usage: %{output_tokens: 5}
+              }
+            },
+            %{
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              num_turns: 1,
+              result: "All green.",
+              session_id: "SESSION_ID",
+              total_cost_usd: 0.01,
+              usage: %{}
+            }
+          ],
+          "\n",
+          &JSON.encode!/1
+        ) <> "\n"
+      )
+
+      env =
+        Enum.map(config[:env], fn
+          {"FAKE_CLAUDE_SCRIPT", _} -> {"FAKE_CLAUDE_SCRIPT", script}
+          other -> other
+        end)
+
+      Application.put_env(:canopy, :claude_code, Keyword.put(config, :env, env))
+
+      Runtime.wake_scheduled(ctx.channel.id, ctx.coder.id, "Check the queue.")
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_turn_completed", payload: %{"profile" => "light"}}},
+                     10_000
+
+      assert_receive {:timeline, %{event_type: "session_compacted"}}, 5_000
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: compact}}, 10_000
+      assert compact["trigger"] == "compact"
+      assert compact["profile"] == "main"
+
+      assert [first, second] = argv_lines(ctx.log)
+      assert first =~ "--model haiku"
+      assert second =~ "--model sonnet"
+      assert second =~ "--effort high"
+      assert List.last(stdin_lines(ctx.log)) =~ "/compact"
+    end
+  end
+
   describe "MCP servers" do
     @fixtures Path.expand("../../support/mcp_fixtures/claude", __DIR__)
 

@@ -6,6 +6,7 @@ defmodule Canopy.Costs.Report do
   """
 
   alias Canopy.{Agents, Costs, Settings}
+  alias Canopy.Costs.Routing
   alias Canopy.OpenCode.Providers
   alias Canopy.Runtime.ChannelServer
   alias Canopy.Schedules.When
@@ -45,6 +46,8 @@ defmodule Canopy.Costs.Report do
       breakdown("By channel", Costs.by_channel(since), total.cost),
       breakdown("By model", Costs.by_model(since), total.cost),
       breakdown("By trigger (what woke the agent)", Costs.by_trigger(since), total.cost),
+      routing(since),
+      candidates(since),
       efficiency(eff),
       top_turns(Costs.top_turns(since, 6)),
       budgets(Costs.channel_budgets()),
@@ -81,6 +84,97 @@ defmodule Canopy.Costs.Report do
     ]
   end
 
+  # Model routing once it runs: who is routed, what ran light, how often it
+  # escalated, the estimated net saving, and the paused rules.
+  defp routing(since) do
+    case Routing.routed_agents() do
+      [] ->
+        [
+          "Model routing (experimental, unverified until the Phase 0 spike): off for every agent. An agent can run cheap wakes on a light model; see Routing candidates for what it might save.",
+          ""
+        ]
+
+      agents ->
+        s = Routing.routing_savings(since)
+        kinds = Routing.escalation_by_kind(since)
+
+        rates =
+          case kinds do
+            [] -> "none yet"
+            rows -> Enum.map_join(rows, "; ", &"#{&1.kind} #{&1.escalated} of #{&1.turns}")
+          end
+
+        paused =
+          case Routing.paused_rules() do
+            [] ->
+              []
+
+            rules ->
+              [
+                "- paused rules (the user resumes them on the agent page): " <>
+                  Enum.map_join(rules, "; ", fn p ->
+                    "@#{p.agent && p.agent.name} #{kind_label(p.wake_kind)} (#{p.reason})"
+                  end)
+              ]
+          end
+
+        [
+          "Model routing (experimental, unverified until the Phase 0 spike):",
+          "- routed agents: #{Enum.map_join(agents, ", ", &("@" <> &1.name))}",
+          "- #{s.light_turns} light turns; escalated per wake kind: #{rates}",
+          "- estimated net saving #{Costs.money(s.net)} = #{Costs.money(s.gross)} saved on light turns − #{Costs.money(s.waste)} paid for escalated ones − #{Costs.money(s.penalty)} cache re-reads after a switch (estimates against each agent's main turns of the same kind)"
+        ] ++ paused ++ [""]
+    end
+  end
+
+  defp kind_label("*"), do: "every wake"
+  defp kind_label(kind), do: kind <> " wakes"
+
+  # Phase 1: what the wakes routing would send to a light model cost, and an
+  # estimate of what they would have cost there.
+  defp candidates(since) do
+    profile = Routing.wake_profile(since)
+
+    if profile == [] do
+      []
+    else
+      c = Routing.candidates(since)
+
+      models =
+        c.light_models
+        |> Enum.map(fn {engine, model} ->
+          label = Canopy.Engine.label(engine)
+
+          cond do
+            is_nil(model) -> "#{label}: none set"
+            c.assumed[engine] -> "#{label}: #{model} (assumed; none set)"
+            true -> "#{label}: #{model}"
+          end
+        end)
+        |> Enum.join("; ")
+
+      kinds =
+        Enum.map(profile, fn r ->
+          "- #{r.kind}#{if r.light?, do: " (may go light)", else: ""}: #{r.turns} turns, #{Costs.money(r.cost)} (#{Costs.money(r.avg_cost)} each), #{pct(r.pass_rate)} passed, #{pct(r.quiet_rate)} quiet, #{r.reacted} reacted, context #{tokens(r.avg_context)}, output #{tokens(r.avg_output)}, #{pct(r.warm_share)} with a warm cache"
+        end)
+
+      estimates =
+        Enum.map(c.rows, fn r ->
+          "- #{r.kind}: #{r.candidates} candidate turns; #{r.routed} would run light, saving about #{Costs.money(r.saving)} (#{Costs.money(r.cost)} → #{Costs.money(r.light_cost)}); #{r.kept_main} kept on main by a warm cache#{if r.no_estimate > 0, do: ", #{r.no_estimate} without a price", else: ""}"
+        end)
+
+      [
+        "Routing candidates (what each kind of wake costs; quiet = passed, or no files, no reply of its own, 3 tool calls or fewer):"
+      ] ++
+        kinds ++
+        [
+          "Estimated saving with routing on (estimates: list prices, cache warmth guessed from turn timing; light models #{models}): about #{Costs.money(c.saving)}."
+        ] ++ estimates ++ [""]
+    end
+  end
+
+  defp pct(r), do: "#{round(r * 100)}%"
+
   defp top_turns([]), do: ["Costliest turns: none with a cost.", ""]
 
   defp top_turns(turns) do
@@ -92,9 +186,11 @@ defmodule Canopy.Costs.Report do
     ["Costliest turns:" | lines] ++ [""]
   end
 
+  defp turn_flags(%{escalated: true}), do: ", light model, escalated"
   defp turn_flags(%{passed: true}), do: ", passed (no reply)"
   defp turn_flags(%{outcome: "error"}), do: ", ended in error"
   defp turn_flags(%{outcome: "stopped"}), do: ", stopped by the user"
+  defp turn_flags(%{profile: "light"}), do: ", light model"
   defp turn_flags(_), do: ""
 
   defp budgets([]),

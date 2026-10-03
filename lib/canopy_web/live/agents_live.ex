@@ -20,6 +20,12 @@ defmodule CanopyWeb.AgentsLive do
   An agent with no model (or, on Claude Code, no effort) of its own inherits
   its engine's default from Settings; the list, the picker, and the form show
   which default that is.
+
+  Model routing (experimental, off by default and unverified until the Phase
+  0 spike): the form's Routing section turns it on per agent and picks the
+  light model and effort ("Default (…)" inherits the engine's light model from
+  Settings); the agent page shows the routing state, the light turns' recent
+  escalation rates, and paused rules with Resume; the list marks routed agents.
   """
 
   use CanopyWeb, :live_view
@@ -49,6 +55,9 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:agent_teams, [])
       |> assign(:agent_schedules, [])
       |> assign(:agent_memory, "")
+      |> assign(:light_profile, nil)
+      |> assign(:routing_pauses, [])
+      |> assign(:rule_stats, [])
       |> assign(:memory_updated_at, nil)
       |> assign(:editing_memory?, false)
       |> assign(:selected, MapSet.new())
@@ -128,6 +137,17 @@ defmodule CanopyWeb.AgentsLive do
      end}
   end
 
+  # A light model changed in Settings, or a routing rule paused or resumed.
+  def handle_info({:settings, :light_profiles_changed}, socket) do
+    socket = socket |> assign_defaults() |> load_agents()
+
+    {:noreply,
+     case socket.assigns.agent do
+       %Agent{id: id} -> socket |> assign(:agent, Agents.get!(id)) |> load_routing()
+       nil -> socket
+     end}
+  end
+
   def handle_info({:teams, :changed}, socket),
     do: {:noreply, socket |> load_agents() |> load_agent_details()}
 
@@ -141,7 +161,13 @@ defmodule CanopyWeb.AgentsLive do
     # engine's default rather than on a model that engine cannot run.
     params =
       if params["engine"] && params["engine"] != socket.assigns.form[:engine].value,
-        do: Map.merge(params, %{"model_provider" => nil, "model_id" => nil}),
+        do:
+          Map.merge(params, %{
+            "model_provider" => nil,
+            "model_id" => nil,
+            "light_model_provider" => nil,
+            "light_model_id" => nil
+          }),
         else: params
 
     changeset =
@@ -177,6 +203,24 @@ defmodule CanopyWeb.AgentsLive do
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, changeset)}
+    end
+  end
+
+  # A routing rule paused for this agent runs on its light model again.
+  def handle_event(
+        "resume_routing",
+        %{"kind" => kind},
+        %{assigns: %{agent: %Agent{} = agent}} = socket
+      ) do
+    case Agents.resume_routing(agent.id, kind) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> load_routing()
+         |> put_flash(:info, "Routing resumed for #{routing_kind_label(kind)}.")}
+
+      {:error, _} ->
+        {:noreply, load_routing(socket)}
     end
   end
 
@@ -397,7 +441,10 @@ defmodule CanopyWeb.AgentsLive do
   # models are checked against the alias list by the schema.
   defp maybe_validate_model(changeset, providers) do
     if Ecto.Changeset.get_field(changeset, :engine) == "opencode",
-      do: Providers.validate(changeset, providers),
+      do:
+        changeset
+        |> Providers.validate(providers)
+        |> Providers.validate(providers, {:light_model_provider, :light_model_id}),
       else: changeset
   end
 
@@ -437,6 +484,7 @@ defmodule CanopyWeb.AgentsLive do
     socket
     |> assign(:defaults, Settings.default_models())
     |> assign(:default_effort, Settings.default_effort("claude_code"))
+    |> assign(:light_defaults, Settings.light_profiles())
   end
 
   defp load_agents(socket) do
@@ -461,6 +509,7 @@ defmodule CanopyWeb.AgentsLive do
     |> assign(:agent_teams, Teams.for_agent(id))
     |> assign(:agent_schedules, Schedules.list_for_agent(id))
     |> assign(:agent_spend, agent_spend(id))
+    |> load_routing()
     |> load_memory()
   end
 
@@ -477,6 +526,17 @@ defmodule CanopyWeb.AgentsLive do
       {key, if(row, do: row.cost, else: 0.0)}
     end
   end
+
+  # Model routing on the agent page: the light profile it resolves, the paused
+  # rules, and the recent light turns per wake kind.
+  defp load_routing(%{assigns: %{agent: %Agent{} = agent}} = socket) do
+    socket
+    |> assign(:light_profile, Agents.effective_profile(agent, :light))
+    |> assign(:routing_pauses, Agents.routing_pauses(agent.id))
+    |> assign(:rule_stats, Canopy.Costs.rule_stats(agent.id))
+  end
+
+  defp load_routing(socket), do: socket
 
   defp load_memory(%{assigns: %{agent: %Agent{id: id}}} = socket) do
     socket
@@ -534,6 +594,52 @@ defmodule CanopyWeb.AgentsLive do
 
   defp default_effort_option(nil), do: "Claude Code's own default"
   defp default_effort_option(effort), do: "Default (#{effort})"
+
+  # The "Default (…)" option of a light model select: the engine's light
+  # model from Settings, or none.
+  defp light_default_option(light_defaults, engine) do
+    case Map.get(light_defaults, engine) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
+        "Default (#{p}/#{m})"
+
+      %{model_id: m} when is_binary(m) ->
+        "Default (#{m})"
+
+      _ ->
+        "No light model (none set in Settings)"
+    end
+  end
+
+  defp light_effort_option(light_defaults) do
+    case get_in(light_defaults, ["claude_code", :effort]) do
+      nil -> "Default (Claude Code picks)"
+      effort -> "Default (#{effort})"
+    end
+  end
+
+  # The agent page's routing line.
+  defp routing_text(%Agent{routing_enabled: true}, nil),
+    do: "Routing is on but no light model is set"
+
+  defp routing_text(%Agent{routing_enabled: true}, profile),
+    do:
+      "on · light #{profile_label(profile)}#{if profile.source == :default, do: " (default)", else: ""}"
+
+  defp routing_text(_agent, _profile), do: "off"
+
+  defp profile_label(%{model_provider: p, model_id: m} = profile) do
+    model =
+      cond do
+        is_binary(p) and is_binary(m) -> "#{p}/#{m}"
+        is_binary(m) -> m
+        true -> "the main model"
+      end
+
+    if profile.effort, do: "#{model}, effort #{profile.effort}", else: model
+  end
+
+  defp routing_kind_label("*"), do: "every wake"
+  defp routing_kind_label(kind), do: String.replace(kind, "_", " ") <> " wakes"
 
   # A list row's label for an agent on its engine's default.
   defp inherited_label(defaults, engine) do
@@ -743,6 +849,14 @@ defmodule CanopyWeb.AgentsLive do
               >
                 {model_label(agent) || inherited_label(@defaults, agent.engine)}
               </button>
+              <span
+                :if={agent.routing_enabled}
+                id={"routed-#{agent.id}"}
+                class="badge badge-ghost badge-xs justify-self-start"
+                title="Model routing is on (experimental): cheap wakes run on a light model"
+              >
+                routed
+              </span>
               <span
                 class="flex items-center gap-0.5 text-xs text-base-content/60"
                 title="Active schedules"
@@ -1191,6 +1305,17 @@ defmodule CanopyWeb.AgentsLive do
                     {agent_price_line(@agent, @providers, @defaults, @server_defaults)}
                   </span>
                 </dd>
+                <dt class="text-base-content/60">Routing</dt>
+                <dd id="agent-routing" class="text-xs">
+                  {routing_text(@agent, @light_profile)}
+                  <span
+                    :if={@agent.routing_enabled}
+                    class="ml-1 badge badge-warning badge-soft badge-xs"
+                    title="Unverified until the Phase 0 spike; see the user guide"
+                  >
+                    experimental
+                  </span>
+                </dd>
                 <dt class="text-base-content/60">Spend</dt>
                 <dd id="agent-spend" class="text-xs tabular-nums">
                   {Canopy.Costs.money(@agent_spend.today)} today · {Canopy.Costs.money(
@@ -1208,6 +1333,59 @@ defmodule CanopyWeb.AgentsLive do
                 class="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-base-100 p-3 font-mono text-xs leading-relaxed text-base-content/80"
               >{@agent.system_prompt}</pre>
             </div>
+          </Layouts.panel>
+
+          <Layouts.panel
+            :if={@agent.routing_enabled or @routing_pauses != [] or @rule_stats != []}
+            id="agent-routing-panel"
+            title="Model routing"
+            description="Experimental, unverified until the Phase 0 spike. A rule pauses when at least 10 of its last 20 light turns exist and 35% or more escalated."
+          >
+            <ul :if={@routing_pauses != []} class="mb-3 flex flex-col gap-2">
+              <li
+                :for={pause <- @routing_pauses}
+                id={"routing-pause-#{pause.wake_kind}"}
+                class="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm"
+              >
+                <.icon name="hero-pause-circle-mini" class="size-4 shrink-0 text-warning" />
+                <span class="min-w-0 flex-1">
+                  Routing paused for {routing_kind_label(pause.wake_kind)}: {pause.reason}
+                </span>
+                <button
+                  type="button"
+                  id={"resume-routing-#{pause.wake_kind}"}
+                  class="btn btn-xs"
+                  phx-click="resume_routing"
+                  phx-value-kind={pause.wake_kind}
+                >
+                  Resume
+                </button>
+              </li>
+            </ul>
+            <table :if={@rule_stats != []} id="routing-rule-stats" class="table table-xs">
+              <thead>
+                <tr>
+                  <th>Wake kind</th>
+                  <th class="text-right">Light turns</th>
+                  <th class="text-right">Escalated</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @rule_stats} id={"rule-stat-#{row.kind}"}>
+                  <td>{String.replace(row.kind, "_", " ")}</td>
+                  <td class="text-right tabular-nums">{row.turns}</td>
+                  <td class="text-right tabular-nums">
+                    {row.escalated} ({round(row.rate * 100)}%)
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p
+              :if={@routing_pauses == [] and @rule_stats == []}
+              class="text-xs text-base-content/60"
+            >
+              No light turns yet.
+            </p>
           </Layouts.panel>
 
           <Layouts.panel
@@ -1570,6 +1748,11 @@ defmodule CanopyWeb.AgentsLive do
               <% end %>
             </p>
           <% end %>
+          <.routing_fields
+            form={@form}
+            providers={@providers}
+            light_defaults={@light_defaults}
+          />
           <div class="flex items-center gap-2 pt-1">
             <.button type="submit" variant="primary" id="save-agent">
               {if @agent, do: "Save changes", else: "Create agent"}
@@ -1578,6 +1761,116 @@ defmodule CanopyWeb.AgentsLive do
         </.form>
       </Layouts.panel>
     </Layouts.page>
+    """
+  end
+
+  attr :form, :any, required: true
+  attr :providers, :list, required: true
+  attr :light_defaults, :map, required: true
+
+  # Model routing on the edit form: off by default, experimental, with the
+  # light model and effort in the same pattern as the main ones.
+  defp routing_fields(assigns) do
+    ~H"""
+    <fieldset
+      id="agent-routing-fields"
+      class="flex flex-col gap-3 rounded-lg border border-base-300 p-3"
+    >
+      <legend class="flex items-center gap-2 px-1 text-sm font-medium">
+        Model routing <span class="badge badge-warning badge-soft badge-xs">experimental</span>
+      </legend>
+      <p id="routing-experimental-note" class="text-xs text-warning">
+        Unverified until the Phase 0 spike — see docs. Leave it off unless you are testing it.
+      </p>
+      <.input
+        field={@form[:routing_enabled]}
+        type="checkbox"
+        id="agent-routing-enabled"
+        label="Run cheap wakes on a light model"
+      />
+      <%= if @form[:engine].value == "claude_code" do %>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <.input
+            field={@form[:light_model_id]}
+            type="select"
+            id="claude-light-model"
+            label="Light model"
+            prompt={light_default_option(@light_defaults, "claude_code")}
+            options={Agent.claude_models()}
+          />
+          <.input
+            field={@form[:light_effort]}
+            type="select"
+            id="claude-light-effort"
+            label="Light effort"
+            prompt={light_effort_option(@light_defaults)}
+            options={Agent.efforts()}
+          />
+        </div>
+      <% else %>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <%= if @providers != [] do %>
+            <.input
+              field={@form[:light_model_provider]}
+              type="select"
+              id="opencode-light-provider"
+              label="Light model provider"
+              prompt={light_default_option(@light_defaults, "opencode")}
+              options={Providers.provider_options(@providers, @form[:light_model_provider].value)}
+            />
+            <.input
+              field={@form[:light_model_id]}
+              type="select"
+              id="opencode-light-model"
+              label="Light model"
+              prompt={
+                if @form[:light_model_provider].value,
+                  do: "Pick a model",
+                  else: "Pick a provider first"
+              }
+              options={
+                Providers.model_options(
+                  @providers,
+                  @form[:light_model_provider].value,
+                  @form[:light_model_id].value
+                )
+              }
+              disabled={
+                is_nil(@form[:light_model_provider].value) or
+                  @form[:light_model_provider].value == ""
+              }
+            />
+          <% else %>
+            <.input
+              field={@form[:light_model_provider]}
+              type="text"
+              id="opencode-light-provider"
+              label="Light model provider (optional)"
+              placeholder="opencode"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <.input
+              field={@form[:light_model_id]}
+              type="text"
+              id="opencode-light-model"
+              label="Light model id (optional)"
+              placeholder="claude-haiku-4-5"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          <% end %>
+        </div>
+      <% end %>
+      <p class="text-xs text-base-content/60">
+        With routing on, scheduled checks, delegation reports, accepted handoffs, unaddressed
+        agent posts reaching this agent as owner, and agent acknowledgements run on the light
+        model; the agent can call <code class="font-mono">canopy_escalate</code>
+        to re-run the wake on its main model. Your own messages, delegated tasks, playbook steps,
+        and watches always use the main model, and so does any wake while its main cache is still
+        warm. Routing does nothing until a light model is set here or in Settings.
+      </p>
+    </fieldset>
     """
   end
 end

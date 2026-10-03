@@ -42,8 +42,10 @@ defmodule Canopy.Templates.Import do
   alias Canopy.Templates.Import.{Item, Plan}
   alias Ecto.Multi
 
-  @claude_fields ~w(display_name role group color engine permission_mode effort allowed_tools model_id system_prompt)a
-  @opencode_fields ~w(display_name role group color engine opencode_agent model_provider model_id system_prompt)a
+  @claude_fields ~w(display_name role group color engine permission_mode effort allowed_tools model_id
+                    routing_enabled light_model_id light_effort system_prompt)a
+  @opencode_fields ~w(display_name role group color engine opencode_agent model_provider model_id
+                      routing_enabled light_model_provider light_model_id system_prompt)a
   @broad_tools ["*", "Bash", "Bash(*)", "Bash(* *)"]
 
   # -- Plan -----------------------------------------------------------------------
@@ -403,6 +405,9 @@ defmodule Canopy.Templates.Import do
 
     {changes, prompt_diff}
   end
+
+  defp compare_value(:routing_enabled, record, _existing),
+    do: Map.get(record, :routing_enabled) == true
 
   defp compare_value(:allowed_tools, record, _existing),
     do: Agent.allowed_tools_list(%{allowed_tools: Map.get(record, :allowed_tools)})

@@ -48,6 +48,12 @@ defmodule Canopy.Settings.Setting do
     field :claude_default_effort, :string
     field :opencode_default_provider, :string
     field :opencode_default_model, :string
+    # model routing (experimental): the light model (and, for Claude Code, the
+    # effort) a routed agent with none of its own runs cheap wakes on; nil: none
+    field :claude_light_model, :string
+    field :claude_light_effort, :string
+    field :opencode_light_provider, :string
+    field :opencode_light_model, :string
     # when first-run setup was finished or skipped; nil sends `/` to /welcome.
     # Set only by `Canopy.Settings.mark_onboarded/0`, never cast.
     field :onboarded_at, :utc_datetime_usec
@@ -78,7 +84,11 @@ defmodule Canopy.Settings.Setting do
       :claude_default_model,
       :claude_default_effort,
       :opencode_default_provider,
-      :opencode_default_model
+      :opencode_default_model,
+      :claude_light_model,
+      :claude_light_effort,
+      :opencode_light_provider,
+      :opencode_light_model
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
     |> update_change(:gh_binary, &trim_or_nil/1)
@@ -86,6 +96,10 @@ defmodule Canopy.Settings.Setting do
     |> update_change(:claude_default_effort, &trim_or_nil/1)
     |> update_change(:opencode_default_provider, &trim_or_nil/1)
     |> update_change(:opencode_default_model, &trim_or_nil/1)
+    |> update_change(:claude_light_model, &trim_or_nil/1)
+    |> update_change(:claude_light_effort, &trim_or_nil/1)
+    |> update_change(:opencode_light_provider, &trim_or_nil/1)
+    |> update_change(:opencode_light_model, &trim_or_nil/1)
     |> update_change(:claude_config_dir, &normalize_claude_config_dir/1)
     |> validate_required([
       :opencode_url,
@@ -118,32 +132,43 @@ defmodule Canopy.Settings.Setting do
     end)
     |> validate_url(:opencode_url)
     |> validate_inclusion(:claude_default_effort, Agent.efforts())
+    |> validate_inclusion(:claude_light_effort, Agent.efforts())
     |> validate_default_models()
+    |> validate_engine_models(
+      {:claude_light_model, :opencode_light_provider, :opencode_light_model}
+    )
   end
 
   # The same rules as an agent's own model: the alias list for Claude Code,
   # provider and model together for OpenCode. Checked only when a default
   # changes, so a stale one never blocks saving another setting.
-  defp validate_default_models(changeset) do
+  defp validate_default_models(changeset),
+    do:
+      validate_engine_models(
+        changeset,
+        {:claude_default_model, :opencode_default_provider, :opencode_default_model}
+      )
+
+  # One set of per-engine model columns (the defaults, or the light models).
+  defp validate_engine_models(changeset, {claude_field, provider_field, model_field}) do
     claude =
-      if changed?(changeset, :claude_default_model) do
-        Agent.model_errors("claude_code", nil, get_field(changeset, :claude_default_model))
-        |> Enum.map(fn {_field, message} -> {:claude_default_model, message} end)
+      if changed?(changeset, claude_field) do
+        Agent.model_errors("claude_code", nil, get_field(changeset, claude_field))
+        |> Enum.map(fn {_field, message} -> {claude_field, message} end)
       else
         []
       end
 
     opencode =
-      if changed?(changeset, :opencode_default_provider) or
-           changed?(changeset, :opencode_default_model) do
+      if changed?(changeset, provider_field) or changed?(changeset, model_field) do
         Agent.model_errors(
           "opencode",
-          get_field(changeset, :opencode_default_provider),
-          get_field(changeset, :opencode_default_model)
+          get_field(changeset, provider_field),
+          get_field(changeset, model_field)
         )
         |> Enum.map(fn
-          {:model_provider, message} -> {:opencode_default_provider, message}
-          {:model_id, message} -> {:opencode_default_model, message}
+          {:model_provider, message} -> {provider_field, message}
+          {:model_id, message} -> {model_field, message}
         end)
       else
         []

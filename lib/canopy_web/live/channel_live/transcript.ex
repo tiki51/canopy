@@ -976,7 +976,8 @@ defmodule CanopyWeb.ChannelLive.Transcript do
     "watch" => "a watch",
     "playbook" => "a playbook",
     "playbook_nudge" => "a playbook nudge",
-    "lock" => "a lock"
+    "lock" => "a lock",
+    "escalation" => "an escalation"
   }
 
   defp turn_text(%{at: at, turn: turn}) do
@@ -984,6 +985,8 @@ defmodule CanopyWeb.ChannelLive.Transcript do
       "Turn",
       at && TimelineComponents.short_time(at),
       Map.get(@triggers, turn.trigger) && "woken by " <> @triggers[turn.trigger],
+      Map.get(turn, :light?) && "light model",
+      Map.get(turn, :escalated?) && "escalated",
       turn.steered > 0 &&
         ngettext("took 1 message mid-turn", "took %{count} messages mid-turn", turn.steered),
       is_integer(turn.tools) && turn.tools > 0 && ngettext("1 call", "%{count} calls", turn.tools),

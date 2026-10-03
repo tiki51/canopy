@@ -89,8 +89,11 @@ function assistantMessage(sessionID, messageID, extra = {}) {
   let message = log.find((m) => m.info.id === messageID);
   if (!message) {
     const parent = [...log].reverse().find((m) => m.info.role === "user");
+    // the reply is by the model the prompt named (model routing sends a
+    // light or a main model per prompt)
+    const model = parent?.info.model || { providerID: "opencode", modelID: "gpt-5-nano" };
     message = {
-      info: { id: messageID, sessionID, role: "assistant", parentID: parent?.info.id, modelID: "gpt-5-nano", providerID: "opencode", mode: "build", agent: "build", time: { created: Date.now() } },
+      info: { id: messageID, sessionID, role: "assistant", parentID: parent?.info.id, modelID: model.modelID, providerID: model.providerID, mode: "build", agent: "build", time: { created: Date.now() } },
       parts: [],
     };
     log.push(message);
@@ -713,6 +716,14 @@ async function runTurn(sessionID, text, cwd) {
   const handoff = text.match(/Handoff ID: (ho_\S+)/);
   const channel = text.match(/Canopy message in #(\S+)/) || text.match(/in #(\S+)\./);
 
+  // Model routing (e2e/tests/routing.spec.ts): on a light turn, an
+  // "escalating check" is real work, so the agent escalates and stops; the
+  // re-run on the main model then answers as the scheduled branch below.
+  if (/You are on your light model for this wake/.test(text) && /escalating check/i.test(text)) {
+    await mcpCall("escalate", { canopy_session_id: sessionID, reason: "the check needs real work" });
+    return finishTurn(sessionID, messageID, part, "Escalating.", 0.0003);
+  }
+
   if (delegation) {
     await mcpCall("task_update", { canopy_session_id: sessionID, status: "completed", result: "Found two enqueue paths." });
     reply = "Delegated work finished.";
@@ -735,7 +746,8 @@ async function runTurn(sessionID, text, cwd) {
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Report attached.", attachments: id });
       reply = "Published the report.";
     } else if (/schedule/i.test(body)) {
-      const created = await mcpCall("schedule_create", { canopy_session_id: sessionID, when: "3s", what: "Run the scheduled check and report." });
+      const what = /escalat/i.test(body) ? "Run the escalating check and report." : "Run the scheduled check and report.";
+      const created = await mcpCall("schedule_create", { canopy_session_id: sessionID, when: "3s", what });
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Scheduled it: " + created.split(".")[0] + "." });
       reply = "Scheduled.";
     } else if (answer) {
@@ -847,7 +859,8 @@ const server = http.createServer(async (req, res) => {
       // what the session was last prompted with, for specs that check the
       // system text (e2e/tests/brief.spec.ts) and the wake text
       const known = sessions.get(m[1]);
-      if (known) Object.assign(known, { lastSystem: body.system ?? null, lastText: text });
+      // and the model of every prompt, in order (e2e/tests/routing.spec.ts)
+      if (known) Object.assign(known, { lastSystem: body.system ?? null, lastText: text, models: [...(known.models || []), body.model ? `${body.model.providerID}/${body.model.modelID}` : null] });
       // stored at once, like OpenCode, even when a running turn reads it later
       logUser(m[1], body);
       res.writeHead(204); res.end();

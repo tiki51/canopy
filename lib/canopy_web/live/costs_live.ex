@@ -2,13 +2,16 @@ defmodule CanopyWeb.CostsLive do
   @moduledoc """
   Spend, from the cost OpenCode reports per turn: totals, a daily bar for the
   last two weeks, and breakdowns by agent, channel, and model for a chosen
-  period. Updates live as turns finish.
+  period. Updates live as turns finish. The Model routing card (experimental)
+  shows routed agents, light turns, escalations, and the estimated net
+  saving once routing runs, and the routing candidates with an estimated
+  saving before it does.
   """
 
   use CanopyWeb, :live_view
 
   alias Canopy.Costs
-  alias Canopy.Costs.Auditor
+  alias Canopy.Costs.{Auditor, Routing}
 
   @periods [today: "Today", week: "7 days", month: "30 days", all: "All time"]
   @page 6
@@ -109,6 +112,28 @@ defmodule CanopyWeb.CostsLive do
     |> assign(:top_turns, Costs.top_turns(since, @page))
     |> assign(:budgets, Costs.channel_budgets())
     |> assign(:by_day, Costs.by_day(14))
+    |> assign_routing(since)
+  end
+
+  # Model routing: what ran light and what it saved once an agent is routed;
+  # the candidates and their estimated saving either way.
+  defp assign_routing(socket, since) do
+    agents = Routing.routed_agents()
+
+    socket
+    |> assign(:routed_agents, agents)
+    |> assign(:routing_savings, Routing.routing_savings(since))
+    |> assign(:escalations, Routing.escalation_by_kind(since))
+    |> assign(:paused_rules, Routing.paused_rules())
+    |> assign(:candidates, Routing.candidates(since))
+  end
+
+  defp escalation_rate([]), do: "—"
+
+  defp escalation_rate(rows) do
+    turns = Enum.sum(Enum.map(rows, & &1.turns))
+    escalated = Enum.sum(Enum.map(rows, & &1.escalated))
+    if turns > 0, do: "#{round(escalated / turns * 100)}%", else: "—"
   end
 
   # "@name · first words of the role", short enough for a select box.
@@ -254,6 +279,14 @@ defmodule CanopyWeb.CostsLive do
           </dl>
         </Layouts.panel>
 
+        <.routing_card
+          agents={@routed_agents}
+          savings={@routing_savings}
+          escalations={@escalations}
+          paused={@paused_rules}
+          candidates={@candidates}
+        />
+
         <div class="grid gap-6 lg:grid-cols-2 xl:grid-cols-4">
           <.breakdown
             id="by-agent"
@@ -337,6 +370,20 @@ defmodule CanopyWeb.CostsLive do
                       <td>
                         {t.trigger || "—"}
                         <span :if={t.passed} class="badge badge-xs badge-ghost">passed</span>
+                        <span
+                          :if={t.profile == "light"}
+                          class="badge badge-xs badge-info badge-soft"
+                          title="Ran on the agent's light model (model routing)"
+                        >
+                          light
+                        </span>
+                        <span
+                          :if={t.escalated}
+                          class="badge badge-xs badge-warning badge-soft"
+                          title="The light model escalated the wake to the main model"
+                        >
+                          escalated
+                        </span>
                         <span :if={t.outcome == "error"} class="badge badge-xs badge-error badge-soft">
                           error
                         </span>
@@ -468,6 +515,86 @@ defmodule CanopyWeb.CostsLive do
             {if @auditor, do: "Ask @#{@auditor.name} to audit", else: "Pick an auditor"}
           </.button>
         </form>
+      </div>
+    </Layouts.panel>
+    """
+  end
+
+  attr :agents, :list, required: true
+  attr :savings, :map, required: true
+  attr :escalations, :list, required: true
+  attr :paused, :list, required: true
+  attr :candidates, :map, required: true
+
+  # Model routing (experimental): its four numbers once an agent is routed,
+  # and the candidates with their estimated saving.
+  defp routing_card(assigns) do
+    ~H"""
+    <Layouts.panel
+      id="routing"
+      title="Model routing"
+      description="Experimental, unverified until the Phase 0 spike. Routed agents run cheap wakes on a light model and escalate real work to their main one. Savings are estimates."
+    >
+      <dl :if={@agents != []} class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
+        <.metric
+          id="routing-agents"
+          label="Routed agents"
+          value={length(@agents)}
+          hint={Enum.map_join(@agents, ", ", &("@" <> &1.name))}
+        />
+        <.metric id="routing-light" label="Light turns" value={@savings.light_turns} />
+        <.metric
+          id="routing-escalated"
+          label="Escalated"
+          value={escalation_rate(@escalations)}
+          hint={Enum.map_join(@escalations, " · ", &"#{&1.kind} #{&1.escalated}/#{&1.turns}")}
+        />
+        <.metric
+          id="routing-net"
+          label="Net saving (est.)"
+          value={Costs.money(@savings.net)}
+          hint={"#{Costs.money(@savings.gross)} saved − #{Costs.money(@savings.waste)} escalated − #{Costs.money(@savings.penalty)} switches"}
+        />
+      </dl>
+      <p :if={@agents == []} id="routing-off" class="text-xs text-base-content/60">
+        Off for every agent. Turn it on per agent on its edit form, after setting a light model.
+      </p>
+      <ul :if={@paused != []} class="mt-3 flex flex-col gap-1 text-xs">
+        <li :for={p <- @paused} id={"routing-paused-#{p.id}"} class="text-warning">
+          Paused for @{p.agent && p.agent.name}, {if p.wake_kind == "*",
+            do: "every wake",
+            else: p.wake_kind <> " wakes"}: {p.reason}
+        </li>
+      </ul>
+      <div :if={@candidates.rows != []} id="routing-candidates" class="mt-4">
+        <p class="mb-1 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
+          Routing candidates · about {Costs.money(@candidates.saving)} saved (estimate)
+        </p>
+        <table class="table table-xs">
+          <thead>
+            <tr>
+              <th>Wake kind</th>
+              <th class="text-right">Candidates</th>
+              <th class="text-right">Would run light</th>
+              <th class="text-right">Kept on main (warm cache)</th>
+              <th class="text-right">Saving (est.)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={r <- @candidates.rows} id={"candidate-#{r.kind}"}>
+              <td>{String.replace(r.kind, "_", " ")}</td>
+              <td class="text-right tabular-nums">{r.candidates}</td>
+              <td class="text-right tabular-nums">{r.routed}</td>
+              <td class="text-right tabular-nums">{r.kept_main}</td>
+              <td class="text-right tabular-nums">{Costs.money(r.saving)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="mt-1 text-[11px] text-base-content/60">
+          Light models: {Enum.map_join(@candidates.light_models, " · ", fn {engine, model} ->
+            "#{Canopy.Engine.label(engine)} #{model || "none set"}#{if @candidates.assumed[engine], do: " (assumed)", else: ""}"
+          end)}. List prices; cache warmth guessed from how soon each turn followed the last.
+        </p>
       </div>
     </Layouts.panel>
     """

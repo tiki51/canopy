@@ -2,7 +2,8 @@ defmodule Canopy.MCP.Tools.CostsReport do
   @moduledoc """
   What agents have spent, as reported by the model providers through
   OpenCode: totals and breakdowns by agent, channel, model, and trigger,
-  efficiency (model calls, tokens, cache hits, wasted turns), the costliest
+  model routing (experimental) and the routing candidates with estimated
+  savings, efficiency (model calls, tokens, cache hits, wasted turns), the costliest
   turns, channel spend limits, the settings that shape spend, and model
   prices. Use it when asked to audit or reduce costs.
   """
