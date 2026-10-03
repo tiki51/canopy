@@ -224,6 +224,44 @@ defmodule Canopy.Runtime.Prompts do
     """
   end
 
+  @doc """
+  Appended to a delegation wake that a message about it joined before the
+  delegate started: the message to read, without a second set of instructions.
+  """
+  def delegation_followup(message_id) when is_binary(message_id) do
+    "\nA message about this delegation arrived while it waited (Message ID: #{message_id}). Read it with canopy_message_get before you start; it may change the task.\n"
+  end
+
+  def delegation_followup(_message_id),
+    do:
+      "\nOther messages arrived while this delegation waited; canopy_messages_read returns them.\n"
+
+  @doc """
+  Appended to a wake for an agent's main session while the same agent works
+  on delegations in separate sessions of this channel, so it does not start
+  the same work twice.
+  """
+  def delegation_in_progress([]), do: ""
+
+  def delegation_in_progress(delegations) do
+    lines =
+      Enum.map_join(delegations, "\n", fn d ->
+        description =
+          d.description
+          |> Canopy.MCP.Format.single_line()
+          |> Canopy.MCP.Format.truncate(200)
+
+        "- #{d.id} (\"#{description}\")"
+      end)
+
+    """
+
+    You are also working on #{if length(delegations) == 1, do: "this delegation", else: "these delegations"} in a separate delegated session:
+    #{lines}
+    Don't start that work here. If this message is about it, say it is in progress.
+    """
+  end
+
   def delegation_completed(%{
         channel: channel,
         to: to,

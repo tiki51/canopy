@@ -14,6 +14,19 @@ defmodule Canopy.MCP.Tools.TasksTest do
     Map.merge(ctx, %{delegate: delegate, delegate_session: delegate_session})
   end
 
+  # The child session an agent's delegation runs in, as the channel server starts it.
+  defp start_child(ctx, delegation) do
+    child =
+      session_fixture(%{
+        channel: ctx.channel,
+        agent_id: delegation.to_agent_id,
+        parent_session_id: ctx.session.id
+      })
+
+    {:ok, delegation} = Delegations.start(delegation, child.id)
+    {child, delegation}
+  end
+
   describe "task_get" do
     test "shows the channel task", ctx do
       {:ok, _} =
@@ -79,21 +92,22 @@ defmodule Canopy.MCP.Tools.TasksTest do
           description: "Check the index"
         })
 
+      {child, _} = start_child(ctx, delegation)
       Timeline.subscribe(ctx.channel.id)
       task_before = Tasks.for_channel(ctx.channel.id)
 
-      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, ctx.delegate_session)
+      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, child)
       assert text =~ "still working on delegation [#{delegation.id}]"
-      assert Delegations.get!(delegation.id).status == "requested"
+      assert Delegations.get!(delegation.id).status == "working"
 
-      assert {:error, reason} = call(TaskUpdate, %{title: "New title"}, ctx.delegate_session)
+      assert {:error, reason} = call(TaskUpdate, %{title: "New title"}, child)
       assert reason =~ "Only the task owner"
 
       assert {:ok, text} =
                call(
                  TaskUpdate,
                  %{status: "completed", result: "Index missing on invoice_id"},
-                 ctx.delegate_session
+                 child
                )
 
       assert text =~
@@ -116,10 +130,10 @@ defmodule Canopy.MCP.Tools.TasksTest do
     end
 
     test "a delegate reporting blocked fails its delegation with the result as reason", ctx do
+      # the user's delegation runs in the delegate's root session
       {:ok, delegation} =
         Delegations.create(%{
           channel_id: ctx.channel.id,
-          from_agent_id: ctx.agent.id,
           to_agent_id: ctx.delegate.id,
           description: "Check the index"
         })
@@ -147,18 +161,37 @@ defmodule Canopy.MCP.Tools.TasksTest do
           description: "Look at the logs"
         })
 
-      child =
-        session_fixture(%{
-          channel: ctx.channel,
-          agent_id: ctx.delegate.id,
-          parent_session_id: ctx.session.id
-        })
-
-      {:ok, _} = Delegations.start(delegation, child.id)
+      {child, _} = start_child(ctx, delegation)
 
       assert {:ok, text} = call(TaskUpdate, %{result: "Logs show a double enqueue"}, child)
       assert text =~ "delegation [#{delegation.id}] completed"
       assert Delegations.get!(delegation.id).result == "Logs show a double enqueue"
+    end
+
+    test "the delegate's root session leaves an agent's delegation to its child session", ctx do
+      {:ok, working} =
+        Delegations.create(%{
+          channel_id: ctx.channel.id,
+          from_agent_id: ctx.agent.id,
+          to_agent_id: ctx.delegate.id,
+          description: "Check the index"
+        })
+
+      {_child, _} = start_child(ctx, working)
+
+      # not started yet: it still belongs to the child session it will wake
+      {:ok, requested} =
+        Delegations.create(%{
+          channel_id: ctx.channel.id,
+          from_agent_id: ctx.agent.id,
+          to_agent_id: ctx.delegate.id,
+          description: "Then the logs"
+        })
+
+      assert {:ok, text} = call(TaskUpdate, %{status: "working"}, ctx.delegate_session)
+      assert text =~ "updated task in ##{ctx.channel.name}"
+      assert Delegations.get!(working.id).status == "working"
+      assert Delegations.get!(requested.id).status == "requested"
     end
 
     test "the owner completing the task does not touch delegations addressed to others", ctx do

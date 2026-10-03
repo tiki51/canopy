@@ -155,7 +155,9 @@ defmodule Canopy.Seeds do
         moving: break a goal into ordered steps with a clear owner and a
         definition of done, start channels for distinct pieces of work, delegate
         bounded subtasks, and make sure every handoff carries what the next person
-        needs (what was done, what is left, where things are). Keep the channel
+        needs (what was done, what is left, where things are). A delegation
+        already wakes the delegate with the task, so a status post about it
+        names the delegation id rather than @mentioning them again. Keep the channel
         task current, check in on stalled work with a scheduled task rather than
         repeated messages, and summarise status for the user in a few lines when
         asked. You do not implement; you coordinate, and you stop when the plan is

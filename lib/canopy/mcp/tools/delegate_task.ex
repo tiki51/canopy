@@ -3,6 +3,10 @@ defmodule Canopy.MCP.Tools.DelegateTask do
   Delegate a bounded subtask to another member of the channel. You keep
   ownership of the task; the delegate works in a child session and you are
   woken with the result when they report completion.
+
+  The delegate is woken with the task; don't @mention them about it in a post
+  as well, or you wake their main session too. To add to the task, cite the
+  delegation id in a message.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -30,7 +34,9 @@ defmodule Canopy.MCP.Tools.DelegateTask do
            {:ok, delegation} <- create(ctx, channel, delegate, description) do
         {:ok,
          "delegation [#{delegation.id}] requested: @#{delegate.name} will work on it in ##{channel.name}. " <>
-           "You will be woken when it completes; ownership stays with #{Format.agent_ref(channel.owner)}."}
+           "You will be woken when it completes; ownership stays with #{Format.agent_ref(channel.owner)}. " <>
+           "@#{delegate.name} has been woken with the task: don't @mention them about it in a post, " <>
+           "or you'll wake their main session as well."}
       end
     end)
   end

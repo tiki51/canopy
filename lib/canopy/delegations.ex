@@ -71,6 +71,36 @@ defmodule Canopy.Delegations do
     )
   end
 
+  @doc """
+  Pending delegations to `agent_id` in a channel that run in the delegate's
+  root session: the user's, which have no delegator and no child session. An
+  agent's delegation belongs to the child session it wakes, even before that
+  session exists, so the delegate's root session never reports on it.
+  """
+  def list_pending_root_for(channel_id, agent_id) do
+    Repo.all(
+      from d in Delegation,
+        where:
+          d.channel_id == ^channel_id and d.to_agent_id == ^agent_id and
+            d.status in ^@pending and is_nil(d.from_agent_id) and is_nil(d.child_session_id),
+        order_by: [asc: d.id],
+        preload: ^@preloads
+    )
+  end
+
+  @doc """
+  Pending delegations in a channel from one agent to another: each runs, or
+  will run, in a child session of its delegate.
+  """
+  def list_pending_children(channel_id) do
+    Repo.all(
+      from d in Delegation,
+        where:
+          d.channel_id == ^channel_id and d.status in ^@pending and not is_nil(d.from_agent_id),
+        order_by: [asc: d.id]
+    )
+  end
+
   @doc "The pending delegation whose child session is `session_id`, if any."
   def get_by_child_session(session_id) do
     Repo.one(

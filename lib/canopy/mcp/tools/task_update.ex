@@ -133,8 +133,10 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
     end
   end
 
+  # A child session reports on its own delegation; a root session only on one
+  # the user handed it. Another session's delegation is never closed from here.
   defp pending_delegation(ctx, channel) do
     Delegations.get_by_child_session(ctx.session.id) ||
-      List.first(Delegations.list_pending_for(channel.id, ctx.agent.id))
+      List.first(Delegations.list_pending_root_for(channel.id, ctx.agent.id))
   end
 end

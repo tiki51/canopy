@@ -47,6 +47,25 @@ defmodule Canopy.DelegationsTest do
     assert [] = Delegations.list_pending_for(channel.id, delegate.id)
   end
 
+  test "only the user's delegations run in the delegate's root session", ctx do
+    %{channel: channel, agent: agent, delegate: delegate} = ctx
+
+    {:ok, from_user} =
+      Delegations.create(%{channel_id: channel.id, to_agent_id: delegate.id, description: "a"})
+
+    {:ok, _from_agent} =
+      Delegations.create(%{
+        channel_id: channel.id,
+        from_agent_id: agent.id,
+        to_agent_id: delegate.id,
+        description: "b"
+      })
+
+    id = from_user.id
+    assert [%{id: ^id}] = Delegations.list_pending_root_for(channel.id, delegate.id)
+    assert length(Delegations.list_pending_for(channel.id, delegate.id)) == 2
+  end
+
   test "fail records delegation_failed and self-delegation is rejected", ctx do
     %{channel: channel, agent: agent, delegate: delegate} = ctx
     Timeline.subscribe(channel.id)

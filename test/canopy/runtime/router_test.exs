@@ -223,4 +223,42 @@ defmodule Canopy.Runtime.RouterTest do
     [{{:root, @backend}, plain}] = Router.wakeups(message_event(%{}), ctx())
     assert is_binary(plain)
   end
+
+  describe "a message to an agent working on a delegation" do
+    @dl "dl_01M3P41NP63ABCDEFGHJKMNPQR"
+    @other_dl "dl_01M3P5RKNTVYABCDEFGHJKMNP"
+
+    defp delegating_ctx(pending \\ [%{id: @dl, from_agent_id: @backend}]),
+      do: ctx(%{pending_children: %{@reviewer => pending}})
+
+    test "from the delegator goes to the child session" do
+      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "@reviewer FYI"})
+      assert [{{:child, @dl}, _}] = Router.wakeups(event, delegating_ctx())
+    end
+
+    test "citing the delegation's id or short id goes to the child session, from anyone" do
+      for body <- ["about #{@dl}", "about dl_01M3P41N, the retries"] do
+        event = message_event(%{mentions: [@reviewer], body: "@reviewer #{body}"})
+        assert [{{:child, @dl}, _}] = Router.wakeups(event, delegating_ctx())
+      end
+    end
+
+    test "from the user without the id stays on the main session" do
+      event = message_event(%{mentions: [@reviewer], body: "@reviewer something else"})
+      assert [{{:root, @reviewer}, _}] = Router.wakeups(event, delegating_ctx())
+    end
+
+    test "from a delegator of two of them, without an id, stays on the main session" do
+      pending = [
+        %{id: @dl, from_agent_id: @backend},
+        %{id: @other_dl, from_agent_id: @backend}
+      ]
+
+      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "@reviewer hi"})
+      assert [{{:root, @reviewer}, _}] = Router.wakeups(event, delegating_ctx(pending))
+
+      event = message_event(%{agent_id: @backend, mentions: [@reviewer], body: "re #{@other_dl}"})
+      assert [{{:child, @other_dl}, _}] = Router.wakeups(event, delegating_ctx(pending))
+    end
+  end
 end
