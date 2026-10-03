@@ -491,7 +491,7 @@ const startedAt = Date.now();
 async function turn(prompt) {
   const state = loadState();
   const story = state.story || {};
-  const messageFrom = prompt.match(/new Canopy message in #\S+ from (\S+)\./)?.[1];
+  const messageFrom = prompt.match(/new Canopy message in #\S+ from (.+?)\.\n/)?.[1];
   const body = prompt.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
 
   let m;

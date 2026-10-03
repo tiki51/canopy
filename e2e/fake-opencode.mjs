@@ -290,7 +290,7 @@ async function storyTurn(sessionID, text, cwd) {
   emit("session.status", { sessionID, status: { type: "busy" } });
   await sleep(TURN_DELAY / 2);
 
-  const from = text.match(/new Canopy message in #\S+ from (\S+)\./)?.[1];
+  const from = text.match(/new Canopy message in #\S+ from (.+?)\.\n/)?.[1];
   const body = text.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
   let m;
 

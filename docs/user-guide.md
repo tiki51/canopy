@@ -138,33 +138,37 @@ opts in for one run. The Homebrew build always stays on loopback.
 
 ### First-run setup
 
-The first time you open Canopy, a short setup asks six things, one per page:
+The first time you open Canopy, setup is one page you scroll down. Each section is a
+heading, a line about it, and its controls:
 
-1. **Your name**: what agents call you, prefilled from your global git `user.name` when
-   there is one.
-2. **A look**: light, dark, or following the system, and one of the four palettes. It applies
-   as you click and is kept in this browser.
-3. **Your engines**: Canopy checks both engines at once. Claude Code shows its version and
-   the account it is logged in as; OpenCode shows its version and URL. Below them, pick the
-   **default model** for each engine that answered (and Claude Code's default effort);
-   agents without a model of their own run on it. The OpenCode model list comes from
-   OpenCode itself, so it stays disabled until OpenCode answers. When only Claude Code is
-   ready, *Move the starter agents to Claude Code* (ticked) puts the seeded agents that are
-   still on OpenCode with no model of their own onto Claude Code, so they can answer.
-4. **How much agents do on their own**: a preset for the brakes (see
-   [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
-   *Custom* to set them yourself. Below the presets, an optional **Desktop notifications**
-   switch (off unless you turn it on): flipping it on is when the browser asks to allow
-   them, and the page says at once whether it did, whether the browser blocks them, or
-   whether this page can't have them (see [Notifications](#notifications)). It is kept in
-   this browser, like the look; *Continue* and *Skip setup* leave it as it is.
-5. **Your first project**: a folder on this Mac. A folder that is not a git repository yet
-   gets `git init`. *Skip this step* if you would rather add one later.
-6. **You're set**: a summary, each line linking to its place in Settings (including whether
-   desktop notifications are on in this browser). *Start a channel*
-   opens New channel with your project already picked; *Look around first* opens Agents.
+- **You**: what agents call you, prefilled from your global git `user.name` when there is
+  one.
+- **Look**: light, dark, or following the system, and one of the four palettes. It applies
+  as you click and is kept in this browser.
+- **Engines**: Canopy checks both engines at once as the page opens. Claude Code shows its
+  version and the account it is logged in as; OpenCode shows its version and URL. Below
+  them, pick the **default model** for each engine that answered (and Claude Code's default
+  effort); agents without a model of their own run on it. The OpenCode model list comes
+  from OpenCode itself, so it stays disabled until OpenCode answers. When only Claude Code
+  is ready, a **Move the starter agents to Claude Code** button puts the seeded agents that
+  are still on OpenCode with no model of their own onto Claude Code, so they can answer.
+- **How much agents do on their own**: a preset for the brakes (see
+  [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
+  *Custom* to set them yourself.
+- **Notifications** (optional): the **Desktop notifications** switch, off unless you turn
+  it on. Flipping it on is when the browser asks to allow them, and the page says at once
+  whether it did, whether the browser blocks them, or whether this page can't have them
+  (see [Notifications](#notifications)). It is kept in this browser, like the look.
+- **Your first project** (optional): a folder on this Mac and a name. *Add project* adds
+  it and says so right there; a folder that is not a git repository yet gets `git init`.
+  Leave it empty if you would rather add one later.
 
-Every step saves when you press *Continue*, so closing the tab halfway keeps what you chose.
+Every choice saves as you make it (the name a moment after you stop typing), and a small
+*Saved* appears beside the section's heading. So leaving the page halfway keeps what you
+chose. **Finish setup** at the bottom (it stays in reach at the foot of the screen on a
+phone) replaces the page with a summary, each line linking to its place in Settings
+(including whether desktop notifications are on in this browser). *Start a channel* opens
+New channel with your new project already picked; *Look around first* opens Agents.
 *Skip setup* (top right) ends it at once; either way it does not come back by itself.
 **Settings → Run setup again** reopens it, prefilled with your current choices.
 

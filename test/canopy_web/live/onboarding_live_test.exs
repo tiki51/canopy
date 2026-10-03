@@ -66,39 +66,63 @@ defmodule CanopyWeb.OnboardingLiveTest do
     path
   end
 
-  describe "steps" do
-    test "/welcome starts at the name step; ?step= picks one; an unknown step is the first",
+  # The page with its engine checks (and git name) in.
+  defp open(conn) do
+    {:ok, view, _html} = live(conn, ~p"/welcome")
+    render_async(view)
+    view
+  end
+
+  defp finish(view) do
+    view |> element("#welcome-finish") |> render_click()
+    render_async(view)
+  end
+
+  describe "the page" do
+    test "every section is on one page, in order, with Skip and Finish and no steps",
          %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome")
-      assert has_element?(view, "#welcome-name-form")
-      assert has_element?(view, "#welcome-step-name[data-state=current]")
-      assert has_element?(view, "#welcome-step-done[data-state=upcoming]")
+      view = open(conn)
+      html = render(view)
+
+      ids =
+        ~w(welcome-you welcome-look welcome-engines welcome-pace welcome-notify welcome-project)
+
+      for id <- ids, do: assert(has_element?(view, "section##{id} h2##{id}-title"))
+
+      positions = Enum.map(ids, fn id -> :binary.match(html, ~s(id="#{id}")) |> elem(0) end)
+      assert positions == Enum.sort(positions)
+
       assert has_element?(view, "#skip-setup")
-
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
-      assert has_element?(view, "#welcome-team")
-      assert has_element?(view, "#welcome-step-name[data-state=done]")
-      assert has_element?(view, "#welcome-step-team[data-state=current]")
-
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=nope")
-      assert has_element?(view, "#welcome-name-form")
+      assert has_element?(view, "#welcome-finish")
+      refute has_element?(view, "#welcome-steps")
+      refute has_element?(view, "#welcome-continue")
+      refute has_element?(view, "#welcome-back")
     end
 
-    test "Back and the step rail move between steps", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=theme")
+    test "an old ?step= link opens the page at the matching section", %{conn: conn} do
+      assert {:error, {:redirect, %{to: "/welcome#welcome-pace"}}} =
+               live(conn, ~p"/welcome?step=team")
 
-      view |> element("#welcome-back") |> render_click()
-      assert_patch(view, ~p"/welcome?step=name")
+      assert {:error, {:redirect, %{to: "/welcome#welcome-finish-bar"}}} =
+               live(conn, ~p"/welcome?step=done")
 
-      view |> element("#welcome-step-team a") |> render_click()
-      assert_patch(view, ~p"/welcome?step=team")
+      assert {:error, {:redirect, %{to: "/welcome"}}} = live(conn, ~p"/welcome?step=nope")
+    end
+
+    test "/ sends a fresh install here, and not once setup is finished", %{conn: conn} do
+      assert redirected_to(get(conn, ~p"/")) == ~p"/welcome"
+
+      view = open(conn)
+      finish(view)
+
+      refute redirected_to(get(build_conn(), ~p"/")) == ~p"/welcome"
     end
   end
 
-  describe "name" do
+  describe "you" do
     test "prefills a name already chosen", %{conn: conn} do
       {:ok, _} = Settings.update(%{user_display_name: "Steven"})
-      {:ok, view, _html} = live(conn, ~p"/welcome")
+      view = open(conn)
 
       assert has_element?(
                view,
@@ -106,65 +130,152 @@ defmodule CanopyWeb.OnboardingLiveTest do
              )
     end
 
-    test "suggests git's user.name while the name is still the default", %{conn: conn} do
+    test "suggests git's user.name while the name is still the default, kept on Finish",
+         %{conn: conn} do
       put_env(:canopy, :git_user_name, "Ada Lovelace")
-      {:ok, view, _html} = live(conn, ~p"/welcome")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(
                view,
                "#welcome-name-form input[name='setting[user_display_name]'][value='Ada Lovelace']"
              )
+
+      # only a suggestion until the page is finished (or the field edited)
+      assert Settings.get().user_display_name == "You"
+
+      finish(view)
+      assert Settings.get().user_display_name == "Ada Lovelace"
+      assert has_element?(view, "#summary-name", "Ada Lovelace")
+    end
+
+    test "Skip does not take the git suggestion", %{conn: conn} do
+      put_env(:canopy, :git_user_name, "Ada Lovelace")
+      view = open(conn)
+
+      view |> element("#skip-setup") |> render_click()
+      assert Settings.get().user_display_name == "You"
     end
 
     test "with no git name the field starts empty", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(view, "#welcome-name-form input[placeholder='Your name']")
       refute has_element?(view, "#welcome-name-form input[value='You']")
     end
 
-    test "saves the name, syncs the local user, and moves on", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome")
+    test "saves as it changes, syncs the local user, and says Saved", %{conn: conn} do
+      view = open(conn)
+      refute has_element?(view, "#welcome-you-saved")
 
-      view |> form("#welcome-name-form", setting: %{user_display_name: ""}) |> render_submit()
+      view |> form("#welcome-name-form", setting: %{user_display_name: ""}) |> render_change()
       assert has_element?(view, "#welcome-name-form", "can't be blank")
 
       view
       |> form("#welcome-name-form", setting: %{user_display_name: String.duplicate("a", 81)})
-      |> render_submit()
+      |> render_change()
 
       assert has_element?(view, "#welcome-name-form", "at most 80")
       assert Settings.get().user_display_name == "You"
+      refute has_element?(view, "#welcome-you-saved")
 
-      view |> form("#welcome-name-form", setting: %{user_display_name: "Ada"}) |> render_submit()
-      assert_patch(view, ~p"/welcome?step=theme")
+      view |> form("#welcome-name-form", setting: %{user_display_name: "Ada"}) |> render_change()
 
       assert Settings.get().user_display_name == "Ada"
       assert Users.local().display_name == "Ada"
+      assert has_element?(view, "#welcome-you-status #welcome-you-saved[data-saved]")
+      refute has_element?(view, "#welcome-name-form", "can't be blank")
+    end
+
+    test "Saved goes away after a moment", %{conn: conn} do
+      view = open(conn)
+      view |> form("#welcome-name-form", setting: %{user_display_name: "Ada"}) |> render_change()
+      assert has_element?(view, "#welcome-you-saved")
+
+      # the timer's message, sent early; an older timer's is ignored
+      send(view.pid, {:clear_saved, :you, make_ref()})
+      assert has_element?(view, "#welcome-you-saved")
+
+      %{saved: %{you: ref}} = :sys.get_state(view.pid).socket.assigns
+      send(view.pid, {:clear_saved, :you, ref})
+      refute has_element?(view, "#welcome-you-saved")
+    end
+
+    test "the name survives without any Continue: other sections, then Finish", %{conn: conn} do
+      view = open(conn)
+
+      view
+      |> form("#welcome-name-form", setting: %{user_display_name: "Priya"})
+      |> render_change()
+
+      view |> element("#welcome-presets-careful") |> render_click()
+      finish(view)
+
+      assert Settings.get().user_display_name == "Priya"
+      assert has_element?(view, "#summary-name", "You're Priya.")
+    end
+
+    test "leaving midway keeps the name", %{conn: conn} do
+      view = open(conn)
+
+      view
+      |> form("#welcome-name-form", setting: %{user_display_name: "Priya"})
+      |> render_submit()
+
+      # a new visit shows it
+      view = open(conn)
+
+      assert has_element?(
+               view,
+               "#welcome-name-form input[name='setting[user_display_name]'][value='Priya']"
+             )
+    end
+
+    test "Finish without a name says so instead of calling you You", %{conn: conn} do
+      view = open(conn)
+      finish(view)
+      assert has_element?(view, "#summary-name", "No name yet")
     end
   end
 
-  test "the theme step shows the appearance picker", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/welcome?step=theme")
+  test "the look section shows the appearance picker", %{conn: conn} do
+    view = open(conn)
 
     for mode <- ~w(system light dark) do
-      assert has_element?(view, "#appearance-mode-#{mode}[data-phx-theme='#{mode}']")
+      assert has_element?(
+               view,
+               "#welcome-look #appearance-mode-#{mode}[data-phx-theme='#{mode}']"
+             )
     end
 
     for id <- ~w(blue-hour moss graphite ember) do
-      assert has_element?(view, "#palette-#{id}[role=radio][data-phx-palette='#{id}']")
+      assert has_element?(
+               view,
+               "#welcome-look #palette-#{id}[role=radio][data-phx-palette='#{id}']"
+             )
     end
-
-    view |> element("#welcome-continue") |> render_click()
-    assert_patch(view, ~p"/welcome?step=engines")
   end
 
   describe "engines" do
-    test "Claude Code found and logged in shows its version and login", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
+    test "both checks start with the page; Claude Code found and logged in shows its login",
+         %{conn: conn} do
+      test_pid = self()
+
+      stub(OC, :health, fn _opts ->
+        send(test_pid, {:health, self()})
+
+        receive do
+          :answer -> {:error, {:transport, %{reason: :econnrefused}}}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/welcome")
+      assert_receive {:health, task}
+      assert has_element?(view, "#welcome-opencode[data-state=checking]")
+      assert has_element?(view, "#welcome-check-engines[disabled]")
+
+      send(task, :answer)
       render_async(view)
+      assert has_element?(view, "#welcome-opencode[data-state=missing]")
 
       assert has_element?(view, "#welcome-claude[data-state=ready]")
       assert has_element?(view, "#welcome-claude-status", "Claude Code 9.9.9")
@@ -176,8 +287,7 @@ defmodule CanopyWeb.OnboardingLiveTest do
          %{conn: conn} do
       fake = fake_claude()
       claude_missing()
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(view, "#welcome-claude[data-state=missing]")
       assert has_element?(view, "#welcome-claude-error", "not found on PATH")
@@ -203,12 +313,12 @@ defmodule CanopyWeb.OnboardingLiveTest do
       render_async(view)
       assert has_element?(view, "#welcome-claude[data-state=ready]")
       assert Settings.get().claude_binary == fake
+      assert has_element?(view, "#welcome-engines-saved")
     end
 
     test "OpenCode running shows its version; not running shows how to start it",
          %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(view, "#welcome-opencode[data-state=missing]")
       assert has_element?(view, "#welcome-opencode-status", "opencode serve --port 4096")
@@ -221,20 +331,41 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert has_element?(view, "#welcome-opencode-status", "OpenCode 1.18.11")
     end
 
-    test "with no engine ready, Continue still works and no model is offered", %{conn: conn} do
+    test "with no engine ready, a warning and no model; Finish still works", %{conn: conn} do
       claude_missing()
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(view, "#welcome-no-engine")
       refute has_element?(view, "#welcome-default-model")
 
-      view |> form("#welcome-engines-form") |> render_submit()
-      assert_patch(view, ~p"/welcome?step=team")
+      finish(view)
+      assert Settings.onboarded?()
       assert Settings.default_model("claude_code").model_id == nil
     end
 
-    test "only Claude Code: its default model and effort, and the starter agents move to it",
+    test "Claude Code's default model and effort save as they change", %{conn: conn} do
+      view = open(conn)
+
+      assert has_element?(view, "#welcome-claude-default-model")
+      refute has_element?(view, "#welcome-opencode-default-provider")
+
+      view
+      |> form("#welcome-engines-form", setting: %{claude_default_model: "sonnet"})
+      |> render_change()
+
+      assert Settings.default_model("claude_code").model_id == "sonnet"
+      assert has_element?(view, "#welcome-engines-saved")
+
+      view
+      |> form("#welcome-engines-form",
+        setting: %{claude_default_model: "sonnet", claude_default_effort: "high"}
+      )
+      |> render_change()
+
+      assert Settings.default_effort("claude_code") == "high"
+    end
+
+    test "only Claude Code: moving the starter agents is a button, done at once",
          %{conn: conn} do
       backend = Fixtures.agent_fixture(%{name: "backend"})
 
@@ -246,47 +377,32 @@ defmodule CanopyWeb.OnboardingLiveTest do
         })
 
       mine = Fixtures.agent_fixture(%{name: "my-own"})
+      view = open(conn)
 
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      assert has_element?(
+               view,
+               "#welcome-move-starters",
+               "Move the 1 starter agent to Claude Code"
+             )
 
-      assert has_element?(view, "#welcome-claude-default-model")
-      assert has_element?(view, "#welcome-claude-default-effort")
-      refute has_element?(view, "#welcome-opencode-default-provider")
-      assert has_element?(view, "#welcome-move-starters-block", "Move the 1 starter agent")
+      assert Agents.get!(backend.id).engine == "opencode"
 
-      view
-      |> form("#welcome-engines-form",
-        setting: %{claude_default_model: "sonnet", claude_default_effort: "high"},
-        move_starters: "true"
-      )
-      |> render_submit()
-
-      assert_patch(view, ~p"/welcome?step=team")
-      assert Settings.default_model("claude_code").model_id == "sonnet"
-      assert Settings.default_effort("claude_code") == "high"
+      view |> element("#welcome-move-starters") |> render_click()
 
       assert Agents.get!(backend.id).engine == "claude_code"
       assert Agents.get!(configured.id).engine == "opencode"
       assert Agents.get!(mine.id).engine == "opencode"
+      assert has_element?(view, "#welcome-moved-starters", "Moved 1 starter agent")
+      refute has_element?(view, "#welcome-move-starters-block")
+      assert has_element?(view, "#welcome-engines-saved")
     end
 
-    test "unticking the move leaves the starter agents alone", %{conn: conn} do
-      backend = Fixtures.agent_fixture(%{name: "backend"})
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
-
-      view |> form("#welcome-engines-form", move_starters: "false") |> render_submit()
-      assert_patch(view, ~p"/welcome?step=team")
-      assert Agents.get!(backend.id).engine == "opencode"
-    end
-
-    test "only OpenCode: its default is picked from its own list", %{conn: conn} do
+    test "with OpenCode running, no move is offered and its default comes from its own list",
+         %{conn: conn} do
       claude_missing()
       opencode_running()
       Fixtures.agent_fixture(%{name: "backend"})
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      view = open(conn)
 
       refute has_element?(view, "#welcome-claude-default-model")
       refute has_element?(view, "#welcome-move-starters-block")
@@ -296,83 +412,95 @@ defmodule CanopyWeb.OnboardingLiveTest do
                "select#welcome-opencode-default-provider option[value='opencode']"
              )
 
+      # a provider alone waits for its model, without an error
       view
       |> form("#welcome-engines-form", setting: %{opencode_default_provider: "opencode"})
-      |> render_change()
+      |> render_change(%{"_target" => ["setting", "opencode_default_provider"]})
+
+      assert Settings.default_model("opencode").model_provider == nil
+      refute has_element?(view, "#welcome-engines-form", "pick a model")
+      refute has_element?(view, "#welcome-engines-saved")
+
+      assert has_element?(
+               view,
+               "select#welcome-opencode-default-model:not([disabled]) option[value='gpt-5-nano']"
+             )
 
       view
       |> form("#welcome-engines-form",
         setting: %{opencode_default_provider: "opencode", opencode_default_model: "gpt-5-nano"}
       )
-      |> render_submit()
-
-      assert_patch(view, ~p"/welcome?step=team")
+      |> render_change(%{"_target" => ["setting", "opencode_default_model"]})
 
       assert Settings.default_model("opencode") == %{
                model_provider: "opencode",
                model_id: "gpt-5-nano"
              }
+
+      assert has_element?(view, "#welcome-engines-saved")
+    end
+
+    test "a Claude Code change saves while an OpenCode provider still waits for its model",
+         %{conn: conn} do
+      opencode_running()
+      view = open(conn)
+
+      view
+      |> form("#welcome-engines-form",
+        setting: %{opencode_default_provider: "opencode", claude_default_model: "opus"}
+      )
+      |> render_change(%{"_target" => ["setting", "claude_default_model"]})
+
+      assert Settings.default_model("claude_code").model_id == "opus"
+      assert Settings.default_model("opencode").model_provider == nil
     end
 
     test "the OpenCode picker stays disabled until OpenCode sends its models", %{conn: conn} do
       stub(OC, :health, fn _opts -> {:ok, %{"healthy" => true, "version" => "1.18.11"}} end)
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=engines")
-      render_async(view)
+      view = open(conn)
 
       assert has_element?(view, "select#welcome-opencode-default-provider[disabled]")
       assert has_element?(view, "select#welcome-opencode-default-model[disabled]")
+      assert has_element?(view, "#welcome-opencode-default-provider", "OpenCode sent no models")
     end
   end
 
-  describe "team" do
+  describe "pace" do
     test "Balanced is preselected on a fresh install", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
+      view = open(conn)
       assert has_element?(view, "#welcome-presets-balanced[aria-checked=true]")
-      refute has_element?(view, "#welcome-team-custom")
+      refute has_element?(view, "#welcome-team-form")
     end
 
-    test "offers the desktop notifications switch, kept in the browser", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
-
-      assert has_element?(view, "#welcome-notify #notify-prefs[phx-update='ignore']")
-      assert has_element?(view, "#welcome-notify #notify-enabled[role='switch']")
-      # the details stay in Settings
-      refute has_element?(view, "#welcome-notify #notify-kinds")
-
-      # Continue saves the preset only: notifications have no server side
-      view |> form("#welcome-team-form") |> render_submit()
-      assert_patch(view, ~p"/welcome?step=repository")
-    end
-
-    test "Careful and Autonomous save their brakes", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
+    test "a preset saves as it is clicked", %{conn: conn} do
+      view = open(conn)
 
       view |> element("#welcome-presets-careful") |> render_click()
       assert has_element?(view, "#welcome-presets-careful[aria-checked=true]")
-      view |> form("#welcome-team-form") |> render_submit()
-      assert_patch(view, ~p"/welcome?step=repository")
-
+      assert has_element?(view, "#welcome-pace-saved")
       assert %{serialize_turns: true, chatter_pause: true, chatter_limit: 3} = Settings.get()
 
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
-      assert has_element?(view, "#welcome-presets-careful[aria-checked=true]")
       view |> element("#welcome-presets-autonomous") |> render_click()
-      view |> form("#welcome-team-form") |> render_submit()
-
       assert %{serialize_turns: false, chatter_pause: false} = Settings.get()
       refute Settings.serialize_turns?()
       assert Settings.chatter_limit() == nil
+
+      # a new visit shows it
+      view = open(conn)
+      assert has_element?(view, "#welcome-presets-autonomous[aria-checked=true]")
     end
 
-    test "Custom shows the controls and validates them", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
+    test "Custom reveals the controls, which validate and save as they change",
+         %{conn: conn} do
+      view = open(conn)
 
       view |> element("#welcome-presets-custom") |> render_click()
-      assert has_element?(view, "#welcome-team-custom")
+      assert has_element?(view, "#welcome-team-form")
+      refute has_element?(view, "#welcome-pace-saved")
 
       view
       |> form("#welcome-team-form", setting: %{chatter_pause: "true", chatter_limit: "0"})
-      |> render_submit()
+      |> render_change()
 
       assert has_element?(view, "#welcome-team-form", "must be greater than or equal to 1")
       assert Settings.get().chatter_limit == 6
@@ -381,15 +509,16 @@ defmodule CanopyWeb.OnboardingLiveTest do
       |> form("#welcome-team-form",
         setting: %{serialize_turns: "true", chatter_pause: "true", chatter_limit: "12"}
       )
-      |> render_submit()
+      |> render_change()
 
-      assert_patch(view, ~p"/welcome?step=repository")
       assert Settings.chatter_limit() == 12
+      assert has_element?(view, "#welcome-pace-saved")
+      assert has_element?(view, "#welcome-presets-custom[aria-checked=true]")
     end
 
     test "a re-run with custom values preselects Custom", %{conn: conn} do
       {:ok, _} = Settings.update(%{chatter_limit: 12})
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
+      view = open(conn)
 
       assert has_element?(view, "#welcome-presets-custom[aria-checked=true]")
 
@@ -400,61 +529,82 @@ defmodule CanopyWeb.OnboardingLiveTest do
     end
   end
 
-  describe "repository" do
-    test "adds a folder, initialising git, and moves on", %{conn: conn} do
+  test "offers the desktop notifications switch, kept in the browser", %{conn: conn} do
+    view = open(conn)
+
+    assert has_element?(view, "#welcome-notify #notify-prefs[phx-update='ignore']")
+    assert has_element?(view, "#welcome-notify #notify-enabled[role='switch']")
+    # the details stay in Settings
+    refute has_element?(view, "#welcome-notify #notify-kinds")
+  end
+
+  describe "project" do
+    test "Add project adds a folder, initialising git, and says so inline", %{conn: conn} do
       path = plain_dir()
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=repository")
+      view = open(conn)
 
       view
       |> form("#welcome-repository-form", repository: %{path: path, name: "My project"})
       |> render_submit()
 
-      assert_patch(view, ~p"/welcome?step=done")
-      assert render(view) =~ "so one was initialised"
+      assert has_element?(view, "#welcome-repository-added", "Added My project.")
+      assert has_element?(view, "#welcome-repository-added", "so one was initialised")
+      assert has_element?(view, "#welcome-repositories", "My project")
       assert %{name: "My project"} = Repositories.get_by_path(path)
       assert File.dir?(Path.join(path, ".git"))
+
+      # the form is ready for another
+      refute has_element?(view, "#welcome-repository-form input[value='#{path}']")
+
+      finish(view)
       assert has_element?(view, "#summary-project", "My project")
     end
 
-    test "a relative path is refused", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=repository")
+    test "a relative path is refused inline", %{conn: conn} do
+      view = open(conn)
 
       view
       |> form("#welcome-repository-form", repository: %{path: "code/project"})
       |> render_submit()
 
       assert has_element?(view, "#welcome-repository-form", "must be an absolute path")
+      refute has_element?(view, "#welcome-repository-added")
       assert Repositories.list() == []
     end
 
-    test "Skip this step moves on without adding anything", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=repository")
+    test "is optional: Finish without one adds nothing", %{conn: conn} do
+      view = open(conn)
+      finish(view)
 
-      view |> element("#welcome-skip-repository") |> render_click()
-      assert_patch(view, ~p"/welcome?step=done")
       assert Repositories.list() == []
+      assert has_element?(view, "#summary-project", "No project yet")
     end
 
-    test "a re-run lists the repositories and continues without a new one", %{conn: conn} do
+    test "a re-run lists the repositories already there", %{conn: conn} do
       repository = Fixtures.repository_fixture(%{name: "existing"})
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=repository")
+      view = open(conn)
 
-      assert has_element?(view, "#welcome-repositories", "You already have 1")
+      assert has_element?(view, "#welcome-repositories", "You have 1 already")
       assert has_element?(view, "#welcome-repositories", repository.name)
 
-      view |> form("#welcome-repository-form", repository: %{path: ""}) |> render_submit()
-      assert_patch(view, ~p"/welcome?step=done")
+      finish(view)
+      assert has_element?(view, "#summary-project", "1")
       assert Repositories.list() == [repository]
     end
   end
 
-  describe "done" do
-    test "summarises the choices", %{conn: conn} do
+  describe "finish" do
+    test "marks setup done and summarises the choices in place of the sections",
+         %{conn: conn} do
       {:ok, _} = Settings.update(%{user_display_name: "Ada", chatter_limit: 3})
       {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "opus"})
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=done")
-      render_async(view)
+      view = open(conn)
+      refute has_element?(view, "#welcome-done")
 
+      finish(view)
+      assert Settings.onboarded?()
+
+      assert has_element?(view, "#welcome-done-title[tabindex='-1']")
       assert has_element?(view, "#summary-name", "Ada")
       assert has_element?(view, "#summary-appearance [data-palette-name=moss]")
       assert has_element?(view, "#summary-engines", "Claude Code ✓")
@@ -463,48 +613,46 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert has_element?(view, "#summary-pace", "Careful")
       # on or off is the browser's to say (<html data-notify>, set by notify.js)
       assert has_element?(view, "#summary-notify #summary-notify-state")
+
+      refute has_element?(view, "#welcome-you")
       refute has_element?(view, "#skip-setup")
+      refute has_element?(view, "#welcome-finish")
     end
 
-    test "Start a channel finishes setup and opens New channel on the added repository",
-         %{conn: conn} do
+    test "Start a channel opens New channel on the added repository", %{conn: conn} do
       path = plain_dir()
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=repository")
+      view = open(conn)
 
       view |> form("#welcome-repository-form", repository: %{path: path}) |> render_submit()
       repository = Repositories.get_by_path(path)
 
-      view |> element("#welcome-finish") |> render_click()
+      finish(view)
+      view |> element("#welcome-start-channel") |> render_click()
       assert_redirect(view, ~p"/channels/new?repository_id=#{repository.id}")
-      assert Settings.onboarded?()
     end
 
     test "without a repository, Start a channel goes home", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=done")
+      view = open(conn)
+      finish(view)
 
       assert {:error, {:redirect, %{to: "/"}}} =
-               view |> element("#welcome-finish") |> render_click()
-
-      assert Settings.onboarded?()
+               view |> element("#welcome-start-channel") |> render_click()
     end
 
-    test "Look around first finishes setup and opens the agents", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=done")
+    test "Look around first opens the agents", %{conn: conn} do
+      view = open(conn)
+      finish(view)
 
       view |> element("#welcome-look-around") |> render_click()
       assert_redirect(view, ~p"/agents")
-      assert Settings.onboarded?()
     end
   end
 
-  test "Skip setup from any step finishes setup and goes home with a note", %{conn: conn} do
-    for step <- ~w(name theme engines team repository) do
-      Repo.update_all(Setting, set: [onboarded_at: nil])
-      {:ok, view, _html} = live(conn, ~p"/welcome?step=#{step}")
+  test "Skip setup finishes setup and goes home with a note", %{conn: conn} do
+    view = open(conn)
 
-      view |> element("#skip-setup") |> render_click()
-      assert %{"info" => "Setup skipped" <> _} = assert_redirect(view, ~p"/")
-      assert Settings.onboarded?()
-    end
+    view |> element("#skip-setup") |> render_click()
+    assert %{"info" => "Setup skipped" <> _} = assert_redirect(view, ~p"/")
+    assert Settings.onboarded?()
   end
 end

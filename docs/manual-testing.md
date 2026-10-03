@@ -29,18 +29,24 @@ CANOPY_DB=/tmp/canopy-fresh.db mix run priv/repo/seeds.exs
 CANOPY_DB=/tmp/canopy-fresh.db PORT=4001 mix phx.server     # http://localhost:4001
 ```
 
-- [ ] `/` redirects to `/welcome`. The name field holds your global git `user.name` (or is
-      empty); a blank name is refused.
-- [ ] Palette and mode apply as you click and survive a reload; the done step names them.
+- [ ] `/` redirects to `/welcome`, one scrolling page with no steps. The name field holds
+      your global git `user.name` (or is empty); a blank name is refused inline; a typed
+      name shows *Saved* and survives a reload with no other click.
+- [ ] Palette and mode apply as you click and survive a reload; the summary names them.
 - [ ] Engines: both cards go green with versions (Claude Code also shows the login email).
-      Stop `opencode serve` and press *Check again*: the OpenCode card explains how to start
-      it, its model picker disappears, and *Move the 13 starter agents to Claude Code* shows.
-      Continue with it ticked moves them (Agents page shows Claude Code).
-- [ ] Pace: *Careful* saves 3 turns; Settings → Conversation then shows Careful ticked.
-- [ ] Project: a plain folder under your home is added with the "initialised" note; *Start
-      a channel* opens New channel with it selected. `/` no longer redirects.
+      Changing a default model shows *Saved*. Stop `opencode serve` and press *Check
+      again*: the OpenCode card explains how to start it, its model picker disappears, and
+      *Move the 13 starter agents to Claude Code* shows; pressing it moves them at once
+      (Agents page shows Claude Code).
+- [ ] Pace: *Careful* saves 3 turns on click; Settings → Conversation then shows Careful.
+- [ ] Project: a plain folder under your home is added by *Add project* with the
+      "initialised" note inline; *Finish setup* shows the summary, and *Start a channel*
+      opens New channel with it selected. `/` no longer redirects.
+- [ ] At 390 px wide nothing scrolls sideways and *Finish setup* stays at the foot of the
+      screen; dark and light both read well in every palette.
 - [ ] Settings → *Run setup again* opens `/welcome` prefilled; *Skip setup* lands on a
-      channel or Repositories with "Setup skipped".
+      channel or Repositories with "Setup skipped". An old `/welcome?step=team` link opens
+      the page at the agents section.
 
 An existing database is never sent through setup: the migration that adds `onboarded_at`
 stamps a settings row that already exists. To check it, copy a database from before this
