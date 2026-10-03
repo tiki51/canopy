@@ -156,7 +156,7 @@ if old = Repositories.get_by_path(Path.join([root, "tmp", "e2e-repo"])), do: Rep
 # the other default agents would only crowd the screenshots.
 Repo.delete_all(
   from(a in Canopy.Agents.Agent,
-    where: a.name not in ["backend", "reviewer", "researcher", "test", "docs"]
+    where: a.name not in ["backend", "reviewer", "researcher", "test", "docs", "finops"]
   )
 )
 
