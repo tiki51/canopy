@@ -224,7 +224,8 @@ nothing typed it shows where you have been recently, the channels that need you,
 pages.
 
 A first character narrows the search: `#` channels, `@` agents, teams and DMs, `>` commands
-(pages, *New channel in* a repository, *New direct message*, *Start playbook*, the theme,
+(pages, *New channel in* a repository, *New direct message*, *Import agents…*, *Agent
+gallery*, *Start playbook*, the theme,
 *Turn desktop notifications off* (or *on*, following the switch in this browser),
 *Release hold*, and the open channel's header actions such as *Stop all agents here*), and
 `/` slash commands. **Backspace** on an empty box removes the filter.
@@ -629,7 +630,107 @@ list) opens the Teams page, where you create, edit, and delete them.
 - Only you create and edit teams. Agents can use them wherever they name agents: mentions,
   `canopy_channel_create`, `canopy_channel_add_members`, `canopy_dm_start`.
 
-An agent's page lists the teams it is on, leads marked.
+An agent's page lists the teams it is on, leads marked. **Export** on a team's row downloads
+it as a bundle; see below.
+
+### Sharing agents: export, import, and the gallery
+
+An agent you tuned on one machine can move to another as a file, and so can a whole team
+with its playbooks. Canopy also ships a **gallery** of starter agents.
+
+**Export.** **Export** on an agent's page downloads `<name>.md`: Markdown with YAML
+frontmatter for the agent's fields and the system prompt as the body.
+
+```markdown
+---
+canopy_template: 1
+kind: agent
+name: security-reviewer
+display_name: Security Reviewer
+role: Reviews changes for vulnerabilities, leaked secrets, and unsafe defaults
+group: Review & research
+color: "#dc2626"
+mode: plan
+engine: claude_code
+model: opus
+permission_mode: plan
+allowed_tools:
+  - Bash(git diff *)
+exported_from: Canopy 0.1.0
+---
+
+You are @security-reviewer. You review diffs and designs for security problems…
+```
+
+- What goes in: name, display name, role, group, colour, prompt, engine, model, effort,
+  permissions and allowed tools (Claude Code) or OpenCode agent, and `mode` (`plan` or
+  `build`), which says in engine-neutral terms whether the agent edits.
+- What never goes in: ids, channels, sessions, schedules, costs, notes, Settings, and default
+  models. Agents hold no secrets.
+- **Include memory** (off by default) appends the agent's [memory](#13-agent-memory) after a
+  `<!-- canopy:memory -->` line. Memory can hold repository paths and things learned from
+  private code, so read it before you share the file.
+- Tick agents in the list and **Export selected** downloads them as `canopy-agents.zip`. A
+  team's **Export** downloads `<team>.canopy.zip`: the team, its members, and (ticked by
+  default) the playbooks whose `team:` is that team. A playbook's download icon on the
+  Playbooks page saves its text as `<name>.md`, unchanged.
+
+**Import.** **Import** on the Agents page takes one file: an agent `.md`, a bundle `.zip`, a
+playbook, or a Claude Code subagent file from `.claude/agents/` (its description becomes the
+role; its `tools` list is left out, since Claude Code uses it to restrict tools while Canopy's
+allowed tools approve them). Drop it on the page, or open **Paste instead** for a template
+someone sent you in chat. Nothing is written until you have checked the preview.
+
+The preview has a row per agent, team, and playbook:
+
+- A status: *new*, *already here* (nothing differs), *differs from the one here*, or
+  *invalid* with the reasons.
+- The **permission line**, such as `Claude Code · acceptEdits · runs without asking:
+  Bash(git *)`. It turns amber when the agent edits without asking (`acceptEdits`, an
+  OpenCode `build` agent) or approves broad patterns (`Bash(*)`, `*`). A file can never grant
+  bypass permissions.
+- Amber notices for anything changed to fit this machine, and a **Changes** disclosure with
+  the field differences and a line diff of the prompt.
+- A choice for a taken name: **Import as** a new name (the default, `<name>-2`, editable),
+  **Replace** the one here, or **Skip**. Replace works like saving the edit form: the agent
+  keeps its id, channels, sessions, schedules, and memory (pick *Replace* or *Append* in the
+  memory box to change it), and a deactivated agent stays deactivated. A skipped agent stays
+  as it is, and a team or playbook in the same bundle uses it.
+- An engine box for each agent, to move it to the other engine before importing.
+
+**Import** writes everything at once, or nothing. If something changed in the meantime (an
+agent with that name appeared), the preview is worked out again for you to check.
+
+When a file names something this machine doesn't have, the import falls back and says so:
+
+- An engine this Canopy doesn't know: the agent goes on OpenCode (on Claude Code when
+  OpenCode isn't reachable and Claude Code is installed), with its `mode`.
+- An engine that isn't installed or running: the agent keeps it, with a notice that it won't
+  run until it is.
+- A model this machine doesn't offer (a Claude alias it doesn't know, or an OpenCode model
+  missing from OpenCode's list): the agent inherits the default model. When OpenCode isn't
+  reachable, the model is kept, with a notice that it couldn't be checked.
+- An OpenCode agent this server doesn't define: `plan`, the read-only one.
+
+In a bundle, a team's members and a playbook's coordinator and roles are matched to the
+bundle's agents first, after your renames, then to agents already here. Renaming an agent
+rewrites those references; `@mentions` in prompts and playbook text are not rewritten, and the
+preview lists where the old name appears. A team member found nowhere is an error; a
+playbook's missing agent is only a notice, since a run asks for it. Imported playbooks are
+enabled and yours; they bring no GitHub watches.
+
+**The gallery.** **Gallery** on the Agents page lists starter agents by group: the thirteen
+seeded ones plus a security reviewer, release manager, dependency updater, performance
+engineer, accessibility reviewer, migration reviewer, and incident investigator. Gallery
+agents name no engine or model, so each follows this machine's engine and default model;
+their `mode` keeps reviewers read-only. **Add** opens the import preview. A card for an
+agent you already have says **Added**, or **Differs** when you changed its role, prompt, or
+mode, with **Compare** opening the preview set to replace it. The **Bug-fix team and
+playbook** bundle restores `@bugfix-team` and the bug-fix playbook as the seed step made
+them.
+
+Agents can't export or import agents: there is no tool for it, because importing an agent
+changes what agents may do.
 
 ---
 
@@ -1400,7 +1501,8 @@ run by `@project-manager` with `@bugfix-team` in a new channel.
 
 **Playbooks** in the rail lists every playbook with its description, where it came from
 (*starter*, *yours*, or *draft by @agent*), an **enabled** toggle, how many runs are in
-progress, and **Start…**, **Edit**, **Duplicate**, and **Delete**. Enabled playbooks are
+progress, and **Start…**, **Edit**, **Duplicate**, the download icon (the playbook as a file,
+to [import elsewhere](#sharing-agents-export-import-and-the-gallery)), and **Delete**. Enabled playbooks are
 listed in every agent's prompt, so agents know they exist; a disabled one cannot be
 started. Delete is refused while a run is in progress (disable it instead); finished runs
 keep their own copy of the text.
@@ -1701,6 +1803,33 @@ already in its instructions).
 query rules, except that a word matches as the start of another only when it ends with `*`
 (`retr*`). `channel="all"` searches every channel of its repository the agent is a member
 of, and `include="turns,files"` adds finished turns and shared files to the messages.
+
+### Template files
+
+The files Canopy exports and imports (see [Sharing agents](#sharing-agents-export-import-and-the-gallery)).
+Every file starts with YAML frontmatter between `---` lines; anchors and aliases are refused,
+and a file is at most 256 KB.
+
+| Key | Kinds | Meaning |
+|---|---|---|
+| `canopy_template` | all | `1`. Required; a higher number is refused as made by a newer Canopy |
+| `kind` | all | `agent`, `team`, or `bundle` (a bundle's `canopy.md`) |
+| `name` | all | The `@name` (agents, teams) or the bundle's name |
+| `display_name`, `role`, `group`, `color` | agent | As on the edit form; `role` at most 200 characters |
+| `mode` | agent | `plan` or `build`; sets the OpenCode agent or Claude Code permissions when those keys are absent |
+| `engine` | agent | `claude_code` or `opencode`; absent: this machine's engine for new agents |
+| `model` | agent | A Claude Code alias (`opus`) or an OpenCode `provider/model`; absent: the default |
+| `effort`, `permission_mode`, `allowed_tools` | agent | Claude Code only; `allowed_tools` is a list |
+| `opencode_agent` | agent | OpenCode only |
+| `memory` | agent | `included` when the memory follows a `<!-- canopy:memory -->` line |
+| `display_name`, `description`, `lead`, `members` | team | Members are `name` and an optional `role`; the lead must be a member |
+| `description` | bundle | One line; the body is a readme |
+| `exported_from` | all | Informational (`Canopy 0.1.0`); ignored on import |
+
+Unknown keys are ignored with a notice, so a file from a newer Canopy still imports. A
+bundle is a zip of `canopy.md`, `agents/*.md`, `teams/*.md`, and `playbooks/*.md` (playbooks
+in their own format); it is at most 2 MB, 100 entries, and 8 MB unpacked, and an entry with
+`..` or an absolute path refuses the whole bundle.
 
 ### Composer
 

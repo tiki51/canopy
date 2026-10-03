@@ -246,6 +246,42 @@ defmodule CanopyWeb.TeamsLive do
                 >
                   <.icon name="hero-hashtag-mini" class="size-3.5" /> New channel
                 </.link>
+                <details id={"export-team-#{team.id}"} class="dropdown dropdown-end">
+                  <summary class="btn btn-ghost btn-xs" id={"export-team-button-#{team.id}"}>
+                    <.icon name="hero-arrow-down-tray-mini" class="size-3.5" /> Export
+                  </summary>
+                  <%!-- a plain GET form: the checkboxes stay in the browser --%>
+                  <form
+                    id={"export-team-form-#{team.id}"}
+                    action={~p"/teams/#{team.id}/export"}
+                    method="get"
+                    class="dropdown-content z-30 mt-1 flex w-64 flex-col gap-2 rounded-xl border border-base-300 bg-base-100 p-3 shadow-lg"
+                  >
+                    <p class="text-xs text-base-content/70">
+                      A zip of @{team.name} and its members, to import on another machine.
+                    </p>
+                    <label class="flex cursor-pointer items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        name="playbooks"
+                        value="1"
+                        checked
+                        class="checkbox checkbox-sm"
+                      /> Include this team's playbooks
+                    </label>
+                    <label class="flex cursor-pointer items-center gap-2 text-sm">
+                      <input type="checkbox" name="memory" value="1" class="checkbox checkbox-sm" />
+                      Include members' memory
+                    </label>
+                    <button
+                      type="submit"
+                      id={"export-team-download-#{team.id}"}
+                      class="btn btn-primary btn-sm"
+                    >
+                      Download {team.name}.canopy.zip
+                    </button>
+                  </form>
+                </details>
                 <.link
                   navigate={~p"/teams/#{team.id}/edit"}
                   id={"edit-team-#{team.id}"}

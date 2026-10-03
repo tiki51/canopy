@@ -59,15 +59,8 @@ defmodule Canopy.Teams do
   end
 
   defp save(team, attrs) do
-    member_ids =
-      if has_member_ids?(attrs), do: member_ids(attrs), else: current_member_ids(team)
-
-    Multi.new()
-    |> Multi.insert_or_update(:team, Team.changeset(team, attrs, member_ids))
-    |> Multi.run(:members, fn repo, %{team: team} ->
-      replace_members(repo, team.id, member_ids)
-    end)
-    |> Multi.run(:roles, fn repo, %{team: team} -> set_roles(repo, team.id, roles(attrs)) end)
+    team
+    |> save_multi(attrs)
     |> Repo.transaction()
     |> case do
       {:ok, %{team: team}} ->
@@ -77,6 +70,28 @@ defmodule Canopy.Teams do
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
+  end
+
+  @doc """
+  The steps that save a team (as `create/1` and `update/2` take `attrs`),
+  for a caller composing a larger transaction, such as an import. Steps are
+  named `:team`, `:members` and `:roles`, or `{prefix, step}` with a prefix.
+  The caller runs `broadcast_changed/0` after the commit.
+  """
+  def save_multi(%Team{} = team, attrs, prefix \\ nil) do
+    member_ids =
+      if has_member_ids?(attrs), do: member_ids(attrs), else: current_member_ids(team)
+
+    step = fn name -> if prefix, do: {prefix, name}, else: name end
+
+    Multi.new()
+    |> Multi.insert_or_update(step.(:team), Team.changeset(team, attrs, member_ids))
+    |> Multi.run(step.(:members), fn repo, changes ->
+      replace_members(repo, Map.fetch!(changes, step.(:team)).id, member_ids)
+    end)
+    |> Multi.run(step.(:roles), fn repo, changes ->
+      set_roles(repo, Map.fetch!(changes, step.(:team)).id, roles(attrs))
+    end)
   end
 
   # Members kept keep their row (and role); the rest are removed, new ones added.
@@ -244,6 +259,9 @@ defmodule Canopy.Teams do
 
   @doc "Subscribe to `{:teams, :changed}`, sent when a team is created, edited, or deleted."
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
+
+  @doc "Tells subscribers the teams changed, after a transaction built with `save_multi/3`."
+  def broadcast_changed, do: notify()
 
   defp notify, do: Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:teams, :changed})
 end

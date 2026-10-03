@@ -17,6 +17,16 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     assert has_element?(view, "#rail-playbooks")
   end
 
+  test "each playbook can be exported as its file", %{conn: conn} do
+    {:ok, playbook} = Playbooks.create(%{body: Playbooks.bug_fix_text()})
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+
+    assert has_element?(
+             view,
+             "#export-playbook-#{playbook.id}[href='/playbooks/#{playbook.id}/export']"
+           )
+  end
+
   test "create: the text is checked as you type and its steps are previewed", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/playbooks/new")
     # the editor starts from a template that parses

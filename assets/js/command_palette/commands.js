@@ -39,6 +39,8 @@ const STATIC = [
   {id: "new-channel", label: "New channel", keywords: ["create"], action: {navigate: "/channels/new"}},
   {id: "new-dm", label: "New direct message…", keywords: ["create", "dm", "message"], action: {dmPicker: true}},
   {id: "new-agent", label: "New agent", keywords: ["create"], action: {navigate: "/agents/new"}},
+  {id: "import-agents", label: "Import agents…", keywords: ["template", "upload", "bundle", "team"], when: ctx => ctx.path !== "/agents/import", action: {navigate: "/agents/import"}},
+  {id: "agent-gallery", label: "Agent gallery", keywords: ["templates", "starter", "add"], when: ctx => ctx.path !== "/agents/gallery", action: {navigate: "/agents/gallery"}},
   {id: "new-team", label: "New team", keywords: ["create"], action: {navigate: "/teams/new"}},
   {id: "new-playbook", label: "New playbook", keywords: ["create", "workflow"], action: {navigate: "/playbooks/new"}},
   {id: "theme-system", label: "Theme: System", keywords: ["appearance", "mode", "auto"], action: {theme: "system"}},

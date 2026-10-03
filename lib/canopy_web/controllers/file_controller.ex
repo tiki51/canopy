@@ -13,6 +13,7 @@ defmodule CanopyWeb.FileController do
 
   alias Canopy.Documents
   alias Canopy.Documents.Store
+  alias CanopyWeb.Download
 
   def show(conn, %{"id" => id}) do
     with %{} = document <- Documents.get(id),
@@ -36,15 +37,6 @@ defmodule CanopyWeb.FileController do
 
   defp disposition(%{kind: kind, mime: mime} = document) do
     inline? = kind in ["image", "pdf"] and mime != "image/svg+xml"
-    type = if inline?, do: "inline", else: "attachment"
-
-    ~s(#{type}; filename="#{ascii_name(document.filename)}"; filename*=UTF-8''#{URI.encode(document.filename, &URI.char_unreserved?/1)})
-  end
-
-  # The plain `filename=` value is for old clients: ASCII only, no quotes.
-  defp ascii_name(name) do
-    name
-    |> String.replace(~r/[^\x20-\x7e]/u, "_")
-    |> String.replace(~s("), "_")
+    Download.disposition(if(inline?, do: "inline", else: "attachment"), document.filename)
   end
 end

@@ -26,6 +26,13 @@ defmodule CanopyWeb.Router do
 
     get "/", PageController, :home
 
+    # Exports are plain downloads. Before the live routes, so `/agents/:id`
+    # doesn't take `/agents/export`.
+    get "/agents/export", TemplateController, :agents
+    get "/agents/:id/export", TemplateController, :agent
+    get "/teams/:id/export", TemplateController, :team
+    get "/playbooks/:id/export", TemplateController, :playbook
+
     # First-run setup: no sidebar, so none of CanopyWeb.Nav's loading.
     live_session :onboarding, on_mount: [] do
       live "/welcome", OnboardingLive
@@ -39,6 +46,8 @@ defmodule CanopyWeb.Router do
       live "/repositories/:id", RepositoriesLive, :show
       live "/agents", AgentsLive, :index
       live "/agents/new", AgentsLive, :new
+      live "/agents/import", AgentImportLive
+      live "/agents/gallery", AgentGalleryLive
       live "/agents/:id", AgentsLive, :show
       live "/agents/:id/edit", AgentsLive, :edit
       live "/teams", TeamsLive, :index

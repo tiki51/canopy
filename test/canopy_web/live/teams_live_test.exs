@@ -124,6 +124,19 @@ defmodule CanopyWeb.TeamsLiveTest do
     assert Teams.get(team.id) == nil
   end
 
+  test "a team exports as a zip, with its playbooks unless unticked", ctx do
+    team = Fixtures.team_fixture([ctx.backend], name: "shipped")
+    {:ok, view, _html} = live(ctx.conn, ~p"/teams")
+
+    assert has_element?(
+             view,
+             "#export-team-form-#{team.id}[action='/teams/#{team.id}/export'][method=get]"
+           )
+
+    assert has_element?(view, "#export-team-form-#{team.id} input[name=playbooks][checked]")
+    assert has_element?(view, "#export-team-download-#{team.id}", "shipped.canopy.zip")
+  end
+
   test "members can carry a role on the team, which playbooks fill roles from", ctx do
     {:ok, view, _html} = live(ctx.conn, ~p"/teams/new")
 

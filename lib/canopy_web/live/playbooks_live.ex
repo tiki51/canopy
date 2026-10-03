@@ -1,6 +1,7 @@
 defmodule CanopyWeb.PlaybooksLive do
   @moduledoc """
-  The playbook library, in four pages under one LiveView:
+  The playbook library, in four pages under one LiveView (a playbook's
+  export is a plain download from `CanopyWeb.TemplateController`):
 
     * `/playbooks` — every playbook: name, description, where it came from,
       enabled, runs in progress; Start, Edit, Duplicate, Delete
@@ -439,6 +440,14 @@ defmodule CanopyWeb.PlaybooksLive do
                 >
                   <.icon name="hero-document-duplicate-mini" class="size-3.5" />
                 </button>
+                <a
+                  href={~p"/playbooks/#{playbook.id}/export"}
+                  id={"export-playbook-#{playbook.id}"}
+                  class="btn btn-ghost btn-xs"
+                  title="Export as a file, to import on another machine"
+                >
+                  <.icon name="hero-arrow-down-tray-mini" class="size-3.5" />
+                </a>
                 <button
                   type="button"
                   id={"delete-playbook-#{playbook.id}"}

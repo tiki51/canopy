@@ -18,11 +18,14 @@ defmodule Canopy.Playbooks.Definition do
   come back as `warnings` on the definition.
   """
 
+  alias Canopy.Frontmatter
+
   @name_regex ~r/^[a-z0-9]+(-[a-z0-9]+)*$/
   @top_keys ~w(name description steps roles team coordinator channel inputs stall_after)
   @step_keys ~w(id title owner approval optional on_reject)
   @max_steps 20
   # read before the YAML parser sees anything, so it never works on more
+  # (`Canopy.Frontmatter` also refuses anchors and aliases)
   @max_bytes 40_000
   @max_header_bytes 8_000
   @default_stall_minutes 30
@@ -67,17 +70,14 @@ defmodule Canopy.Playbooks.Definition do
 
   @spec parse(String.t() | nil) :: {:ok, t()} | {:error, [String.t()]}
   def parse(text) when is_binary(text) do
-    with :ok <- check_size(text, @max_bytes, "the playbook"),
-         {:ok, yaml, body} <- split(text),
-         :ok <- check_size(yaml, @max_header_bytes, "the frontmatter"),
-         :ok <- check_no_anchors(yaml),
-         {:ok, data} <- read_yaml(yaml) do
-      build(data, body)
+    with {:ok, data, body} <-
+           Frontmatter.read(text, "the playbook", @max_bytes, @max_header_bytes) do
+      build_checked(data, body)
     end
   rescue
     # the checks below are meant to be total; anything they miss is still a
     # reason, never a crash
-    e -> {:error, ["could not read the playbook: " <> one_line(Exception.message(e))]}
+    e -> {:error, ["could not read the playbook: " <> Frontmatter.one_line(Exception.message(e))]}
   end
 
   def parse(_), do: {:error, ["the playbook is empty"]}
@@ -114,58 +114,6 @@ defmodule Canopy.Playbooks.Definition do
   @doc "Every role a step names, other than `coordinator`, in order of first use."
   def owner_roles(%__MODULE__{steps: steps}) do
     steps |> Enum.flat_map(& &1.owner) |> Enum.reject(&(&1 == "coordinator")) |> Enum.uniq()
-  end
-
-  # -- Frontmatter ------------------------------------------------------------
-
-  defp split(text) do
-    text = text |> String.replace("\r\n", "\n") |> String.trim_leading("﻿")
-
-    case Regex.run(~r/\A\s*---[ \t]*\n(.*?)\n---[ \t]*(?:\n(.*))?\z/s, text) do
-      [_, yaml] -> {:ok, yaml, ""}
-      [_, yaml, body] -> {:ok, yaml, body}
-      nil -> {:error, ["the playbook must start with YAML frontmatter between --- lines"]}
-    end
-  end
-
-  defp check_size(text, max, what) do
-    if byte_size(text) > max,
-      do: {:error, ["#{what} is too long (at most #{max} bytes)"]},
-      else: :ok
-  end
-
-  # YAML anchors and aliases (`&name`, `*name`) let a few lines expand into a
-  # huge document; a playbook never needs them, so they are refused before
-  # the parser runs. Both can only start a value or an item, which is where
-  # this looks; inside quotes they are plain text.
-  @anchor_or_alias ~r/(?:^|:[ \t]+|-[ \t]+|\?[ \t]+|[\[{,][ \t]*)[&*][^\s\[\]{},]/m
-
-  defp check_no_anchors(yaml) do
-    if Regex.match?(@anchor_or_alias, yaml),
-      do: {:error, ["YAML anchors and aliases (&name, *name) are not allowed in a playbook"]},
-      else: :ok
-  end
-
-  defp read_yaml(yaml) do
-    case YamlElixir.read_from_string(yaml) do
-      {:ok, %{} = data} -> {:ok, data}
-      {:ok, _other} -> {:error, ["the frontmatter must be a set of key: value fields"]}
-      {:error, %{message: message}} -> {:error, ["invalid YAML: " <> one_line(message)]}
-      {:error, other} -> {:error, ["invalid YAML: " <> one_line(inspect(other))]}
-    end
-  rescue
-    e -> {:error, ["invalid YAML: " <> one_line(Exception.message(e))]}
-  end
-
-  defp one_line(text), do: text |> String.split("\n") |> hd() |> String.trim()
-
-  # Every key YAML can produce that is not plain text (a number, a list, a
-  # map used as a key) is refused here, before anything reads the keys.
-  defp build(data, body) do
-    case Enum.reject(Map.keys(data), &is_binary/1) do
-      [] -> build_checked(data, body)
-      _ -> {:error, ["field names in the frontmatter must be plain text"]}
-    end
   end
 
   defp plain_keys?(map), do: Enum.all?(Map.keys(map), &is_binary/1)

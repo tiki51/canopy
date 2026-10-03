@@ -280,6 +280,10 @@ defmodule Canopy.Playbooks do
   @doc "Subscribe to `{:playbooks, :changed}`, sent when the library changes."
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
 
+  @doc "Tells subscribers the library changed, after a transaction that wrote playbooks directly (an import)."
+  def broadcast_changed,
+    do: Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:playbooks, :changed})
+
   defp notify({:ok, _} = result) do
     Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:playbooks, :changed})
     result

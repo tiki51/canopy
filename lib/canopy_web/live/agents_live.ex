@@ -7,6 +7,12 @@ defmodule CanopyWeb.AgentsLive do
     * `/agents/:id` — one agent: identity, model, channels, schedules, actions
     * `/agents/:id/edit` — the edit form for that agent
 
+  Sharing lives beside it: the list's Import and Gallery buttons lead to
+  `CanopyWeb.AgentImportLive` and `CanopyWeb.AgentGalleryLive`, rows can be
+  selected for "Export selected" (a zip), and an agent's page has Export
+  (its `.md`, with its memory only when ticked). Downloads are plain GETs to
+  `CanopyWeb.TemplateController`.
+
   The OpenCode agent picker is a select filled from `GET /agent` for the
   first repository (always offering the built-in `build` and `plan`), and the provider/model selects come from
   `GET /config/providers`; both degrade to plain inputs when OpenCode is away.
@@ -45,6 +51,7 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:agent_memory, "")
       |> assign(:memory_updated_at, nil)
       |> assign(:editing_memory?, false)
+      |> assign(:selected, MapSet.new())
       |> assign_form(Agents.change(%Agent{}))
       |> load_agents()
 
@@ -202,6 +209,20 @@ defmodule CanopyWeb.AgentsLive do
         {:noreply, put_flash(socket, :error, "Could not reactivate @#{agent.name}.")}
     end
   end
+
+  def handle_event("toggle_select", %{"id" => id}, socket) do
+    selected = socket.assigns.selected
+
+    selected =
+      if MapSet.member?(selected, id),
+        do: MapSet.delete(selected, id),
+        else: MapSet.put(selected, id)
+
+    {:noreply, assign(socket, :selected, selected)}
+  end
+
+  def handle_event("clear_selection", _params, socket),
+    do: {:noreply, assign(socket, :selected, MapSet.new())}
 
   def handle_event("toggle_inactive", _params, socket) do
     {:noreply, update(socket, :show_inactive, &(!&1))}
@@ -592,6 +613,12 @@ defmodule CanopyWeb.AgentsLive do
         <.link navigate={~p"/teams"} id="agents-teams" class="btn btn-sm btn-ghost">
           <.icon name="hero-user-group" class="size-4" /> Teams
         </.link>
+        <.link navigate={~p"/agents/gallery"} id="agents-gallery" class="btn btn-sm btn-ghost">
+          <.icon name="hero-sparkles" class="size-4" /> Gallery
+        </.link>
+        <.link navigate={~p"/agents/import"} id="agents-import" class="btn btn-sm btn-ghost">
+          <.icon name="hero-arrow-up-tray" class="size-4" /> Import
+        </.link>
         <.link navigate={~p"/agents/new"} id="new-agent" class="btn btn-sm btn-primary">
           <.icon name="hero-plus" class="size-4" /> New agent
         </.link>
@@ -633,7 +660,9 @@ defmodule CanopyWeb.AgentsLive do
         title="Active agents"
         description="Mention an agent with @name in a channel to wake it. Open one for its channels, schedules, and settings."
       >
-        <div class="-mx-2 hidden grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
+        <.export_bar :if={MapSet.size(@selected) > 0} selected={@selected} />
+        <div class="-mx-2 hidden grid-cols-[1rem_2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
+          <span class="sr-only">Select</span>
           <span />
           <span>Agent</span>
           <span>Role</span>
@@ -657,11 +686,20 @@ defmodule CanopyWeb.AgentsLive do
             <li
               :for={agent <- agents}
               id={"agent-#{agent.id}"}
-              class="group relative -mx-2 flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
+              class="group relative -mx-2 flex flex-col gap-2 rounded-lg px-2 py-3 transition hover:bg-base-200/60 md:grid md:grid-cols-[1rem_2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] md:items-center md:gap-4"
             >
               <.link navigate={~p"/agents/#{agent.id}"} class="absolute inset-0 rounded-lg">
                 <span class="sr-only">Open {agent.display_name}</span>
               </.link>
+              <input
+                type="checkbox"
+                id={"select-agent-#{agent.id}"}
+                class="checkbox checkbox-xs relative z-10"
+                checked={MapSet.member?(@selected, agent.id)}
+                phx-click="toggle_select"
+                phx-value-id={agent.id}
+                aria-label={"Select @#{agent.name} for export"}
+              />
               <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-base-200 font-mono text-sm font-semibold text-base-content/70 group-hover:bg-base-300/70">
                 {initial(agent)}
               </div>
@@ -821,6 +859,45 @@ defmodule CanopyWeb.AgentsLive do
         defaults={@defaults}
       />
     </Layouts.page>
+    """
+  end
+
+  attr :selected, :any, required: true
+
+  # Shown while rows are selected: download them as one zip. A plain GET
+  # form, so "Include memory" stays in the browser.
+  defp export_bar(assigns) do
+    ~H"""
+    <form
+      id="agents-export-bar"
+      action={~p"/agents/export"}
+      method="get"
+      class="mb-3 flex flex-wrap items-center gap-3 rounded-lg bg-base-200 px-3 py-2 text-sm"
+    >
+      <input :for={id <- Enum.sort(@selected)} type="hidden" name="ids[]" value={id} />
+      <span>{MapSet.size(@selected)} selected</span>
+      <label class="flex cursor-pointer items-center gap-1.5 text-xs">
+        <input
+          type="checkbox"
+          id="agents-export-memory"
+          name="memory"
+          value="1"
+          class="checkbox checkbox-xs"
+        /> Include memory
+      </label>
+      <button type="submit" id="agents-export-selected" class="btn btn-primary btn-xs">
+        <.icon name="hero-arrow-down-tray-mini" class="size-3.5" />
+        Export selected ({MapSet.size(@selected)})
+      </button>
+      <button
+        type="button"
+        id="agents-clear-selection"
+        class="btn btn-ghost btn-xs"
+        phx-click="clear_selection"
+      >
+        Clear
+      </button>
+    </form>
     """
   end
 
@@ -994,6 +1071,37 @@ defmodule CanopyWeb.AgentsLive do
         >
           <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
         </.link>
+        <details id="export-agent" class="dropdown dropdown-end">
+          <summary class="btn btn-sm" id={"export-agent-#{@agent.id}"}>
+            <.icon name="hero-arrow-down-tray" class="size-4" /> Export
+          </summary>
+          <div class="dropdown-content z-30 mt-1 flex w-64 flex-col gap-3 rounded-xl border border-base-300 bg-base-100 p-3 shadow-lg">
+            <p class="text-xs text-base-content/70">
+              A Markdown file with @{@agent.name}'s role, prompt and engine settings, to import on
+              another machine. Never its channels, schedules or costs.
+            </p>
+            <%!-- a plain GET form: the download needs no round trip through the LiveView --%>
+            <form
+              id="export-agent-form"
+              action={~p"/agents/#{@agent.id}/export"}
+              method="get"
+              class="flex flex-col gap-3"
+            >
+              <label class="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  id="export-agent-memory"
+                  name="memory"
+                  value="1"
+                  class="checkbox checkbox-sm"
+                /> Include memory
+              </label>
+              <button type="submit" id="export-agent-download" class="btn btn-primary btn-sm">
+                Download {@agent.name}.md
+              </button>
+            </form>
+          </div>
+        </details>
         <.link
           navigate={~p"/agents/#{@agent.id}/edit"}
           id={"edit-agent-#{@agent.id}"}

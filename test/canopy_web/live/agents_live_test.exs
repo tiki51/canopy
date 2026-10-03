@@ -736,4 +736,49 @@ defmodule CanopyWeb.AgentsLiveTest do
       refute has_element?(view, "#agent-model-price", "(opencode/")
     end
   end
+
+  describe "sharing" do
+    test "the list links to Import and the Gallery", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#agents-import[href='/agents/import']")
+      assert has_element?(view, "#agents-gallery[href='/agents/gallery']")
+    end
+
+    test "selected rows export as one zip", %{conn: conn} do
+      a = Fixtures.agent_fixture(%{name: "pick-a"})
+      b = Fixtures.agent_fixture(%{name: "pick-b"})
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      refute has_element?(view, "#agents-export-bar")
+
+      view |> element("#select-agent-#{a.id}") |> render_click()
+      view |> element("#select-agent-#{b.id}") |> render_click()
+      assert has_element?(view, "#agents-export-bar[action='/agents/export'][method=get]")
+      assert has_element?(view, "#agents-export-selected", "Export selected (2)")
+
+      assert has_element?(
+               view,
+               "#agents-export-bar input[type=hidden][name='ids[]'][value=#{a.id}]"
+             )
+
+      assert has_element?(view, "#agents-export-bar input[type=checkbox][name=memory]")
+
+      view |> element("#select-agent-#{a.id}") |> render_click()
+      assert has_element?(view, "#agents-export-selected", "Export selected (1)")
+      view |> element("#agents-clear-selection") |> render_click()
+      refute has_element?(view, "#agents-export-bar")
+    end
+
+    test "an agent's page has Export, with memory left out unless ticked", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "exportable"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+
+      assert has_element?(
+               view,
+               "#export-agent-form[action='/agents/#{agent.id}/export'][method=get]"
+             )
+
+      assert has_element?(view, "#export-agent-memory[name=memory]:not([checked])")
+      assert has_element?(view, "#export-agent-download", "Download exportable.md")
+    end
+  end
 end
