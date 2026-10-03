@@ -1206,7 +1206,10 @@ defmodule CanopyWeb.AgentsLive do
               id="agent-memory"
               class="max-h-[32rem] overflow-y-auto text-sm"
             >
-              <.message_text body={@agent_memory} />
+              <.message_text
+                body={@agent_memory}
+                mentions={Enum.map(@active_agents ++ @teams, & &1.name)}
+              />
             </div>
 
             <form

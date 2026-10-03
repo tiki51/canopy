@@ -45,4 +45,9 @@ defmodule Canopy.Runtime.CommandsTest do
     assert {:error, "usage: /handoff" <> _} = Commands.parse("/handoff @database")
     assert {:error, "usage: /delegate" <> _} = Commands.parse("/delegate")
   end
+
+  test "names/0 lists every command the composer highlights, aliases included" do
+    assert Commands.names() == ["delegate", "handoff", "i", "invite", "stop"]
+    assert Enum.all?(Commands.names(), &(Commands.parse("/" <> &1 <> " @x y") != :text))
+  end
 end

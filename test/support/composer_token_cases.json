@@ -1,0 +1,584 @@
+{
+  "_comment": "Composer highlight parity: test/canopy_web/composer_token_parity_test.exs derives these from the server (Messages, CodeMask, Markdown, Commands) and e2e/tests/composer-tokens.spec.ts runs assets/js/composer_tokens.js over them. `expect` lists the non-plain tokens in order; a case's own keys override `context`.",
+  "context": {
+    "agents": [
+      "a",
+      "alice",
+      "b",
+      "backend",
+      "designer",
+      "reviewer"
+    ],
+    "inactive": [
+      "retired"
+    ],
+    "members": [
+      "a",
+      "alice",
+      "b",
+      "backend",
+      "reviewer"
+    ],
+    "teams": {
+      "crew": [
+        "backend",
+        "designer"
+      ],
+      "design": [
+        "designer"
+      ],
+      "ghosts": [
+        "retired"
+      ]
+    },
+    "channels": [
+      "billing-retries",
+      "old-archive",
+      "payments"
+    ],
+    "commands": [
+      "delegate",
+      "handoff",
+      "i",
+      "invite",
+      "stop"
+    ],
+    "thread": false
+  },
+  "cases": [
+    {
+      "name": "a member mention",
+      "text": "hey @backend can you look",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "names are case-insensitive",
+      "text": "@Backend look",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@Backend"
+        }
+      ]
+    },
+    {
+      "name": "an agent outside the channel",
+      "text": "ask @designer",
+      "expect": [
+        {
+          "kind": "outsider",
+          "text": "@designer"
+        }
+      ]
+    },
+    {
+      "name": "an unknown name",
+      "text": "@nobody here",
+      "expect": []
+    },
+    {
+      "name": "an inactive agent",
+      "text": "@retired, are you there?",
+      "expect": []
+    },
+    {
+      "name": "an email address",
+      "text": "mail me@reviewer.com",
+      "expect": []
+    },
+    {
+      "name": "a possessive",
+      "text": "@reviewer's turn",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "trailing punctuation",
+      "text": "thanks @reviewer.",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "a trailing hyphen is part of the name",
+      "text": "@reviewer- ok",
+      "expect": []
+    },
+    {
+      "name": "a longer name that only starts with an agent's",
+      "text": "@alice-bob",
+      "expect": []
+    },
+    {
+      "name": "a mention right after a hyphenated word",
+      "text": "@a-@b",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@b"
+        }
+      ]
+    },
+    {
+      "name": "a doubled at sign",
+      "text": "@@reviewer",
+      "expect": []
+    },
+    {
+      "name": "non-ASCII before the at sign",
+      "text": "é@reviewer",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "inline code does not wake",
+      "text": "not `@reviewer` but @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a double-backtick span holding a backtick",
+      "text": "``code with ` and @reviewer`` then @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "an unmatched backtick is literal",
+      "text": "a ` then @reviewer",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "escaped backticks are literal",
+      "text": "\\`@reviewer\\`",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "a span runs across a line break",
+      "text": "`a\n@reviewer` @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a blank line ends a paragraph, and an open span with it",
+      "text": "`open\n\n@reviewer and `x`",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "a fenced block does not wake",
+      "text": "look:\n```\n@reviewer fix\n```\nthen @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a fence with an info string",
+      "text": "```elixir\n@reviewer\n```",
+      "expect": []
+    },
+    {
+      "name": "a tilde fence",
+      "text": "~~~\n@reviewer\n~~~\n@b",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@b"
+        }
+      ]
+    },
+    {
+      "name": "an unclosed fence runs to the end",
+      "text": "```\n@reviewer and more",
+      "expect": []
+    },
+    {
+      "name": "a shorter fence does not close a longer one",
+      "text": "````\n```\n@reviewer\n````\n@backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a fence inside a list item",
+      "text": "1. step\n   ```\n   @reviewer\n   ```\n2. @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a known channel",
+      "text": "see #payments",
+      "expect": [
+        {
+          "kind": "channel",
+          "text": "#payments"
+        }
+      ]
+    },
+    {
+      "name": "channel names are case-insensitive",
+      "text": "see #Payments",
+      "expect": [
+        {
+          "kind": "channel",
+          "text": "#Payments"
+        }
+      ]
+    },
+    {
+      "name": "an unknown channel",
+      "text": "see #unknown",
+      "expect": []
+    },
+    {
+      "name": "a hash inside a word",
+      "text": "a#payments",
+      "expect": []
+    },
+    {
+      "name": "a hash after an ampersand",
+      "text": "&#payments",
+      "expect": []
+    },
+    {
+      "name": "a hash after a slash",
+      "text": "path/#payments",
+      "expect": []
+    },
+    {
+      "name": "a doubled hash",
+      "text": "##payments",
+      "expect": []
+    },
+    {
+      "name": "a heading",
+      "text": "# heading",
+      "expect": []
+    },
+    {
+      "name": "an archived channel still links",
+      "text": "#old-archive",
+      "expect": [
+        {
+          "kind": "channel",
+          "text": "#old-archive"
+        }
+      ]
+    },
+    {
+      "name": "a channel in code",
+      "text": "`#payments`",
+      "expect": []
+    },
+    {
+      "name": "a mixed draft",
+      "text": "@backend and @designer see #billing-retries and @nobody",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        },
+        {
+          "kind": "outsider",
+          "text": "@designer"
+        },
+        {
+          "kind": "channel",
+          "text": "#billing-retries"
+        }
+      ]
+    },
+    {
+      "name": "a team with a member here",
+      "text": "@crew look",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@crew"
+        }
+      ]
+    },
+    {
+      "name": "a team with nobody here",
+      "text": "@design please",
+      "expect": [
+        {
+          "kind": "outsider",
+          "text": "@design"
+        }
+      ]
+    },
+    {
+      "name": "a team with no active members",
+      "text": "@ghosts?",
+      "expect": [
+        {
+          "kind": "outsider",
+          "text": "@ghosts"
+        }
+      ]
+    },
+    {
+      "name": "a team in code",
+      "text": "`@crew` is busy",
+      "expect": []
+    },
+    {
+      "name": "/i with an outsider and a note",
+      "text": "/i @designer please look @backend",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        },
+        {
+          "kind": "mention",
+          "text": "@designer"
+        },
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "/invite with a bare target",
+      "text": "/invite designer",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/invite"
+        },
+        {
+          "kind": "mention",
+          "text": "designer"
+        }
+      ]
+    },
+    {
+      "name": "/i with a team",
+      "text": "/i @crew hello",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        },
+        {
+          "kind": "mention",
+          "text": "@crew"
+        }
+      ]
+    },
+    {
+      "name": "/i with an unknown target",
+      "text": "/i @nobody",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        }
+      ]
+    },
+    {
+      "name": "/i keeps code in the note quiet",
+      "text": "/i @designer see `@backend`",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        },
+        {
+          "kind": "mention",
+          "text": "@designer"
+        }
+      ]
+    },
+    {
+      "name": "/handoff posts its reason without mentions",
+      "text": "/handoff @reviewer take it, ask @designer",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/handoff"
+        },
+        {
+          "kind": "mention",
+          "text": "@reviewer"
+        }
+      ]
+    },
+    {
+      "name": "/handoff to an agent outside the channel",
+      "text": "/handoff @designer take it",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/handoff"
+        },
+        {
+          "kind": "outsider",
+          "text": "@designer"
+        }
+      ]
+    },
+    {
+      "name": "/delegate does not take a team",
+      "text": "/delegate @crew write tests",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/delegate"
+        }
+      ]
+    },
+    {
+      "name": "/stop ignores what follows",
+      "text": "/stop @backend",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/stop"
+        }
+      ]
+    },
+    {
+      "name": "an unknown command is text",
+      "text": "/unknown @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a path is text",
+      "text": "/lib/foo.ex @backend",
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "leading whitespace before a command",
+      "text": "  /stop",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/stop"
+        }
+      ]
+    },
+    {
+      "name": "command names are case-insensitive",
+      "text": "/STOP",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/STOP"
+        }
+      ]
+    },
+    {
+      "name": "a command must end at whitespace",
+      "text": "/stop!",
+      "expect": []
+    },
+    {
+      "name": "a command in a thread is invalid",
+      "text": "/i @designer",
+      "thread": true,
+      "expect": [
+        {
+          "kind": "invalid",
+          "text": "/i"
+        }
+      ]
+    },
+    {
+      "name": "text in a thread follows the usual rules",
+      "text": "@backend and @designer",
+      "thread": true,
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        },
+        {
+          "kind": "outsider",
+          "text": "@designer"
+        }
+      ]
+    },
+    {
+      "name": "a DM highlights its own members only",
+      "text": "@backend and @reviewer and @crew",
+      "agents": [
+        "backend"
+      ],
+      "members": [
+        "backend"
+      ],
+      "teams": {},
+      "expect": [
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    }
+  ]
+}

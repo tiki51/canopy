@@ -8,7 +8,7 @@ defmodule Canopy.Messages do
 
   alias Canopy.Agents
   alias Canopy.Documents
-  alias Canopy.Messages.{Attachment, Message}
+  alias Canopy.Messages.{Attachment, CodeMask, Message}
   alias Canopy.Repo
   alias Canopy.Teams
   alias Canopy.Timeline
@@ -19,6 +19,11 @@ defmodule Canopy.Messages do
   @preloads [:agent, :user, :documents]
   @max_attachments 10
   @mention_regex ~r/(?<![\w@])@([a-z0-9][a-z0-9_-]*)/i
+
+  @doc false
+  # The composer highlight (assets/js/composer_tokens.js) mirrors this; the
+  # parity test reads it from here.
+  def mention_regex, do: @mention_regex
 
   @doc "The most documents one message may carry."
   def max_attachments, do: @max_attachments
@@ -191,7 +196,8 @@ defmodule Canopy.Messages do
   @doc """
   Returns the ids of agents mentioned as `@name` in `body`, in order of first
   appearance. A team name expands in place to its active members, by name;
-  the result has no duplicates. Unknown names are ignored.
+  the result has no duplicates. Unknown names are ignored, and so are names
+  inside inline code or a fenced code block (see `Canopy.Messages.CodeMask`).
   """
   def extract_mentions(body), do: body |> resolve_mentions() |> elem(0)
 
@@ -209,7 +215,7 @@ defmodule Canopy.Messages do
   def resolve_mentions(body) when is_binary(body) do
     names =
       @mention_regex
-      |> Regex.scan(body)
+      |> Regex.scan(CodeMask.mask(body))
       |> Enum.map(fn [_, name] -> String.downcase(name) end)
       |> Enum.uniq()
 

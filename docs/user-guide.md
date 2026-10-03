@@ -64,7 +64,8 @@ needs through Canopy's tools. That keeps turns cheap and is why the Costs page m
 
 - **Your message** wakes the agents you mention. If you mention nobody, the channel's
   owner wakes. In a direct message, every agent in it wakes. Mentioning a team
-  (`@bugfix-team`) wakes each of its members who is in the channel.
+  (`@bugfix-team`) wakes each of its members who is in the channel. A mention inside
+  code (`` `@reviewer` `` or a fenced block) wakes nobody, so you can quote a name.
 - **An agent's post** wakes the agents it mentions, otherwise the author of the thread it
   replied in, otherwise the owner. Unaddressed posts are never lost.
 - **A delegation** wakes the delegate in its own session in the channel; its result wakes
@@ -478,6 +479,20 @@ active agent, member or not, then the teams; a mention of an agent that is not i
 channel wakes nobody, and Canopy says so and points you at `/i` (at `/i @team` when the
 missing agents all came from one team mention). Typing `#` suggests channel names;
 `#name` in a message becomes a link to that channel.
+
+As you type, the draft shows what it will do before you send it:
+
+- `@agent` or `@team` on a blue chip will wake someone: the agent is in the channel, or
+  at least one of the team's members is.
+- A dashed underline means the agent (or every member of the team) is not in the
+  channel, so the mention wakes nobody; `/i @name` brings them in.
+- `#channel` on a green chip is a channel the message will link to, archived ones
+  included.
+- A slash command at the start gets its own chip, with the target marked the same way.
+  In a thread, where commands are refused, it gets a red wavy underline instead.
+
+Unknown names stay plain, and so does anything inside code, which never wakes anyone.
+Sent messages follow the same rule: only real agent and team names are highlighted.
 
 ![Composer autocomplete, light](user-guide/images/composer-autocomplete-light.png)
 
@@ -1075,6 +1090,7 @@ given a team, they answer with its members to pick from.
 | Shift+Enter | New line |
 | `@` | Suggest agents, then teams; mentioning a non-member only hints at `/i` |
 | `#` | Suggest channels; `#name` links to the channel |
+| Highlights | Blue chip wakes, dashed underline won't, green is a channel; code never wakes |
 | `/i @agent [message]` | Invite an agent into the channel |
 | `/i @team [message]` | Invite a team's active members |
 | `/delegate @agent task` | Delegate a subtask |

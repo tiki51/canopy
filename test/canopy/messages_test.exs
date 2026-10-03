@@ -179,6 +179,20 @@ defmodule Canopy.MessagesTest do
     assert Messages.extract_mentions("no mentions") == []
   end
 
+  test "extract_mentions/1 skips names inside inline code and fenced blocks", ctx do
+    %{agent: agent, channel: channel, user: user} = ctx
+    reviewer = agent_fixture(%{name: "reviewer"})
+
+    assert Messages.extract_mentions("run `@reviewer` past @#{agent.name}") == [agent.id]
+    assert Messages.extract_mentions("```\n@reviewer\n```\n@#{agent.name}") == [agent.id]
+    assert Messages.extract_mentions("~~~ sh\necho @reviewer\n") == []
+    # an unmatched backtick is literal, so the mention still wakes
+    assert Messages.extract_mentions("a ` stray @reviewer") == [reviewer.id]
+
+    {:ok, message} = Messages.post_user_message(channel.id, user.id, "see `@reviewer`")
+    assert message.mentions == []
+  end
+
   describe "team mentions" do
     setup do
       backend = agent_fixture(%{name: "backend-" <> unique_suffix()})

@@ -7,10 +7,14 @@ defmodule CanopyWeb.TimelineComponentsTest do
   alias CanopyWeb.TimelineComponents
 
   defp render_body(body, opts \\ []) do
-    assigns = %{body: body, inline: Keyword.get(opts, :inline, false)}
+    assigns = %{
+      body: body,
+      inline: Keyword.get(opts, :inline, false),
+      mentions: Keyword.get(opts, :mentions, ["reviewer"])
+    }
 
     rendered_to_string(~H"""
-    <TimelineComponents.message_text body={@body} inline={@inline} />
+    <TimelineComponents.message_text body={@body} inline={@inline} mentions={@mentions} />
     """)
   end
 

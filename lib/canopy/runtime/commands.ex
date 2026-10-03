@@ -43,6 +43,9 @@ defmodule Canopy.Runtime.Commands do
 
   def parse(_), do: :text
 
+  @doc "Every command name, aliases included: what the composer highlights."
+  def names, do: @commands |> Map.keys() |> Enum.sort()
+
   @doc "Short help shown in the composer."
   def help,
     do:

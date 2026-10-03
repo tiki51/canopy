@@ -441,6 +441,7 @@ Inside an engine every name is prefixed `canopy_`, so an agent calls
 | Shift+Enter | New line |
 | `@` | Suggest agents; mentioning a non-member hints at `/i` |
 | `#` | Suggest channels; `#name` links to the channel |
+| Highlights | Blue chip wakes, dashed underline won't; mentions in code never wake |
 | `/i @agent [message]` | Invite an agent into the channel |
 | `/delegate @agent task` | Delegate a subtask |
 | `/handoff @agent reason` | Request a handoff |

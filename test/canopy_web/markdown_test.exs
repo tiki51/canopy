@@ -23,9 +23,27 @@ defmodule CanopyWeb.MarkdownTest do
   end
 
   test "raw html stays escaped and mentions are highlighted" do
-    html = Markdown.to_html("<img src=/files/x> hi @backend")
+    html = Markdown.to_html("<img src=/files/x> hi @backend", mentions: ["backend"])
     refute html =~ "<img"
     assert html =~ "@backend</span>"
+  end
+
+  test "only known names are highlighted as mentions, in any case" do
+    html =
+      Markdown.to_html("@Backend, @crew and @nobody", mentions: MapSet.new(["backend", "crew"]))
+
+    assert html =~ ~s(<span class="#{Markdown.mention_class()}">@Backend</span>)
+    assert html =~ ~s(<span class="#{Markdown.mention_class()}">@crew</span>)
+    assert html =~ "and @nobody"
+    refute Markdown.to_html("hi @backend") =~ "<span"
+
+    assert Markdown.mention_parts("to @backend and @nobody: ok", ["backend"]) ==
+             [{:plain, "to "}, {:mention, "@backend"}, {:plain, " and @nobody: ok"}]
+  end
+
+  test "a typed & before #name is not an entity, so the name is left alone" do
+    html = Markdown.to_html("&#payments, but #payments", channels: %{"payments" => "ch_1"})
+    assert html =~ "&amp;#payments, but <a "
   end
 
   test "#channel references become in-app links only for known channels" do

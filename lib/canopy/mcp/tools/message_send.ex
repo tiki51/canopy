@@ -19,7 +19,7 @@ defmodule Canopy.MCP.Tools.MessageSend do
 
     field :text, :string,
       description:
-        "Message body in GitHub-flavoured Markdown. @name mentions wake that agent. May be empty when attachments are given."
+        "Message body in GitHub-flavoured Markdown. @name mentions wake that agent; inside `code` they wake nobody. May be empty when attachments are given."
 
     field :attachments, :string,
       description:

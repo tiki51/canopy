@@ -23,6 +23,11 @@ defmodule CanopyWeb.TimelineComponents do
   attr :user_name, :string, required: true
   attr :replies, :list, default: []
   attr :channels, :map, default: %{}, doc: "channel name => id, for #channel links in bodies"
+
+  attr :mentions, :any,
+    default: MapSet.new(),
+    doc: "agent and team names highlighted as @mentions in bodies"
+
   attr :thread_open, :boolean, default: false
 
   attr :root, :string,
@@ -38,6 +43,7 @@ defmodule CanopyWeb.TimelineComponents do
         user_name={@user_name}
         replies={@replies}
         channels={@channels}
+        mentions={@mentions}
         repliable
         thread_open={@thread_open}
         inline_reply={not is_nil(@event.message.thread_id)}
@@ -64,6 +70,7 @@ defmodule CanopyWeb.TimelineComponents do
         entries={@entries}
         final_text={@final_text}
         root={@root}
+        mentions={@mentions}
       />
     </div>
     """
@@ -92,6 +99,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :repliable, :boolean, default: false, doc: "show the Reply in thread affordance"
   attr :thread_open, :boolean, default: false
   attr :channels, :map, default: %{}
+  attr :mentions, :any, default: MapSet.new()
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -102,7 +110,7 @@ defmodule CanopyWeb.TimelineComponents do
       at={@message.inserted_at}
     >
       <span class="font-medium">{sender_name(@message, @user_name)}</span>
-      <.message_text body={@message.body} inline />
+      <.message_text body={@message.body} mentions={@mentions} inline />
     </.system_line>
     """
   end
@@ -166,6 +174,7 @@ defmodule CanopyWeb.TimelineComponents do
             :if={@message.body not in [nil, ""]}
             body={@message.body}
             channels={@channels}
+            mentions={@mentions}
           />
           <.attachments message={@message} />
         </div>
@@ -196,6 +205,7 @@ defmodule CanopyWeb.TimelineComponents do
                 names={@names}
                 user_name={@user_name}
                 channels={@channels}
+                mentions={@mentions}
                 repliable
               />
             </div>
@@ -267,13 +277,16 @@ defmodule CanopyWeb.TimelineComponents do
   Renders a message body. Bodies are GitHub-flavoured Markdown, rendered by
   `CanopyWeb.Markdown` with raw HTML escaped. The inline variant, used for
   one-line system notes, keeps the text as written and only highlights mentions.
+  Only `mentions` (known agent and team names) are highlighted.
   """
   attr :body, :string, required: true
   attr :inline, :boolean, default: false
   attr :channels, :map, default: %{}
+  attr :mentions, :any, default: MapSet.new()
 
   def message_text(%{inline: true} = assigns) do
-    assigns = assign(assigns, :parts, Markdown.mention_parts(assigns.body || ""))
+    assigns =
+      assign(assigns, :parts, Markdown.mention_parts(assigns.body || "", assigns.mentions))
 
     ~H"""
     <span class="whitespace-pre-wrap break-words" phx-no-format><%= for part <- @parts do %><%= case part do %><% {:mention, name} -> %><span class={Markdown.mention_class()}>{name}</span><% {:plain, text} -> %>{text}<% end %><% end %></span>
@@ -281,7 +294,12 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   def message_text(assigns) do
-    assigns = assign(assigns, :html, Markdown.to_html(assigns.body, channels: assigns.channels))
+    assigns =
+      assign(
+        assigns,
+        :html,
+        Markdown.to_html(assigns.body, channels: assigns.channels, mentions: assigns.mentions)
+      )
 
     ~H"""
     <div class="message-body break-words">{raw(@html)}</div>
@@ -462,6 +480,7 @@ defmodule CanopyWeb.TimelineComponents do
   attr :entries, :list, default: []
   attr :final_text, :string, default: nil
   attr :root, :string, default: nil
+  attr :mentions, :any, default: MapSet.new()
 
   def turn_card(%{entries: [], final_text: nil} = assigns) do
     ~H"""
@@ -522,7 +541,7 @@ defmodule CanopyWeb.TimelineComponents do
           <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/60">
             Closing note
           </p>
-          <.message_text body={@final_text} />
+          <.message_text body={@final_text} mentions={@mentions} />
         </div>
       </div>
     </details>

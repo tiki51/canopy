@@ -436,6 +436,73 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       refute has_element?(view, "#message-#{message.id} a", "#nope")
     end
+
+    test "the composer form carries what the mention highlight needs", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer} = ctx
+      outsider = Fixtures.agent_fixture(%{name: "outsider#{Fixtures.unique_suffix()}"})
+      team = Fixtures.team_fixture([outsider, reviewer], name: "crew#{Fixtures.unique_suffix()}")
+
+      archived =
+        Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "old-plans"})
+
+      {:ok, _} = Canopy.Channels.archive(archived)
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      form = "#composer-form"
+      assert has_element?(view, "#{form}[data-members*='#{reviewer.name}']")
+      refute has_element?(view, "#{form}[data-members*='#{outsider.name}']")
+      # the team's active members, so a team with nobody here reads as an outsider
+      assert has_element?(view, ~s(#{form}[data-team-members*='"#{team.name}":']))
+      assert has_element?(view, ~s(#{form}[data-team-members*='"#{outsider.name}"']))
+      # every linkable channel is highlighted; only open ones are suggested
+      assert has_element?(view, "#{form}[data-channel-refs*='old-plans']")
+      refute has_element?(view, "#{form}[data-channels*='old-plans']")
+      assert has_element?(view, "#{form}[data-commands*='invite']")
+      assert has_element?(view, "#composer-input-wrap #composer-highlight[aria-hidden='true']")
+
+      refute has_element?(view, "#{form}[data-thread]")
+      view |> element("#reply-#{root.id}") |> render_click()
+      assert has_element?(view, "#{form}[data-thread='true']")
+      view |> element("#composer-thread-cancel") |> render_click()
+      refute has_element?(view, "#{form}[data-thread]")
+
+      view |> element("#edit-members") |> render_click()
+      view |> form("#add-member-form", agent_id: outsider.id) |> render_submit()
+      assert has_element?(view, "#{form}[data-members*='#{outsider.name}']")
+    end
+
+    test "a DM's composer knows only its own agents", ctx do
+      %{agent: agent, reviewer: reviewer} = ctx
+      {:ok, dm} = Canopy.Channels.ensure_dm(ctx.repository.id, agent)
+
+      {:ok, view, _html} = open(conn_of(ctx), dm)
+      assert has_element?(view, "#composer-form[data-agents='#{Jason.encode!([agent.name])}']")
+      assert has_element?(view, "#composer-form[data-members='#{Jason.encode!([agent.name])}']")
+      assert has_element?(view, "#composer-form[data-team-members='{}']")
+      refute has_element?(view, "#composer-form[data-agents*='#{reviewer.name}']")
+    end
+
+    test "sent messages highlight known agents and teams only", ctx do
+      %{channel: channel, user: user, reviewer: reviewer} = ctx
+      team = Fixtures.team_fixture([reviewer], name: "crew#{Fixtures.unique_suffix()}")
+
+      {:ok, message} =
+        Messages.post_user_message(
+          channel.id,
+          user.id,
+          "@#{reviewer.name} and @#{team.name}, not @nobody or `@#{reviewer.name}`"
+        )
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      body = "#message-#{message.id} .message-body"
+      assert has_element?(view, "#{body} span", "@#{reviewer.name}")
+      assert has_element?(view, "#{body} span", "@#{team.name}")
+      refute has_element?(view, "#{body} span", "@nobody")
+      assert has_element?(view, "#{body} code", "@#{reviewer.name}")
+      # the code span did not wake anyone twice, and @nobody resolved to no one
+      assert message.mentions == [reviewer.id]
+    end
   end
 
   describe "library" do

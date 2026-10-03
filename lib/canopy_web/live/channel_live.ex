@@ -531,6 +531,9 @@ defmodule CanopyWeb.ChannelLive do
   # What the composer suggests after `@` and `#`, and the map that turns
   # `#name` in bodies into links. In a channel every active agent is offered
   # (mentioning a non-member only hints at /i); a DM keeps its own set.
+  # `mention_names` are the agents and teams the composer and the timeline
+  # highlight as `@mentions`; `team_members` lets the composer tell a team
+  # that would wake someone here from one that wouldn't.
   defp assign_mention_sources(socket, channel) do
     agent_names =
       if channel.kind == "dm",
@@ -552,11 +555,17 @@ defmodule CanopyWeb.ChannelLive do
       |> Enum.uniq()
 
     # teams are offered after agents, outside DMs (a DM keeps its own set)
-    team_names = if channel.kind == "dm", do: [], else: Teams.names()
+    teams = if channel.kind == "dm", do: [], else: Teams.list()
+    team_names = Enum.map(teams, & &1.name)
+
+    team_members =
+      Map.new(teams, &{&1.name, Enum.map(Teams.active_members(&1), fn agent -> agent.name end)})
 
     socket
     |> assign(:agent_names, agent_names)
     |> assign(:team_names, team_names)
+    |> assign(:team_members, team_members)
+    |> assign(:mention_names, MapSet.new(agent_names ++ team_names))
     |> assign(:channel_names, channel_names)
     |> assign(:channel_links, links)
   end
@@ -1338,6 +1347,7 @@ defmodule CanopyWeb.ChannelLive do
             replies={thread_replies(@threads, event)}
             thread_open={thread_open?(@open_threads, event)}
             channels={@channel_links}
+            mentions={@mention_names}
           />
         </div>
 
@@ -1373,8 +1383,11 @@ defmodule CanopyWeb.ChannelLive do
         waiting={@waiting_on_user}
         form={@composer}
         agent_names={@agent_names}
+        member_names={@member_names}
         team_names={@team_names}
+        team_members={@team_members}
         channel_names={@channel_names}
+        channel_refs={Map.keys(@channel_links)}
         uploads={@uploads}
         picked={@picked}
         replying_to={@replying_to}
@@ -2168,8 +2181,11 @@ defmodule CanopyWeb.ChannelLive do
 
   attr :form, :map, required: true
   attr :agent_names, :list, required: true
+  attr :member_names, :list, default: []
   attr :team_names, :list, default: []
+  attr :team_members, :map, default: %{}, doc: "team name => its active members' names"
   attr :channel_names, :list, required: true
+  attr :channel_refs, :list, default: [], doc: "every linkable channel name, archived ones too"
   attr :uploads, :map, required: true
   attr :picked, :list, required: true
   attr :replying_to, :map, default: nil
@@ -2217,6 +2233,11 @@ defmodule CanopyWeb.ChannelLive do
         data-teams={Jason.encode!(@team_names)}
         data-channels={Jason.encode!(@channel_names)}
         data-awaiting={Jason.encode!(Enum.map(@waiting, &elem(&1, 0)))}
+        data-members={Jason.encode!(@member_names)}
+        data-team-members={Jason.encode!(@team_members)}
+        data-channel-refs={Jason.encode!(@channel_refs)}
+        data-commands={Jason.encode!(Commands.names())}
+        data-thread={@replying_to && "true"}
         class="relative"
       >
         <%!-- Filled by the Composer hook when the draft mentions an agent that
@@ -2319,16 +2340,21 @@ defmodule CanopyWeb.ChannelLive do
           </div>
           <%!-- The textarea is the browser's: LiveView never patches it, so the
                hook's auto-grown height and the draft survive every update.
-               The server clears it with the "composer:clear" event. --%>
-          <div id="composer-input-wrap" phx-update="ignore" class="min-w-0">
+               The server clears it with the "composer:clear" event. Behind it,
+               #composer-highlight copies the draft in transparent text so the
+               mention chips show through (see composer_highlight.js). --%>
+          <div id="composer-input-wrap" phx-update="ignore" class="relative min-w-0">
+            <div id="composer-highlight" aria-hidden="true" class="composer-text composer-highlight">
+            </div>
             <textarea
               id="composer-input"
               name={@form[:body].name}
               phx-hook="Composer"
               data-suggestions="#composer-suggestions"
+              data-highlight="#composer-highlight"
               rows="1"
               placeholder="Message the channel — @mention an agent to wake it, #name a channel"
-              class="max-h-[60vh] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-relaxed outline-none focus:outline-none"
+              class="composer-text relative max-h-[60vh] w-full resize-none bg-transparent outline-none focus:outline-none"
               autocomplete="off"
             >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>
           </div>

@@ -7,9 +7,15 @@
 // card (the form's data-awaiting), a hint says the message will not answer the
 // card: the text never round-trips, so the hint is drawn here.
 //
+// Mentions, channels and commands in the draft are highlighted by a layer
+// behind the textarea (composer_highlight.js).
+//
 // Height: one row by default, growing with its content up to AUTO_MAX. The
 // browser's resize handle is off (CSS resize-none); the manual-floor tracking
 // below is kept in case it is ever turned back on.
+import Highlighter from "../composer_highlight"
+import {maskCode} from "../composer_tokens"
+
 const MAX_SUGGESTIONS = 8
 const AUTO_MAX = 192
 
@@ -31,6 +37,7 @@ const Composer = {
       this.el.style.height = this.manual ? this.manual + "px" : ""
       this.hide()
       this.renderAwaitingHint()
+      if (this.highlighter) this.highlighter.render()
       this.el.focus()
     })
 
@@ -42,10 +49,15 @@ const Composer = {
       this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting"]})
     }
 
+    const layer = this.el.dataset.highlight && document.querySelector(this.el.dataset.highlight)
+    if (layer) this.highlighter = new Highlighter(this.el, layer)
+
     // A height we did not set ourselves is the reader dragging the handle.
+    // The highlight layer follows every size change.
     this.observer = new ResizeObserver(() => {
       const height = this.el.offsetHeight
       if (this.lastAuto !== null && Math.abs(height - this.lastAuto) > 2) this.manual = height
+      if (this.highlighter) this.highlighter.sync()
     })
     this.observer.observe(this.el)
 
@@ -54,6 +66,7 @@ const Composer = {
       this.autosize()
       this.refresh()
       this.renderAwaitingHint()
+      if (this.highlighter) this.highlighter.schedule()
     })
     this.el.addEventListener("blur", () => setTimeout(() => this.hide(), 150))
     this.el.addEventListener("paste", e => this.onPaste(e))
@@ -197,9 +210,11 @@ const Composer = {
   destroyed() {
     if (this.observer) this.observer.disconnect()
     if (this.formObserver) this.formObserver.disconnect()
+    if (this.highlighter) this.highlighter.destroy()
   },
 
-  // Agents named in the draft that are waiting on a card in this channel.
+  // Agents named in the draft that are waiting on a card in this channel. A
+  // name inside code wakes nobody, so it doesn't count.
   awaitingMentioned() {
     let names = []
     try {
@@ -207,7 +222,7 @@ const Composer = {
     } catch (_e) {
       return []
     }
-    const text = this.el.value
+    const text = maskCode(this.el.value)
     return names.filter(name => {
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
       return new RegExp(`(^|[^\\w@#])@${escaped}(?![\\w-])`, "i").test(text)
@@ -234,6 +249,7 @@ const Composer = {
     const height = Math.max(needed, this.manual || 0)
     this.el.style.height = height + "px"
     this.lastAuto = height
+    if (this.highlighter) this.highlighter.sync()
   },
 }
 

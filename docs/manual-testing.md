@@ -269,6 +269,14 @@ to: researcher …" as in the README demo prompt.
 ![Composer autocomplete](screenshots/12-composer-autocomplete.png)
 
 - [ ] Typing `@` in the composer suggests members; Enter sends, Shift+Enter adds a line.
+- [ ] Type `@backend see #<channel> and @nobody` → `@backend` and the channel get chips,
+      `@nobody` stays plain. Remove @reviewer from the channel and type `@reviewer` → a
+      dashed underline; add it back without touching the draft → it turns into a chip.
+- [ ] `` `@reviewer` `` and a fenced block holding `@reviewer` get no chip, and sending
+      them wakes nobody.
+- [ ] Type 30 lines and scroll the composer: the chips stay on their words. Resize the
+      window and switch to dark mode: still aligned, and the chips are readable.
+- [ ] Click **Reply** on a message and type `/i @reviewer` → `/i` gets a red wavy underline.
 - [ ] Mention `@reviewer` in a message → the reviewer wakes instead of the owner.
 - [ ] When an agent answers inside a thread, the reply nests under the parent with an
       "N replies" toggle.

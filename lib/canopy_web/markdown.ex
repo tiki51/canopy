@@ -4,8 +4,8 @@ defmodule CanopyWeb.Markdown do
 
   Raw HTML in the source is escaped rather than passed through, dangerous link
   schemes are dropped by the renderer, and single newlines become line breaks
-  so chat-style messages keep their shape. `@mentions` outside code are
-  wrapped in a highlight span after rendering.
+  so chat-style messages keep their shape. `@mentions` of known agents and
+  teams outside code are wrapped in a highlight span after rendering.
 
   Images are kept only when they point at a document Canopy serves itself
   (`/files/…`); any other image source becomes a plain link, so a message can
@@ -24,9 +24,15 @@ defmodule CanopyWeb.Markdown do
   @doc """
   Markdown to HTML. Returns an empty string for anything that is not a binary.
 
-  Options: `channels: %{"name" => channel_id}` turns `#name` references outside
-  code and links into in-app links to those channels; unknown names are left
-  as text.
+  Options:
+
+    * `channels: %{"name" => channel_id}` turns `#name` references outside
+      code and links into in-app links to those channels; unknown names are
+      left as text.
+    * `mentions: names` (lowercase agent and team names) highlights `@name`
+      outside code when the name is one of them, the same names the composer
+      highlights; any other `@word` is left as text. Without it nothing is
+      highlighted.
   """
   @spec to_html(term, keyword) :: String.t()
   def to_html(body, opts \\ [])
@@ -34,7 +40,7 @@ defmodule CanopyWeb.Markdown do
   def to_html(body, opts) when is_binary(body) do
     body
     |> MDEx.to_html!(@mdex_opts)
-    |> highlight_mentions()
+    |> highlight_mentions(known(Keyword.get(opts, :mentions, [])))
     |> restrict_images()
     |> open_links_in_new_tab()
     |> link_channels(Keyword.get(opts, :channels, %{}))
@@ -42,17 +48,31 @@ defmodule CanopyWeb.Markdown do
 
   def to_html(_, _opts), do: ""
 
-  @doc "Splits plain text into `{:mention, \"@name\"}` and `{:plain, text}` parts."
-  @spec mention_parts(String.t()) :: [{:mention | :plain, String.t()}]
-  def mention_parts(text) when is_binary(text) do
+  @doc """
+  Splits plain text into `{:mention, "@name"}` and `{:plain, text}` parts; only
+  the `names` given (as for `to_html/2`'s `:mentions`) count as mentions.
+  """
+  @spec mention_parts(String.t(), Enumerable.t()) :: [{:mention | :plain, String.t()}]
+  def mention_parts(text, names) when is_binary(text) do
+    known = known(names)
+
     @mention_regex
     |> Regex.split(text, include_captures: true)
     |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn
-      "@" <> _ = mention -> {:mention, mention}
-      plain -> {:plain, plain}
+    |> Enum.map(fn part ->
+      if known?(part, known), do: {:mention, part}, else: {:plain, part}
+    end)
+    |> Enum.chunk_by(&elem(&1, 0))
+    |> Enum.flat_map(fn
+      [{:plain, _} | _] = plains -> [{:plain, Enum.map_join(plains, &elem(&1, 1))}]
+      mentions -> mentions
     end)
   end
+
+  defp known(names), do: MapSet.new(names)
+
+  defp known?("@" <> name, known), do: MapSet.member?(known, String.downcase(name))
+  defp known?(_part, _known), do: false
 
   @doc false
   def mention_class, do: "rounded bg-secondary/10 px-1 font-medium text-secondary"
@@ -60,7 +80,11 @@ defmodule CanopyWeb.Markdown do
   # Walk the rendered HTML token by token; text outside <code> gets its
   # mentions wrapped. Rendered text is already entity-escaped, so the span can
   # be spliced in as-is.
-  defp highlight_mentions(html) do
+  defp highlight_mentions(html, known) do
+    if MapSet.size(known) == 0, do: html, else: wrap_outside_code(html, known)
+  end
+
+  defp wrap_outside_code(html, known) do
     {out, _in_code} =
       @tag_regex
       |> Regex.split(html, include_captures: true)
@@ -68,15 +92,19 @@ defmodule CanopyWeb.Markdown do
         "<code" <> _ = tag, {acc, depth} -> {[tag | acc], depth + 1}
         "</code" <> _ = tag, {acc, depth} -> {[tag | acc], max(depth - 1, 0)}
         "<" <> _ = tag, {acc, depth} -> {[tag | acc], depth}
-        text, {acc, 0} -> {[wrap_mentions(text) | acc], 0}
+        text, {acc, 0} -> {[wrap_mentions(text, known) | acc], 0}
         text, {acc, depth} -> {[text | acc], depth}
       end)
 
     out |> Enum.reverse() |> IO.iodata_to_binary()
   end
 
-  defp wrap_mentions(text) do
-    Regex.replace(@mention_regex, text, ~s(<span class="#{mention_class()}">\\1</span>))
+  defp wrap_mentions(text, known) do
+    Regex.replace(@mention_regex, text, fn mention ->
+      if known?(mention, known),
+        do: ~s(<span class="#{mention_class()}">#{mention}</span>),
+        else: mention
+    end)
   end
 
   @img_regex ~r/<img\s+([^>]*?)\s*\/?>/
@@ -104,7 +132,13 @@ defmodule CanopyWeb.Markdown do
     end
   end
 
-  @channel_regex ~r/(?<![\w#&\/])#([a-z0-9][a-z0-9_-]*)/i
+  # `&` keeps entities like `&#39;` out; `&amp;` is a typed `&`, which the
+  # composer's highlight (and the raw-text match) also leaves alone.
+  @channel_regex ~r/(?<![\w#&\/])(?<!&amp;)#([a-z0-9][a-z0-9_-]*)/i
+
+  @doc false
+  # The composer highlight (assets/js/composer_tokens.js) mirrors this.
+  def channel_regex, do: @channel_regex
 
   @doc false
   def channel_class, do: "rounded bg-primary/10 px-1 font-medium text-primary no-underline"
