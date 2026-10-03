@@ -175,8 +175,8 @@ defmodule Canopy.Costs.Routing do
 
   @doc """
   What routing the light kinds would have saved since `since`, per kind:
-  candidate turns, what they cost (a Claude Code turn re-priced from its
-  tokens at list price), what they would have cost on the light
+  candidate turns, what they cost (as recorded; a Claude Code turn with no
+  recorded cost is priced from its tokens at list price), what they would have cost on the light
   model, and the turns the cache-warmth guard would have kept on main.
   **Estimates.** A candidate is a turn of a light kind (an agent mention or
   thread reply only when recorded as an acknowledgement; an agent message
@@ -292,11 +292,12 @@ defmodule Canopy.Costs.Routing do
     end
   end
 
-  # A Claude Code turn's main side is re-priced from its tokens at list price
-  # too: the CLI's `total_cost_usd` has been seen to carry more than the turn
-  # (the installed app's Opus turns record $10-30 for a few hundred output
-  # tokens), so it is not compared against. An OpenCode turn keeps the cost
-  # its provider reported.
+  # What the turn cost on main: what it recorded. A Claude Code turn with no
+  # recorded cost (it failed before its result) is priced from its tokens at
+  # list price instead. (Claude Code turns once recorded the session's running
+  # total; the upgrade that fixed it corrected the old turns too.)
+  defp main_cost(%{cost: cost}, _claude) when cost > 0, do: cost
+
   defp main_cost(t, claude) do
     case price_of(t.model, claude, %{}) do
       nil -> t.cost

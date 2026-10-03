@@ -82,6 +82,18 @@ defmodule Canopy.AgentSessions do
   end
 
   @doc """
+  Records the running cost total the engine last reported for the session
+  (Claude Code: see `Canopy.ClaudeCode.Cost`).
+  """
+  def put_cost_total(session_id, total) when is_binary(session_id) and is_number(total) do
+    Repo.update_all(from(s in AgentSession, where: s.id == ^session_id),
+      set: [cost_total: total / 1]
+    )
+
+    :ok
+  end
+
+  @doc """
   Stamps the session as prompted with the channel's current brief. Returns
   the session with `brief_seen_at` set.
   """

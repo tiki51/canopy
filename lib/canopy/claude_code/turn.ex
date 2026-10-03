@@ -30,6 +30,14 @@ defmodule Canopy.ClaudeCode.Turn do
       Claude Code consumed the process on housekeeping and never sent the
       prompt (seen after an auto-backgrounded task); the turn is resent.
 
+  Cost: every `result` carries the session's running total, not the turn's
+  (see `Canopy.ClaudeCode.Cost`). `:cost_bases` (`fn flag -> [total] end`,
+  asked each time the process is spawned, so a retry with the other flag
+  gets its own) says where the new process may start counting from, and
+  `Canopy.ClaudeCode.Events` turns each result into the cost since then;
+  `:on_cost_total` (`fn total -> _ end`) is told every result's total before
+  its events go out, so the next turn of the session can count from it.
+
   Abort sends SIGINT; Claude Code then writes an `error_during_execution`
   result, which is reported as a completed turn rather than an error.
   A turn that prints nothing for `:stall_ms` is killed and reported as an
@@ -86,6 +94,10 @@ defmodule Canopy.ClaudeCode.Turn do
       cwd: Keyword.get(opts, :cwd),
       compact?: Keyword.get(opts, :compact?, false),
       stall_ms: Keyword.get(opts, :stall_ms, @default_stall_ms),
+      # fn flag -> [total] the process may resume its cost from
+      cost_bases: Keyword.get(opts, :cost_bases, fn _flag -> [] end),
+      # fn total -> any, told every result's cumulative total
+      on_cost_total: Keyword.get(opts, :on_cost_total),
       # nil: any CLI may be steered
       steer_min_version: Keyword.get(opts, :steer_min_version),
       # from system/init
@@ -148,7 +160,7 @@ defmodule Canopy.ClaudeCode.Turn do
          lost_refs: state.lost_refs ++ state.written_refs,
          written_refs: [],
          buffer: "",
-         acc: Events.new(state.cwd),
+         acc: Events.new(state.cwd, cost_bases: cost_bases(state)),
          saw_assistant?: false,
          last_line_at: System.monotonic_time(:millisecond)
      }}
@@ -269,6 +281,7 @@ defmodule Canopy.ClaudeCode.Turn do
 
   defp handle_line(%{"type" => "result"} = json, state) do
     {events, acc} = Events.normalize(json, state.acc)
+    note_cost_total(state, json["total_cost_usd"])
     state = state |> Map.put(:acc, acc) |> note_consumed(json)
 
     cond do
@@ -309,6 +322,15 @@ defmodule Canopy.ClaudeCode.Turn do
         {:noreply, state}
     end
   end
+
+  defp cost_bases(%{cost_bases: fun, flag: flag}) when is_function(fun, 1), do: fun.(flag)
+  defp cost_bases(%{cost_bases: list}) when is_list(list), do: list
+
+  defp note_cost_total(%{on_cost_total: fun}, total)
+       when is_function(fun, 1) and is_number(total),
+       do: fun.(total)
+
+  defp note_cost_total(_state, _total), do: :ok
 
   defp queued_turns(%{"queued_turn_count" => n}) when is_integer(n), do: n
   defp queued_turns(_json), do: 0

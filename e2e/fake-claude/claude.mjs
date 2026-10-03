@@ -134,7 +134,25 @@ async function mcpCall(name, args = {}) {
 
 // ---- stream-json output ------------------------------------------------------------
 let steps = 0;
-let cost = 0;
+// Like Claude Code, `total_cost_usd` is the session's running total: the CLI
+// restores it from the transcript on --resume (a `cost-state` line), and
+// Canopy subtracts where the turn started. Kept beside the story state.
+const costFile = path.join(os.tmpdir(), "canopy-fake-claude", `${sid}.cost`);
+let cost = (() => {
+  try {
+    return Number(fs.readFileSync(costFile, "utf8")) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const saveCost = () => {
+  try {
+    fs.mkdirSync(path.dirname(costFile), { recursive: true });
+    fs.writeFileSync(costFile, String(cost));
+  } catch {
+    // the next turn just starts over, as the real CLI does without a cost-state
+  }
+};
 let context = 17_000 + Math.floor(Math.random() * 3_000);
 const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 const price = model.includes("opus") ? 3 : model.includes("haiku") ? 0.35 : 1;
@@ -271,6 +289,7 @@ function finish(text, extra = {}) {
     if (body) text = `${text}\n\nRe your message: “${body}”`;
   }
   modelCall([{ type: "text", text }], "end_turn");
+  saveCost();
   out({
     type: "result",
     subtype: "success",
@@ -542,6 +561,7 @@ async function turn(prompt) {
 
 // Abort is SIGINT: Claude Code ends the turn with an error result and exits 0.
 process.on("SIGINT", () => {
+  saveCost();
   out({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: steps, result: "", session_id: sid, total_cost_usd: Number(cost.toFixed(6)), usage });
   process.exit(0);
 });
@@ -597,6 +617,7 @@ try {
   }
 } catch (e) {
   process.stderr.write(`[fake-claude] ${e.stack || e}\n`);
+  saveCost();
   out({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: steps, result: String(e.message || e), session_id: sid, total_cost_usd: cost, usage });
 }
 process.stdout.write("", () => process.exit(0));

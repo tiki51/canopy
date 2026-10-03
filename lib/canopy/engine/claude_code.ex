@@ -29,6 +29,12 @@ defmodule Canopy.Engine.ClaudeCode do
   mcp__canopy__permission`, a Canopy tool that blocks until the user answers
   from the channel (`Canopy.ClaudeCode.Prompts`). Agents run under
   `acceptEdits` with a read/edit/git allowance plus every `canopy_*` tool.
+
+  Cost: a result's `total_cost_usd` is the session's running total, which the
+  CLI restores from the transcript on resume. Each turn is told where its
+  process starts counting (the transcript's last `cost-state`, and the last
+  total saved on the session row, `agent_sessions.cost_total`), so the
+  `:turn_usage` it reports is the turn's own cost (`Canopy.ClaudeCode.Cost`).
   """
 
   @behaviour Canopy.Engine
@@ -37,7 +43,7 @@ defmodule Canopy.Engine.ClaudeCode do
 
   alias Canopy.{Agents, AgentSessions, ClaudeCode, Documents, Settings}
   alias Canopy.Agents.Agent
-  alias Canopy.ClaudeCode.{Command, MCPConfig, Prompts}
+  alias Canopy.ClaudeCode.{Command, Cost, MCPConfig, Prompts}
   alias Canopy.Engine.Event
   alias Canopy.MCP.Inventory
   alias Canopy.MCP.Redact
@@ -459,9 +465,30 @@ defmodule Canopy.Engine.ClaudeCode do
         )
       end
 
+      # Results carry the session's running cost; these say where the
+      # process starts counting (see Canopy.ClaudeCode.Cost).
+      last_total = fresh.cost_total
+      transcripts = transcripts_dir(settings)
+
+      cost_bases = fn
+        :new ->
+          []
+
+        :resume ->
+          Cost.bases(
+            :resume,
+            Cost.restored_total(transcripts, sid, ctx.repository.path),
+            last_total
+          )
+      end
+
+      on_cost_total = fn total -> save_cost_total(fresh.id, total) end
+
       turn_opts = [
         repository_id: ctx.repository.id,
         command: command,
+        cost_bases: cost_bases,
+        on_cost_total: on_cost_total,
         flag: if(seen?, do: :resume, else: :new),
         message: Command.user_message(content),
         stderr_file: stderr_file,
@@ -486,6 +513,20 @@ defmodule Canopy.Engine.ClaudeCode do
           {:error, reason}
       end
     end
+  end
+
+  # The turn runs in its own process; a failed write only costs the next
+  # turn its fallback base.
+  defp save_cost_total(session_id, total) do
+    AgentSessions.put_cost_total(session_id, total)
+  rescue
+    error ->
+      Logger.warning("Claude Code: could not save the session cost total: #{inspect(error)}")
+      :error
+  catch
+    :exit, reason ->
+      Logger.warning("Claude Code: could not save the session cost total: #{inspect(reason)}")
+      :error
   end
 
   # The agent's own allowance, else the default set; the Canopy tools always.

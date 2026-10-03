@@ -2738,6 +2738,9 @@ defmodule Canopy.Runtime.ChannelServer do
               "tools" => turn.tools,
               "files" => MapSet.to_list(turn.files),
               "cost" => turn.cost,
+              # the turn's own cost (Claude Code turns before this recorded
+              # the session's running total; the upgrade corrected them)
+              "cost_scope" => "turn",
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => outcome_label(outcome),
               "model" => model,

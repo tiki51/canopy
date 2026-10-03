@@ -1822,6 +1822,13 @@ From the top:
 A finishing turn updates the numbers without a reload. Turns that ended in an error, or
 ran on a provider that reports nothing, count as zero, so treat the totals as a floor.
 
+Claude Code reports a running total for the whole session at the end of every turn, not
+the turn's own cost. Canopy subtracts where the session's total stood when the turn
+started, so each turn shows what it cost. Earlier versions recorded the running total as
+the turn's cost, which overstated Claude Code spend many times over, on this page, in
+channel spend limits, in the auditor's report, and in the routing estimates. Upgrading
+corrects past Claude Code turns from the totals they recorded, once.
+
 ### What drives cost
 
 Context is most of the bill. Canopy keeps it small in four ways:
@@ -2077,6 +2084,7 @@ service started by `brew services` uses the defaults.
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
 | Search doesn't find part of a word (`worker` in `PaymentWorker`) | Words are matched whole or by their start: search `Payment*`, or the whole word. Code separators (`_ / . - :`) split words, so `charge` finds `enqueue_charge` |
 | No desktop notifications | Check, in order: Settings → Notifications says *On* (not *blocked*; *Send a test notification* shows one); macOS System Settings → Notifications → your browser allows them, and no Focus mode is hiding banners; you were not looking at that channel in a focused Canopy tab (then nothing is shown, by design); Canopy is open at `127.0.0.1` or `localhost`, not a network address (`CANOPY_BIND=0.0.0.0`); a Canopy tab is open (nothing arrives without one, and a sleeping Mac misses what happened meanwhile) |
+| Claude Code costs dropped sharply after upgrading | Expected: versions before the fix recorded each Claude Code turn's cost as the session's running total, so spend was overstated many times over. The upgrade recomputes past turns (see [Costs](#14-costs)); a channel whose spend limit was reached on the old numbers may be under it now |
 | The Agents page is empty | Seeding is a separate step: `canopy seed` (Homebrew) or `mix run priv/repo/seeds.exs` (source); either adds any missing default without overwriting agents you edited |
 
 ### Regenerating the screenshots

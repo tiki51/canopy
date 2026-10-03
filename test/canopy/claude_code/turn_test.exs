@@ -148,6 +148,42 @@ defmodule Canopy.ClaudeCode.TurnTest do
     assert Supervisor.whereis(sid) == nil
   end
 
+  test "a resumed turn reports its own cost, not the session's running total", ctx do
+    test = self()
+
+    script =
+      script!(ctx.dir, [
+        init_line("SESSION_ID"),
+        result_line("SESSION_ID", %{total_cost_usd: 1.25})
+      ])
+
+    pid =
+      start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}],
+        flag: :resume,
+        cost_bases: fn :resume -> [1.0, 0.9] end,
+        on_cost_total: &send(test, {:cost_total, &1})
+      )
+
+    assert_receive {:engine_event, %Event{type: :turn_usage, data: %{cost: cost}}}, 5_000
+    assert_in_delta cost, 0.25, 1.0e-9
+    assert_received {:cost_total, 1.25}
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+  end
+
+  test "a resumed process that started over counts from zero", ctx do
+    script =
+      script!(ctx.dir, [
+        init_line("SESSION_ID"),
+        result_line("SESSION_ID", %{total_cost_usd: 0.3})
+      ])
+
+    pid =
+      start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}], flag: :resume, cost_bases: fn _ -> [1.0] end)
+
+    assert_receive {:engine_event, %Event{type: :turn_usage, data: %{cost: 0.3}}}, 5_000
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+  end
+
   test "a second turn for the same session is refused while one runs", ctx do
     pid = start(ctx, [{"FAKE_CLAUDE_SLEEP", "30"}])
 
@@ -192,6 +228,8 @@ defmodule Canopy.ClaudeCode.TurnTest do
   end
 
   test "an unknown session on resume is retried with --session-id", ctx do
+    test = self()
+
     pid =
       start(
         ctx,
@@ -199,13 +237,20 @@ defmodule Canopy.ClaudeCode.TurnTest do
           {"FAKE_CLAUDE_STDERR", "No conversation found with session ID: x"},
           {"FAKE_CLAUDE_EXIT", "1"}
         ],
-        flag: :resume
+        flag: :resume,
+        cost_bases: fn flag ->
+          send(test, {:cost_bases, flag})
+          []
+        end
       )
 
     assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
     assert [first, second] = argv_lines(ctx.log)
     assert first =~ "--resume"
     assert second =~ "--session-id #{ctx.sid}"
+    # each spawn asks where its cost starts, with its own flag
+    assert_received {:cost_bases, :resume}
+    assert_received {:cost_bases, :new}
   end
 
   test "an empty zero-turn result is resent once, then accepted", ctx do
@@ -429,14 +474,27 @@ defmodule Canopy.ClaudeCode.TurnTest do
     end
 
     test "a result with a queued turn keeps the process open until the final one", ctx do
+      test = self()
+
+      # a resumed session at $0.50; each result carries the running total
       pid =
-        steered(ctx, [
-          tool_result(),
-          text_line("Done with the first part."),
-          result_line("SESSION_ID", %{queued_turn_count: 1, total_cost_usd: 0.01}),
-          text_line("Now your message."),
-          result_line("SESSION_ID", %{user_message_uuids: ["STEER_UUID"], total_cost_usd: 0.02})
-        ])
+        steered(
+          ctx,
+          [
+            tool_result(),
+            text_line("Done with the first part."),
+            result_line("SESSION_ID", %{queued_turn_count: 1, total_cost_usd: 0.51}),
+            text_line("Now your message."),
+            result_line("SESSION_ID", %{
+              user_message_uuids: ["STEER_UUID"],
+              total_cost_usd: 0.525
+            })
+          ],
+          turn: [
+            cost_bases: fn :new -> [0.5] end,
+            on_cost_total: &send(test, {:cost_total, &1})
+          ]
+        )
 
       assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
       ref = Ecto.UUID.generate()
@@ -444,8 +502,12 @@ defmodule Canopy.ClaudeCode.TurnTest do
 
       assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
 
-      # both results' usage, then one end, after the second
-      assert [{:turn_usage, 0.01}, {:turn_usage, 0.02}, {:agent_completed, nil}] = ends()
+      # each result's own share of the total, then one end, after the second
+      assert [{:turn_usage, first}, {:turn_usage, second}, {:agent_completed, nil}] = ends()
+      assert_in_delta first, 0.01, 1.0e-9
+      assert_in_delta second, 0.015, 1.0e-9
+      assert_received {:cost_total, 0.51}
+      assert_received {:cost_total, 0.525}
       refute_received {:engine_event, %Event{type: :prompts_unconsumed}}
     end
 

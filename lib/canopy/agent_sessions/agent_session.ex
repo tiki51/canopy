@@ -34,6 +34,9 @@ defmodule Canopy.AgentSessions.AgentSession do
     # when the session was last prompted with the channel's brief as it
     # stood; nil until its first prompt (see `AgentSessions.mark_brief_seen/1`)
     field :brief_seen_at, :utc_datetime_usec
+    # Claude Code sessions: the running cost total the engine reported last
+    # (its results are cumulative per session; see `Canopy.ClaudeCode.Cost`)
+    field :cost_total, :float
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent

@@ -67,6 +67,8 @@ defmodule Canopy.Engine.CrossEngineTest do
     previous = Application.get_env(:canopy, :claude_code)
 
     Application.put_env(:canopy, :claude_code,
+      # never the real ~/.claude
+      default_config_dir: Application.get_env(:canopy, :claude_code)[:default_config_dir],
       binary: @fake,
       env: [{"FAKE_CLAUDE_SCRIPT", script}, {"FAKE_CLAUDE_LOG", log}]
     )

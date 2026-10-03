@@ -15,6 +15,18 @@ defmodule Canopy.ClaudeCode.Events do
   flag, an edit's patch and line counts, and a search's match count. A failed
   Bash call's exit code is read from an `Exit code N` prefix on its result;
   that format is not in a capture yet, so anything else leaves the code unset.
+
+  ## Cost
+
+  A `result`'s `total_cost_usd` is not the turn's cost: Claude Code keeps a
+  running total per session, saves it in the transcript (a `cost-state` line,
+  seen in 2.1.283) and restores it when the session is resumed, so every
+  result reports what the whole session has cost so far. Within one process
+  several results (steered turns) are cumulative too. The accumulator
+  therefore carries `cost_bases`, the totals this process may have started
+  from (see `Canopy.ClaudeCode.Cost`), and a result's cost is its total minus
+  the largest base not above it (zero is always a base, for a process that
+  started over). After a result its own total is the base for the next one.
   """
 
   alias Canopy.Engine.Event
@@ -26,11 +38,33 @@ defmodule Canopy.ClaudeCode.Events do
           cwd: String.t() | nil,
           inputs: map(),
           step: map() | nil,
-          steps: non_neg_integer()
+          steps: non_neg_integer(),
+          cost_bases: [number()]
         }
 
-  @doc "A fresh accumulator; `cwd` shortens file paths in tool titles."
-  def new(cwd \\ nil), do: %{cwd: cwd, inputs: %{}, step: nil, steps: 0}
+  @doc """
+  A fresh accumulator; `cwd` shortens file paths in tool titles. Options:
+  `:cost_bases`, the session totals the process may resume from (default
+  none: the process starts at zero).
+  """
+  def new(cwd \\ nil, opts \\ []) do
+    bases = for b <- Keyword.get(opts, :cost_bases, []), is_number(b), do: b
+    %{cwd: cwd, inputs: %{}, step: nil, steps: 0, cost_bases: bases}
+  end
+
+  @doc """
+  The turn's own cost from a result's cumulative `total`: the total minus the
+  largest of `bases` (and zero) that is not above it.
+  """
+  @spec turn_cost(number(), [number()]) :: float()
+  def turn_cost(total, bases) when is_number(total) do
+    base =
+      [0 | bases]
+      |> Enum.filter(&(is_number(&1) and &1 <= total + 1.0e-9))
+      |> Enum.max()
+
+    max(total - base, 0) / 1
+  end
 
   @spec normalize(map(), acc) :: {[Event.t()], acc}
   def normalize(line, acc)
@@ -234,7 +268,8 @@ defmodule Canopy.ClaudeCode.Events do
 
   def normalize(%{"type" => "result"} = line, acc) do
     usage = tokens(line["usage"] || %{})
-    cost = number(line["total_cost_usd"])
+    total = number(line["total_cost_usd"])
+    cost = turn_cost(total, acc.cost_bases)
 
     # Without partial messages no step was folded; the result's usage is the turn's.
     steps =
@@ -256,7 +291,8 @@ defmodule Canopy.ClaudeCode.Events do
         event(:agent_completed, %{})
       end
 
-    {steps ++ [usage_event, outcome], acc}
+    # a later result of this process counts from this one
+    {steps ++ [usage_event, outcome], %{acc | cost_bases: [total]}}
   end
 
   def normalize(_line, acc), do: {[], acc}

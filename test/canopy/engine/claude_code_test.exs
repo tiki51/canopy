@@ -107,6 +107,8 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     previous = Application.get_env(:canopy, :claude_code)
 
     Application.put_env(:canopy, :claude_code,
+      # never the real ~/.claude
+      default_config_dir: Application.get_env(:canopy, :claude_code)[:default_config_dir],
       binary: @fake,
       env: [{"FAKE_CLAUDE_SCRIPT", script}, {"FAKE_CLAUDE_LOG", log}]
     )
@@ -218,6 +220,155 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     refute File.exists?(ctx.log)
   end
 
+  describe "cost" do
+    # Claude Code's results carry the session's running total, restored from
+    # the transcript's last `cost-state` line on every resume.
+    setup ctx do
+      config_dir = Path.join(Path.dirname(ctx.log), "claude-config")
+      File.mkdir_p!(config_dir)
+      config = Application.get_env(:canopy, :claude_code)
+
+      Application.put_env(
+        :canopy,
+        :claude_code,
+        Keyword.put(config, :default_config_dir, config_dir)
+      )
+
+      {:ok, config_dir: config_dir}
+    end
+
+    # The next turn's process ends with this running total.
+    defp next_total(ctx, total) do
+      path = Path.join(Path.dirname(ctx.log), "total-#{System.unique_integer([:positive])}.jsonl")
+
+      lines = [
+        %{type: "system", subtype: "init", session_id: "SESSION_ID", model: "claude-haiku-4-5"},
+        %{
+          type: "assistant",
+          session_id: "SESSION_ID",
+          message: %{id: "msg_c", content: [%{type: "text", text: "Done."}]}
+        },
+        %{
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          num_turns: 1,
+          result: "Done.",
+          session_id: "SESSION_ID",
+          total_cost_usd: total,
+          usage: %{input_tokens: 10, output_tokens: 5}
+        }
+      ]
+
+      File.write!(path, Enum.map_join(lines, "\n", &JSON.encode!/1) <> "\n")
+      config = Application.get_env(:canopy, :claude_code)
+
+      env =
+        List.keystore(config[:env], "FAKE_CLAUDE_SCRIPT", 0, {"FAKE_CLAUDE_SCRIPT", path})
+
+      Application.put_env(:canopy, :claude_code, Keyword.put(config, :env, env))
+    end
+
+    defp turn_cost(ctx, text) do
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} #{text}")
+      assert_receive {:timeline, %{event_type: "agent_started"}}, 5_000
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_turn_completed", payload: %{"cost" => cost} = payload}},
+                     10_000
+
+      assert payload["cost_scope"] == "turn"
+      cost
+    end
+
+    # What Claude Code keeps on disk for the session: its transcript, with the
+    # cost-state lines given.
+    defp write_transcript(ctx, sid, lines) do
+      dir =
+        Path.join([
+          ctx.config_dir,
+          "projects",
+          Canopy.ClaudeCode.Transcript.encode(ctx.repository.path)
+        ])
+
+      File.mkdir_p!(dir)
+      first = %{type: "user", sessionId: sid, message: %{role: "user", content: "hi"}}
+
+      File.write!(
+        Path.join(dir, sid <> ".jsonl"),
+        Enum.map_join([first | lines], "\n", &JSON.encode!/1) <> "\n"
+      )
+    end
+
+    test "each turn records its own cost, not the session's running total; a reset starts over",
+         ctx do
+      next_total(ctx, 0.30)
+      assert_in_delta turn_cost(ctx, "first"), 0.30, 1.0e-9
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+      assert session.cost_total == 0.30
+
+      # no transcript here: counted from the last total seen
+      next_total(ctx, 0.45)
+      assert_in_delta turn_cost(ctx, "second"), 0.15, 1.0e-9
+      assert AgentSessions.get_root(ctx.channel.id, ctx.coder.id).cost_total == 0.45
+
+      :ok = Runtime.reset_session(ctx.channel.id, ctx.coder.id, "user")
+      next_total(ctx, 0.02)
+      assert_in_delta turn_cost(ctx, "after the reset"), 0.02, 1.0e-9
+
+      assert_in_delta Canopy.Costs.channel_total(ctx.channel.id), 0.47, 1.0e-9
+    end
+
+    test "a resumed process counts from the total the transcript saved", ctx do
+      next_total(ctx, 0.30)
+      turn_cost(ctx, "first")
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+
+      # something Canopy never saw a result for ran in between and saved $0.40
+      write_transcript(ctx, session.engine_session_id, [
+        %{type: "cost-state", sessionId: session.engine_session_id, totalCostUSD: 0.30},
+        %{type: "cost-state", sessionId: session.engine_session_id, totalCostUSD: 0.40}
+      ])
+
+      next_total(ctx, 0.45)
+      assert_in_delta turn_cost(ctx, "second"), 0.05, 1.0e-9
+    end
+
+    test "a transcript with no saved total means the process started at zero", ctx do
+      next_total(ctx, 0.30)
+      turn_cost(ctx, "first")
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+      # an older CLI: no cost-state lines, every process counts its own
+      write_transcript(ctx, session.engine_session_id, [])
+
+      next_total(ctx, 0.45)
+      assert_in_delta turn_cost(ctx, "second"), 0.45, 1.0e-9
+    end
+
+    test "the channel's spend limit trips on the turns' own costs", ctx do
+      {:ok, _} = Canopy.Channels.set_spend_limit(ctx.channel, 0.50)
+
+      next_total(ctx, 0.30)
+      turn_cost(ctx, "first")
+      next_total(ctx, 0.45)
+      turn_cost(ctx, "second")
+
+      # $0.45 spent, not $0.75: the next wake still runs
+      next_total(ctx, 0.60)
+      assert_in_delta turn_cost(ctx, "third"), 0.15, 1.0e-9
+      assert_in_delta Canopy.Costs.channel_total(ctx.channel.id), 0.60, 1.0e-9
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} fourth")
+
+      assert_receive {:timeline,
+                      %{event_type: "spend_limit_reached", payload: %{"spent" => spent}}},
+                     5_000
+
+      assert_in_delta spent, 0.60, 1.0e-9
+      refute_receive {:timeline, %{event_type: "agent_started"}}, 300
+    end
+  end
+
   describe "steering" do
     setup do
       {:ok, _} = Canopy.Settings.update(%{interrupt_on_mention: true})
@@ -260,6 +411,8 @@ defmodule Canopy.Engine.ClaudeCodeTest do
       steer = write.("steer-fold.jsonl", steer_lines)
 
       Application.put_env(:canopy, :claude_code,
+        # never the real ~/.claude
+        default_config_dir: Application.get_env(:canopy, :claude_code)[:default_config_dir],
         binary: @fake,
         env: [
           {"FAKE_CLAUDE_SCRIPT", script},

@@ -16,7 +16,9 @@ defmodule Canopy.Engine.Event do
     * `:session_deleted`   data: `%{session: map}`
     * `:mcp_servers`       data: `%{servers: [%{name, status, tool_count}]}` (what the session loaded this turn)
     * `:message_updated`   data: `%{message: map}`
-    * `:turn_usage`        data: `%{message_id, cost, tokens, finish}` (assistant message completed)
+    * `:turn_usage`        data: `%{message_id, cost, tokens, finish}` (assistant message completed;
+      `cost` is what this usage cost on its own, never a running total: the
+      runtime adds every `:turn_usage` of a turn up)
     * `:tool_started`      data: `%{call_id, tool, status, input, title, message_id, part_id}`
     * `:tool_completed`    data: `%{call_id, tool, status: :ok | :error, input, title, output, error, metadata, time, message_id, part_id}`,
       plus, when the engine reports them: `exit_code`, `stdout`, `stderr`,

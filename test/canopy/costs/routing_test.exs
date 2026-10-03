@@ -114,11 +114,28 @@ defmodule Canopy.Costs.RoutingTest do
       assert c.assumed["claude_code"]
 
       assert [%{kind: "scheduled", candidates: 2, routed: 1, kept_main: 1} = row] = c.rows
-      # haiku: 1k in at $1 + 1k out at $5 per million; the opus side is
-      # re-priced from the same tokens at list price ($4 / $20)
+      # haiku: 1k in at $1 + 1k out at $5 per million; the opus side is what
+      # the turn recorded
       assert_in_delta row.light_cost, 0.006, 0.000001
+      assert_in_delta row.cost, 1.0, 0.000001
+      assert_in_delta row.saving, 0.994, 0.000001
+    end
+
+    test "a Claude Code turn with no recorded cost is priced from its tokens", ctx do
+      tokens = %{
+        "input" => 1_000,
+        "output" => 1_000,
+        "reasoning" => 0,
+        "cache_read" => 0,
+        "cache_write" => 0
+      }
+
+      turn(ctx, %{"trigger" => "scheduled", "model" => "opus", "cost" => 0, "tokens" => tokens})
+
+      assert [%{routed: 1} = row] = Routing.candidates(nil, catalog: %{}).rows
+      # opus at list price: 1k in at $4 + 1k out at $20 per million
       assert_in_delta row.cost, 0.024, 0.000001
-      assert_in_delta row.saving, 0.018, 0.000001
+      assert_in_delta row.light_cost, 0.006, 0.000001
     end
 
     test "an OpenCode turn needs a light model and a price", ctx do
