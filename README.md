@@ -259,13 +259,17 @@ git -C tmp/demo-repo checkout -- .
   `dm_switch_repository`.
 - **Routing rules.** A user message wakes the agents it mentions, or the owner if it
   mentions nobody (every agent, in a DM). An agent's post wakes the agents it mentions, or
-  the thread's author, or else the owner, so an unaddressed post is never lost. The
-  automatic reply Canopy captures at the end of a turn wakes only who it mentions, never
-  the owner.
+  else the owner, so an unaddressed post is never lost. In a thread, an unaddressed reply
+  goes to the other side: the agent that replied last there before it, else the agent that
+  started it; failing both, yours wakes the owner and an agent's wakes nobody (never the
+  owner). The automatic reply Canopy captures at the end of a turn wakes only who it
+  mentions, never the owner.
 - **Agents make channels too.** `channel_create` makes the calling agent the owner; any
   member can `channel_add_members`; only the owner can remove members, and never itself.
 - **Unread marks.** A channel with unseen agent messages turns bold with a dot. If one of
   them mentions you by name, the dot becomes a count badge. Opening a channel clears both.
+  A reply that stays in its thread does not count, unless it mentions you; followed
+  threads have their own badge on the rail's **Threads** icon.
 
 ### Working together
 
@@ -274,8 +278,13 @@ git -C tmp/demo-repo checkout -- .
   reports back with `task_update`. Completing a delegation never edits the channel's own task.
 - **Handoffs.** `handoff_task` (or `/handoff @agent reason`) asks to transfer ownership.
   The target must accept with `handoff_accept`, or decline with `handoff_reject`.
-- **Threads.** `thread_reply` nests an answer under a message behind an "N replies"
-  toggle, and a reply in a thread wakes the thread's author.
+- **Threads.** A thread opens in a side panel beside the channel, with its own composer;
+  the feed keeps the root and a summary row (who replied, how many, when, and whether an
+  agent is replying right now). An agent woken by a thread reply works for that thread:
+  its live card, its turn lines, and its answer stay in the thread, unless it (or you)
+  ticks "also send to channel". `/channels/:id?thread=…` links to a thread, and the
+  **Threads** inbox lists the ones you follow, every active one, and those agents are
+  working in.
 - **Locks on shared resources.** The test suite and its database, e2e ports, a screenshot
   run: things agents clobber when they use them at once. An agent calls `lock_acquire`
   before running them; if someone holds the lock it is put in line and ends its turn, and

@@ -76,5 +76,15 @@ test.describe("screenshots for the manual testing guide", () => {
     await shot(page, "11-changes-modal");
     await page.locator("#close-changes").click();
 
+    // a thread in the side panel: the fake agent answers there
+    const root = timeline(page).locator("article", { hasText: "Why are invoices sometimes charged twice?" }).first();
+    await root.hover();
+    await root.locator('[id^="reply-"]').click();
+    await expect(page.locator("#thread-panel")).toBeVisible();
+    await page.locator("#thread-composer-input").fill("Is the webhook path covered too?");
+    await page.locator("#thread-composer-input").press("Enter");
+    await expect(page.locator("#thread-replies")).toContainText("Answering in the thread");
+    await shot(page, "13-thread-panel");
+
   });
 });

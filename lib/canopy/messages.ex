@@ -11,6 +11,7 @@ defmodule Canopy.Messages do
   alias Canopy.Messages.{Attachment, CodeMask, Message}
   alias Canopy.Repo
   alias Canopy.Teams
+  alias Canopy.Threads
   alias Canopy.Timeline
   alias Ecto.Multi
 
@@ -61,13 +62,24 @@ defmodule Canopy.Messages do
   @doc """
   Replies in the thread rooted at `parent_id` (the parent's own thread root is
   used when the parent is itself a reply). `sender` is `{:agent, id}` or
-  `{:user, id}`.
+  `{:user, id}`. Besides the shared options:
+
+    * `:to_channel` — also show the reply in the channel feed
+      ("also send to channel"); otherwise only the thread shows it
+    * `:kind` — `"thread_reply"` (default), or `"reply"` for a turn's final
+      text that Canopy posts into the thread the turn was working in
   """
   def thread_reply(parent_id, sender, body, opts \\ []) do
     parent = get!(parent_id)
     root_id = parent.thread_id || parent.id
 
-    attrs = %{channel_id: parent.channel_id, thread_id: root_id, body: body, kind: "thread_reply"}
+    attrs = %{
+      channel_id: parent.channel_id,
+      thread_id: root_id,
+      body: body,
+      kind: Keyword.get(opts, :kind, "thread_reply"),
+      sent_to_channel: Keyword.get(opts, :to_channel, false) == true
+    }
 
     attrs =
       case sender do
@@ -89,7 +101,9 @@ defmodule Canopy.Messages do
     * `:limit` — default #{@default_limit}, max #{@max_limit}
     * `:before` — message id; returns the messages preceding it
     * `:around` — message id; returns messages before and after it (inclusive)
-    * `:thread` — root message id; returns the root and its replies
+    * `:thread` — any message id in a thread; returns the root and the latest
+      `limit` replies (see `list_thread/2`), or nothing when the thread is
+      in another channel
   """
   def list(channel_id, opts \\ []) do
     limit = opts |> Keyword.get(:limit, @default_limit) |> clamp_limit()
@@ -97,11 +111,10 @@ defmodule Canopy.Messages do
 
     cond do
       thread_id = Keyword.get(opts, :thread) ->
-        base
-        |> where([m], m.id == ^thread_id or m.thread_id == ^thread_id)
-        |> order_by([m], asc: m.id)
-        |> limit(^limit)
-        |> Repo.all()
+        case list_thread(thread_id, limit: limit) do
+          [%{channel_id: ^channel_id} | _] = messages -> messages
+          _ -> []
+        end
 
       anchor = Keyword.get(opts, :around) ->
         before_count = div(limit, 2)
@@ -139,6 +152,184 @@ defmodule Canopy.Messages do
         |> Repo.all()
         |> Enum.reverse()
     end
+  end
+
+  @doc """
+  The root of the thread `id` belongs to: the message itself when it is a
+  top-level message, its root when it is a reply. Nil for an unknown id.
+  """
+  def thread_root(id) when is_binary(id) do
+    case get(id) do
+      %Message{thread_id: nil} = root -> root
+      %Message{thread_id: root_id} -> get(root_id)
+      nil -> nil
+    end
+  end
+
+  def thread_root(_id), do: nil
+
+  @doc """
+  A thread, from any message id in it: the root followed by its **latest**
+  `limit` replies (default #{@default_limit}, max #{@max_limit}), oldest first.
+  `[]` for an unknown id.
+  """
+  def list_thread(id, opts \\ []) do
+    limit = opts |> Keyword.get(:limit, @default_limit) |> clamp_limit()
+
+    case thread_root(id) do
+      nil ->
+        []
+
+      root ->
+        replies =
+          from(m in Message,
+            where: m.thread_id == ^root.id,
+            order_by: [desc: m.id],
+            limit: ^limit,
+            preload: ^@preloads
+          )
+          |> Repo.all()
+          |> Enum.reverse()
+
+        [root | replies]
+    end
+  end
+
+  @max_participants 4
+
+  @doc """
+  What a thread's summary row shows, for the given roots (the ones on a loaded
+  page): `%{root_id => %{count, last_reply_at, participants, last}}`, only for
+  roots with replies. `participants` are the distinct senders, newest first,
+  then the root's own sender, at most #{@max_participants}; each is
+  `%{agent_id, user_id, agent}` (`agent` preloaded, nil for the user). `last`
+  is the newest reply. Computed on demand: three grouped queries over the
+  indexed `thread_id`.
+  """
+  def thread_summaries([]), do: %{}
+
+  def thread_summaries(root_ids) when is_list(root_ids) do
+    root_ids = Enum.uniq(root_ids)
+
+    counts =
+      from(m in Message,
+        where: m.thread_id in ^root_ids,
+        group_by: m.thread_id,
+        select: {m.thread_id, count(m.id), max(m.id)}
+      )
+      |> Repo.all()
+
+    case counts do
+      [] ->
+        %{}
+
+      counts ->
+        last =
+          from(m in Message, where: m.id in ^Enum.map(counts, &elem(&1, 2)), preload: ^@preloads)
+          |> Repo.all()
+          |> Map.new(&{&1.thread_id, &1})
+
+        participants = participants(Enum.map(counts, &elem(&1, 0)))
+
+        Map.new(counts, fn {root_id, count, _last_id} ->
+          reply = Map.fetch!(last, root_id)
+
+          {root_id,
+           %{
+             count: count,
+             last_reply_at: reply.inserted_at,
+             participants: Map.get(participants, root_id, []),
+             last: reply
+           }}
+        end)
+    end
+  end
+
+  defp participants(root_ids) do
+    repliers =
+      from(m in Message,
+        where: m.thread_id in ^root_ids,
+        group_by: [m.thread_id, m.agent_id, m.user_id],
+        select: {m.thread_id, m.agent_id, m.user_id, max(m.id)}
+      )
+      |> Repo.all()
+      |> Enum.group_by(&elem(&1, 0))
+
+    authors =
+      from(m in Message, where: m.id in ^root_ids, select: {m.id, m.agent_id, m.user_id})
+      |> Repo.all()
+      |> Map.new(fn {id, agent_id, user_id} -> {id, {agent_id, user_id}} end)
+
+    senders =
+      Map.new(root_ids, fn root_id ->
+        newest_first =
+          repliers
+          |> Map.get(root_id, [])
+          |> Enum.sort_by(&elem(&1, 3), :desc)
+          |> Enum.map(fn {_, agent_id, user_id, _} -> {agent_id, user_id} end)
+
+        list =
+          (newest_first ++ List.wrap(Map.get(authors, root_id)))
+          |> Enum.uniq()
+          |> Enum.take(@max_participants)
+
+        {root_id, list}
+      end)
+
+    agents =
+      senders
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.flat_map(fn {agent_id, _} -> List.wrap(agent_id) end)
+      |> Enum.uniq()
+      |> then(&Repo.all(from a in Canopy.Agents.Agent, where: a.id in ^&1))
+      |> Map.new(&{&1.id, &1})
+
+    Map.new(senders, fn {root_id, list} ->
+      {root_id,
+       Enum.map(list, fn {agent_id, user_id} ->
+         %{agent_id: agent_id, user_id: user_id, agent: agent_id && Map.get(agents, agent_id)}
+       end)}
+    end)
+  end
+
+  @doc """
+  The agent that replied last in the thread rooted at `root_id`, or nil.
+  Options narrow what counts:
+
+    * `:except` — an agent id to leave out (the sender)
+    * `:before` — a message id: only replies older than it count, so a reply
+      routed late is not answered by an agent that replied after it
+    * `:among` — agent ids that may count (the channel's members)
+  """
+  def thread_last_agent(root_id, opts \\ []) when is_binary(root_id) do
+    query =
+      from(m in Message,
+        where: m.thread_id == ^root_id and not is_nil(m.agent_id),
+        order_by: [desc: m.id],
+        limit: 1,
+        select: m.agent_id
+      )
+
+    query =
+      case Keyword.get(opts, :except) do
+        nil -> query
+        except -> where(query, [m], m.agent_id != ^except)
+      end
+
+    query =
+      case Keyword.get(opts, :before) do
+        nil -> query
+        before -> where(query, [m], m.id < ^before)
+      end
+
+    query =
+      case Keyword.get(opts, :among) do
+        nil -> query
+        ids -> where(query, [m], m.agent_id in ^ids)
+      end
+
+    Repo.one(query)
   end
 
   @doc """
@@ -271,6 +462,7 @@ defmodule Canopy.Messages do
       |> Map.put(:mentions, mentions)
       |> Map.put(:team_mentions, team_mentions)
       |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
+      |> Map.put(:mentions_user, Canopy.Unread.mentions?(attrs.body, Canopy.Users.local()))
 
     with {:ok, document_ids} <- check_attachments(Keyword.get(opts, :attachments, [])) do
       Multi.new()
@@ -294,25 +486,35 @@ defmodule Canopy.Messages do
           end
         end)
       end)
+      # a thread reply stays out of the channel feed unless also sent there
       |> Timeline.multi_record(:event, fn %{message: message} ->
         %{
           channel_id: message.channel_id,
           agent_id: message.agent_id,
           event_type: "message",
           ref_id: message.id,
+          thread_id: message.thread_id,
+          in_channel: is_nil(message.thread_id) or message.sent_to_channel,
           payload: %{
             "kind" => message.kind,
             "thread_id" => message.thread_id,
+            "sent_to_channel" => message.sent_to_channel,
             "user_id" => message.user_id,
             "mentions" => message.mentions,
             "attachments" => document_ids
           }
         }
       end)
+      # before the broadcast, so a view that hears of the reply sees the follow
+      |> Multi.run(:follow, fn repo, %{message: message} ->
+        {:ok, Threads.auto_follow(repo, message)}
+      end)
       |> Repo.transaction()
       |> case do
-        {:ok, %{message: message, event: event}} ->
+        {:ok, %{message: message, event: event, follow: follow}} ->
           Timeline.broadcast(event)
+          if message.thread_id, do: Threads.broadcast_reply(message)
+          if follow == :followed, do: Threads.broadcast_reads(message.thread_id)
           {:ok, Repo.preload(message, @preloads)}
 
         {:error, _step, changeset, _changes} ->

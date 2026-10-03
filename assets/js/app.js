@@ -30,12 +30,24 @@ import Pref from "./hooks/pref"
 import AutoDismiss from "./hooks/auto_dismiss"
 import SidebarScroll from "./hooks/sidebar_scroll"
 import KeepOpen from "./hooks/keep_open"
+import SidePanel from "./hooks/side_panel"
+import CopyLink from "./hooks/copy_link"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, Composer, TimelineScroll, Pref, AutoDismiss, SidebarScroll, KeepOpen},
+  hooks: {
+    ...colocatedHooks,
+    Composer,
+    TimelineScroll,
+    Pref,
+    AutoDismiss,
+    SidebarScroll,
+    KeepOpen,
+    SidePanel,
+    CopyLink,
+  },
 })
 
 // Show progress bar on live navigation and form submits

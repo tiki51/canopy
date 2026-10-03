@@ -23,6 +23,11 @@ defmodule Canopy.Messages.Message do
     # mention alone woke (not also named directly, nor by an earlier team)
     field :team_mentions, {:array, :map}, default: []
     field :opencode_message_id, :string
+    # a thread reply also shown in the channel feed ("also send to channel")
+    field :sent_to_channel, :boolean, default: false
+    # the body mentions the local user (`Canopy.Unread.mentions?/2`), worked
+    # out once on insert so every unread and follow check agrees
+    field :mentions_user, :boolean, default: false
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -54,7 +59,9 @@ defmodule Canopy.Messages.Message do
       :body,
       :mentions,
       :team_mentions,
-      :opencode_message_id
+      :opencode_message_id,
+      :sent_to_channel,
+      :mentions_user
     ])
     |> update_change(:body, &String.trim/1)
     |> validate_required([:channel_id, :kind])

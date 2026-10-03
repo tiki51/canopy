@@ -1,8 +1,9 @@
 defmodule CanopyWeb.TimelineComponents do
   @moduledoc """
-  Function components for the channel feed: messages (with nested thread
-  replies), collaboration events rendered as centred system lines, the live
-  telemetry card of a working agent, permission cards, and handoff banners.
+  Function components for the channel feed and the thread panel: messages
+  (a thread's root with its summary row), collaboration events rendered as
+  centred system lines, the live telemetry card of a working agent,
+  permission cards, and handoff banners.
 
   Every component that names an agent takes a `names` map (`agent_id => name`)
   and the local user's display name, so events with a nil agent read naturally
@@ -16,19 +17,35 @@ defmodule CanopyWeb.TimelineComponents do
 
   # -- Timeline items ----------------------------------------------------------
 
-  @doc "Renders one timeline event by its type."
+  @doc """
+  Renders one timeline event by its type. Message events take `thread`, what
+  the message shows about threads (all keys optional):
+
+    * `:href` — the thread to open from "Reply in thread"
+    * `:link` — the path "Copy link" copies
+    * `:summary` — the summary row under a thread's root: `%{root_id, count,
+      last_reply_at, participants, open?, unread?, working}`
+    * `:parent` — for a reply also sent to the channel, `%{href, excerpt}` of
+      its thread
+    * `:highlight` — mark the message as the open thread's root
+    * `:target` — the reply a link pointed at: the thread panel scrolls to it
+      and flashes it
+    * `:divider` — inside the thread panel, the reply count under the root
+
+  `dom_prefix` keeps a message's DOM ids unique when it shows both in the feed
+  and in the thread panel.
+  """
   attr :id, :string, required: true
   attr :event, :map, required: true
   attr :names, :map, required: true
   attr :user_name, :string, required: true
-  attr :replies, :list, default: []
+  attr :thread, :map, default: %{}
+  attr :dom_prefix, :string, default: "message"
   attr :channels, :map, default: %{}, doc: "channel name => id, for #channel links in bodies"
 
   attr :mentions, :any,
     default: MapSet.new(),
     doc: "agent and team names highlighted as @mentions in bodies"
-
-  attr :thread_open, :boolean, default: false
 
   attr :root, :string,
     default: nil,
@@ -36,18 +53,29 @@ defmodule CanopyWeb.TimelineComponents do
 
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
-    <div id={@id}>
+    <div id={@id} data-scroll-target={@thread[:target] && "true"}>
       <.message_item
         message={@event.message}
         names={@names}
         user_name={@user_name}
-        replies={@replies}
         channels={@channels}
         mentions={@mentions}
-        repliable
-        thread_open={@thread_open}
-        inline_reply={not is_nil(@event.message.thread_id)}
+        dom_prefix={@dom_prefix}
+        thread_href={@thread[:href]}
+        link={@thread[:link]}
+        summary={@thread[:summary]}
+        parent={@thread[:parent]}
+        highlight={@thread[:highlight] == true}
+        target={@thread[:target] == true}
       />
+      <div
+        :if={is_integer(@thread[:divider])}
+        id="thread-divider"
+        class="flex items-center gap-2 px-3 py-1 text-[11px] font-medium text-base-content/55 sm:px-4"
+      >
+        <span>{ngettext("1 reply", "%{count} replies", @thread[:divider])}</span>
+        <span class="h-px flex-1 bg-base-300/70" />
+      </div>
     </div>
     """
   end
@@ -94,17 +122,20 @@ defmodule CanopyWeb.TimelineComponents do
   attr :message, :map, required: true
   attr :names, :map, required: true
   attr :user_name, :string, required: true
-  attr :replies, :list, default: []
-  attr :inline_reply, :boolean, default: false
-  attr :repliable, :boolean, default: false, doc: "show the Reply in thread affordance"
-  attr :thread_open, :boolean, default: false
+  attr :dom_prefix, :string, default: "message"
+  attr :thread_href, :string, default: nil, doc: "show Reply in thread, opening this thread"
+  attr :link, :string, default: nil, doc: "show Copy link, copying this path"
+  attr :summary, :map, default: nil, doc: "the summary row under a thread's root"
+  attr :parent, :map, default: nil, doc: "`%{href, excerpt}` for a reply sent to the channel"
+  attr :highlight, :boolean, default: false
+  attr :target, :boolean, default: false
   attr :channels, :map, default: %{}
   attr :mentions, :any, default: MapSet.new()
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
     <.system_line
-      id={"message-#{@message.id}"}
+      id={"#{@dom_prefix}-#{@message.id}"}
       icon="hero-command-line-mini"
       tone="muted"
       at={@message.inserted_at}
@@ -118,15 +149,32 @@ defmodule CanopyWeb.TimelineComponents do
   def message_item(assigns) do
     ~H"""
     <article
-      id={"message-#{@message.id}"}
+      id={"#{@dom_prefix}-#{@message.id}"}
       class={[
-        "group flex gap-3 px-3 py-2 transition-colors sm:px-6 hover:bg-base-200/50",
-        @message.kind == "reply" && "message-reply"
+        "group relative flex gap-3 px-3 py-2 transition-colors sm:px-6 hover:bg-base-200/50",
+        @message.kind == "reply" && "message-reply",
+        @target && "message-target"
       ]}
       data-kind={@message.kind}
     >
+      <span
+        :if={@highlight}
+        class="absolute inset-y-1 left-0 w-0.5 rounded-r-full bg-primary"
+        aria-hidden="true"
+      />
       <.avatar message={@message} user_name={@user_name} />
       <div class="min-w-0 flex-1">
+        <.link
+          :if={@parent}
+          patch={@parent.href}
+          id={"#{@dom_prefix}-parent-#{@message.id}"}
+          class="mb-0.5 flex min-w-0 items-center gap-1 text-[11px] text-base-content/60 transition hover:text-primary"
+          title="Open the thread"
+        >
+          <.icon name="hero-arrow-uturn-right-mini" class="size-3.5 shrink-0 rotate-180" />
+          <span class="shrink-0">replied to a thread:</span>
+          <span class="min-w-0 truncate">“{@parent.excerpt}”</span>
+        </.link>
         <div class="flex items-baseline gap-2">
           <span class={[
             "text-sm font-semibold",
@@ -142,11 +190,12 @@ defmodule CanopyWeb.TimelineComponents do
             reply
           </span>
           <span
-            :if={@inline_reply}
-            class="text-[11px] text-base-content/60"
-            title="A reply in a thread that is not loaded"
+            :if={@message.sent_to_channel and is_nil(@parent)}
+            id={"#{@dom_prefix}-also-#{@message.id}"}
+            class="flex items-center gap-0.5 text-[11px] text-base-content/60"
+            title="This reply was also sent to the channel"
           >
-            in a thread
+            <.icon name="hero-arrow-uturn-right-mini" class="size-3 rotate-180" /> also in channel
           </span>
           <time
             class="text-[11px] text-base-content/60"
@@ -154,17 +203,33 @@ defmodule CanopyWeb.TimelineComponents do
           >
             {short_time(@message.inserted_at)}
           </time>
-          <button
-            :if={@repliable}
-            type="button"
-            id={"reply-#{@message.id}"}
-            class="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-base-content/60 opacity-0 transition hover:bg-base-300/60 hover:text-base-content focus:opacity-100 group-hover:opacity-100"
-            phx-click="reply_in_thread"
-            phx-value-id={@message.id}
-            title="Reply in a thread"
+          <div
+            :if={@thread_href || @link}
+            class="message-actions ml-auto flex items-center gap-0.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100"
           >
-            <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5" /> Reply
-          </button>
+            <.link
+              :if={@thread_href}
+              patch={@thread_href}
+              id={"reply-#{@message.id}"}
+              class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-base-content/60 transition hover:bg-base-300/60 hover:text-base-content"
+              title="Reply in thread"
+            >
+              <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5" />
+              <span class="max-sm:sr-only">Reply</span>
+            </.link>
+            <button
+              :if={@link}
+              type="button"
+              id={"#{@dom_prefix}-copy-link-#{@message.id}"}
+              phx-hook="CopyLink"
+              data-href={@link}
+              class="flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-base-content/60 transition hover:bg-base-300/60 hover:text-base-content"
+              title="Copy link"
+              aria-label="Copy link to this message"
+            >
+              <.icon name="hero-link-mini" class="size-3.5" />
+            </button>
+          </div>
         </div>
         <div class={[
           "mt-0.5 text-sm leading-relaxed",
@@ -176,43 +241,119 @@ defmodule CanopyWeb.TimelineComponents do
             channels={@channels}
             mentions={@mentions}
           />
-          <.attachments message={@message} />
+          <.attachments message={@message} dom_prefix={attachment_prefix(@dom_prefix)} />
         </div>
 
-        <div :if={@replies != []} class="mt-1.5">
-          <%!-- Open state lives on the server: a client-side toggle would be
-               undone by the next patch, and a thread re-renders whenever it
-               gains a reply. --%>
-          <button
-            type="button"
-            id={"thread-toggle-#{@message.id}"}
-            class="flex items-center gap-1 text-xs font-medium text-primary transition hover:underline"
-            phx-click="toggle_thread"
-            phx-value-id={@message.id}
-            aria-expanded={to_string(@thread_open)}
-          >
-            <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5" />
-            {ngettext("1 reply", "%{count} replies", length(@replies))}
-          </button>
-          <div
-            id={"thread-#{@message.id}"}
-            hidden={not @thread_open}
-            class="mt-2 border-l-2 border-base-300 pl-3"
-          >
-            <div :for={reply <- @replies} class="-mx-3 sm:-mx-6">
-              <.message_item
-                message={reply}
-                names={@names}
-                user_name={@user_name}
-                channels={@channels}
-                mentions={@mentions}
-                repliable
-              />
-            </div>
-          </div>
-        </div>
+        <.thread_summary :if={@summary} href={@thread_href} summary={@summary} user_name={@user_name} />
       </div>
     </article>
+    """
+  end
+
+  # The feed keeps the plain ids it always had; the thread panel's copies
+  # carry the panel's prefix.
+  defp attachment_prefix("message"), do: ""
+  defp attachment_prefix(prefix), do: prefix <> "-"
+
+  attr :href, :string, required: true
+  attr :summary, :map, required: true
+  attr :user_name, :string, required: true
+
+  # The one line a thread leaves in the feed: who is in it, how many replies,
+  # when the last one came, whether there is something new, and whether an
+  # agent is replying right now. It opens the thread panel.
+  defp thread_summary(assigns) do
+    assigns =
+      assigns
+      |> assign(:shown, Enum.take(assigns.summary.participants, 3))
+      |> assign(:more, max(length(assigns.summary.participants) - 3, 0))
+
+    ~H"""
+    <.link
+      patch={@href}
+      id={"thread-summary-#{@summary.root_id}"}
+      class={[
+        "mt-1.5 flex max-w-xl items-center gap-2 rounded-lg border px-2 py-1 text-xs transition",
+        @summary.open? && "border-primary/30 bg-primary/5 ring-1 ring-primary/30",
+        !@summary.open? &&
+          "border-transparent hover:border-base-300 hover:bg-base-100 group-hover:border-base-300"
+      ]}
+      data-open={@summary.open? && "true"}
+      title="Open the thread"
+    >
+      <span class="flex shrink-0 -space-x-1.5">
+        <.mini_avatar :for={p <- @shown} participant={p} user_name={@user_name} />
+        <span
+          :if={@more > 0}
+          class="flex size-5 items-center justify-center rounded-md bg-base-300 text-[9px] font-bold ring-2 ring-base-100"
+        >
+          +{@more}
+        </span>
+      </span>
+      <span class="shrink-0 font-semibold text-primary">
+        {ngettext("1 reply", "%{count} replies", @summary.count)}
+      </span>
+      <span
+        :if={@summary.working != []}
+        id={"thread-working-#{@summary.root_id}"}
+        class="flex min-w-0 items-center gap-1.5 text-success"
+      >
+        <Layouts.status_dot status={:busy} />
+        <span class="truncate">
+          {Enum.map_join(@summary.working, ", ", &("@" <> &1))} {if length(@summary.working) == 1,
+            do: "is",
+            else: "are"} replying…
+        </span>
+      </span>
+      <span
+        :if={@summary.working == [] and @summary.last_reply_at}
+        class="min-w-0 truncate text-base-content/55"
+      >
+        last reply {Canopy.MCP.Format.relative_time(@summary.last_reply_at)}
+      </span>
+      <span
+        :if={@summary.unread?}
+        id={"thread-unread-#{@summary.root_id}"}
+        class="flex shrink-0 items-center gap-1 font-medium text-primary"
+        title="New replies since you last read this thread"
+      >
+        <span class="size-1.5 rounded-full bg-primary" /> new
+      </span>
+      <span class="ml-auto flex shrink-0 items-center text-base-content/50">
+        View <.icon name="hero-chevron-right-mini" class="size-3.5" />
+      </span>
+    </.link>
+    """
+  end
+
+  @doc "A small avatar for a thread participant (`%{agent}`, nil for the user)."
+  attr :participant, :map, required: true
+  attr :user_name, :string, required: true
+
+  def mini_avatar(%{participant: %{agent: %{} = agent}} = assigns) do
+    assigns = assign(assigns, :agent, agent)
+
+    ~H"""
+    <span
+      class="flex size-5 select-none items-center justify-center rounded-md bg-primary/15 text-[9px] font-bold text-primary ring-2 ring-base-100"
+      style={
+        @agent.color && "background-color: #{@agent.color}; color: #{initial_color(@agent.color)}"
+      }
+      title={"@" <> @agent.name}
+    >
+      {initial(@agent.name)}
+    </span>
+    """
+  end
+
+  def mini_avatar(assigns) do
+    ~H"""
+    <span
+      class="flex size-5 select-none items-center justify-center rounded-md bg-secondary text-[9px] font-bold text-secondary-content ring-2 ring-base-100"
+      title={@user_name}
+    >
+      {initial(@user_name)}
+    </span>
     """
   end
 
@@ -311,14 +452,15 @@ defmodule CanopyWeb.TimelineComponents do
   new tab), everything else as a card with a download link.
   """
   attr :message, :map, required: true
+  attr :dom_prefix, :string, default: "", doc: "prefixes the ids where a message shows twice"
 
   def attachments(%{message: %{documents: docs}} = assigns) when is_list(docs) and docs != [] do
     ~H"""
-    <div class="mt-1.5 flex flex-wrap gap-2" id={"attachments-#{@message.id}"}>
+    <div class="mt-1.5 flex flex-wrap gap-2" id={"#{@dom_prefix}attachments-#{@message.id}"}>
       <%= for doc <- @message.documents do %>
         <a
           :if={doc.kind == "image"}
-          id={"attachment-#{@message.id}-#{doc.id}"}
+          id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
           href={Canopy.Documents.url_path(doc)}
           target="_blank"
           rel="noopener"
@@ -335,7 +477,7 @@ defmodule CanopyWeb.TimelineComponents do
         </a>
         <a
           :if={doc.kind != "image"}
-          id={"attachment-#{@message.id}-#{doc.id}"}
+          id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
           href={Canopy.Documents.url_path(doc)}
           target="_blank"
           rel="noopener"

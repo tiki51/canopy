@@ -1,7 +1,10 @@
-// The channel composer: Enter sends, Shift+Enter inserts a newline, typing
-// `@` opens an autocomplete of agents and teams and `#` one of channels. The
-// textarea keeps its text on a failed send; the server pushes "composer:clear"
-// on success.
+// The channel composer, and the thread panel's: Enter sends, Shift+Enter
+// inserts a newline, typing `@` opens an autocomplete of agents and teams and
+// `#` one of channels. The textarea keeps its text on a failed send; the
+// server pushes "composer:clear" on success. Both composers share this hook:
+// each finds its popup, highlight layer, hint, and upload through its own data
+// attributes, and "composer:focus" / "composer:clear" name the textarea they
+// are for ({id}).
 //
 // When the draft mentions an agent that is blocked on a question or permission
 // card (the form's data-awaiting), a hint says the message will not answer the
@@ -28,25 +31,35 @@ const Composer = {
     this.manual = null
     this.lastAuto = null
 
-    // Clicking Reply on a message puts the caret here, so the reply can be
-    // typed without a second click.
-    this.handleEvent("composer:focus", () => this.el.focus())
+    const mine = detail => Boolean(detail) && detail.id === this.el.id
 
-    this.handleEvent("composer:clear", () => {
-      this.el.value = ""
-      this.el.style.height = this.manual ? this.manual + "px" : ""
-      this.hide()
-      this.renderAwaitingHint()
-      if (this.highlighter) this.highlighter.render()
+    // Opening a thread puts the caret in its composer, so the reply can be
+    // typed without a second click.
+    this.handleEvent("composer:focus", detail => {
+      if (mine(detail)) this.el.focus()
+    })
+
+    this.handleEvent("composer:clear", detail => {
+      if (!mine(detail)) return
+      this.clear()
       this.el.focus()
     })
 
     // The waiting agents change as cards come and go; LiveView patches the
-    // form's attribute, never the textarea, so watch the attribute.
-    this.hint = document.getElementById("composer-awaiting-hint")
+    // form's attribute, never the textarea, so watch the attribute. The
+    // form's data-scope names what the draft belongs to (the thread panel's
+    // root): when it changes, the draft is another thread's and is dropped.
+    this.hint = this.el.dataset.hint ? document.querySelector(this.el.dataset.hint) : null
     if (this.el.form) {
-      this.formObserver = new MutationObserver(() => this.renderAwaitingHint())
-      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting"]})
+      this.scope = this.el.form.dataset.scope
+      this.formObserver = new MutationObserver(() => {
+        if (this.el.form.dataset.scope !== this.scope) {
+          this.scope = this.el.form.dataset.scope
+          this.clear()
+        }
+        this.renderAwaitingHint()
+      })
+      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting", "data-scope"]})
     }
 
     const layer = this.el.dataset.highlight && document.querySelector(this.el.dataset.highlight)
@@ -97,7 +110,7 @@ const Composer = {
       const ext = (file.name.match(/\.\w+$/) || [file.type ? "." + file.type.split("/")[1] : ""])[0]
       return new File([file], `paste-${stamp}${files.length > 1 ? "-" + (i + 1) : ""}${ext}`, {type: file.type})
     })
-    this.upload("files", renamed)
+    this.upload(this.el.dataset.upload || "files", renamed)
   },
 
   // The agent, team, and channel lists live on the form, which LiveView keeps
@@ -133,6 +146,7 @@ const Composer = {
         e.preventDefault()
         return this.choose(this.matches[this.index])
       }
+      // handled here, so the side panel does not take it as "close"
       if (e.key === "Escape") {
         e.preventDefault()
         return this.hide()
@@ -195,6 +209,17 @@ const Composer = {
     this.hide()
     this.autosize()
     this.el.dispatchEvent(new Event("input", {bubbles: true}))
+  },
+
+  // An empty composer: the text, its height, and one-shot choices such as
+  // "Also send to channel".
+  clear() {
+    this.el.value = ""
+    this.el.style.height = this.manual ? this.manual + "px" : ""
+    if (this.el.form) this.el.form.querySelectorAll("input[data-clear]").forEach(box => { box.checked = false })
+    this.hide()
+    this.renderAwaitingHint()
+    if (this.highlighter) this.highlighter.render()
   },
 
   hide() {

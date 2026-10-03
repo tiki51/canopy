@@ -45,5 +45,8 @@ defmodule Canopy.Runtime.Supervisor do
     end
   end
 
+  @doc "The ids of the channels whose server is running."
+  def running_channel_ids, do: Registry.select(@registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+
   def via(channel_id), do: {:via, Registry, {@registry, channel_id}}
 end

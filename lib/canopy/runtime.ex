@@ -41,6 +41,8 @@ defmodule Canopy.Runtime do
     * `:thread_id` — reply inside the thread rooted at this message id (the
       parent's own root is used when it is itself a reply). Commands are
       channel-level actions and cannot be sent in a thread.
+    * `:to_channel` — with `:thread_id`, also show the reply in the channel
+      feed ("also send to channel")
   """
   def post_user_message(channel_id, body, opts \\ []) do
     if Channels.archived?(Channels.get!(channel_id)) do
@@ -55,10 +57,16 @@ defmodule Canopy.Runtime do
 
     attachments? = Keyword.get(opts, :attachments, []) != []
     {thread_id, opts} = Keyword.pop(opts, :thread_id)
+    {to_channel, opts} = Keyword.pop(opts, :to_channel, false)
 
     case Commands.parse(body) do
       :text when is_binary(thread_id) ->
-        Messages.thread_reply(thread_id, {:user, Users.local().id}, body, opts)
+        Messages.thread_reply(
+          thread_id,
+          {:user, Users.local().id},
+          body,
+          Keyword.put(opts, :to_channel, to_channel)
+        )
 
       :text ->
         Messages.post_user_message(channel_id, Users.local().id, body, opts)
@@ -296,6 +304,41 @@ defmodule Canopy.Runtime do
       nil -> false
       pid -> ChannelServer.stopped?(pid)
     end
+  end
+
+  @doc """
+  `%{agent_id => thread_id}` for the turns in flight in the channel that work
+  for a thread; for a view that is mounting or reconnecting. Empty when the
+  channel's process is not running.
+  """
+  def turn_threads(channel_id) do
+    case Supervisor.whereis(channel_id) do
+      nil -> %{}
+      pid -> ChannelServer.turn_threads(pid)
+    end
+  catch
+    # stopping, or too busy to answer: nothing to show
+    :exit, _ -> %{}
+  end
+
+  @doc """
+  Every thread an agent is working in right now, across the running
+  channels: `[%{channel_id, agent_id, thread_id}]`. For the Threads inbox,
+  when it mounts (it follows `Canopy.Threads`' turn messages after that).
+  The channels are asked at once; one too busy to answer within `timeout`
+  milliseconds is left out.
+  """
+  def working_threads(timeout \\ 500) do
+    Supervisor.running_channel_ids()
+    |> Task.async_stream(&{&1, turn_threads(&1)}, timeout: timeout, on_timeout: :kill_task)
+    |> Enum.flat_map(fn
+      {:ok, {channel_id, threads}} ->
+        for {agent_id, thread_id} <- threads,
+            do: %{channel_id: channel_id, agent_id: agent_id, thread_id: thread_id}
+
+      {:exit, _reason} ->
+        []
+    end)
   end
 
   def telemetry(channel_id, agent_id) do

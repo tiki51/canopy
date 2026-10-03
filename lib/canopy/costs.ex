@@ -244,6 +244,8 @@ defmodule Canopy.Costs do
         id: e.id,
         agent: if(e.agent, do: "@" <> e.agent.name, else: "removed agent"),
         channel_id: e.channel_id,
+        # the thread the turn worked for, if any
+        thread_id: e.thread_id,
         channel: channel_label(e.channel),
         cost: number(p["cost"]) / 1,
         tools: number(p["tools"]),

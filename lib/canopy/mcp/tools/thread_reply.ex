@@ -1,7 +1,10 @@
 defmodule Canopy.MCP.Tools.ThreadReply do
   @moduledoc """
-  Reply in the thread of an existing message. The thread's author is woken if
-  it is an agent. Attach files with `attachments`, as in canopy_message_send.
+  Reply in the thread of an existing message. The reply wakes the agents it
+  mentions; unaddressed, it wakes the agent that replied last in the thread
+  before you, or else the agent that started it, and never the channel owner. The reply stays in the thread unless
+  `also_send_to_channel` is set, for a conclusion the whole channel needs.
+  Attach files with `attachments`, as in canopy_message_send.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -20,6 +23,10 @@ defmodule Canopy.MCP.Tools.ThreadReply do
     field :attachments, :string,
       description:
         "Comma-separated document ids (doc_…) or repository-relative file paths to attach."
+
+    field :also_send_to_channel, :boolean,
+      description:
+        "Also show the reply in the channel feed. Only for conclusions the whole channel needs; the thread is the place for the back-and-forth."
   end
 
   @impl true
@@ -34,12 +41,16 @@ defmodule Canopy.MCP.Tools.ThreadReply do
                Tool.blank_to_nil(Map.get(params, :attachments))
              ),
            {:ok, text} <- text(params, attachments),
-           {:ok, reply} <- reply(parent, ctx, text, attachments) do
+           to_channel? = Map.get(params, :also_send_to_channel) == true,
+           {:ok, reply} <- reply(parent, ctx, text, attachments, to_channel?) do
         {:ok,
-         "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{attached(attachments)}"}
+         "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{also(reply, channel)}#{attached(attachments)}"}
       end
     end)
   end
+
+  defp also(%{sent_to_channel: true}, channel), do: " (also in ##{channel.name})"
+  defp also(_reply, _channel), do: ""
 
   defp attached([]), do: ""
   defp attached(ids), do: " with #{length(ids)} attachment(s): #{Enum.join(ids, ", ")}"
@@ -71,8 +82,11 @@ defmodule Canopy.MCP.Tools.ThreadReply do
     end
   end
 
-  defp reply(parent, ctx, text, attachments) do
-    case Messages.thread_reply(parent.id, {:agent, ctx.agent.id}, text, attachments: attachments) do
+  defp reply(parent, ctx, text, attachments, to_channel?) do
+    case Messages.thread_reply(parent.id, {:agent, ctx.agent.id}, text,
+           attachments: attachments,
+           to_channel: to_channel?
+         ) do
       {:ok, reply} ->
         {:ok, reply}
 

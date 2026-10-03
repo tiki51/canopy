@@ -16,7 +16,7 @@ defmodule Canopy.Timeline do
 
   @pubsub Canopy.PubSub
   @default_limit 50
-  @preloads [:agent, message: [:agent, :user, :documents]]
+  @preloads [:agent, message: [:agent, :user, :documents, :thread]]
 
   @doc "PubSub topic for a channel."
   def topic(channel_id) when is_binary(channel_id), do: "channel:#{channel_id}"
@@ -67,13 +67,16 @@ defmodule Canopy.Timeline do
   sender) and `agent` preloaded.
 
   Options: `:limit` (default #{@default_limit}), `:before` (event id; returns the
-  events preceding it), `:types` (list of event types to include).
+  events preceding it), `:types` (list of event types to include), `:scope`
+  (`:channel` for the channel feed: everything but what only a thread shows;
+  default all events).
   """
   def list(channel_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
 
     Event
     |> where([e], e.channel_id == ^channel_id)
+    |> maybe_scope(Keyword.get(opts, :scope))
     |> maybe_before(Keyword.get(opts, :before))
     |> maybe_types(Keyword.get(opts, :types))
     |> order_by([e], desc: e.id)
@@ -81,6 +84,33 @@ defmodule Canopy.Timeline do
     |> preload(^@preloads)
     |> Repo.all()
     |> Enum.reverse()
+  end
+
+  @doc """
+  A thread's events in ascending id order: the root's own `message` event
+  first, then the latest `:limit` (default #{@default_limit}) events of the
+  thread: its replies and the turn cards of work done for it. `[]` when the
+  root has no event.
+  """
+  def list_thread(root_id, opts \\ []) when is_binary(root_id) do
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    case for_message(root_id) do
+      nil ->
+        []
+
+      root ->
+        events =
+          Event
+          |> where([e], e.thread_id == ^root_id)
+          |> order_by([e], desc: e.id)
+          |> limit(^limit)
+          |> preload(^@preloads)
+          |> Repo.all()
+          |> Enum.reverse()
+
+        [root | events]
+    end
   end
 
   @doc "Fetches one event with preloads."
@@ -93,6 +123,9 @@ defmodule Canopy.Timeline do
     |> preload(^@preloads)
     |> Repo.one()
   end
+
+  defp maybe_scope(query, :channel), do: where(query, [e], e.in_channel == true)
+  defp maybe_scope(query, _all), do: query
 
   defp maybe_before(query, nil), do: query
   defp maybe_before(query, before), do: where(query, [e], e.id < ^before)

@@ -266,3 +266,20 @@
 /* Compact timeline: routine activity lines (started, finished, scheduled fire)
    are hidden; anything that needs the user stays. Toggled from the channel header. */
 .timeline-compact > [data-activity="routine"] { display: none; }
+
+/* Message actions (Reply in thread, Copy link) show on hover; a touch screen
+   has no hover, so they are always there. */
+@media (hover: none) { .message-actions { opacity: 1; } }
+
+/* The reply a link pointed at flashes once in the thread panel. */
+@keyframes message-target { from { background: color-mix(in oklab, var(--color-primary) 18%, transparent); } }
+.message-target { animation: message-target 2.4s ease-out; }
+
+/* The side panel is a full-screen overlay below lg; it slides in. */
+@keyframes side-panel-in { from { transform: translateX(100%); } }
+@media (max-width: 63.999rem) {
+  .side-panel { animation: side-panel-in 180ms ease-out; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-panel, .message-target { animation: none; }
+}

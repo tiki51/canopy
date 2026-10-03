@@ -286,10 +286,37 @@ to: researcher …" as in the README demo prompt.
       them wakes nobody.
 - [ ] Type 30 lines and scroll the composer: the chips stay on their words. Resize the
       window and switch to dark mode: still aligned, and the chips are readable.
-- [ ] Click **Reply** on a message and type `/i @reviewer` → `/i` gets a red wavy underline.
+- [ ] Click **Reply** on a message and type `/i @reviewer` in the thread panel's composer →
+      `/i` gets a red wavy underline; the same text in the channel's composer is a command.
 - [ ] Mention `@reviewer` in a message → the reviewer wakes instead of the owner.
-- [ ] When an agent answers inside a thread, the reply nests under the parent with an
-      "N replies" toggle.
+
+- [ ] Hover a message (on a touch screen the actions are always shown) → **Reply** and a
+      link icon. **Reply** opens the thread in a panel on the right (full screen with
+      **Back** on a phone-sized window); the URL gains `?thread=msg_…` and the root gets a
+      green bar in the feed.
+- [ ] Reply in the panel → it lands in the thread, not the feed, and the composer stays in
+      the thread for the next reply. The feed's summary row under the root shows the
+      avatars, the count, and "last reply …".
+- [ ] The owner (or the agent that replied last in the thread) wakes: its live card shows
+      in the panel, the summary row says "@backend is replying…", and its answer and its
+      "finished" line stay in the thread. With the panel closed, only the summary row shows
+      the work.
+- [ ] Tick **Also send to #channel** and reply → the reply is in the thread and in the
+      feed, where it says "replied to a thread: …"; the box is unticked afterwards.
+- [ ] Copy a thread's link (the link icon), open it in a new tab → the panel opens there,
+      also for a thread older than the loaded feed. `?thread=msg_nonsense` shows "That
+      thread is not in this channel." and no panel.
+- [ ] Esc in the panel with an empty box closes it; with a draft it does nothing.
+- [ ] An agent's unaddressed reply in a thread wakes the agent that replied before it there
+      (else the one that started it), never the owner.
+- [ ] Reply in a thread, close the panel before the agent answers → the summary row gets a
+      "new" dot and the rail's **Threads** icon a badge; the channel itself does not turn
+      bold (a thread-only reply counts only if it mentions you). Opening the thread clears
+      both. The bell in the panel unfollows: new replies then leave the badge alone.
+- [ ] The rail's **Threads** page lists followed threads (with their last two replies and
+      the unread count), **All active** lists every thread with a reply this week, and
+      **Agents working** the threads an agent is in right now. **Open thread** goes to the
+      channel with the thread open.
 - [ ] The sidebar has a **Direct messages** section between Channels and Agents. It lists
       every DM, including ones agents open; it updates without a reload. Its **+** opens a
       modal over the current page to pick one or more agents (and a repository if you have
@@ -403,6 +430,8 @@ to: researcher …" as in the README demo prompt.
       name in the sidebar turns bold with a small dot. Hover it for the count.
 - [ ] Have an agent mention you (`@` + your display name) there → the dot becomes a filled
       badge with the number of mentions. Open the channel → both clear.
+- [ ] A reply that stays in a thread does not make the channel bold, unless it mentions you;
+      one also sent to the channel does.
 
 ## 10h. Lean context
 

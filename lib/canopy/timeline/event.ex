@@ -2,7 +2,9 @@ defmodule Canopy.Timeline.Event do
   @moduledoc """
   One row of the channel feed. Messages appear here as `event_type: "message"`
   with `ref_id` pointing at the message; other rows describe collaboration
-  events and carry their details in `payload`.
+  events and carry their details in `payload`. A row that belongs to a thread
+  (a reply, or a turn card of work done for one) names its root in
+  `thread_id`; with `in_channel: false` only the thread shows it.
   """
 
   use Ecto.Schema
@@ -29,6 +31,12 @@ defmodule Canopy.Timeline.Event do
     field :event_type, :string
     field :ref_id, :string
     field :payload, :map, default: %{}
+    # the root message of the thread the event belongs to: a thread reply, or
+    # a turn card of work done for a thread
+    field :thread_id, :string
+    # false for what only the thread shows; true for the channel feed, which
+    # includes a thread reply also sent to the channel
+    field :in_channel, :boolean, default: true
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -43,7 +51,15 @@ defmodule Canopy.Timeline.Event do
 
   def changeset(event, attrs) do
     event
-    |> cast(attrs, [:channel_id, :agent_id, :event_type, :ref_id, :payload])
+    |> cast(attrs, [
+      :channel_id,
+      :agent_id,
+      :event_type,
+      :ref_id,
+      :payload,
+      :thread_id,
+      :in_channel
+    ])
     |> validate_required([:channel_id, :event_type, :payload])
     |> validate_inclusion(:event_type, @event_types)
     |> foreign_key_constraint(:channel_id)

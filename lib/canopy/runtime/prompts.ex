@@ -187,13 +187,8 @@ defmodule Canopy.Runtime.Prompts do
     end
   end
 
-  def new_message(
-        %{channel: channel, sender: sender, message_id: message_id, thread?: thread?} = args
-      ) do
-    thread_hint =
-      if thread?,
-        do: " The message is part of a thread; answer with canopy_thread_reply on that thread.",
-        else: ""
+  def new_message(%{channel: channel, sender: sender, message_id: message_id} = args) do
+    thread = thread_context(args)
 
     members_line =
       case Map.get(args, :members, []) do
@@ -211,13 +206,72 @@ defmodule Canopy.Runtime.Prompts do
     """
     You have a new Canopy message in ##{channel} from #{sender}.
     Message ID: #{message_id}
-    #{members_line}#{teams_line}
+    #{thread_lines(thread)}#{members_line}#{teams_line}
     #{inline_body(args)}#{attachments_block(Map.get(args, :attachments, []))}
-    canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older ones. Do the work, then post your findings with canopy_message_send.#{thread_hint}
-    Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.
+    #{reply_lines(thread)}
     If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop. Never post an acknowledgement.
     #{time_line()}
     """
+  end
+
+  # `thread` is `%{id, sender, excerpt}` from the router; a bare `thread?: true`
+  # (no root known) still says the message is in a thread.
+  defp thread_context(%{thread: %{id: id} = thread}) when is_binary(id), do: thread
+  defp thread_context(%{thread?: true}), do: %{id: nil, sender: nil, excerpt: nil}
+  defp thread_context(_args), do: nil
+
+  defp thread_lines(nil), do: ""
+  defp thread_lines(%{id: nil}), do: "The message is a reply in a thread.\n"
+
+  defp thread_lines(%{id: id} = thread) do
+    started =
+      case {thread.sender, thread.excerpt} do
+        {sender, excerpt} when is_binary(sender) and is_binary(excerpt) ->
+          " (started by #{sender}: \"#{Canopy.MCP.Format.truncate(Canopy.MCP.Format.single_line(excerpt), 120)}\")"
+
+        _ ->
+          ""
+      end
+
+    "Thread: #{id}#{started}\n"
+  end
+
+  defp reply_lines(nil) do
+    """
+    canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older ones. Do the work, then post your findings with canopy_message_send.
+    Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.\
+    """
+  end
+
+  defp reply_lines(thread) do
+    read =
+      if thread.id,
+        do: "Read the thread with canopy_messages_read thread=#{thread.id}",
+        else: "Read the thread with canopy_messages_read thread=<this message id>"
+
+    """
+    The message is part of a thread. #{read}; canopy_message_get returns one message in full. Answer with canopy_thread_reply on the thread, not canopy_message_send; the conversation stays in the thread.
+    Your reply wakes the agents you @mention. Unaddressed, it wakes the agent that replied last in the thread before you, or else the agent that started it; never the channel owner. Set also_send_to_channel only for a conclusion the whole channel needs.\
+    """
+  end
+
+  @doc """
+  Appended to a channel turn's wake that stands for messages from different
+  places (two threads, or a thread and the channel): every message, where it
+  is, and where to answer it. `sources` is `[{message_id, thread_id | nil}]`.
+  """
+  def mixed_scope(sources) do
+    lines =
+      Enum.map_join(sources, "\n", fn
+        {id, nil} ->
+          "- #{id}, in the channel: answer in the channel with canopy_message_send"
+
+        {id, thread_id} ->
+          "- #{id}, in thread #{thread_id}: read it with canopy_messages_read thread=#{thread_id} and answer there with canopy_thread_reply"
+      end)
+
+    "\nThis wake stands for messages from different places, so it is not tied to one thread. Read each (canopy_message_get) and answer where it belongs:\n" <>
+      lines <> "\n"
   end
 
   @doc """

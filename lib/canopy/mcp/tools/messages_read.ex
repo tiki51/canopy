@@ -6,7 +6,8 @@ defmodule Canopy.MCP.Tools.MessagesRead do
 
   Read channel messages, oldest first. Without options returns the latest
   messages. Use `around` to see the context of one message id, `before` to
-  page further back, or `thread` to read one thread by its root message id.
+  page further back, or `thread` to read one thread (the root and its latest
+  replies) by any message id in it.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -22,7 +23,11 @@ defmodule Canopy.MCP.Tools.MessagesRead do
     field :channel, :string, description: "Channel name or id. Defaults to your own channel."
     field :around, :string, description: "Message id; returns messages before and after it."
     field :before, :string, description: "Message id; returns the messages preceding it."
-    field :thread, :string, description: "Root message id; returns that message and its replies."
+
+    field :thread, :string,
+      description:
+        "Any message id in a thread (the root or a reply); returns the root and the thread's latest replies."
+
     field :limit, :integer, description: "Maximum messages to return (default 10, max 50)."
   end
 
@@ -41,7 +46,9 @@ defmodule Canopy.MCP.Tools.MessagesRead do
           |> put_opt(:thread, Tool.blank_to_nil(Map.get(params, :thread)))
 
         {messages, header} = fetch(ctx, channel, opts)
-        mark(ctx, channel, messages)
+        # A thread read leaves the channel's read marker alone: its newest reply
+        # can be newer than channel messages the agent has not read yet.
+        unless Keyword.has_key?(opts, :thread), do: mark(ctx, channel, messages)
         {:ok, header <> "\n" <> Format.message_lines(messages, truncate: @body_chars)}
       end
     end)
@@ -54,6 +61,9 @@ defmodule Canopy.MCP.Tools.MessagesRead do
     last_read = Messages.last_read(ctx.agent.id, channel.id)
 
     cond do
+      thread_id = Keyword.get(opts, :thread) ->
+        thread(channel, thread_id, opts)
+
       anchored? ->
         messages = Messages.list(channel.id, opts)
         {messages, "##{channel.name}: #{length(messages)} message(s), oldest first"}
@@ -79,6 +89,25 @@ defmodule Canopy.MCP.Tools.MessagesRead do
         {messages, header}
     end
   end
+
+  defp thread(channel, thread_id, opts) do
+    case Messages.list(channel.id, opts) do
+      [] ->
+        {[], "##{channel.name}: no thread with message #{thread_id} here"}
+
+      [root | replies] = messages ->
+        total = get_in(Messages.thread_summaries([root.id]), [root.id, :count]) || 0
+
+        shown =
+          if length(replies) < total, do: ", showing the last #{length(replies)}", else: ""
+
+        {messages,
+         "thread [#{root.id}] in ##{channel.name}: #{count(total, "reply", "replies")}#{shown}, oldest first"}
+    end
+  end
+
+  defp count(1, one, _many), do: "1 #{one}"
+  defp count(n, _one, many), do: "#{n} #{many}"
 
   defp mark(_ctx, _channel, []), do: :ok
 

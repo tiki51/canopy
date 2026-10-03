@@ -13,9 +13,20 @@ defmodule Canopy.Runtime.Router do
   @doc """
   `ctx` carries `channel`, `members` (agent ids), `owner_agent_id`, a `lookup`
   function `agent_id -> %Agent{} | nil` for display names, `thread_root`
-  (`message_id -> message | nil`), and optionally `teams` (names of the teams
-  the channel holds whole, for the wake prompt). Targets without an agent (for example the
-  previous owner of a user-initiated handoff) are dropped.
+  (`message_id -> message | nil`), optionally `thread_last_agent`
+  (`(root_id, opts) -> agent_id | nil`, see `Canopy.Messages.thread_last_agent/2`:
+  the agent that replied last in a thread before a message, among the members,
+  leaving the sender out), and optionally `teams` (names of the teams
+  the channel holds whole, for the wake prompt). Targets without an agent (for
+  example the previous owner of a user-initiated handoff) are dropped.
+
+  Threads: an unaddressed reply goes to the other side of the thread: the
+  agent (in the channel, not the sender) that replied last in the thread
+  before it, else the root's author when that is another agent in the
+  channel. When there is none, a user's reply falls back to the usual
+  listener (the owner; every agent in a DM) and an agent's wakes nobody,
+  never the owner: a thread is a side conversation, and the owner can read
+  it. Mentions always win.
   """
   def wakeups(event, ctx) do
     event
@@ -36,27 +47,33 @@ defmodule Canopy.Runtime.Router do
       |> Enum.reject(&(&1 == sender_agent_id))
       |> Enum.filter(&(&1 in ctx.members))
 
-    # In a DM the user is talking to everyone in it, so an unaddressed user
-    # message wakes all agents rather than just the owner.
-    # An unaddressed post from an agent reaches the owner, who is responsible
-    # for the task, unless the owner wrote it. Thread replies still go to the
-    # thread's author first.
+    # An unaddressed reply in a thread goes to the thread's other side (the
+    # agent that replied last before it, else the agent that started it),
+    # even in a DM. Outside a thread, or with nobody on the other side, an
+    # unaddressed user message wakes the owner, or every agent in a DM, where
+    # the user is talking to everyone. An unaddressed post from an agent
+    # reaches the owner, who is responsible for the task, unless the owner
+    # wrote it; an agent's thread reply never does.
+    threaded? = not is_nil(message.thread_id)
+
+    counterpart =
+      if targets == [] and threaded? and message.kind != "reply",
+        do: thread_counterpart(message, ctx, sender_agent_id),
+        else: []
+
     targets =
       cond do
         targets != [] ->
           targets
 
+        counterpart != [] ->
+          counterpart
+
         is_nil(sender_agent_id) and dm?(ctx) ->
           ctx.members
 
-        # A user's unaddressed reply belongs to the thread it is in: the agent
-        # whose message started it answers, not the channel owner. Outside a
-        # thread the owner is still the default listener.
         is_nil(sender_agent_id) ->
-          case thread_root_author(message, ctx, sender_agent_id) do
-            [] -> List.wrap(ctx.owner_agent_id)
-            authors -> authors
-          end
+          List.wrap(ctx.owner_agent_id)
 
         # The "reply" kind is the turn's final text that Canopy captures on its
         # own: narration, not a question. It wakes only who it mentions, or
@@ -64,28 +81,49 @@ defmodule Canopy.Runtime.Router do
         message.kind == "reply" ->
           []
 
+        threaded? ->
+          []
+
         true ->
-          thread_root_author(message, ctx, sender_agent_id) ++
-            owner_fallback(ctx, sender_agent_id)
+          owner_fallback(ctx, sender_agent_id)
       end
 
     attachments = message |> documents_of() |> Canopy.Documents.prompt_plan()
 
-    text =
-      Prompts.new_message(%{
-        channel: ctx.channel.name,
-        sender: sender,
-        message_id: message.id,
-        thread?: not is_nil(message.thread_id),
-        members: member_names(ctx),
-        teams: Map.get(ctx, :teams, []),
-        body: Map.get(message, :body),
-        attachments: attachments
-      })
+    args = %{
+      channel: ctx.channel.name,
+      sender: sender,
+      message_id: message.id,
+      thread?: threaded?,
+      thread: thread_info(message, ctx),
+      members: member_names(ctx),
+      teams: Map.get(ctx, :teams, []),
+      body: Map.get(message, :body),
+      attachments: attachments
+    }
+
+    text = Prompts.new_message(args)
 
     # With attachments the wake carries the plan too, so the channel server
-    # can add the file parts the text promises.
-    wake = if attachments == [], do: text, else: %{text: text, attachments: attachments}
+    # can add the file parts the text promises. A thread message's wake also
+    # carries the same prompt without the thread's instructions: a wake
+    # merged with one from elsewhere starts a channel turn and uses it.
+    wake =
+      case {attachments, threaded?} do
+        {[], false} ->
+          text
+
+        {_, false} ->
+          %{text: text, attachments: attachments}
+
+        {_, true} ->
+          %{
+            text: text,
+            channel_text: Prompts.new_message(%{args | thread?: false, thread: nil}),
+            attachments: attachments
+          }
+      end
+
     charges = team_charges(message)
 
     targets
@@ -182,12 +220,38 @@ defmodule Canopy.Runtime.Router do
     end
   end
 
-  defp thread_root_author(%{thread_id: nil}, _ctx, _sender), do: []
+  # Who an unaddressed reply in a thread is addressed to: the agent in the
+  # channel, other than the sender, that replied last before it; else the
+  # root's author when that is another agent in the channel.
+  defp thread_counterpart(%{thread_id: root_id, id: message_id}, ctx, sender_agent_id) do
+    lookup = Map.get(ctx, :thread_last_agent, fn _root, _opts -> nil end)
 
-  defp thread_root_author(%{thread_id: thread_id}, ctx, sender_agent_id) do
-    case ctx.thread_root.(thread_id) do
-      %{agent_id: author} when is_binary(author) and author != sender_agent_id -> [author]
-      _ -> []
+    case lookup.(root_id, except: sender_agent_id, before: message_id, among: ctx.members) do
+      agent_id when is_binary(agent_id) -> [agent_id]
+      _ -> thread_root_author(root_id, ctx, sender_agent_id)
+    end
+  end
+
+  defp thread_root_author(root_id, ctx, sender_agent_id) do
+    case ctx.thread_root.(root_id) do
+      %{agent_id: author} when is_binary(author) and author != sender_agent_id ->
+        if author in ctx.members, do: [author], else: []
+
+      _ ->
+        []
+    end
+  end
+
+  # The wake prompt names the thread's root and quotes the start of it.
+  defp thread_info(%{thread_id: nil}, _ctx), do: nil
+
+  defp thread_info(%{thread_id: root_id}, ctx) do
+    case ctx.thread_root.(root_id) do
+      %{body: body} = root ->
+        %{id: root_id, sender: sender_name(root, ctx), excerpt: body}
+
+      _ ->
+        %{id: root_id, sender: nil, excerpt: nil}
     end
   end
 

@@ -996,6 +996,176 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert Map.has_key?(:sys.get_state(ctx.pid), :waiting)
   end
 
+  describe "thread turns" do
+    test "a reply in a thread starts a turn for that thread; its lines and closing text stay there",
+         ctx do
+      expect_prompt(self())
+      sid = ctx.session.engine_session_id
+      agent_id = ctx.agent.id
+      # the owner's own post wakes nobody
+      {:ok, root} = Messages.post_agent_message(ctx.channel.id, agent_id, "Which width?")
+      root_id = root.id
+
+      {:ok, _} =
+        Runtime.post_user_message(ctx.channel.id, "what about mobile?", thread_id: root_id)
+
+      assert_receive {:prompted, ^sid, %{parts: [%{text: text}]}}, 2_000
+      assert text =~ "Thread: #{root_id}"
+      assert text =~ "canopy_thread_reply"
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_started", thread_id: ^root_id, in_channel: false}},
+                     1_000
+
+      assert_receive {:turn_thread, ^agent_id, ^root_id}, 1_000
+      assert ChannelServer.turn_threads(ctx.pid) == %{agent_id => root_id}
+      assert Runtime.turn_threads(ctx.channel.id) == %{agent_id => root_id}
+
+      assert %{channel_id: _, agent_id: ^agent_id, thread_id: ^root_id} =
+               Enum.find(Runtime.working_threads(), &(&1.thread_id == root_id))
+
+      emit(sid, :text_done, %{message_id: "m", part_id: "p1", text: "Mobile is 390px."})
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "agent_turn_completed",
+                        thread_id: ^root_id,
+                        in_channel: false,
+                        payload: %{"thread_id" => ^root_id}
+                      }},
+                     2_000
+
+      # the final text answers in the thread, as a reply that wakes nobody
+      assert_receive {:timeline,
+                      %{
+                        event_type: "message",
+                        in_channel: false,
+                        message: %{kind: "reply", body: "Mobile is 390px.", thread_id: ^root_id}
+                      }},
+                     2_000
+
+      assert_receive {:turn_thread, ^agent_id, nil}, 1_000
+      assert ChannelServer.turn_threads(ctx.pid) == %{}
+      refute_receive {:prompted, _, _}, 200
+    end
+
+    test "wakes merged from two threads make a channel turn; from one thread, a thread turn",
+         ctx do
+      expect_prompt(self(), 3)
+      sid = ctx.session.engine_session_id
+      {:ok, a} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "thread a")
+      {:ok, b} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "thread b")
+
+      # a channel turn is running; two threads' replies queue behind it and merge
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "first")
+      assert_receive {:prompted, ^sid, _}, 2_000
+      assert_receive {:timeline, %{event_type: "agent_started", thread_id: nil}}, 1_000
+
+      {:ok, in_a} = Runtime.post_user_message(ctx.channel.id, "in a", thread_id: a.id)
+      {:ok, in_b} = Runtime.post_user_message(ctx.channel.id, "in b", thread_id: b.id)
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:prompted, ^sid, %{parts: [%{text: text}]}}, 2_000
+
+      # the channel turn's prompt carries no one thread's instructions, and
+      # lists every message with where to answer it
+      refute text =~ "not canopy_message_send"
+      refute text =~ "Thread: "
+      assert text =~ "not tied to one thread"
+
+      assert text =~
+               "- #{in_a.id}, in thread #{a.id}: read it with canopy_messages_read thread=#{a.id}"
+
+      assert text =~ "- #{in_b.id}, in thread #{b.id}"
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_started", thread_id: nil, in_channel: true}},
+                     1_000
+
+      assert ChannelServer.turn_threads(ctx.pid) == %{}
+
+      # two replies in one thread keep its scope
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "a again", thread_id: a.id)
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "and again", thread_id: a.id)
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:prompted, ^sid, %{parts: [%{text: text}]}}, 2_000
+      assert text =~ "Thread: #{a.id}"
+      refute text =~ "not tied to one thread"
+      a_id = a.id
+      assert_receive {:timeline, %{event_type: "agent_started", thread_id: ^a_id}}, 1_000
+      assert ChannelServer.turn_threads(ctx.pid) == %{ctx.agent.id => a_id}
+    end
+
+    test "a thread's wake merged with the channel's makes a channel turn listing both", ctx do
+      expect_prompt(self(), 2)
+      sid = ctx.session.engine_session_id
+      {:ok, a} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "thread a")
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "first")
+      assert_receive {:prompted, ^sid, _}, 2_000
+
+      {:ok, in_a} = Runtime.post_user_message(ctx.channel.id, "in a", thread_id: a.id)
+      {:ok, plain} = Runtime.post_user_message(ctx.channel.id, "and in the channel")
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:prompted, ^sid, %{parts: [%{text: text}]}}, 2_000
+      assert text =~ "Message ID: #{plain.id}"
+      assert text =~ "post your findings with canopy_message_send"
+      assert text =~ "- #{in_a.id}, in thread #{a.id}"
+
+      assert text =~
+               "- #{plain.id}, in the channel: answer in the channel with canopy_message_send"
+    end
+
+    test "a busy agent's posts in a thread and in the channel wake as one channel turn",
+         ctx do
+      %{channel: channel, agent: owner, reviewer: reviewer, session: session} = ctx
+      test_pid = self()
+
+      stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+        send(test_pid, {:prompted, sid, body})
+        {:ok, ""}
+      end)
+
+      stub(OC, :create_session, fn _dir, _body, _opts -> {:ok, %{"id" => "ses_rev_mixed"}} end)
+
+      {:ok, root} = Messages.post_user_message(channel.id, ctx.user.id, "root")
+      sid = session.engine_session_id
+      assert_receive {:prompted, ^sid, _}, 2_000
+
+      # mid-turn, the owner mentions the reviewer in the thread, then in the channel
+      {:ok, in_thread} =
+        Messages.thread_reply(root.id, {:agent, owner.id}, "@#{reviewer.name} in the thread")
+
+      {:ok, in_channel} =
+        Messages.post_agent_message(channel.id, owner.id, "@#{reviewer.name} in the channel")
+
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:prompted, "ses_rev_mixed", %{parts: [%{text: text} | _]}}, 2_000
+      refute text =~ "not canopy_message_send"
+      assert text =~ "- #{in_thread.id}, in thread #{root.id}"
+      assert text =~ "- #{in_channel.id}, in the channel"
+    end
+
+    test "an agent error in a thread turn stays in the thread", ctx do
+      expect_prompt(self())
+      sid = ctx.session.engine_session_id
+      {:ok, root} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "root")
+      root_id = root.id
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go", thread_id: root_id)
+      assert_receive {:prompted, ^sid, _}, 2_000
+
+      emit(sid, :agent_error, %{error: %{"name" => "Boom"}})
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_error", thread_id: ^root_id, in_channel: false}},
+                     2_000
+    end
+  end
+
   test "a passed turn posts no reply and the summary says so", ctx do
     expect_prompt(self())
     sid = ctx.session.engine_session_id

@@ -33,9 +33,10 @@ defmodule Canopy.MCP.Format do
       end
 
     thread =
-      case message.thread_id do
-        nil -> ""
-        thread_id -> " (in thread #{thread_id})"
+      case message do
+        %{thread_id: nil} -> ""
+        %{thread_id: id, sent_to_channel: true} -> " (in thread #{id}, also sent to channel)"
+        %{thread_id: id} -> " (in thread #{id})"
       end
 
     "[#{message.id}] #{sender(message)} (#{relative_time(message.inserted_at)})#{thread}#{body}"

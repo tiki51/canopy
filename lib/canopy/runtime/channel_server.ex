@@ -14,6 +14,16 @@ defmodule Canopy.Runtime.ChannelServer do
   Outputs on the channel topic (`"channel:<id>"`):
     * `{:telemetry, agent_id, %Canopy.Engine.Event{}}` — ephemeral tool/text activity
     * `{:agent_status, agent_id, :idle | :queued | :busy | :awaiting_user | :error}`
+    * `{:turn_thread, agent_id, thread_id | nil}` — the thread a turn that just
+      started works for (nil: the channel), and nil again when it ends; also
+      sent on `Canopy.Threads`' topic for views that span channels
+
+  Thread-scoped turns. A wake for a message in a thread remembers the thread's
+  root; a turn started from it works for that thread: its started, finished,
+  and error lines belong to the thread (only the thread panel shows them),
+  and a final text the agent did not post itself lands in the thread. Wakes
+  merged from different threads, or from a thread and the channel, make a
+  channel turn, as before threads had a place of their own.
 
   Permission and question prompts. A turn whose engine holds a tool call open
   on a card is marked as awaiting the user (`:awaiting_user`). It still holds
@@ -185,6 +195,9 @@ defmodule Canopy.Runtime.ChannelServer do
     do: GenServer.call(server, {:pass, engine_session_id, reason})
 
   def continue(server), do: GenServer.call(server, :continue)
+
+  @doc "`%{agent_id => thread_id}` for every turn in flight that works for a thread."
+  def turn_threads(server), do: GenServer.call(server, :turn_threads)
 
   @doc "The `ref` of the session's turn in flight (by `AgentSession.id`), or nil."
   def turn_ref(server, session_id), do: GenServer.call(server, {:turn_ref, session_id}, 15_000)
@@ -431,6 +444,16 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
+
+  def handle_call(:turn_threads, _from, state) do
+    threads =
+      for {_sid, %{thread_id: thread_id} = turn} <- state.turns,
+          is_binary(thread_id),
+          into: %{},
+          do: {turn.agent_id, thread_id}
+
+    {:reply, threads, state}
+  end
 
   def handle_call({:turn_ref, session_id}, _from, state) do
     ref =
@@ -710,12 +733,17 @@ defmodule Canopy.Runtime.ChannelServer do
     Logger.warning("channel #{state.channel.name}: ending #{agent_name}'s turn #{sid}: #{reason}")
 
     {:ok, _} =
-      Timeline.record(%{
-        channel_id: state.channel.id,
-        agent_id: who.agent_id,
-        event_type: "agent_error",
-        payload: %{"reason" => reason}
-      })
+      Timeline.record(
+        Map.merge(
+          %{
+            channel_id: state.channel.id,
+            agent_id: who.agent_id,
+            event_type: "agent_error",
+            payload: %{"reason" => reason}
+          },
+          thread_scope(Map.get(turn, :thread_id))
+        )
+      )
 
     {:ok, _} =
       Messages.post_user_note(
@@ -967,12 +995,54 @@ defmodule Canopy.Runtime.ChannelServer do
           Map.put(new, :text, new.text <> Prompts.delegation_followup(Map.get(old, :message_id)))
 
         _ ->
-          Map.put(new, :text, new.text <> @merged_wake_note)
+          Map.put(new, :text, scoped_text(new, merged_thread(old, new)) <> @merged_wake_note)
       end
+
+    sources = Enum.uniq(sources(old) ++ sources(new))
+    thread_id = merged_thread(old, new)
 
     merged
     |> Map.put(:attachments, attachments)
     |> Map.put(:lock_claim_ids, Enum.uniq(lock_claim_ids(old) ++ lock_claim_ids(new)))
+    |> Map.put(:sources, sources)
+    |> Map.put(:thread_id, thread_id)
+    |> scope_merged(thread_id, sources)
+  end
+
+  # The messages a wake stands for, as `[{message_id, thread_id | nil}]`.
+  defp sources(wake), do: Map.get(wake, :sources, [])
+
+  # The text of the newest wake, without its thread's instructions when the
+  # merged wakes do not all share that thread.
+  defp scoped_text(wake, nil), do: Map.get(wake, :channel_text, wake.text)
+  defp scoped_text(wake, _thread_id), do: wake.text
+
+  # A channel turn standing for messages from more than one place (two
+  # threads, or a thread and the channel) lists each and where to answer it.
+  # Its text is channel-scoped from here on, for any later merge too.
+  defp scope_merged(wake, nil, sources) do
+    if Enum.any?(sources, fn {_id, thread_id} -> thread_id end) do
+      wake
+      |> Map.put(:text, wake.text <> Prompts.mixed_scope(sources))
+      |> Map.delete(:channel_text)
+    else
+      wake
+    end
+  end
+
+  defp scope_merged(wake, _thread_id, _sources), do: wake
+
+  # The thread a merged wake works for: the one both wakes share, or nil (the
+  # channel) when they differ. A lock grant has no scope of its own and takes
+  # the other wake's.
+  defp merged_thread(%{trigger: "lock"}, new), do: Map.get(new, :thread_id)
+  defp merged_thread(old, %{trigger: "lock"}), do: Map.get(old, :thread_id)
+
+  defp merged_thread(old, new) do
+    case {Map.get(old, :thread_id), Map.get(new, :thread_id)} do
+      {thread_id, thread_id} -> thread_id
+      _ -> nil
+    end
   end
 
   defp lock_claim_ids(wake), do: Map.get(wake, :lock_claim_ids, [])
@@ -1112,9 +1182,17 @@ defmodule Canopy.Runtime.ChannelServer do
 
     plan = Canopy.Documents.prompt_plan(documents)
 
+    threads = group |> Enum.map(fn {_, wake, _} -> Map.get(wake, :thread_id) end) |> Enum.uniq()
+    thread_id = if match?([_], threads), do: hd(threads)
+    sources = group |> Enum.flat_map(fn {_, wake, _} -> sources(wake) end) |> Enum.uniq()
+    text = scoped_text(last, thread_id)
+
     last
-    |> Map.put(:text, last.text <> Prompts.earlier_posts(earlier, plan))
+    |> Map.put(:text, text <> Prompts.earlier_posts(earlier, plan))
     |> Map.put(:attachments, plan)
+    |> Map.put(:sources, sources)
+    |> Map.put(:thread_id, thread_id)
+    |> scope_merged(thread_id, sources)
   end
 
   # The router hands back plain text, or a map with the attachments plan when
@@ -1122,9 +1200,16 @@ defmodule Canopy.Runtime.ChannelServer do
   defp wake_message(text, trigger) when is_binary(text), do: %{text: text, trigger: trigger}
   defp wake_message(%{text: _} = wake, trigger), do: Map.put(wake, :trigger, trigger)
 
-  # A message wake remembers its message, so a merge can point at it.
-  defp put_message_id(wake, %Timeline.Event{event_type: "message", message: %{id: id}}),
-    do: Map.put(wake, :message_id, id)
+  # A message wake remembers its message, so a merge can point at it, and the
+  # thread it is in (its root, nil outside a thread), so the turn works there.
+  defp put_message_id(wake, %Timeline.Event{event_type: "message", message: %{id: id} = m}) do
+    thread_id = Map.get(m, :thread_id)
+
+    wake
+    |> Map.put(:message_id, id)
+    |> Map.put(:thread_id, thread_id)
+    |> Map.put(:sources, [{id, thread_id}])
+  end
 
   defp put_message_id(wake, _event), do: wake
 
@@ -1212,7 +1297,11 @@ defmodule Canopy.Runtime.ChannelServer do
 
     case mod.send_prompt(ctx(state), es, session, agent, prompt) do
       {:ok, %{attachments: attachments}} ->
-        begin_turn(state, session, agent_id, trigger, attachments, ids, claims)
+        begin_turn(state, session, agent_id, trigger, attachments,
+          delegation_ids: ids,
+          lock_claim_ids: claims,
+          thread_id: Map.get(wake, :thread_id)
+        )
 
       {:error, reason} ->
         record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
@@ -1271,30 +1360,32 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   # The engine accepted a prompt: the session is busy until it reports done.
-  # `delegation_ids` are the delegations the wake handed over, if any, and
-  # `lock_claim_ids` the granted locks the turn now owns.
-  defp begin_turn(
-         state,
-         session,
-         agent_id,
-         trigger,
-         attachments,
-         delegation_ids \\ [],
-         lock_claim_ids \\ []
-       ) do
+  # Options: `delegation_ids`, the delegations the wake handed over;
+  # `lock_claim_ids`, the granted locks the turn now owns; `thread_id`, the
+  # thread the turn works for (nil: the channel).
+  defp begin_turn(state, session, agent_id, trigger, attachments, opts \\ []) do
+    delegation_ids = Keyword.get(opts, :delegation_ids, [])
+    lock_claim_ids = Keyword.get(opts, :lock_claim_ids, [])
+    thread_id = Keyword.get(opts, :thread_id)
     ref = Canopy.ID.generate("turn")
     :ok = Locks.stamp_turn(session.id, lock_claim_ids, ref)
     {:ok, _} = AgentSessions.set_status(session, "busy")
     broadcast(state, {:agent_status, agent_id, :busy})
+    broadcast_turn_thread(state, agent_id, thread_id)
 
     {:ok, _} =
-      Timeline.record(%{
-        channel_id: state.channel.id,
-        agent_id: agent_id,
-        event_type: "agent_started",
-        ref_id: session.id,
-        payload: %{"engine_session_id" => session.engine_session_id}
-      })
+      Timeline.record(
+        Map.merge(
+          %{
+            channel_id: state.channel.id,
+            agent_id: agent_id,
+            event_type: "agent_started",
+            ref_id: session.id,
+            payload: %{"engine_session_id" => session.engine_session_id, "thread_id" => thread_id}
+          },
+          thread_scope(thread_id)
+        )
+      )
 
     turn = %{
       # owns the lock claims taken or handed over during the turn
@@ -1321,6 +1412,8 @@ defmodule Canopy.Runtime.ChannelServer do
       steps: 0,
       tokens: %{},
       trigger: trigger,
+      # the thread the turn works for, nil for the channel
+      thread_id: thread_id,
       delegation_ids: delegation_ids,
       # documents sent along in the prompt; they stay in the session's context
       attachments: attachments
@@ -1772,14 +1865,20 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp record_agent_error(state, event, who, reason) do
     if Canopy.Hold.billing_error?(reason), do: Canopy.Hold.engage(reason)
+    thread_id = state.turns |> Map.get(event.session_id, %{}) |> Map.get(:thread_id)
 
     {:ok, _} =
-      Timeline.record(%{
-        channel_id: state.channel.id,
-        agent_id: who.agent_id,
-        event_type: "agent_error",
-        payload: %{"reason" => reason}
-      })
+      Timeline.record(
+        Map.merge(
+          %{
+            channel_id: state.channel.id,
+            agent_id: who.agent_id,
+            event_type: "agent_error",
+            payload: %{"reason" => reason}
+          },
+          thread_scope(thread_id)
+        )
+      )
 
     finish_turn(state, event.session_id, who, {:error, reason})
   end
@@ -1816,6 +1915,7 @@ defmodule Canopy.Runtime.ChannelServer do
           |> Activity.to_payload()
 
         {model, model_source} = turn_model(who.agent_id)
+        thread_id = Map.get(turn, :thread_id)
 
         {:ok, _} =
           Timeline.record(%{
@@ -1823,6 +1923,8 @@ defmodule Canopy.Runtime.ChannelServer do
             agent_id: who.agent_id,
             event_type: "agent_turn_completed",
             ref_id: session.id,
+            thread_id: thread_id,
+            in_channel: is_nil(thread_id),
             payload: %{
               "tools" => turn.tools,
               "files" => MapSet.to_list(turn.files),
@@ -1838,6 +1940,7 @@ defmodule Canopy.Runtime.ChannelServer do
               "passed" => is_binary(turn.passed),
               "note" => turn.passed,
               "trigger" => turn.trigger,
+              "thread_id" => thread_id,
               "attachments" => Map.get(turn, :attachments, 0),
               "steps" => turn.steps,
               "context" => turn.context,
@@ -1856,6 +1959,7 @@ defmodule Canopy.Runtime.ChannelServer do
         if awaiting?(turn), do: Locks.touch(state.repository.id, session.id)
 
         broadcast(state, {:agent_status, who.agent_id, status_after_turn(state, who, outcome)})
+        broadcast_turn_thread(state, who.agent_id, nil)
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
         state = if outcome == :ok, do: maybe_compact(state, session, turn, who), else: state
@@ -1954,14 +2058,21 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp final_text(_turn), do: nil
 
-  # The last text part of the turn is the agent's reply; earlier parts are narration.
-  defp maybe_post_reply(state, %{texts: [last | _]}, who) when is_binary(last) do
-    case String.trim(last) do
-      "" ->
+  # The last text part of the turn is the agent's reply; earlier parts are
+  # narration. A turn working for a thread answers in that thread.
+  defp maybe_post_reply(state, %{texts: [last | _]} = turn, who) when is_binary(last) do
+    case {String.trim(last), Map.get(turn, :thread_id)} do
+      {"", _} ->
         nil
 
-      text ->
+      {text, nil} ->
         {:ok, message} = Messages.post_agent_reply(state.channel.id, who.agent_id, text)
+        message.id
+
+      {text, thread_id} ->
+        {:ok, message} =
+          Messages.thread_reply(thread_id, {:agent, who.agent_id}, text, kind: "reply")
+
         message.id
     end
   end
@@ -2135,7 +2246,8 @@ defmodule Canopy.Runtime.ChannelServer do
       owner_agent_id: state.channel.owner_agent_id,
       user_name: Users.local().display_name,
       lookup: &Agents.get/1,
-      thread_root: &Messages.get/1
+      thread_root: &Messages.get/1,
+      thread_last_agent: &Messages.thread_last_agent/2
     }
   end
 
@@ -2303,6 +2415,15 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp broadcast(state, message),
     do: Phoenix.PubSub.broadcast(Canopy.PubSub, Timeline.topic(state.channel.id), message)
+
+  defp broadcast_turn_thread(state, agent_id, thread_id) do
+    broadcast(state, {:turn_thread, agent_id, thread_id})
+    Canopy.Threads.broadcast_turn(state.channel.id, agent_id, thread_id)
+  end
+
+  # Where a turn's lines go: only the thread for a thread turn, else the feed.
+  defp thread_scope(nil), do: %{}
+  defp thread_scope(thread_id), do: %{thread_id: thread_id, in_channel: false}
 
   defp reply_atom("once"), do: :once
   defp reply_atom("always"), do: :always

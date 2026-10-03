@@ -87,6 +87,94 @@ defmodule Canopy.MessagesTest do
            ]
   end
 
+  test "list_thread/2 returns the root and the latest replies, from any id in the thread",
+       %{channel: channel, agent: agent, user: user} do
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+
+    replies =
+      for n <- 1..12 do
+        {:ok, reply} = Messages.thread_reply(root.id, {:agent, agent.id}, "reply #{n}")
+        reply
+      end
+
+    # the newest replies survive the limit, oldest first, after the root
+    expected = [root.id | replies |> Enum.take(-5) |> Enum.map(& &1.id)]
+    assert Enum.map(Messages.list_thread(root.id, limit: 5), & &1.id) == expected
+    assert Enum.map(Messages.list_thread(hd(replies).id, limit: 5), & &1.id) == expected
+
+    assert Enum.map(Messages.list(channel.id, thread: hd(replies).id, limit: 5), & &1.id) ==
+             expected
+
+    assert Messages.list_thread("msg_missing") == []
+    other = channel_fixture(%{repository_id: channel.repository_id})
+    assert Messages.list(other.id, thread: root.id) == []
+  end
+
+  test "thread_summaries/1 counts replies and lists participants, newest first, capped",
+       %{channel: channel, agent: agent, user: user} do
+    a2 = agent_fixture()
+    a3 = agent_fixture()
+    a4 = agent_fixture()
+    {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+    {:ok, lonely} = Messages.post_agent_message(channel.id, agent.id, "no replies")
+
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, a2.id}, "one")
+    {:ok, _} = Messages.thread_reply(root.id, {:user, user.id}, "two")
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, a3.id}, "three")
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, a2.id}, "four")
+    {:ok, last} = Messages.thread_reply(root.id, {:agent, a4.id}, "five")
+
+    root_id = root.id
+    assert %{^root_id => summary} = summaries = Messages.thread_summaries([root.id, lonely.id])
+    refute Map.has_key?(summaries, lonely.id)
+    assert summary.count == 5
+    assert summary.last.id == last.id
+    assert summary.last_reply_at == last.inserted_at
+
+    # distinct senders, newest first, then the root's author; four at most
+    assert Enum.map(summary.participants, &(&1.agent_id || {:user, &1.user_id})) ==
+             [a4.id, a2.id, a3.id, {:user, user.id}]
+
+    assert hd(summary.participants).agent.name == a4.name
+    assert Messages.thread_summaries([]) == %{}
+  end
+
+  test "thread_last_agent/2 names the newest agent in a thread, before a message, among some",
+       %{channel: channel, agent: agent, user: user} do
+    other = agent_fixture()
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+    assert Messages.thread_last_agent(root.id) == nil
+
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "first")
+    {:ok, mine} = Messages.thread_reply(root.id, {:user, user.id}, "mine")
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, other.id}, "second")
+
+    assert Messages.thread_last_agent(root.id) == other.id
+    assert Messages.thread_last_agent(root.id, except: other.id) == agent.id
+    # replies after the routed message do not count
+    assert Messages.thread_last_agent(root.id, before: mine.id) == agent.id
+    assert Messages.thread_last_agent(root.id, among: [agent.id]) == agent.id
+    assert Messages.thread_last_agent(root.id, among: []) == nil
+  end
+
+  test "a thread reply stays out of the channel feed unless it is also sent to the channel",
+       %{channel: channel, agent: agent, user: user} do
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+    {:ok, quiet} = Messages.thread_reply(root.id, {:agent, agent.id}, "in the thread")
+    {:ok, loud} = Messages.thread_reply(root.id, {:agent, agent.id}, "for all", to_channel: true)
+    {:ok, closing} = Messages.thread_reply(root.id, {:agent, agent.id}, "done", kind: "reply")
+
+    refute quiet.sent_to_channel
+    assert loud.sent_to_channel
+    assert closing.kind == "reply"
+
+    assert %{thread_id: nil, in_channel: true} = Timeline.for_message(root.id)
+    assert %{thread_id: thread_id, in_channel: false} = Timeline.for_message(quiet.id)
+    assert thread_id == root.id
+    assert %{thread_id: ^thread_id, in_channel: true} = Timeline.for_message(loud.id)
+    assert %{in_channel: false} = Timeline.for_message(closing.id)
+  end
+
   test "list/2 supports limit, before, and around", %{channel: channel, user: user} do
     messages =
       for i <- 1..12 do

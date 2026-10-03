@@ -87,7 +87,29 @@ defmodule CanopyWeb.CostsLiveTest do
            )
 
     assert has_element?(view, "#turn-#{big.id}", "1m")
+    refute has_element?(view, "#turn-#{big.id}-thread")
     assert has_element?(view, "#budget-#{channel.id}", "$1.50 / $1.00")
+
+    # a turn that worked in a thread links to it
+    {:ok, root} = Canopy.Messages.post_agent_message(channel.id, agent.id, "root")
+
+    {:ok, threaded} =
+      Timeline.record(%{
+        channel_id: channel.id,
+        agent_id: agent.id,
+        event_type: "agent_turn_completed",
+        thread_id: root.id,
+        in_channel: false,
+        payload: %{"outcome" => "ok", "cost" => 2.0, "thread_id" => root.id}
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/costs")
+
+    assert has_element?(
+             view,
+             "#turn-#{threaded.id}-thread[href='/channels/#{channel.id}?thread=#{root.id}']"
+           )
+
     assert has_element?(view, "#budget-#{channel.id} .text-error")
   end
 

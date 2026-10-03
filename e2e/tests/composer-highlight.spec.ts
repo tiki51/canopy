@@ -91,13 +91,16 @@ test.describe("composer highlight", () => {
     const root = timeline(page).locator("article", { hasText: "thread root for the highlight" }).first();
     await root.hover();
     await root.locator('[id^="reply-"]').click();
-    await expect(page.locator("#composer-thread")).toBeVisible();
+    await expect(page.locator("#thread-panel")).toBeVisible();
 
+    // the thread panel's composer has its own layer, fed by the same hook
+    const threadLayer = page.locator("#thread-composer-highlight");
+    await page.locator("#thread-composer-input").fill("/i @reviewer");
+    await expect(threadLayer.locator('[data-kind="invalid"]')).toHaveText(["/i"]);
+    await expect(threadLayer.locator('[data-kind="command"]')).toHaveCount(0);
+
+    // the channel's composer is not a thread: the same command is a command there
     await page.locator("#composer-input").fill("/i @reviewer");
-    await expect(chips(page, "invalid")).toHaveText(["/i"]);
-    await expect(chips(page, "command")).toHaveCount(0);
-
-    await page.locator("#composer-thread-cancel").click();
     await expect(chips(page, "command")).toHaveText(["/i"]);
   });
 });

@@ -46,6 +46,7 @@ defmodule CanopyWeb.Router do
       live "/teams/:id/edit", TeamsLive, :edit
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
+      live "/threads", ThreadsLive
     end
 
     get "/dm/:agent_id", DmController, :show

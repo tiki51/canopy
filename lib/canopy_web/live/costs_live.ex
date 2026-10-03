@@ -153,6 +153,7 @@ defmodule CanopyWeb.CostsLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}
@@ -320,6 +321,15 @@ defmodule CanopyWeb.CostsLive do
                           class="hover:underline"
                         >
                           {t.channel}
+                        </.link>
+                        <.link
+                          :if={t.channel_id && t.thread_id}
+                          navigate={CanopyWeb.ChannelLive.thread_path(t.channel_id, t.thread_id)}
+                          id={"turn-#{t.id}-thread"}
+                          class="badge badge-xs badge-ghost ml-1 hover:badge-primary"
+                          title="The turn worked in a thread; open it"
+                        >
+                          thread
                         </.link>
                       </td>
                       <td class="whitespace-nowrap">{when_local(t.at)}</td>

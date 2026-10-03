@@ -36,6 +36,10 @@ defmodule CanopyWeb.Layouts do
   attr :agents, :list, default: [], doc: "active agents, from CanopyWeb.Nav"
   attr :unread, :map, default: %{}, doc: "channel_id => %{count, mentions}, from CanopyWeb.Nav"
 
+  attr :threads_unread, :integer,
+    default: 0,
+    doc: "followed threads with unread replies, from CanopyWeb.Nav"
+
   attr :attention, :map,
     default: %{},
     doc: "channel_id => %{questions, permissions} waiting on the user, from CanopyWeb.Nav"
@@ -106,6 +110,14 @@ defmodule CanopyWeb.Layouts do
               String.starts_with?(@current_path, "/agents") or
                 String.starts_with?(@current_path, "/teams")
             }
+          />
+          <.rail_link
+            id="rail-threads"
+            navigate={~p"/threads"}
+            icon="hero-chat-bubble-left-right"
+            title={threads_title(@threads_unread)}
+            active={@current_path == "/threads"}
+            badge={@threads_unread}
           />
           <.rail_link
             navigate={~p"/files"}
@@ -488,14 +500,17 @@ defmodule CanopyWeb.Layouts do
   @doc false
   def group_slug(group), do: group |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
 
+  attr :id, :string, default: nil
   attr :navigate, :string, required: true
   attr :icon, :string, required: true
   attr :title, :string, required: true
   attr :active, :boolean, default: false
+  attr :badge, :integer, default: 0
 
   defp rail_link(assigns) do
     ~H"""
     <.link
+      id={@id}
       navigate={@navigate}
       title={@title}
       aria-label={@title}
@@ -510,9 +525,21 @@ defmodule CanopyWeb.Layouts do
         class="absolute -left-2 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary"
       />
       <.icon name={@icon} class="size-5" />
+      <span
+        :if={@badge > 0}
+        id={@id && "#{@id}-badge"}
+        class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-content shadow-sm"
+        data-count={@badge}
+      >
+        {@badge}
+      </span>
     </.link>
     """
   end
+
+  defp threads_title(0), do: "Threads"
+  defp threads_title(1), do: "Threads · 1 with new replies"
+  defp threads_title(n), do: "Threads · #{n} with new replies"
 
   attr :status, :atom, default: :idle
 

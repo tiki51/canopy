@@ -361,15 +361,24 @@ with_keys = fn entries ->
 end
 
 # A finished agent turn: the "started working" line, then the summary line
-# with the same payload the runtime writes.
+# with the same payload the runtime writes. With `thread_id`, a turn that
+# worked for that thread: only the thread panel shows its lines.
 turn = fn channel, agent, opts ->
+  thread_id = Map.get(opts, :thread_id)
+  scope = if thread_id, do: %{thread_id: thread_id, in_channel: false}, else: %{}
+
   {:ok, _} =
-    Timeline.record(%{
-      channel_id: channel.id,
-      agent_id: agent.id,
-      event_type: "agent_started",
-      payload: %{}
-    })
+    Timeline.record(
+      Map.merge(
+        %{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_started",
+          payload: %{"thread_id" => thread_id}
+        },
+        scope
+      )
+    )
 
   steps = Map.get(opts, :steps, 2)
   context = Map.get(opts, :context, 12_000)
@@ -381,7 +390,10 @@ turn = fn channel, agent, opts ->
       channel_id: channel.id,
       agent_id: agent.id,
       event_type: "agent_turn_completed",
+      thread_id: thread_id,
+      in_channel: is_nil(thread_id),
       payload: %{
+        "thread_id" => thread_id,
         "tools" => Map.get(opts, :tools, length(activity)),
         "files" => Map.get(opts, :files, []),
         "cost" => Map.get(opts, :cost, cost_of.(agent, tokens)),
@@ -613,6 +625,49 @@ stamp.(latency.id, days_ago.(2, 11))
   })
 
 stamp.(latency.id, days_ago.(2, 11))
+
+# Priya answers in the thread; @backend's turn works for the thread, and its
+# conclusion is also sent to the channel. Priya follows the thread (she
+# replied), so that reply is unread: the summary row's dot and the Threads badge.
+{:ok, _} =
+  Messages.thread_reply(
+    latency_post.id,
+    {:user, user.id},
+    "Per-request is fine. Go ahead, @backend."
+  )
+
+stamp.(latency.id, days_ago.(2, 12))
+
+turn.(latency, backend, %{
+  trigger: "user",
+  thread_id: latency_post.id,
+  steps: 4,
+  context: 14_000,
+  files: ["src/checkout/session.ts"],
+  activity: [
+    tool.("read", "src/checkout/session.ts"),
+    file.("src/checkout/session.ts"),
+    tool.("bash", "npm test -- checkout"),
+    tool.("canopy_thread_reply", nil)
+  ]
+})
+
+{:ok, _} =
+  Messages.thread_reply(
+    latency_post.id,
+    {:agent, backend.id},
+    "Per-request cache is in (`src/checkout/session.ts:12`); p95 is back to 390ms.",
+    to_channel: true
+  )
+
+stamp.(latency.id, days_ago.(2, 12))
+
+# read up to before the thread's last replies, so they count as new
+Repo.update_all(
+  from(r in Canopy.Threads.ThreadRead, where: r.root_id == ^latency_post.id),
+  set: [last_read_at: days_ago.(2, 10)]
+)
+
 
 # -- #brand-logo: asking for feedback on an image ----------------------------------------
 

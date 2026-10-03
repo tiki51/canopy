@@ -465,6 +465,7 @@ defmodule CanopyWeb.SettingsLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}

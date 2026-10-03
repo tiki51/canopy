@@ -487,12 +487,24 @@ async function runTurn(sessionID, text, cwd) {
     return finishTurn(sessionID, messageID, part, "Replied about the load test.", 0.0004);
   }
 
+  // A wake for a message in a thread names the thread's root; the agent then
+  // answers there with canopy_thread_reply, the way the wake prompt tells it to
+  // (e2e/tests/threads.spec.ts). "tell the channel" in the message also sends
+  // the reply to the channel; "take your time" keeps the turn running for a
+  // couple of seconds, so the live card can be seen.
+  const threadRoot = text.match(/^Thread: (msg_\S+)/m)?.[1];
+  const slow = /take your time/i.test(text);
+  const post = (args) =>
+    threadRoot
+      ? mcpCall("thread_reply", { canopy_session_id: sessionID, message_id: threadRoot, also_send_to_channel: /tell the channel/i.test(text), ...args })
+      : mcpCall("message_send", { canopy_session_id: sessionID, ...args });
+
   // one read tool, pending -> running -> completed
   const callID = nextId("call");
   const toolID = nextId("prt");
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "pending", input: {} } } });
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "running", input: { filePath: "README.md" }, time: { start: Date.now() } } } });
-  await sleep(TURN_DELAY);
+  await sleep(slow ? 2500 : TURN_DELAY);
   emit("message.part.updated", { sessionID, part: { id: toolID, sessionID, messageID, type: "tool", callID, tool: "read", state: { status: "completed", input: { filePath: "README.md" }, title: "README.md", output: "# e2e repo", metadata: {}, time: { start: Date.now() - 50, end: Date.now() } } } });
 
   // Like a real agent, read the message the wake prompt points at; the prompt
@@ -568,10 +580,12 @@ async function runTurn(sessionID, text, cwd) {
       reply = "Scheduled.";
     } else if (answer) {
       const choice = answer.flat().join(", ");
-      await mcpCall("message_send", { canopy_session_id: sessionID, text: choice ? `Going with **${choice}**.` : "Skipped the question; keeping the current key." });
+      await post({ text: choice ? `Going with **${choice}**.` : "Skipped the question; keeping the current key." });
       reply = "Answered.";
+    } else if (threadRoot) {
+      await post({ text: "Answering in the thread: per-request caching is the safe option." });
     } else {
-      await mcpCall("message_send", { canopy_session_id: sessionID, text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
+      await post({ text: "Acknowledged: looking into it now.\n\n1. Read `README.md`\n2. Check the queue\n\n```python\nqueue.add(invoice_id)\n```" });
     }
   }
 

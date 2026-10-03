@@ -3,6 +3,12 @@ defmodule CanopyWeb.ChannelLive do
   The main screen: one channel's header, feed, live agent telemetry, permission
   cards, pending handoffs, task form, the repository's locks, and the composer.
 
+  A thread opens in the side panel beside the feed (`?thread=<message id>`,
+  with `&reply=<id>` to point at one reply): its own stream, its own composer,
+  and the live card and cards of an agent working for it. The feed shows only
+  a thread's root and its summary row. The side panel is one slot shared by
+  every panel kind; only one is open at a time.
+
   The process subscribes to the channel topic *before* loading the feed so no
   event can slip between the query and the subscription. Live navigation between
   channels reuses this process, so all per-channel state is (re)built in
@@ -28,6 +34,7 @@ defmodule CanopyWeb.ChannelLive do
     Schedules,
     Tasks,
     Teams,
+    Threads,
     Timeline,
     Unread,
     Users
@@ -39,6 +46,7 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Tasks.Task
 
   @page_size 100
+  @thread_page 200
   @archived_answer "This channel is archived. Unarchive (Reopen) the channel to answer."
   @branch_interval 15_000
 
@@ -58,17 +66,25 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:compact?, true)
      |> assign(:branch_timer, nil)
      |> assign(:picked, [])
-     |> assign(:replying_to, nil)
-     |> assign(:open_threads, MapSet.new())
+     |> assign(:thread_picked, [])
      |> assign(:library, nil)
+     |> assign(:thread, nil)
      |> allow_upload(:files,
        accept: :any,
        max_entries: Messages.max_attachments(),
        max_file_size: Documents.max_bytes(),
        auto_upload: true
      )
+     |> allow_upload(:thread_files,
+       accept: :any,
+       max_entries: Messages.max_attachments(),
+       max_file_size: Documents.max_bytes(),
+       auto_upload: true
+     )
      |> stream_configure(:timeline, dom_id: &"evt-#{&1.id}")
-     |> stream(:timeline, [])}
+     |> stream_configure(:thread, dom_id: &"thread-evt-#{&1.id}")
+     |> stream(:timeline, [])
+     |> stream(:thread, [])}
   end
 
   @impl true
@@ -79,7 +95,7 @@ defmodule CanopyWeb.ChannelLive do
         _ -> load_channel(socket, id)
       end
 
-    {:noreply, attach_from_params(socket, params)}
+    {:noreply, socket |> attach_from_params(params) |> thread_from_params(params)}
   end
 
   # `/channels/:id?attach=doc_…` arrives from the Files page's "Share to":
@@ -93,12 +109,99 @@ defmodule CanopyWeb.ChannelLive do
 
   defp attach_from_params(socket, _params), do: socket
 
-  defp pick(socket, document) do
-    picked = socket.assigns.picked
+  # `?thread=msg_…` opens that thread in the side panel; any message of the
+  # thread will do, and the root is loaded from the database, so a thread
+  # older than the loaded feed opens too. `&reply=msg_…` points at one reply.
+  # Without the param the panel is closed.
+  defp thread_from_params(socket, %{"thread" => id} = params) do
+    case Messages.thread_root(id) do
+      %{channel_id: channel_id} = root when channel_id == socket.assigns.channel.id ->
+        open_thread(socket, root, target_from(params["reply"] || id, root))
+
+      _ ->
+        socket
+        |> close_thread()
+        |> put_flash(:error, "That thread is not in this channel.")
+    end
+  end
+
+  defp thread_from_params(socket, _params), do: close_thread(socket)
+
+  # A link to a reply (`&reply=`, or `?thread=` naming a reply) marks that
+  # reply, when it is in the thread.
+  defp target_from(id, %{id: id}), do: nil
+
+  defp target_from(id, %{id: root_id}) do
+    case Messages.get(id) do
+      %{thread_id: ^root_id} -> id
+      _ -> nil
+    end
+  end
+
+  # Another thread starts with an empty composer: the draft (cleared by the
+  # Composer hook when the form's data-scope changes), the picked files, and
+  # the uploads in flight belong to the thread they were meant for. The same
+  # thread again (a link to one of its replies) keeps them.
+  defp open_thread(socket, root, target) do
+    previous = open_root(socket.assigns)
+    user = socket.assigns.user
+    :ok = Threads.mark_read(root.id, user)
+    events = Timeline.list_thread(root.id, limit: @thread_page)
+
+    socket
+    |> assign(:thread, %{
+      root: root,
+      following?: Threads.following?(root.id, user),
+      count: reply_count(root.id),
+      target: target,
+      # the messages the panel has rendered: only those are re-rendered in place
+      loaded: message_ids(events)
+    })
+    |> stream(:thread, events, reset: true)
+    |> then(fn socket ->
+      if previous == root.id,
+        do: socket,
+        else:
+          socket
+          |> reset_thread_composer()
+          |> push_event("composer:focus", %{id: "thread-composer-input"})
+    end)
+    |> refresh_thread_unread()
+    |> refresh_roots([previous, root.id])
+  end
+
+  defp reset_thread_composer(socket) do
+    socket.assigns.uploads.thread_files.entries
+    |> Enum.reduce(socket, &cancel_upload(&2, :thread_files, &1.ref))
+    |> assign(:thread_picked, [])
+    |> assign_thread_composer("")
+  end
+
+  defp close_thread(%{assigns: %{thread: nil}} = socket), do: socket
+
+  defp close_thread(socket) do
+    previous = open_root(socket.assigns)
+
+    socket
+    |> assign(:thread, nil)
+    |> reset_thread_composer()
+    |> stream(:thread, [], reset: true)
+    |> refresh_roots([previous])
+  end
+
+  defp open_root(%{thread: %{root: %{id: id}}}), do: id
+  defp open_root(_assigns), do: nil
+
+  defp reply_count(root_id),
+    do: get_in(Messages.thread_summaries([root_id]), [root_id, :count]) || 0
+
+  defp pick(socket, document, target \\ "main") do
+    key = picked_key(target)
+    picked = Map.fetch!(socket.assigns, key)
 
     if Enum.any?(picked, &(&1.id == document.id)),
       do: socket,
-      else: assign(socket, :picked, picked ++ [document])
+      else: assign(socket, key, picked ++ [document])
   end
 
   defp load_channel(socket, id) do
@@ -114,8 +217,7 @@ defmodule CanopyWeb.ChannelLive do
     user = Users.local()
     Unread.mark_read(id, user)
     names = Map.new(Agents.list(), &{&1.id, &1.name})
-    events = Timeline.list(id, limit: @page_size)
-    {items, threads, message_ids} = split_threads(events)
+    events = Timeline.list(id, limit: @page_size, scope: :channel)
     statuses = Runtime.status(id)
 
     agent_statuses =
@@ -139,8 +241,13 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:paused?, Runtime.paused?(id))
     |> assign(:stopped?, Runtime.stopped?(id))
     |> assign(:telemetry, telemetry)
-    |> assign(:threads, threads)
-    |> assign(:message_ids, message_ids)
+    |> assign(:turn_threads, Runtime.turn_threads(id))
+    |> assign(:message_ids, message_ids(events))
+    |> assign(:summaries, Messages.thread_summaries(root_ids(events)))
+    |> assign(:thread_unread, thread_unread(Map.put(socket.assigns, :user, user)))
+    |> assign(:thread, nil)
+    |> assign(:thread_picked, [])
+    |> stream(:thread, [], reset: true)
     |> assign(:oldest_event_id, events |> List.first() |> then(&(&1 && &1.id)))
     |> assign(:has_earlier?, length(events) >= @page_size)
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
@@ -162,7 +269,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign_task(Tasks.for_channel(id))
     |> assign_composer("")
     |> assign_branch()
-    |> stream(:timeline, items, reset: true)
+    |> stream(:timeline, events, reset: true)
     |> schedule_branch_refresh()
   end
 
@@ -204,28 +311,54 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
-  # Thread replies are nested under their root instead of listed inline. Replies
-  # whose root is outside the loaded window stay inline, marked "in a thread".
-  defp split_threads(events) do
-    {items, threads, ids} =
-      Enum.reduce(events, {[], %{}, MapSet.new()}, fn event, {items, threads, ids} ->
-        case event do
-          %{event_type: "message", message: %{thread_id: root} = message} when is_binary(root) ->
-            if MapSet.member?(ids, root) do
-              {items, Map.update(threads, root, [message], &(&1 ++ [message])), ids}
-            else
-              {[event | items], threads, ids}
-            end
+  # The feed holds a thread's root and, when one was also sent to the
+  # channel, a reply; never the rest of the thread.
+  defp message_ids(events) do
+    for %{event_type: "message", message: %{id: id}} <- events, into: MapSet.new(), do: id
+  end
 
-          %{event_type: "message", message: %{id: message_id}} ->
-            {[event | items], threads, MapSet.put(ids, message_id)}
+  defp root_ids(events) do
+    for %{event_type: "message", message: %{id: id, thread_id: nil}} <- events, do: id
+  end
 
-          _ ->
-            {[event | items], threads, ids}
-        end
-      end)
+  # The followed threads with unread replies, from the map CanopyWeb.Nav keeps
+  # current (`Nav.refresh_unread/1`), so the dots cost no query of their own.
+  defp thread_unread(assigns) do
+    case Map.get(assigns, :thread_unread_summary) do
+      %{} = summary -> summary |> Map.keys() |> MapSet.new()
+      nil -> assigns.user |> Unread.thread_summary() |> Map.keys() |> MapSet.new()
+    end
+  end
 
-    {Enum.reverse(items), threads, ids}
+  # Stream items are rendered once, when they are inserted: an assign the item
+  # depends on (a summary, the open thread, a working agent, an unread dot)
+  # does not re-render it. Re-insert the roots that changed, if loaded; a root
+  # outside the loaded feed would otherwise be appended to it.
+  defp refresh_roots(socket, root_ids) do
+    root_ids
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.filter(&MapSet.member?(socket.assigns.message_ids, &1))
+    |> Enum.reduce(socket, fn root_id, socket ->
+      case Timeline.for_message(root_id) do
+        nil -> socket
+        event -> stream_insert(socket, :timeline, event)
+      end
+    end)
+  end
+
+  # The read state changed here: the rail's badge, then the dots, follow.
+  defp refresh_thread_unread(socket), do: socket |> Nav.refresh_unread() |> apply_thread_unread()
+
+  # The unread dots follow Nav's current map; the roots whose dot changed
+  # re-render.
+  defp apply_thread_unread(socket) do
+    unread = thread_unread(socket.assigns)
+    changed = MapSet.symmetric_difference(unread, socket.assigns.thread_unread)
+
+    socket
+    |> assign(:thread_unread, unread)
+    |> refresh_roots(MapSet.to_list(changed))
   end
 
   defp assign_task(socket, task) do
@@ -237,27 +370,25 @@ defmodule CanopyWeb.ChannelLive do
     assign(socket, :composer, to_form(%{"body" => body}, as: :message, id: "composer-form"))
   end
 
-  defp load_library(socket, q) do
-    picked = Enum.map(socket.assigns.picked, & &1.id)
+  defp assign_thread_composer(socket, body) do
+    assign(
+      socket,
+      :thread_composer,
+      to_form(%{"body" => body}, as: :message, id: "thread-composer-form")
+    )
+  end
+
+  # The library picks into the composer it was opened from: the channel's
+  # ("main") or the thread panel's ("thread").
+  defp load_library(socket, q, target \\ nil) do
+    target = target || (socket.assigns.library && socket.assigns.library.target) || "main"
+    picked = socket.assigns |> Map.fetch!(picked_key(target)) |> Enum.map(& &1.id)
     documents = Documents.list(search: q, limit: 30) |> Enum.reject(&(&1.id in picked))
-    assign(socket, :library, %{q: q, documents: documents})
+    assign(socket, :library, %{q: q, documents: documents, target: target})
   end
 
-  # A deleted document on a thread reply: swap the reply in the threads map.
-  defp refresh_thread_reply(socket, message_id) do
-    case Messages.get(message_id) do
-      %{thread_id: root} = reply when is_binary(root) ->
-        threads =
-          Map.update(socket.assigns.threads, root, [reply], fn replies ->
-            Enum.map(replies, &if(&1.id == reply.id, do: reply, else: &1))
-          end)
-
-        assign(socket, :threads, threads)
-
-      _ ->
-        socket
-    end
-  end
+  defp picked_key("thread"), do: :thread_picked
+  defp picked_key(_main), do: :picked
 
   # A mention of an agent that is not in the channel wakes nobody; say so and
   # point at /i, instead of leaving the user waiting. When the outsiders all
@@ -316,8 +447,8 @@ defmodule CanopyWeb.ChannelLive do
   # Turns every finished upload into a document and returns the ids, in the
   # order the files were added. Entries that fail to store are skipped and
   # reported as a flash by the caller.
-  defp store_uploads(socket) do
-    consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
+  defp store_uploads(socket, upload) do
+    consume_uploaded_entries(socket, upload, fn %{path: path}, entry ->
       result =
         Documents.create(%{
           filename: entry.client_name,
@@ -359,7 +490,46 @@ defmodule CanopyWeb.ChannelLive do
   def handle_info({:timeline, %Timeline.Event{channel_id: cid} = event}, socket)
       when cid == socket.assigns.channel.id do
     if event.event_type == "message", do: Unread.mark_read(cid, socket.assigns.user)
-    {:noreply, socket |> insert_event(event) |> react_to(event)}
+    {:noreply, socket |> insert_event(event) |> thread_event(event) |> react_to(event)}
+  end
+
+  # A reply arrived: CanopyWeb.Nav has refreshed the unread map by now (its
+  # copy of the event was already queued), so the dots follow without a query.
+  def handle_info(:thread_dots, socket), do: {:noreply, apply_thread_unread(socket)}
+
+  # A thread read, followed, or unfollowed elsewhere (Nav refreshed the map):
+  # the dots and the open panel's bell follow.
+  def handle_info({:thread_reads, root_id}, socket) do
+    socket =
+      case socket.assigns.thread do
+        %{root: %{id: ^root_id}} = thread ->
+          assign(socket, :thread, %{
+            thread
+            | following?: Threads.following?(root_id, socket.assigns.user)
+          })
+
+        _ ->
+          socket
+      end
+
+    {:noreply, apply_thread_unread(socket)}
+  end
+
+  # A turn started working for a thread (or for the channel), or ended: the
+  # live card moves between the feed and the panel, and the summary rows of
+  # the threads it leaves and enters re-render.
+  def handle_info({:turn_thread, agent_id, thread_id}, socket) do
+    previous = Map.get(socket.assigns.turn_threads, agent_id)
+
+    turn_threads =
+      if thread_id,
+        do: Map.put(socket.assigns.turn_threads, agent_id, thread_id),
+        else: Map.delete(socket.assigns.turn_threads, agent_id)
+
+    {:noreply,
+     socket
+     |> assign(:turn_threads, turn_threads)
+     |> refresh_roots([previous, thread_id])}
   end
 
   # Activity means the agent is working, unless it is blocked on a card: only
@@ -396,6 +566,7 @@ defmodule CanopyWeb.ChannelLive do
     socket =
       socket
       |> assign(:picked, Enum.reject(socket.assigns.picked, &(&1.id == id)))
+      |> assign(:thread_picked, Enum.reject(socket.assigns.thread_picked, &(&1.id == id)))
       |> then(fn socket ->
         if socket.assigns.library,
           do: load_library(socket, socket.assigns.library.q),
@@ -404,13 +575,19 @@ defmodule CanopyWeb.ChannelLive do
 
     socket =
       Enum.reduce(message_ids, socket, fn message_id, socket ->
-        if MapSet.member?(socket.assigns.message_ids, message_id) do
-          case Timeline.for_message(message_id) do
-            nil -> socket
-            event -> stream_insert(socket, :timeline, event)
-          end
-        else
-          refresh_thread_reply(socket, message_id)
+        case Timeline.for_message(message_id) do
+          nil ->
+            socket
+
+          event ->
+            socket =
+              if MapSet.member?(socket.assigns.message_ids, message_id),
+                do: stream_insert(socket, :timeline, event),
+                else: socket
+
+            if loaded_in_panel?(socket, message_id),
+              do: stream_insert(socket, :thread, event),
+              else: socket
         end
       end)
 
@@ -454,23 +631,8 @@ defmodule CanopyWeb.ChannelLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
-  defp insert_event(
-         socket,
-         %{event_type: "message", message: %{thread_id: root} = message} = event
-       )
-       when is_binary(root) do
-    if MapSet.member?(socket.assigns.message_ids, root) do
-      threads = Map.update(socket.assigns.threads, root, [message], &(&1 ++ [message]))
-      socket = assign(socket, :threads, threads)
-
-      case Timeline.for_message(root) do
-        nil -> stream_insert(socket, :timeline, event)
-        parent -> stream_insert(socket, :timeline, parent)
-      end
-    else
-      stream_insert(socket, :timeline, event)
-    end
-  end
+  # Only the thread shows what stays in it.
+  defp insert_event(socket, %{in_channel: false}), do: socket
 
   defp insert_event(socket, %{event_type: "message", message: %{id: message_id}} = event) do
     socket
@@ -479,6 +641,83 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   defp insert_event(socket, event), do: stream_insert(socket, :timeline, event)
+
+  # What a thread's event changes. A reply updates its root's summary row
+  # (one summary, for that root), joins the open panel and is read there, and
+  # the unread dots follow once Nav has refreshed its map. A turn line only
+  # joins the open panel.
+  defp thread_event(socket, %{thread_id: nil}), do: socket
+
+  defp thread_event(socket, %{event_type: "message", thread_id: root_id} = event) do
+    summary = Map.get(Messages.thread_summaries([root_id]), root_id)
+
+    socket =
+      if summary,
+        do: assign(socket, :summaries, Map.put(socket.assigns.summaries, root_id, summary)),
+        else: socket
+
+    socket =
+      if in_open_thread?(socket, event),
+        do: socket |> insert_in_panel(event) |> panel_reply(summary),
+        else: socket
+
+    send(self(), :thread_dots)
+    reinsert_root(socket, root_id)
+  end
+
+  defp thread_event(socket, event) do
+    if in_open_thread?(socket, event), do: insert_in_panel(socket, event), else: socket
+  end
+
+  defp in_open_thread?(socket, event) do
+    root_id = open_root(socket.assigns)
+    not is_nil(root_id) and (event.thread_id == root_id or event.ref_id == root_id)
+  end
+
+  defp insert_in_panel(socket, %{event_type: "message", ref_id: id} = event) do
+    %{thread: thread} = socket.assigns
+
+    socket
+    |> assign(:thread, %{thread | loaded: MapSet.put(thread.loaded, id)})
+    |> stream_insert(:thread, event)
+  end
+
+  defp insert_in_panel(socket, event), do: stream_insert(socket, :thread, event)
+
+  defp loaded_in_panel?(%{assigns: %{thread: %{loaded: loaded}}}, message_id),
+    do: MapSet.member?(loaded, message_id)
+
+  defp loaded_in_panel?(_socket, _message_id), do: false
+
+  # A reply in the open thread is read as it arrives; the count under the root
+  # follows, and so does the bell (the reply may have made the user follow).
+  defp panel_reply(socket, summary) do
+    %{root: root} = thread = socket.assigns.thread
+    :ok = Threads.mark_read(root.id, socket.assigns.user)
+
+    assign(socket, :thread, %{
+      thread
+      | count: (summary && summary.count) || thread.count,
+        following?: Threads.following?(root.id, socket.assigns.user)
+    })
+  end
+
+  # The root's row, where it is shown: its summary row in the feed, the reply
+  # count under it in the panel. One read of its event serves both.
+  defp reinsert_root(socket, root_id) do
+    in_feed? = MapSet.member?(socket.assigns.message_ids, root_id)
+    in_panel? = open_root(socket.assigns) == root_id
+
+    case (in_feed? or in_panel?) && Timeline.for_message(root_id) do
+      %Timeline.Event{} = event ->
+        socket
+        |> then(&if(in_feed?, do: stream_insert(&1, :timeline, event), else: &1))
+        |> then(&if(in_panel?, do: stream_insert(&1, :thread, event), else: &1))
+
+      _ ->
+        socket
+    end
+  end
 
   defp react_to(socket, %{event_type: type}) when type in ~w(owner_changed handoff_accepted) do
     socket
@@ -653,23 +892,60 @@ defmodule CanopyWeb.ChannelLive do
 
   defp cid(socket), do: socket.assigns.channel.id
 
-  # Stream items are rendered once, when they are inserted: an assign the item
-  # depends on does not re-render it. Re-insert the thread's root so it picks up
-  # the new disclosure state.
-  defp refresh_thread_root(socket, root_id) do
-    case Timeline.for_message(root_id) do
-      nil -> socket
-      event -> stream_insert(socket, :timeline, event)
+  # One send path for both composers: `:main` (the channel's) and `:thread`
+  # (the thread panel's), each with its own uploads and picked files. On a
+  # failed send the text stays in the composer and the stored files go.
+  defp submit(socket, body, composer, opts) do
+    {upload, picked_key, input} =
+      case composer do
+        :main -> {:files, :picked, "composer-input"}
+        :thread -> {:thread_files, :thread_picked, "thread-composer-input"}
+      end
+
+    text = String.trim(body)
+    entries = socket.assigns.uploads[upload].entries
+    picked = socket.assigns |> Map.fetch!(picked_key) |> Enum.map(& &1.id)
+
+    cond do
+      text == "" and entries == [] and picked == [] ->
+        {:noreply, socket}
+
+      Enum.any?(entries, &(not &1.done?)) ->
+        {:noreply,
+         put_flash(socket, :error, "A file is still uploading, or failed; wait or remove it.")}
+
+      true ->
+        documents = store_uploads(socket, upload)
+
+        case Runtime.post_user_message(
+               cid(socket),
+               text,
+               [attachments: documents ++ picked] ++ opts
+             ) do
+          {:ok, result} ->
+            {:noreply,
+             socket
+             |> reset_composer(composer)
+             |> assign(picked_key, [])
+             |> outsider_hint(result)
+             |> push_event("composer:clear", %{id: input})}
+
+          {:error, reason} ->
+            # the files were stored for a message that never happened
+            documents
+            |> Enum.map(&Documents.get/1)
+            |> Enum.reject(&is_nil/1)
+            |> Enum.each(&Documents.delete/1)
+
+            {:noreply,
+             socket |> reset_composer(composer, body) |> put_flash(:error, to_string(reason))}
+        end
     end
   end
 
-  defp thread_opt(%{assigns: %{replying_to: %{id: id}}}), do: [thread_id: id]
-  defp thread_opt(_socket), do: []
-
-  defp sender_label(%{agent_id: id}, socket) when is_binary(id),
-    do: "@" <> Map.get(socket.assigns.names, id, "agent")
-
-  defp sender_label(_message, socket), do: socket.assigns.user.display_name
+  defp reset_composer(socket, composer, body \\ "")
+  defp reset_composer(socket, :main, body), do: assign_composer(socket, body)
+  defp reset_composer(socket, :thread, body), do: assign_thread_composer(socket, body)
 
   @excerpt_chars 80
 
@@ -685,80 +961,23 @@ defmodule CanopyWeb.ChannelLive do
   # -- Events ------------------------------------------------------------------
 
   @impl true
-  # Threads are rooted at a top-level message: replying to a reply joins the
-  # thread it is already in rather than nesting a second level.
-  def handle_event("reply_in_thread", %{"id" => id}, socket) do
-    case Messages.get(id) do
+  def handle_event("send", %{"message" => %{"body" => body}}, socket) do
+    submit(socket, body, :main, [])
+  end
+
+  # The thread panel's composer: the reply lands in the open thread, and the
+  # composer stays there for the next one. "Also send to channel" shows it in
+  # the feed too.
+  def handle_event("send_thread", %{"message" => %{"body" => body}} = params, socket) do
+    case socket.assigns.thread do
       nil ->
         {:noreply, socket}
 
-      message ->
-        root_id = message.thread_id || message.id
-
-        target = %{
-          id: root_id,
-          sender: sender_label(message, socket),
-          excerpt: excerpt(message),
-          replies: length(Map.get(socket.assigns.threads, root_id, []))
-        }
-
-        {:noreply,
-         socket
-         |> assign(:replying_to, target)
-         |> assign(:open_threads, MapSet.put(socket.assigns.open_threads, root_id))
-         |> refresh_thread_root(root_id)
-         |> push_event("composer:focus", %{})}
-    end
-  end
-
-  def handle_event("cancel_reply", _params, socket),
-    do: {:noreply, assign(socket, :replying_to, nil)}
-
-  def handle_event("toggle_thread", %{"id" => id}, socket) do
-    open = socket.assigns.open_threads
-    open = if MapSet.member?(open, id), do: MapSet.delete(open, id), else: MapSet.put(open, id)
-
-    {:noreply, socket |> assign(:open_threads, open) |> refresh_thread_root(id)}
-  end
-
-  def handle_event("send", %{"message" => %{"body" => body}}, socket) do
-    text = String.trim(body)
-    entries = socket.assigns.uploads.files.entries
-
-    picked = Enum.map(socket.assigns.picked, & &1.id)
-
-    cond do
-      text == "" and entries == [] and picked == [] ->
-        {:noreply, socket}
-
-      Enum.any?(entries, &(not &1.done?)) ->
-        {:noreply,
-         put_flash(socket, :error, "A file is still uploading, or failed; wait or remove it.")}
-
-      true ->
-        documents = store_uploads(socket)
-
-        opts = [attachments: documents ++ picked] ++ thread_opt(socket)
-
-        case Runtime.post_user_message(cid(socket), text, opts) do
-          {:ok, result} ->
-            {:noreply,
-             socket
-             |> assign_composer("")
-             |> assign(:picked, [])
-             |> assign(:replying_to, nil)
-             |> outsider_hint(result)
-             |> push_event("composer:clear", %{})}
-
-          {:error, reason} ->
-            # the files were stored for a message that never happened
-            documents
-            |> Enum.map(&Documents.get/1)
-            |> Enum.reject(&is_nil/1)
-            |> Enum.each(&Documents.delete/1)
-
-            {:noreply, socket |> assign_composer(body) |> put_flash(:error, to_string(reason))}
-        end
+      %{root: root} ->
+        submit(socket, body, :thread,
+          thread_id: root.id,
+          to_channel: params["also_send"] == "true"
+        )
     end
   end
 
@@ -766,14 +985,36 @@ defmodule CanopyWeb.ChannelLive do
   # round-trips, so there is nothing to validate.
   def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
 
-  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
-    {:noreply, cancel_upload(socket, :files, ref)}
+  def handle_event("cancel_upload", %{"ref" => ref} = params, socket) do
+    upload = if params["upload"] == "thread_files", do: :thread_files, else: :files
+    {:noreply, cancel_upload(socket, upload, ref)}
+  end
+
+  # Esc in the side panel (see the SidePanel hook) closes it.
+  def handle_event("close_panel", _params, socket),
+    do: {:noreply, push_patch(socket, to: ~p"/channels/#{cid(socket)}")}
+
+  def handle_event("toggle_follow", _params, socket) do
+    case socket.assigns.thread do
+      nil ->
+        {:noreply, socket}
+
+      %{root: root} = thread ->
+        # from what is stored, not what the panel last showed
+        following? = not Threads.following?(root.id, socket.assigns.user)
+        :ok = Threads.follow(root.id, socket.assigns.user, following?)
+
+        {:noreply,
+         socket
+         |> assign(:thread, %{thread | following?: following?})
+         |> refresh_thread_unread()}
+    end
   end
 
   # -- Attach from the library --------------------------------------------------
 
-  def handle_event("open_library", _params, socket),
-    do: {:noreply, load_library(socket, "")}
+  def handle_event("open_library", params, socket),
+    do: {:noreply, load_library(socket, "", params["target"] || "main")}
 
   def handle_event("close_library", _params, socket),
     do: {:noreply, assign(socket, :library, nil)}
@@ -782,14 +1023,17 @@ defmodule CanopyWeb.ChannelLive do
     do: {:noreply, load_library(socket, q)}
 
   def handle_event("pick_document", %{"id" => id}, socket) do
+    target = (socket.assigns.library && socket.assigns.library.target) || "main"
+
     case Documents.get(id) do
       nil -> {:noreply, socket}
-      document -> {:noreply, socket |> pick(document) |> assign(:library, nil)}
+      document -> {:noreply, socket |> pick(document, target) |> assign(:library, nil)}
     end
   end
 
-  def handle_event("unpick_document", %{"id" => id}, socket) do
-    {:noreply, assign(socket, :picked, Enum.reject(socket.assigns.picked, &(&1.id == id)))}
+  def handle_event("unpick_document", %{"id" => id} = params, socket) do
+    key = picked_key(params["target"])
+    {:noreply, assign(socket, key, Enum.reject(Map.fetch!(socket.assigns, key), &(&1.id == id)))}
   end
 
   def handle_event("abort", %{"agent-id" => agent_id}, socket) do
@@ -1203,19 +1447,26 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   def handle_event("load_earlier", _params, socket) do
-    older = Timeline.list(cid(socket), limit: @page_size, before: socket.assigns.oldest_event_id)
-    {items, threads, ids} = split_threads(older)
+    older =
+      Timeline.list(cid(socket),
+        limit: @page_size,
+        before: socket.assigns.oldest_event_id,
+        scope: :channel
+      )
 
     {:noreply,
      socket
-     |> assign(:threads, Map.merge(socket.assigns.threads, threads))
-     |> assign(:message_ids, MapSet.union(socket.assigns.message_ids, ids))
+     |> assign(
+       :summaries,
+       Map.merge(socket.assigns.summaries, Messages.thread_summaries(root_ids(older)))
+     )
+     |> assign(:message_ids, MapSet.union(socket.assigns.message_ids, message_ids(older)))
      |> assign(
        :oldest_event_id,
        older |> List.first() |> then(&(&1 && &1.id)) || socket.assigns.oldest_event_id
      )
      |> assign(:has_earlier?, length(older) >= @page_size)
-     |> stream(:timeline, Enum.reverse(items), at: 0)}
+     |> stream(:timeline, Enum.reverse(older), at: 0)}
   end
 
   # `git status --porcelain`: two status columns, a space, then the path.
@@ -1237,6 +1488,7 @@ defmodule CanopyWeb.ChannelLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}
@@ -1245,156 +1497,217 @@ defmodule CanopyWeb.ChannelLive do
       current_repository_id={@current_repository_id}
       agent_statuses={@agent_statuses}
     >
-      <.channel_header
-        channel={@channel}
-        task={@task}
-        branch={@branch}
-        members={@members}
-        agent_statuses={@agent_statuses}
-        editing_task?={@editing_task?}
-        editing_members?={@editing_members?}
-        editing_schedules?={@editing_schedules?}
-        schedule_count={Enum.count(@schedules, &(&1.status == "active"))}
-        compact?={@compact?}
-        repositories={@repositories}
-        editing_budget?={@editing_budget?}
-        spent={@spent}
-        locks={@locks}
-        editing_locks?={@editing_locks?}
-        now={@now}
-      />
+      <div id="channel-layout" class="flex min-h-0 flex-1 overflow-hidden">
+        <%!-- A container, so the header drops its button labels when the side
+           panel narrows the column, not only on a narrow window. --%>
+        <div id="channel-main" class="@container/main flex min-w-0 flex-1 flex-col overflow-hidden">
+          <.channel_header
+            channel={@channel}
+            task={@task}
+            branch={@branch}
+            members={@members}
+            agent_statuses={@agent_statuses}
+            editing_task?={@editing_task?}
+            editing_members?={@editing_members?}
+            editing_schedules?={@editing_schedules?}
+            schedule_count={Enum.count(@schedules, &(&1.status == "active"))}
+            compact?={@compact?}
+            repositories={@repositories}
+            editing_budget?={@editing_budget?}
+            spent={@spent}
+            locks={@locks}
+            editing_locks?={@editing_locks?}
+            now={@now}
+          />
 
-      <.locks_panel
-        :if={@editing_locks?}
-        locks={@locks}
-        channel={@channel}
-        now={@now}
-        form={@lock_form}
-        user_name={@user.display_name}
-      />
+          <.locks_panel
+            :if={@editing_locks?}
+            locks={@locks}
+            channel={@channel}
+            now={@now}
+            form={@lock_form}
+            user_name={@user.display_name}
+          />
 
-      <.budget_panel :if={@editing_budget?} channel={@channel} spent={@spent} />
+          <.budget_panel :if={@editing_budget?} channel={@channel} spent={@spent} />
 
-      <.handoff_banner
-        :for={handoff <- @pending_handoffs}
-        handoff={handoff}
-        names={@names}
-        user_name={@user.display_name}
-      />
-
-      <.task_panel :if={@editing_task? and @task_form} form={@task_form} />
-
-      <section
-        :if={@editing_schedules?}
-        id="schedules-panel"
-        class="border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
-      >
-        <div class="mb-1 flex items-center gap-2">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
-            Scheduled
-          </span>
-          <span class="text-xs text-base-content/60">
-            Ask an agent to set a reminder or a repeat.
-          </span>
-        </div>
-        <.schedule_list id="channel-schedules" schedules={@schedules} scope={:channel} />
-      </section>
-
-      <.members_panel
-        :if={@editing_members?}
-        channel={@channel}
-        members={@members}
-        addable={@addable_agents}
-        addable_teams={@addable_teams}
-        agent_statuses={@agent_statuses}
-      />
-
-      <div
-        id="timeline-scroll"
-        class="flex-1 overflow-y-auto scroll-smooth"
-        phx-hook="TimelineScroll"
-      >
-        <div :if={@has_earlier?} class="flex justify-center py-2">
-          <button
-            type="button"
-            id="load-earlier"
-            class="btn btn-xs btn-ghost text-base-content/60"
-            phx-click="load_earlier"
-          >
-            Load earlier
-          </button>
-        </div>
-
-        <div
-          id="timeline"
-          phx-update="stream"
-          class={["flex flex-col py-2", @compact? && "timeline-compact"]}
-        >
-          <div
-            id="timeline-empty"
-            class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/60"
-          >
-            <.icon name="hero-chat-bubble-oval-left-ellipsis" class="size-8 opacity-40" />
-            Nothing here yet. Say something to wake the owner, or mention an agent.
-          </div>
-          <.timeline_item
-            :for={{id, event} <- @streams.timeline}
-            id={id}
-            event={event}
+          <.handoff_banner
+            :for={handoff <- @pending_handoffs}
+            handoff={handoff}
             names={@names}
             user_name={@user.display_name}
-            root={repo_root(@channel)}
-            replies={thread_replies(@threads, event)}
-            thread_open={thread_open?(@open_threads, event)}
-            channels={@channel_links}
-            mentions={@mention_names}
           />
+
+          <.task_panel :if={@editing_task? and @task_form} form={@task_form} />
+
+          <section
+            :if={@editing_schedules?}
+            id="schedules-panel"
+            class="border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+          >
+            <div class="mb-1 flex items-center gap-2">
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
+                Scheduled
+              </span>
+              <span class="text-xs text-base-content/60">
+                Ask an agent to set a reminder or a repeat.
+              </span>
+            </div>
+            <.schedule_list id="channel-schedules" schedules={@schedules} scope={:channel} />
+          </section>
+
+          <.members_panel
+            :if={@editing_members?}
+            channel={@channel}
+            members={@members}
+            addable={@addable_agents}
+            addable_teams={@addable_teams}
+            agent_statuses={@agent_statuses}
+          />
+
+          <div
+            id="timeline-scroll"
+            class="flex-1 overflow-y-auto scroll-smooth"
+            phx-hook="TimelineScroll"
+            data-feed="#timeline"
+          >
+            <div :if={@has_earlier?} class="flex justify-center py-2">
+              <button
+                type="button"
+                id="load-earlier"
+                class="btn btn-xs btn-ghost text-base-content/60"
+                phx-click="load_earlier"
+              >
+                Load earlier
+              </button>
+            </div>
+
+            <div
+              id="timeline"
+              phx-update="stream"
+              class={["flex flex-col py-2", @compact? && "timeline-compact"]}
+            >
+              <div
+                id="timeline-empty"
+                class="hidden only:flex flex-col items-center gap-1 px-3 py-16 text-center text-sm text-base-content/60"
+              >
+                <.icon name="hero-chat-bubble-oval-left-ellipsis" class="size-8 opacity-40" />
+                Nothing here yet. Say something to wake the owner, or mention an agent.
+              </div>
+              <.timeline_item
+                :for={{id, event} <- @streams.timeline}
+                id={id}
+                event={event}
+                names={@names}
+                user_name={@user.display_name}
+                root={repo_root(@channel)}
+                thread={
+                  feed_thread(
+                    event,
+                    @channel,
+                    @summaries,
+                    @thread,
+                    @thread_unread,
+                    @turn_threads,
+                    @names
+                  )
+                }
+                channels={@channel_links}
+                mentions={@mention_names}
+              />
+            </div>
+
+            <%!-- A turn working for a thread shows its live card and its cards in
+             the thread panel; the feed keeps the channel's own. --%>
+            <.telemetry_card
+              :for={{agent_id, card} <- @telemetry}
+              :if={place(@turn_threads, agent_id, @thread) == :feed}
+              agent_id={agent_id}
+              name={Map.get(@names, agent_id, "agent")}
+              card={card}
+              root={repo_root(@channel)}
+            />
+
+            <.permission_card
+              :for={request <- @pending_permissions}
+              :if={place(@turn_threads, card_agent_id(request), @thread) != :panel}
+              request={request}
+              names={@names}
+            />
+            <.question_card
+              :for={request <- @pending_questions}
+              :if={place(@turn_threads, card_agent_id(request), @thread) != :panel}
+              request={request}
+              names={@names}
+            />
+          </div>
+
+          <.limit_bar
+            :if={limit_reached?(@channel, @spent) and !Channels.archived?(@channel)}
+            channel={@channel}
+            spent={@spent}
+          />
+          <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
+          <.awaiting_bar :if={!Channels.archived?(@channel)} waiting={@waiting_on_user} />
+          <.composer
+            :if={!Channels.archived?(@channel)}
+            id="composer"
+            class={@thread && "max-lg:hidden"}
+            submit="send"
+            waiting={@waiting_on_user}
+            form={@composer}
+            agent_names={@agent_names}
+            member_names={@member_names}
+            team_names={@team_names}
+            team_members={@team_members}
+            channel_names={@channel_names}
+            channel_refs={Map.keys(@channel_links)}
+            upload={@uploads.files}
+            picked={@picked}
+            placeholder="Message the channel — @mention an agent to wake it, #name a channel"
+          />
+          <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
         </div>
 
-        <.telemetry_card
-          :for={{agent_id, card} <- @telemetry}
-          agent_id={agent_id}
-          name={Map.get(@names, agent_id, "agent")}
-          card={card}
-          root={repo_root(@channel)}
-        />
-
-        <.permission_card
-          :for={request <- @pending_permissions}
-          request={request}
+        <.thread_panel
+          :if={@thread}
+          thread={@thread}
+          stream={@streams.thread}
+          channel={@channel}
           names={@names}
-        />
-        <.question_card
-          :for={request <- @pending_questions}
-          request={request}
-          names={@names}
+          user_name={@user.display_name}
+          compact?={@compact?}
+          channel_links={@channel_links}
+          mention_names={@mention_names}
+          telemetry={
+            for {agent_id, card} <- @telemetry,
+                place(@turn_threads, agent_id, @thread) == :panel,
+                do: {agent_id, card}
+          }
+          permissions={
+            Enum.filter(
+              @pending_permissions,
+              &(place(@turn_threads, card_agent_id(&1), @thread) == :panel)
+            )
+          }
+          questions={
+            Enum.filter(
+              @pending_questions,
+              &(place(@turn_threads, card_agent_id(&1), @thread) == :panel)
+            )
+          }
+          waiting={@waiting_on_user}
+          form={@thread_composer}
+          agent_names={@agent_names}
+          member_names={@member_names}
+          team_names={@team_names}
+          team_members={@team_members}
+          channel_names={@channel_names}
+          upload={@uploads.thread_files}
+          picked={@thread_picked}
         />
       </div>
-
-      <.limit_bar
-        :if={limit_reached?(@channel, @spent) and !Channels.archived?(@channel)}
-        channel={@channel}
-        spent={@spent}
-      />
-      <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
-      <.awaiting_bar :if={!Channels.archived?(@channel)} waiting={@waiting_on_user} />
-      <.composer
-        :if={!Channels.archived?(@channel)}
-        waiting={@waiting_on_user}
-        form={@composer}
-        agent_names={@agent_names}
-        member_names={@member_names}
-        team_names={@team_names}
-        team_members={@team_members}
-        channel_names={@channel_names}
-        channel_refs={Map.keys(@channel_links)}
-        uploads={@uploads}
-        picked={@picked}
-        replying_to={@replying_to}
-        user_name={@user.display_name}
-      />
       <.library_picker :if={@library} library={@library} />
-      <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
 
       <.changes_modal :if={@changes} changes={@changes} repository={@channel.repository} />
     </Layouts.app>
@@ -1404,15 +1717,92 @@ defmodule CanopyWeb.ChannelLive do
   defp channel_title(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
   defp channel_title(channel), do: "#" <> channel.name
 
-  defp thread_replies(threads, %{event_type: "message", message: %{id: id, thread_id: nil}}),
-    do: Map.get(threads, id, [])
+  @doc false
+  # `/channels/:id?thread=<root>`, with `&reply=<id>` to point at one reply.
+  def thread_path(channel_id, root_id, reply_id \\ nil)
 
-  defp thread_replies(_threads, _event), do: []
+  def thread_path(channel_id, root_id, nil),
+    do: ~p"/channels/#{channel_id}?#{[thread: root_id]}"
 
-  defp thread_open?(open, %{event_type: "message", message: %{id: id, thread_id: nil}}),
-    do: MapSet.member?(open, id)
+  def thread_path(channel_id, root_id, reply_id),
+    do: ~p"/channels/#{channel_id}?#{[thread: root_id, reply: reply_id]}"
 
-  defp thread_open?(_open, _event), do: false
+  # What a feed message shows about threads (see `timeline_item/1`): Reply in
+  # thread and Copy link; a root's summary row; for a reply also sent to the
+  # channel, the thread it belongs to.
+  defp feed_thread(
+         %{event_type: "message", message: %{kind: kind} = message},
+         channel,
+         summaries,
+         thread,
+         unread,
+         turn_threads,
+         names
+       )
+       when kind != "system" do
+    root_id = message.thread_id || message.id
+    open? = open_root(%{thread: thread}) == root_id
+    working = for {agent_id, ^root_id} <- turn_threads, do: Map.get(names, agent_id, "agent")
+
+    summary =
+      case {message.thread_id, Map.get(summaries, root_id)} do
+        {nil, %{} = summary} ->
+          Map.merge(summary, %{
+            root_id: root_id,
+            open?: open?,
+            unread?: MapSet.member?(unread, root_id),
+            working: Enum.sort(working)
+          })
+
+        _ ->
+          nil
+      end
+
+    parent =
+      if message.thread_id do
+        %{href: thread_path(channel.id, root_id, message.id), excerpt: excerpt(message.thread)}
+      end
+
+    %{
+      href: thread_path(channel.id, root_id),
+      link: thread_path(channel.id, root_id, message.thread_id && message.id),
+      summary: summary,
+      parent: parent,
+      highlight: open? and is_nil(message.thread_id)
+    }
+  end
+
+  defp feed_thread(_event, _channel, _summaries, _thread, _unread, _turn_threads, _names),
+    do: %{}
+
+  # What a message in the thread panel shows: Copy link, the reply count under
+  # the root, and the mark on the reply a link pointed at.
+  defp panel_thread(%{event_type: "message", message: message}, channel, thread) do
+    root_id = thread.root.id
+
+    %{
+      link: thread_path(channel.id, root_id, if(message.id != root_id, do: message.id)),
+      divider: if(message.id == root_id, do: thread.count),
+      target: thread.target == message.id
+    }
+  end
+
+  defp panel_thread(_event, _channel, _thread), do: %{}
+
+  # Where an agent's live card and cards go: the panel when its turn works for
+  # the open thread, nowhere but the summary row when it works for another
+  # thread (cards still show in the feed, since they wait on the user), the
+  # feed otherwise.
+  defp place(turn_threads, agent_id, thread) do
+    case {Map.get(turn_threads, agent_id), open_root(%{thread: thread})} do
+      {nil, _} -> :feed
+      {root_id, root_id} -> :panel
+      _ -> :elsewhere
+    end
+  end
+
+  defp card_agent_id(%{agent_session: %{agent_id: id}}), do: id
+  defp card_agent_id(_request), do: nil
 
   attr :channel, :map, required: true
   attr :task, :map, default: nil
@@ -1483,7 +1873,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Add or remove agents"
           >
             <.icon name="hero-users-mini" class="size-4" />
-            <span class="hidden sm:inline">Members</span>
+            <span class="hidden @4xl/main:inline">Members</span>
           </button>
           <button
             type="button"
@@ -1502,7 +1892,7 @@ defmodule CanopyWeb.ChannelLive do
               name={if @compact?, do: "hero-eye-slash-mini", else: "hero-eye-mini"}
               class="size-4"
             />
-            <span class="hidden sm:inline">Activity</span>
+            <span class="hidden @4xl/main:inline">Activity</span>
           </button>
           <button
             :for={lock <- @locks}
@@ -1517,7 +1907,7 @@ defmodule CanopyWeb.ChannelLive do
           >
             <.icon name="hero-lock-closed-mini" class="size-4 shrink-0 text-warning" />
             <span class="font-mono font-medium">{lock.name}</span>
-            <span class="hidden min-w-0 truncate text-base-content/70 sm:inline">
+            <span class="hidden min-w-0 truncate text-base-content/70 @4xl/main:inline">
               {lock_summary(lock, @now)}
             </span>
             <span
@@ -1536,7 +1926,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Locks on this repository's shared resources"
           >
             <.icon name="hero-lock-open-mini" class="size-4" />
-            <span class="hidden sm:inline">Locks</span>
+            <span class="hidden @4xl/main:inline">Locks</span>
           </button>
           <button
             type="button"
@@ -1546,7 +1936,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Scheduled tasks in this channel"
           >
             <.icon name="hero-clock-mini" class="size-4" />
-            <span class="hidden sm:inline">Scheduled</span>
+            <span class="hidden @4xl/main:inline">Scheduled</span>
             <span :if={@schedule_count > 0} id="schedule-count" class="badge badge-xs badge-primary">
               {@schedule_count}
             </span>
@@ -1563,7 +1953,7 @@ defmodule CanopyWeb.ChannelLive do
             title="What this channel has spent, and its limit"
           >
             <.icon name="hero-banknotes-mini" class="size-4" />
-            <span class="hidden sm:inline">
+            <span class="hidden @4xl/main:inline">
               {Costs.money(@spent)}{if @channel.spend_limit,
                 do: " / " <> Costs.money(@channel.spend_limit),
                 else: ""}
@@ -1576,7 +1966,7 @@ defmodule CanopyWeb.ChannelLive do
             phx-click="toggle_task_form"
           >
             <.icon name="hero-clipboard-document-list-mini" class="size-4" />
-            <span class="hidden sm:inline">Task</span>
+            <span class="hidden @4xl/main:inline">Task</span>
           </button>
           <button
             type="button"
@@ -1585,7 +1975,7 @@ defmodule CanopyWeb.ChannelLive do
             phx-click="open_changes"
           >
             <.icon name="hero-document-plus-mini" class="size-4" />
-            <span class="hidden sm:inline">Changes</span>
+            <span class="hidden @4xl/main:inline">Changes</span>
           </button>
           <button
             :if={!Channels.archived?(@channel)}
@@ -1596,7 +1986,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Stop all: abort every running turn, drop queued wakes, and hold the channel until you reply"
           >
             <.icon name="hero-stop-mini" class="size-4" />
-            <span class="hidden sm:inline">Stop</span>
+            <span class="hidden @4xl/main:inline">Stop</span>
           </button>
           <button
             :if={!Channels.archived?(@channel)}
@@ -1610,7 +2000,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Archive this channel"
           >
             <.icon name="hero-archive-box-arrow-down-mini" class="size-4" />
-            <span class="hidden sm:inline">Archive</span>
+            <span class="hidden @4xl/main:inline">Archive</span>
           </button>
           <button
             :if={Channels.archived?(@channel)}
@@ -1621,7 +2011,7 @@ defmodule CanopyWeb.ChannelLive do
             title="Reopen this channel"
           >
             <.icon name="hero-archive-box-x-mark-mini" class="size-4" />
-            <span class="hidden sm:inline">Reopen</span>
+            <span class="hidden @4xl/main:inline">Reopen</span>
           </button>
         </div>
       </div>
@@ -2179,6 +2569,184 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  attr :thread, :map, required: true
+  attr :stream, :any, required: true
+  attr :channel, :map, required: true
+  attr :names, :map, required: true
+  attr :user_name, :string, required: true
+  attr :compact?, :boolean, default: true
+  attr :channel_links, :map, default: %{}
+  attr :mention_names, :any, default: MapSet.new()
+  attr :telemetry, :list, default: [], doc: "`[{agent_id, card}]` of turns working here"
+  attr :permissions, :list, default: []
+  attr :questions, :list, default: []
+  attr :waiting, :list, default: []
+  attr :form, :map, required: true
+  attr :agent_names, :list, required: true
+  attr :member_names, :list, default: []
+  attr :team_names, :list, default: []
+  attr :team_members, :map, default: %{}
+  attr :channel_names, :list, required: true
+  attr :upload, :any, required: true
+  attr :picked, :list, default: []
+
+  # A thread in the side panel: the root, its replies and the turn cards of
+  # work done for it, the live card and cards of an agent working here, and a
+  # composer that stays in the thread.
+  defp thread_panel(assigns) do
+    ~H"""
+    <.side_panel id="thread-panel" label="Thread" close={~p"/channels/#{@channel.id}"}>
+      <:title>
+        Thread <span class="font-normal text-base-content/60">· {channel_title(@channel)}</span>
+      </:title>
+      <:actions>
+        <button
+          type="button"
+          id="thread-follow"
+          class={["btn btn-ghost btn-xs btn-square", @thread.following? && "text-primary"]}
+          phx-click="toggle_follow"
+          data-following={to_string(@thread.following?)}
+          title={
+            if @thread.following?,
+              do: "Following: new replies show on the Threads badge. Click to unfollow.",
+              else: "Follow: show new replies on the Threads badge"
+          }
+          aria-label={if @thread.following?, do: "Unfollow the thread", else: "Follow the thread"}
+          aria-pressed={to_string(@thread.following?)}
+        >
+          <.icon
+            name={if @thread.following?, do: "hero-bell-alert-mini", else: "hero-bell-mini"}
+            class="size-4"
+          />
+        </button>
+        <button
+          type="button"
+          id="thread-copy-link"
+          phx-hook="CopyLink"
+          data-href={thread_path(@channel.id, @thread.root.id)}
+          class="btn btn-ghost btn-xs btn-square"
+          title="Copy link to this thread"
+          aria-label="Copy link to this thread"
+        >
+          <.icon name="hero-link-mini" class="size-4" />
+        </button>
+      </:actions>
+
+      <div
+        id="thread-scroll"
+        class="min-h-0 flex-1 overflow-y-auto"
+        phx-hook="TimelineScroll"
+        data-feed="#thread-replies"
+        data-scope={@thread.root.id}
+      >
+        <div
+          id="thread-replies"
+          phx-update="stream"
+          class={["flex flex-col py-2", @compact? && "timeline-compact"]}
+        >
+          <.timeline_item
+            :for={{id, event} <- @stream}
+            id={id}
+            event={event}
+            names={@names}
+            user_name={@user_name}
+            root={repo_root(@channel)}
+            dom_prefix="thread-msg"
+            thread={panel_thread(event, @channel, @thread)}
+            channels={@channel_links}
+            mentions={@mention_names}
+          />
+        </div>
+
+        <.telemetry_card
+          :for={{agent_id, card} <- @telemetry}
+          agent_id={agent_id}
+          name={Map.get(@names, agent_id, "agent")}
+          card={card}
+          root={repo_root(@channel)}
+        />
+        <.permission_card :for={request <- @permissions} request={request} names={@names} />
+        <.question_card :for={request <- @questions} request={request} names={@names} />
+      </div>
+
+      <:footer>
+        <.composer
+          :if={!Channels.archived?(@channel)}
+          id="thread-composer"
+          submit="send_thread"
+          scope={@thread.root.id}
+          thread
+          also_send={channel_title(@channel)}
+          waiting={@waiting}
+          form={@form}
+          agent_names={@agent_names}
+          member_names={@member_names}
+          team_names={@team_names}
+          team_members={@team_members}
+          channel_names={@channel_names}
+          channel_refs={Map.keys(@channel_links)}
+          upload={@upload}
+          picked={@picked}
+          placeholder="Reply in the thread — @mention an agent to wake it"
+        />
+      </:footer>
+    </.side_panel>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true, doc: "what the panel is, for assistive technology"
+  attr :close, :string, required: true, doc: "the path Close and Back patch to"
+  slot :title, required: true
+  slot :actions
+  slot :inner_block, required: true
+  slot :footer
+
+  # The right-hand side panel: one slot beside the feed that one panel kind at
+  # a time fills (a thread now; the URL param says which). Fixed widths from
+  # lg up (28rem, 32rem at 2xl); below lg a full-screen overlay with Back.
+  # Esc closes it unless a text box in it has something typed (SidePanel hook).
+  defp side_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      phx-hook="SidePanel"
+      aria-label={@label}
+      class="side-panel fixed inset-0 z-30 flex flex-col bg-base-100 lg:static lg:inset-auto lg:z-auto lg:w-[28rem] lg:shrink-0 lg:border-l lg:border-base-300 2xl:w-[32rem]"
+    >
+      <header class="flex shrink-0 items-center gap-1.5 border-b border-base-300 px-3 py-2 sm:px-4 lg:py-3">
+        <.link
+          patch={@close}
+          id={"#{@id}-back"}
+          class="btn btn-ghost btn-sm -ml-1 gap-1 px-2 lg:hidden"
+          aria-label="Back to the channel"
+        >
+          <.icon name="hero-chevron-left-mini" class="size-4" /> Back
+        </.link>
+        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">{render_slot(@title)}</h2>
+        {render_slot(@actions)}
+        <.link
+          patch={@close}
+          id={"#{@id}-close"}
+          class="btn btn-ghost btn-xs btn-square max-lg:hidden"
+          title="Close (Esc)"
+          aria-label="Close the panel"
+        >
+          <.icon name="hero-x-mark-mini" class="size-4" />
+        </.link>
+      </header>
+      {render_slot(@inner_block)}
+      {render_slot(@footer)}
+    </aside>
+    """
+  end
+
+  attr :id, :string,
+    required: true,
+    doc: "prefix of every id inside: `composer`, `thread-composer`"
+
+  attr :submit, :string, required: true, doc: "the event a send pushes"
+  attr :class, :any, default: nil
   attr :form, :map, required: true
   attr :agent_names, :list, required: true
   attr :member_names, :list, default: []
@@ -2186,49 +2754,49 @@ defmodule CanopyWeb.ChannelLive do
   attr :team_members, :map, default: %{}, doc: "team name => its active members' names"
   attr :channel_names, :list, required: true
   attr :channel_refs, :list, default: [], doc: "every linkable channel name, archived ones too"
-  attr :uploads, :map, required: true
+  attr :upload, :any, required: true, doc: "this composer's own upload config"
   attr :picked, :list, required: true
-  attr :replying_to, :map, default: nil
-  attr :user_name, :string, required: true
+  attr :thread, :boolean, default: false, doc: "a thread's composer: commands are refused"
+
+  attr :scope, :string,
+    default: nil,
+    doc: "what the draft belongs to (a thread's root); the hook clears the draft when it changes"
+
+  attr :also_send, :string, default: nil, doc: "offer \"Also send to\" this channel"
+  attr :placeholder, :string, required: true
   attr :waiting, :list, default: [], doc: "`[{agent_name, card_dom_id}]` blocked on a card"
 
+  # The channel's composer and the thread panel's share this one component and
+  # the one Composer hook (autocomplete, team names, the highlight layer, the
+  # awaiting hint), told apart by their ids.
   defp composer(assigns) do
+    assigns =
+      assigns
+      |> assign(:main?, assigns.id == "composer")
+      |> assign(:item, if(assigns.id == "composer", do: "", else: assigns.id <> "-"))
+      |> assign(:target, if(assigns.id == "composer", do: "main", else: "thread"))
+
     ~H"""
-    <div class="shrink-0 border-t border-base-300 bg-base-100 px-3 pb-2 pt-2 sm:px-6 sm:pb-3">
+    <div class={[
+      "shrink-0 border-t border-base-300 bg-base-100 px-3 pb-2 pt-2",
+      @main? && "sm:px-6 sm:pb-3",
+      !@main? && "sm:px-4",
+      @class
+    ]}>
       <%!-- Files travel through their own form: uploads need a phx-change, and
            the composer text must never round-trip on every keystroke. --%>
-      <form id="upload-form" phx-change="validate_upload" phx-submit="validate_upload" class="hidden">
-        <.live_file_input upload={@uploads.files} />
-      </form>
-      <div
-        :if={@replying_to}
-        id="composer-thread"
-        phx-window-keydown="cancel_reply"
-        phx-key="Escape"
-        class="mb-1.5 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs"
+      <form
+        id={if @main?, do: "upload-form", else: "#{@id}-upload-form"}
+        phx-change="validate_upload"
+        phx-submit="validate_upload"
+        class="hidden"
       >
-        <.icon name="hero-chat-bubble-left-right-mini" class="size-3.5 shrink-0 text-primary" />
-        <span class="shrink-0 font-medium text-primary">
-          {if @replying_to.replies == 0, do: "Starting a thread on", else: "Replying in thread to"}
-        </span>
-        <span class="min-w-0 flex-1 truncate text-base-content/60">
-          {@replying_to.sender}: {@replying_to.excerpt}
-        </span>
-        <button
-          type="button"
-          id="composer-thread-cancel"
-          class="btn btn-ghost btn-xs btn-square shrink-0"
-          phx-click="cancel_reply"
-          title="Post to the channel instead (Esc)"
-          aria-label="Cancel the thread reply"
-        >
-          <.icon name="hero-x-mark-mini" class="size-3.5" />
-        </button>
-      </div>
+        <.live_file_input upload={@upload} />
+      </form>
       <.form
         for={@form}
-        id="composer-form"
-        phx-submit="send"
+        id={"#{@id}-form"}
+        phx-submit={@submit}
         data-agents={Jason.encode!(@agent_names)}
         data-teams={Jason.encode!(@team_names)}
         data-channels={Jason.encode!(@channel_names)}
@@ -2237,36 +2805,37 @@ defmodule CanopyWeb.ChannelLive do
         data-team-members={Jason.encode!(@team_members)}
         data-channel-refs={Jason.encode!(@channel_refs)}
         data-commands={Jason.encode!(Commands.names())}
-        data-thread={@replying_to && "true"}
+        data-thread={@thread && "true"}
+        data-scope={@scope}
         class="relative"
       >
         <%!-- Filled by the Composer hook when the draft mentions an agent that
              is blocked on a card: a message is never taken as the card's answer. --%>
         <div
-          id="composer-awaiting-hint"
+          id={"#{@id}-awaiting-hint"}
           phx-update="ignore"
           class="mb-1.5 hidden rounded-lg border border-info/30 bg-info/5 px-2.5 py-1.5 text-xs text-base-content/70"
         >
         </div>
         <div
-          id="composer-suggestions"
+          id={"#{@id}-suggestions"}
           phx-update="ignore"
           class="absolute bottom-full left-0 z-10 mb-1 hidden w-64 overflow-hidden rounded-lg border border-base-300 bg-base-200 shadow-lg"
         >
         </div>
         <div
-          id="composer-box"
-          phx-drop-target={@uploads.files.ref}
+          id={"#{@id}-box"}
+          phx-drop-target={@upload.ref}
           class="rounded-xl border border-base-300 bg-base-200 p-2 shadow-xs transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
         >
           <div
-            :if={@uploads.files.entries != [] or @picked != []}
-            id="composer-files"
+            :if={@upload.entries != [] or @picked != []}
+            id={"#{@id}-files"}
             class="mb-2 flex flex-wrap gap-2"
           >
             <div
               :for={doc <- @picked}
-              id={"picked-#{doc.id}"}
+              id={"#{@item}picked-#{doc.id}"}
               class="flex max-w-xs items-center gap-2 rounded-lg border border-primary/40 bg-base-100 px-2 py-1 text-xs"
               title="From the files library"
             >
@@ -2290,6 +2859,7 @@ defmodule CanopyWeb.ChannelLive do
                 class="btn btn-ghost btn-xs btn-square"
                 phx-click="unpick_document"
                 phx-value-id={doc.id}
+                phx-value-target={@target}
                 title="Remove"
                 aria-label={"Remove #{doc.filename}"}
               >
@@ -2297,8 +2867,8 @@ defmodule CanopyWeb.ChannelLive do
               </button>
             </div>
             <div
-              :for={entry <- @uploads.files.entries}
-              id={"upload-#{entry.ref}"}
+              :for={entry <- @upload.entries}
+              id={"#{@item}upload-#{entry.ref}"}
               class="flex max-w-xs items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-2 py-1 text-xs"
             >
               <.live_img_preview
@@ -2314,12 +2884,12 @@ defmodule CanopyWeb.ChannelLive do
               <div class="min-w-0">
                 <div class="truncate font-medium" title={entry.client_name}>{entry.client_name}</div>
                 <div
-                  :if={!entry.done? and upload_errors(@uploads.files, entry) == []}
+                  :if={!entry.done? and upload_errors(@upload, entry) == []}
                   class="text-base-content/60"
                 >
                   {entry.progress}%
                 </div>
-                <div :for={err <- upload_errors(@uploads.files, entry)} class="text-error">
+                <div :for={err <- upload_errors(@upload, entry)} class="text-error">
                   {upload_error(err)}
                 </div>
               </div>
@@ -2328,6 +2898,7 @@ defmodule CanopyWeb.ChannelLive do
                 class="btn btn-ghost btn-xs btn-square"
                 phx-click="cancel_upload"
                 phx-value-ref={entry.ref}
+                phx-value-upload={@upload.name}
                 title="Remove"
                 aria-label={"Remove #{entry.client_name}"}
               >
@@ -2335,25 +2906,28 @@ defmodule CanopyWeb.ChannelLive do
               </button>
             </div>
           </div>
-          <div :for={err <- upload_errors(@uploads.files)} class="mb-1 px-1 text-xs text-error">
+          <div :for={err <- upload_errors(@upload)} class="mb-1 px-1 text-xs text-error">
             {upload_error(err)}
           </div>
           <%!-- The textarea is the browser's: LiveView never patches it, so the
                hook's auto-grown height and the draft survive every update.
-               The server clears it with the "composer:clear" event. Behind it,
-               #composer-highlight copies the draft in transparent text so the
-               mention chips show through (see composer_highlight.js). --%>
-          <div id="composer-input-wrap" phx-update="ignore" class="relative min-w-0">
-            <div id="composer-highlight" aria-hidden="true" class="composer-text composer-highlight">
+               The server clears it with the "composer:clear" event (naming
+               this textarea). Behind it, the highlight layer copies the draft
+               in transparent text so the mention chips show through (see
+               composer_highlight.js). --%>
+          <div id={"#{@id}-input-wrap"} phx-update="ignore" class="relative min-w-0">
+            <div id={"#{@id}-highlight"} aria-hidden="true" class="composer-text composer-highlight">
             </div>
             <textarea
-              id="composer-input"
+              id={"#{@id}-input"}
               name={@form[:body].name}
               phx-hook="Composer"
-              data-suggestions="#composer-suggestions"
-              data-highlight="#composer-highlight"
+              data-suggestions={"##{@id}-suggestions"}
+              data-highlight={"##{@id}-highlight"}
+              data-hint={"##{@id}-awaiting-hint"}
+              data-upload={@upload.name}
               rows="1"
-              placeholder="Message the channel — @mention an agent to wake it, #name a channel"
+              placeholder={@placeholder}
               class="composer-text relative max-h-[60vh] w-full resize-none bg-transparent outline-none focus:outline-none"
               autocomplete="off"
             >{Phoenix.HTML.Form.normalize_value("textarea", @form[:body].value)}</textarea>
@@ -2361,8 +2935,8 @@ defmodule CanopyWeb.ChannelLive do
           <%!-- Toolbar under the text, Slack-style: attach on the left, send on the right. --%>
           <div class="mt-1 flex items-center gap-1">
             <label
-              for={@uploads.files.ref}
-              id="composer-attach"
+              for={@upload.ref}
+              id={"#{@id}-attach"}
               class="btn btn-sm btn-ghost btn-square cursor-pointer"
               title="Attach a file from your computer (or paste, or drop one here)"
             >
@@ -2370,16 +2944,33 @@ defmodule CanopyWeb.ChannelLive do
             </label>
             <button
               type="button"
-              id="composer-library"
+              id={"#{@id}-library"}
               class="btn btn-sm btn-ghost btn-square"
               phx-click="open_library"
+              phx-value-target={@target}
               title="Attach a file already shared in Canopy"
             >
               <.icon name="hero-paper-clip-mini" class="size-4" />
             </button>
+            <label
+              :if={@also_send}
+              for="thread-also-send"
+              class="ml-1 flex min-w-0 cursor-pointer select-none items-center gap-1.5 text-xs text-base-content/70"
+              title="Also show this reply in the channel feed"
+            >
+              <input
+                type="checkbox"
+                id="thread-also-send"
+                name="also_send"
+                value="true"
+                data-clear="true"
+                class="checkbox checkbox-xs"
+              />
+              <span class="truncate">Also send to {@also_send}</span>
+            </label>
             <button
               type="submit"
-              id="composer-send"
+              id={"#{@id}-send"}
               class="btn btn-sm btn-primary btn-square ml-auto"
               title="Send (Enter)"
             >
@@ -2387,8 +2978,11 @@ defmodule CanopyWeb.ChannelLive do
             </button>
           </div>
         </div>
-        <p class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
+        <p :if={@main?} class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
           Enter to send · Shift+Enter for a new line · paste or drop files to attach · {Commands.help()}
+        </p>
+        <p :if={!@main?} class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
+          Enter to send · Esc closes the thread when the box is empty
         </p>
       </.form>
     </div>

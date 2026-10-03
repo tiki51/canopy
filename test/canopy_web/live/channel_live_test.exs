@@ -17,6 +17,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
   alias Canopy.ClaudeCode.Prompts
   alias Canopy.OpenCode.ClientMock, as: OC
+  alias CanopyWeb.ChannelLive
 
   setup :set_mox_global
   setup :verify_on_exit!
@@ -92,10 +93,9 @@ defmodule CanopyWeb.ChannelLiveTest do
                "IO.puts(1)"
              )
 
-      # the thread reply is nested under its root, not inline
-      assert has_element?(view, "#thread-#{post.id} #message-#{thread_reply.id}", "in the thread")
-      assert has_element?(view, "#thread-toggle-#{post.id}", "1 reply")
-      refute has_element?(view, "#timeline > div > article#message-#{thread_reply.id}")
+      # the thread stays in the thread: the feed shows the root's summary row
+      assert has_element?(view, "#thread-summary-#{post.id}", "1 reply")
+      refute has_element?(view, "#timeline #message-#{thread_reply.id}")
 
       # the slash-command note is a subtle line carrying the user's name
       assert has_element?(view, "#message-#{note.id}", user.display_name)
@@ -461,11 +461,20 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#{form}[data-commands*='invite']")
       assert has_element?(view, "#composer-input-wrap #composer-highlight[aria-hidden='true']")
 
+      # the thread panel's composer carries the same sources, marked as a thread
       refute has_element?(view, "#{form}[data-thread]")
       view |> element("#reply-#{root.id}") |> render_click()
-      assert has_element?(view, "#{form}[data-thread='true']")
-      view |> element("#composer-thread-cancel") |> render_click()
-      refute has_element?(view, "#{form}[data-thread]")
+      thread_form = "#thread-composer-form"
+      assert has_element?(view, "#{thread_form}[data-thread='true']")
+      assert has_element?(view, "#{thread_form}[data-members*='#{reviewer.name}']")
+      assert has_element?(view, ~s(#{thread_form}[data-team-members*='"#{team.name}":']))
+      assert has_element?(view, "#{thread_form}[data-channel-refs*='old-plans']")
+      assert has_element?(view, "#thread-composer-input-wrap #thread-composer-highlight")
+
+      assert has_element?(
+               view,
+               "#thread-composer-input[phx-hook=Composer][data-highlight='#thread-composer-highlight'][data-suggestions='#thread-composer-suggestions'][data-upload=thread_files]"
+             )
 
       view |> element("#edit-members") |> render_click()
       view |> form("#add-member-form", agent_id: outsider.id) |> render_submit()
@@ -701,102 +710,483 @@ defmodule CanopyWeb.ChannelLiveTest do
   end
 
   describe "threads" do
-    test "Reply opens a thread composer and the message lands in the thread", ctx do
-      %{channel: channel, agent: agent} = ctx
+    defp open_thread(conn, channel, root_id, extra \\ %{}) do
+      live(conn, ChannelLive.thread_path(channel.id, root_id, extra[:reply]))
+    end
+
+    test "the summary row shows the count and who replied, and opens the panel", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer, user: user} = ctx
 
       {:ok, root} =
         Messages.post_agent_message(channel.id, agent.id, "Which width should we use?")
 
-      {:ok, view, _html} = open(conn_of(ctx), channel)
-      refute has_element?(view, "#composer-thread")
-
-      view |> element("#reply-#{root.id}") |> render_click()
-
-      assert has_element?(view, "#composer-thread", "Starting a thread on")
-      assert has_element?(view, "#composer-thread", "Which width should we use?")
-
-      view |> form("#composer-form", %{"message" => %{"body" => "390px"}}) |> render_submit()
-
-      assert [reply] =
-               Messages.list(channel.id, thread: root.id) |> Enum.reject(&(&1.id == root.id))
-
-      assert reply.body == "390px"
-      assert reply.thread_id == root.id
-      assert reply.kind == "thread_reply"
-      assert reply.user_id == ctx.user.id
-
-      # the banner clears and the thread is expanded so the reply is visible
-      refute has_element?(view, "#composer-thread")
-      assert has_element?(view, "#thread-#{root.id}:not([hidden])", "390px")
-    end
-
-    test "replying to a reply joins the same thread rather than nesting", ctx do
-      %{channel: channel, agent: agent, user: user} = ctx
-      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
-      {:ok, first} = Messages.thread_reply(root.id, {:user, user.id}, "first")
+      {:ok, first} = Messages.thread_reply(root.id, {:agent, reviewer.id}, "390px")
+      {:ok, second} = Messages.thread_reply(root.id, {:user, user.id}, "agreed")
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
-      view |> element("#thread-toggle-#{root.id}") |> render_click()
-      view |> element("#reply-#{first.id}") |> render_click()
+      summary = "#thread-summary-#{root.id}"
+      assert has_element?(view, summary, "2 replies")
+      assert has_element?(view, "#{summary} [title='@#{reviewer.name}']")
+      assert has_element?(view, "#{summary} [title='@#{agent.name}']")
+      refute has_element?(view, "#thread-panel")
 
-      assert has_element?(view, "#composer-thread", "Replying in thread to")
-      view |> form("#composer-form", %{"message" => %{"body" => "second"}}) |> render_submit()
+      view |> element(summary) |> render_click()
+      assert_patch(view, ChannelLive.thread_path(channel.id, root.id))
 
-      assert %{thread_id: thread_id} = Messages.list(channel.id, thread: root.id) |> List.last()
-      assert thread_id == root.id
+      assert has_element?(view, "#thread-panel #thread-msg-#{root.id}", "Which width")
+      assert has_element?(view, "#thread-replies #thread-msg-#{first.id}", "390px")
+      assert has_element?(view, "#thread-replies #thread-msg-#{second.id}", "agreed")
+      assert has_element?(view, "#thread-divider", "2 replies")
+      # the open thread's summary row is marked in the feed
+      assert has_element?(view, "#{summary}[data-open=true]")
+      refute has_element?(view, "#timeline #message-#{first.id}")
+
+      view |> element("#thread-panel-close") |> render_click()
+      assert_patch(view, ~p"/channels/#{channel.id}")
+      refute has_element?(view, "#thread-panel")
     end
 
-    test "the thread toggle survives a re-render, unlike a client-side toggle", ctx do
-      %{channel: channel, agent: agent, user: user} = ctx
-      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
-      {:ok, _} = Messages.thread_reply(root.id, {:user, user.id}, "first")
-
-      {:ok, view, _html} = open(conn_of(ctx), channel)
-      assert has_element?(view, "#thread-#{root.id}[hidden]")
-
-      view |> element("#thread-toggle-#{root.id}") |> render_click()
-      assert has_element?(view, "#thread-#{root.id}:not([hidden])")
-
-      # a new reply re-renders the parent; the thread must stay open
-      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "second")
-      assert has_element?(view, "#thread-#{root.id}:not([hidden])", "second")
-
-      view |> element("#thread-toggle-#{root.id}") |> render_click()
-      assert has_element?(view, "#thread-#{root.id}[hidden]")
-    end
-
-    test "cancelling returns the composer to the channel", ctx do
+    test "Reply in thread opens the panel on a message without replies yet", ctx do
       %{channel: channel, agent: agent} = ctx
       {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#thread-summary-#{root.id}")
       view |> element("#reply-#{root.id}") |> render_click()
-      view |> element("#composer-thread-cancel") |> render_click()
 
-      refute has_element?(view, "#composer-thread")
+      assert has_element?(view, "#thread-panel #thread-msg-#{root.id}")
+      assert has_element?(view, "#thread-divider", "0 replies")
+      assert has_element?(view, "#thread-composer-form")
+    end
+
+    test "a reply from the thread composer lands in the thread and the panel stays open", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
 
       view
-      |> form("#composer-form", %{"message" => %{"body" => "to the channel"}})
+      |> form("#thread-composer-form", %{"message" => %{"body" => "390px"}})
       |> render_submit()
 
-      assert %{thread_id: nil} =
-               Messages.list(channel.id) |> Enum.find(&(&1.body == "to the channel"))
+      assert [^root, reply] = Messages.list_thread(root.id)
+      assert reply.body == "390px"
+      assert reply.thread_id == root.id
+      assert reply.kind == "thread_reply"
+      assert reply.user_id == user.id
+      refute reply.sent_to_channel
+
+      assert has_element?(view, "#thread-panel #thread-msg-#{reply.id}", "390px")
+      assert has_element?(view, "#thread-composer-form")
+      refute has_element?(view, "#timeline #message-#{reply.id}")
+      assert has_element?(view, "#thread-summary-#{root.id}", "1 reply")
+
+      # the next reply needs no second click
+      view
+      |> form("#thread-composer-form", %{"message" => %{"body" => "and 768px"}})
+      |> render_submit()
+
+      assert length(Messages.list_thread(root.id)) == 3
+    end
+
+    test "Also send to channel shows the reply in the thread and in the feed", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+
+      view
+      |> form("#thread-composer-form", %{
+        "message" => %{"body" => "Going with 390px"},
+        "also_send" => "true"
+      })
+      |> render_submit()
+
+      assert [_, %{sent_to_channel: true} = reply] = Messages.list_thread(root.id)
+      assert has_element?(view, "#thread-replies #thread-msg-#{reply.id}", "also in channel")
+      assert has_element?(view, "#timeline #message-#{reply.id}", "Going with 390px")
+      assert has_element?(view, "#message-parent-#{reply.id}", "Which width?")
+    end
+
+    test "?thread= opens a thread older than the loaded feed; an unknown one says so", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "an old question")
+      {:ok, reply} = Messages.thread_reply(root.id, {:agent, agent.id}, "an old answer")
+      for n <- 1..105, do: {:ok, _} = Messages.post_agent_message(channel.id, agent.id, "n#{n}")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+      refute has_element?(view, "#timeline #message-#{root.id}")
+      assert has_element?(view, "#thread-panel #thread-msg-#{root.id}", "an old question")
+      assert has_element?(view, "#thread-panel #thread-msg-#{reply.id}", "an old answer")
+
+      # a link to a reply opens its thread and marks that reply
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, reply.id)
+      assert has_element?(view, "#thread-panel #thread-msg-#{root.id}")
+      assert has_element?(view, "[data-scroll-target] #thread-msg-#{reply.id}.message-target")
+
+      other = Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "elsewhere"})
+      {:ok, elsewhere} = Messages.post_agent_message(other.id, agent.id, "not here")
+
+      for id <- ["msg_unknown", elsewhere.id] do
+        {:ok, view, html} = open_thread(conn_of(ctx), channel, id)
+        refute has_element?(view, "#thread-panel")
+        assert html =~ "That thread is not in this channel."
+      end
+    end
+
+    test "a thread turn's summary lands in the panel, not in the feed", ctx do
+      %{channel: channel, agent: agent, session: session} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+
+      {:ok, turn} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          ref_id: session.id,
+          thread_id: root.id,
+          in_channel: false,
+          payload: %{"outcome" => "error", "tools" => 2, "thread_id" => root.id}
+        })
+
+      assert has_element?(view, "#thread-replies #thread-evt-#{turn.id}", "stopped with an error")
+      refute has_element?(view, "#timeline #evt-#{turn.id}")
+    end
+
+    test "the live card of a thread turn shows in the panel; the summary row says who is replying",
+         ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, _} = Messages.thread_reply(root.id, {:user, user.id}, "and?")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      send_turn_thread(channel.id, agent.id, root.id)
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+
+      # the thread is not open: only the summary row shows the work
+      assert has_element?(view, "#thread-working-#{root.id}", "@#{agent.name} is replying")
+      refute has_element?(view, "#telemetry-#{agent.id}")
+
+      view |> element("#thread-summary-#{root.id}") |> render_click()
+      assert has_element?(view, "#thread-panel #telemetry-#{agent.id}")
+      refute has_element?(view, "#timeline-scroll > #telemetry-#{agent.id}")
+
+      # the turn ends: the row goes back to the last reply time
+      send_turn_thread(channel.id, agent.id, nil)
+      broadcast_status(channel.id, agent.id, :idle)
+      refute has_element?(view, "#thread-working-#{root.id}")
+      refute has_element?(view, "#telemetry-#{agent.id}")
+
+      # a channel turn's card stays in the feed
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      assert has_element?(view, "#timeline-scroll > #telemetry-#{agent.id}")
+    end
+
+    test "a question raised by a thread turn shows in that thread's panel", ctx do
+      %{channel: channel, agent: agent, session: session} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, request} =
+        QuestionRequests.record(%{
+          channel_id: channel.id,
+          agent_session_id: session.id,
+          opencode_question_id: "que_thread",
+          questions: [%{"question" => "Which key?", "options" => [%{"label" => "A"}]}],
+          status: "pending"
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      send_turn_thread(channel.id, agent.id, root.id)
+      assert has_element?(view, "#timeline-scroll > #question-#{request.id}")
+
+      view |> element("#reply-#{root.id}") |> render_click()
+      assert has_element?(view, "#thread-panel #question-#{request.id}")
+      refute has_element?(view, "#timeline-scroll > #question-#{request.id}")
+    end
+
+    test "an unread dot marks a followed thread with new replies; opening it clears it", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_user_message(channel.id, user.id, "my question")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      # the user wrote the root, so an agent's reply makes the thread followed and unread
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "an answer")
+      assert has_element?(view, "#thread-unread-#{root.id}")
+      assert has_element?(view, "#rail-threads-badge", "1")
+
+      view |> element("#thread-summary-#{root.id}") |> render_click()
+      refute has_element?(view, "#thread-unread-#{root.id}")
+      refute has_element?(view, "#rail-threads-badge")
+
+      # a reply while the panel is open is read as it arrives
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "one more")
+      refute has_element?(view, "#thread-unread-#{root.id}")
+      refute has_element?(view, "#rail-threads-badge")
+    end
+
+    test "the bell follows and unfollows the thread", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+      assert has_element?(view, "#thread-follow[data-following=false]")
+
+      view |> element("#thread-follow") |> render_click()
+      assert has_element?(view, "#thread-follow[data-following=true]")
+      assert Canopy.Threads.following?(root.id, user)
+
+      view |> element("#thread-follow") |> render_click()
+      assert has_element?(view, "#thread-follow[data-following=false]")
+      refute Canopy.Threads.following?(root.id, user)
+
+      # an explicit unfollow survives an agent's reply that mentions the user
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "@#{user.display_name} ping")
+      refute Canopy.Threads.following?(root.id, user)
+    end
+
+    test "Esc (the SidePanel hook) closes the panel", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+      assert has_element?(view, "#thread-panel[phx-hook=SidePanel]")
+
+      view |> element("#thread-panel") |> render_hook("close_panel", %{})
+      assert_patch(view, ~p"/channels/#{channel.id}")
+      refute has_element?(view, "#thread-panel")
+    end
+
+    test "a &reply= link to a reply in the thread marks it; one from another thread does not",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, first} = Messages.thread_reply(root.id, {:agent, agent.id}, "first")
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "second")
+      {:ok, other} = Messages.post_agent_message(channel.id, agent.id, "other root")
+      {:ok, elsewhere} = Messages.thread_reply(other.id, {:agent, agent.id}, "elsewhere")
+
+      # the shape every Copy link builds: ?thread=<root>&reply=<id>
+      link = ChannelLive.thread_path(channel.id, root.id, first.id)
+      assert %URI{path: path, query: query} = URI.parse(link)
+      assert path == "/channels/#{channel.id}"
+      assert URI.decode_query(query) == %{"thread" => root.id, "reply" => first.id}
+
+      {:ok, view, _html} = live(conn_of(ctx), link)
+      assert has_element?(view, "[data-scroll-target] #thread-msg-#{first.id}.message-target")
+
+      {:ok, view, _html} =
+        live(conn_of(ctx), ChannelLive.thread_path(channel.id, root.id, elsewhere.id))
+
+      assert has_element?(view, "#thread-panel #thread-msg-#{root.id}")
+      refute has_element?(view, "[data-scroll-target]")
+    end
+
+    @png File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    test "another thread starts with an empty composer; the same thread keeps it", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, a} = Messages.post_agent_message(channel.id, agent.id, "thread a")
+      {:ok, a_reply} = Messages.thread_reply(a.id, {:agent, agent.id}, "in a")
+      {:ok, b} = Messages.post_agent_message(channel.id, agent.id, "thread b")
+
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: "notes.md",
+          source: {:binary, "# notes"},
+          user_id: user.id
+        })
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, a.id)
+      assert has_element?(view, "#thread-composer-form[data-scope='#{a.id}']")
+      assert has_element?(view, "#thread-scroll[data-scope='#{a.id}']")
+
+      view |> element("#thread-composer-library") |> render_click()
+      view |> element("#library-#{doc.id}") |> render_click()
+      assert has_element?(view, "#thread-composer-picked-#{doc.id}")
+      refute has_element?(view, "#picked-#{doc.id}")
+
+      upload =
+        file_input(view, "#thread-composer-upload-form", :thread_files, [
+          %{name: "shot.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(upload, "shot.png")
+      assert has_element?(view, "#thread-composer-files [id^=thread-composer-upload-]")
+
+      # a link to a reply of the same thread keeps what is in the composer
+      render_patch(view, ChannelLive.thread_path(channel.id, a.id, a_reply.id))
+      assert has_element?(view, "#thread-composer-picked-#{doc.id}")
+      assert has_element?(view, "#thread-composer-files [id^=thread-composer-upload-]")
+
+      # another thread: the picks and uploads go, and the hook drops the draft
+      render_patch(view, ChannelLive.thread_path(channel.id, b.id))
+      refute has_element?(view, "#thread-composer-picked-#{doc.id}")
+      refute has_element?(view, "#thread-composer-files")
+      assert has_element?(view, "#thread-composer-form[data-scope='#{b.id}']")
+      assert has_element?(view, "#thread-scroll[data-scope='#{b.id}']")
+    end
+
+    test "the bell shows the follow your own reply made", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+      assert has_element?(view, "#thread-follow[data-following=false]")
+
+      view
+      |> form("#thread-composer-form", %{"message" => %{"body" => "count me in"}})
+      |> render_submit()
+
+      assert has_element?(view, "#thread-follow[data-following=true]")
+
+      # the next click unfollows: it reads what is stored, not what was shown
+      view |> element("#thread-follow") |> render_click()
+      refute Canopy.Threads.following?(root.id, user)
+      assert has_element?(view, "#thread-follow[data-following=false]")
+    end
+
+    test "a thread read or followed elsewhere updates the dots, the badge, and the bell", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, root} = Messages.post_user_message(channel.id, user.id, "mine")
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "an answer")
+      {:ok, other} = Messages.post_agent_message(channel.id, agent.id, "other")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#thread-unread-#{root.id}")
+      assert has_element?(view, "#rail-threads-badge", "1")
+
+      # another tab (here, the test process) reads the thread
+      :ok = Canopy.Threads.mark_read(root.id, user)
+      refute has_element?(view, "#thread-unread-#{root.id}")
+      refute has_element?(view, "#rail-threads-badge")
+
+      # and follows the open thread elsewhere: the bell follows
+      view |> element("#reply-#{other.id}") |> render_click()
+      assert has_element?(view, "#thread-follow[data-following=false]")
+      :ok = Canopy.Threads.follow(other.id, user, true)
+      assert has_element?(view, "#thread-follow[data-following=true]")
+    end
+
+    test "a deleted document leaves both composers, and a reply outside the panel's window stays out",
+         ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+
+      {:ok, picked} =
+        Canopy.Documents.create(%{filename: "p.md", source: {:binary, "p"}, user_id: user.id})
+
+      {:ok, attached} =
+        Canopy.Documents.create(%{filename: "a.md", source: {:binary, "a"}, user_id: user.id})
+
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+
+      {:ok, oldest} =
+        Messages.thread_reply(root.id, {:agent, agent.id}, "old", attachments: [attached.id])
+
+      for n <- 1..200, do: {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "r#{n}")
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+      refute has_element?(view, "#thread-msg-#{oldest.id}")
+
+      view |> element("#thread-composer-library") |> render_click()
+      view |> element("#library-#{picked.id}") |> render_click()
+      assert has_element?(view, "#thread-composer-picked-#{picked.id}")
+
+      {:ok, _} = Canopy.Documents.delete(picked)
+      {:ok, _} = Canopy.Documents.delete(attached)
+      _ = render(view)
+
+      refute has_element?(view, "#thread-composer-picked-#{picked.id}")
+      refute has_element?(view, "#thread-msg-#{oldest.id}")
+    end
+
+    test "a thread's turn line costs the panel no thread queries; a reply only a few", ctx do
+      %{channel: channel, agent: agent, session: session} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+
+      test_pid = self()
+      handler = "thread-queries-#{inspect(test_pid)}"
+
+      :telemetry.attach(
+        handler,
+        [:canopy, :repo, :query],
+        fn _event, _measure, meta, _ -> send(test_pid, {:query, self(), meta.source}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      {:ok, _} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_started",
+          ref_id: session.id,
+          thread_id: root.id,
+          in_channel: false,
+          payload: %{}
+        })
+
+      _ = render(view)
+      assert view_queries(view.pid) == []
+
+      {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "a reply")
+      _ = render(view)
+      queries = view_queries(view.pid)
+      # one summary (counts, last reply, participants), the read mark, the
+      # follow state, the root's row, and the unread map Nav refreshes once
+      assert Enum.count(queries, &(&1 == "thread_reads")) <= 3
+      assert length(queries) <= 12
     end
 
     test "a command cannot be sent in a thread", ctx do
       %{channel: channel, agent: agent} = ctx
       {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
 
-      {:ok, view, _html} = open(conn_of(ctx), channel)
-      view |> element("#reply-#{root.id}") |> render_click()
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
 
       html =
         view
-        |> form("#composer-form", %{"message" => %{"body" => "/handoff @#{agent.name} take it"}})
+        |> form("#thread-composer-form", %{
+          "message" => %{"body" => "/handoff @#{agent.name} take it"}
+        })
         |> render_submit()
 
       assert html =~ "commands cannot be sent in a thread"
+      assert [_root] = Messages.list_thread(root.id)
     end
+  end
+
+  defp view_queries(pid) do
+    receive do
+      {:query, ^pid, source} -> [source | view_queries(pid)]
+      {:query, _other, _source} -> view_queries(pid)
+    after
+      0 -> []
+    end
+  end
+
+  defp send_turn_thread(channel_id, agent_id, thread_id) do
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        Timeline.topic(channel_id),
+        {:turn_thread, agent_id, thread_id}
+      )
+  end
+
+  defp tool_data do
+    %{
+      call_id: "c1",
+      tool: "read",
+      status: :running,
+      input: %{"filePath" => "lib/a.ex"},
+      title: nil,
+      message_id: "m",
+      part_id: "p1"
+    }
   end
 
   describe "questions" do

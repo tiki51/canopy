@@ -36,10 +36,10 @@ const sidebarChannel = (page: Page, name: string) =>
 const sidebarDm = (page: Page, name: string) =>
   page.locator("#sidebar-dms a", { hasText: name }).first();
 
-/** Expands every "N replies" toggle on the page. */
-async function openThreads(page: Page) {
-  const toggles = page.locator('[id^="thread-toggle-"]');
-  for (let i = 0; i < (await toggles.count()); i++) await toggles.nth(i).click();
+/** Opens the first thread on the page in the side panel, from its summary row. */
+async function openThread(page: Page) {
+  await page.locator('[id^="thread-summary-"]').first().click();
+  await expect(page.locator("#thread-panel")).toBeVisible();
 }
 
 async function dismissFlash(page: Page) {
@@ -172,8 +172,14 @@ test.describe("screenshots for the user guide", () => {
     // -- A thread and a schedule in the other repository -------------------------
     await sidebarChannel(page, "checkout-latency").click();
     await expect(timeline(page)).toContainText("priceCart");
-    await openThreads(page);
+    await openThread(page);
     await shot(page, "channel-thread");
+
+    // -- The Threads inbox: the latency thread has replies Priya has not read --
+    await page.locator("#thread-panel-close").click();
+    await page.locator("#rail-threads").click();
+    await expect(page.locator('[id^="thread-row-"]').first()).toContainText("priceCart");
+    await shot(page, "threads-inbox");
 
     // -- Asking for feedback on an image -------------------------------------------
     await sidebarChannel(page, "brand-logo").click();

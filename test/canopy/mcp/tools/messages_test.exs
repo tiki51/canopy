@@ -130,12 +130,14 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert {:ok, text} = call(MessagesRead, %{thread: m4.id}, ctx)
       ids = Regex.scan(~r/^\[(msg_[^\]]+)\]/m, text) |> Enum.map(&List.last/1)
       assert ids == [m4.id, reply.id]
+      assert text =~ "thread [#{m4.id}] in ##{ctx.channel.name}: 1 reply, oldest first"
       assert text =~ "(in thread #{m4.id}): in the thread"
 
-      # anchored reads move the marker too: the thread read saw the reply (the
-      # newest message), so only what comes after it is new
+      # anchored reads move the marker too (the around read saw up to m6); a
+      # thread read does not, so what came after m6 is still new
       assert {:ok, text} = call(MessagesRead, %{}, ctx)
-      assert text =~ "nothing new since your last read"
+      assert text =~ "3 new message(s) since your last read"
+      assert text =~ "[#{m7.id}]" and text =~ "[#{m8.id}]" and text =~ "[#{reply.id}]"
       m9 = post(ctx, "message 9")
       assert {:ok, text} = call(MessagesRead, %{}, ctx)
       assert text =~ "1 new message(s) since your last read"
@@ -195,6 +197,69 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert reply.thread_id == root.id
       assert reply.agent_id == ctx.agent.id
       assert reply.kind == "thread_reply"
+    end
+
+    test "also_send_to_channel shows the reply in the channel feed too", ctx do
+      root = post(ctx, "root")
+
+      assert {:ok, text} =
+               call(
+                 ThreadReply,
+                 %{message_id: root.id, text: "conclusion", also_send_to_channel: true},
+                 ctx
+               )
+
+      assert text =~
+               "in thread [#{root.id}] in ##{ctx.channel.name} (also in ##{ctx.channel.name})"
+
+      [_, id] = Regex.run(~r/replied \[(msg_[^\]]+)\]/, text)
+      assert %{sent_to_channel: true, thread_id: thread_id} = Messages.get!(id)
+      assert thread_id == root.id
+      assert %{in_channel: true} = Canopy.Timeline.for_message(id)
+
+      assert {:ok, text} = call(ThreadReply, %{message_id: root.id, text: "detail"}, ctx)
+      refute text =~ "also in"
+
+      assert {:ok, read} = call(MessagesRead, %{thread: root.id}, ctx)
+
+      assert read =~
+               "[#{id}] @#{ctx.agent.name} (just now) (in thread #{root.id}, also sent to channel)"
+    end
+
+    test "a thread read leaves the channel's read marker alone", ctx do
+      root = post(ctx, "root")
+      assert {:ok, _} = call(MessagesRead, %{}, ctx)
+
+      # a channel message arrives, then a newer reply in the thread
+      channel_news = post(ctx, "news in the channel")
+
+      {:ok, reply} =
+        Messages.thread_reply(root.id, {:agent, ctx.other.id}, "newer, in the thread")
+
+      assert {:ok, text} = call(MessagesRead, %{thread: root.id}, ctx)
+      assert text =~ reply.id
+
+      # the plain read still returns the channel message the thread read skipped
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "[#{channel_news.id}]"
+    end
+
+    test "messages_read thread: takes any id in the thread and shows its latest replies", ctx do
+      root = post(ctx, "root")
+
+      replies =
+        for n <- 1..12 do
+          {:ok, reply} = Messages.thread_reply(root.id, {:agent, ctx.other.id}, "reply #{n}")
+          reply
+        end
+
+      assert {:ok, text} = call(MessagesRead, %{thread: hd(replies).id, limit: 3}, ctx)
+      assert text =~ "thread [#{root.id}] in ##{ctx.channel.name}: 12 replies, showing the last 3"
+      ids = Regex.scan(~r/^\[(msg_[^\]]+)\]/m, text) |> Enum.map(&List.last/1)
+      assert ids == [root.id | replies |> Enum.take(-3) |> Enum.map(& &1.id)]
+
+      assert {:ok, text} = call(MessagesRead, %{thread: "msg_nothing"}, ctx)
+      assert text =~ "no thread with message msg_nothing here"
     end
 
     test "refuses unknown messages and threads in channels the caller cannot see", ctx do

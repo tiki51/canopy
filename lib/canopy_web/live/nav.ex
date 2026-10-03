@@ -3,7 +3,9 @@ defmodule CanopyWeb.Nav do
   `on_mount` hook for every LiveView: loads what the sidebar needs and tracks the
   current path so the layout can highlight the active item.
 
-  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`, `:attention`
+  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`,
+  `:threads_unread` (followed threads with unread replies, for the rail's Threads badge) and
+  `:thread_unread_summary` (`Canopy.Unread.thread_summary/1`), `:attention`
   (question and permission cards waiting on the user, per channel), `:current_path`,
   `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
@@ -20,6 +22,7 @@ defmodule CanopyWeb.Nav do
     Hold,
     Repositories,
     Schedules,
+    Threads,
     Timeline,
     Unread,
     Users
@@ -29,6 +32,7 @@ defmodule CanopyWeb.Nav do
     if connected?(socket) do
       Channels.subscribe()
       Timeline.subscribe_all()
+      Threads.subscribe_reads()
       Schedules.subscribe()
       Hold.subscribe()
     end
@@ -69,8 +73,20 @@ defmodule CanopyWeb.Nav do
 
   defp handle_event(_event, _params, socket), do: {:cont, socket}
 
-  @doc "Reloads the per-channel unread and mention counts for the sidebar."
-  def refresh_unread(socket), do: assign(socket, :unread, Unread.summary(Users.local()))
+  @doc """
+  Reloads the per-channel unread and mention counts for the sidebar, and the
+  number of followed threads with unread replies for the rail.
+  """
+  def refresh_unread(socket) do
+    user = Users.local()
+    threads = Unread.thread_summary(user)
+
+    socket
+    |> assign(:unread, Unread.summary(user))
+    |> assign(:threads_unread, map_size(threads))
+    # the whole map, so a view that shows per-thread dots needs no query of its own
+    |> assign(:thread_unread_summary, threads)
+  end
 
   @doc "Reloads the per-channel cards waiting on the user, for the sidebar."
   def refresh_attention(socket), do: assign(socket, :attention, Attention.summary())
@@ -84,6 +100,10 @@ defmodule CanopyWeb.Nav do
   # already reflects that.
   defp handle_info({:timeline_any, %{event_type: "message"}}, socket),
     do: {:halt, refresh_unread(socket)}
+
+  # A thread read, followed, or unfollowed elsewhere (another tab): the badge
+  # follows, and the page may want it too (dots, the inbox).
+  defp handle_info({:thread_reads, _root_id}, socket), do: {:cont, refresh_unread(socket)}
 
   # A question or permission card raised, answered, or detached anywhere: the
   # "needs you" badges follow, so a card in a channel nobody is looking at is seen.

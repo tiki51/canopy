@@ -5,11 +5,17 @@ defmodule Canopy.Unread do
 
   Reading is coarse on purpose: having the channel open counts as reading
   everything in it. System notes and the user's own messages never count.
+
+  A reply that stays in its thread does not make the channel unread, unless
+  it mentions the user; one also sent to the channel does. Threads have their
+  own read state (`Canopy.Threads`): `thread_summary/1` counts the unread
+  replies in the threads the user follows.
   """
 
   import Ecto.Query
 
   alias Canopy.Repo
+  alias Canopy.Threads.ThreadRead
   alias Canopy.Unread.ChannelRead
   alias Canopy.Users.User
 
@@ -33,25 +39,62 @@ defmodule Canopy.Unread do
   @doc """
   Unread counts for every channel that has any, keyed by channel id. A message
   mentions the user when it contains `@` followed by their display name, in any
-  case.
+  case (`mentions?/2`, recorded on the message when it is posted).
   """
   @spec summary(User.t()) :: summary
-  def summary(%User{id: user_id, display_name: name}) do
-    needle = "@" <> String.downcase(name || "")
-
+  def summary(%User{id: user_id}) do
     from(m in Canopy.Messages.Message,
       left_join: r in ChannelRead,
       on: r.channel_id == m.channel_id and r.user_id == ^user_id,
       where: not is_nil(m.agent_id) and m.kind != "system",
       where: is_nil(r.last_read_at) or m.inserted_at > r.last_read_at,
+      where: is_nil(m.thread_id) or m.sent_to_channel or m.mentions_user,
       group_by: m.channel_id,
       select:
         {m.channel_id, count(m.id),
-         sum(fragment("CASE WHEN instr(lower(?), ?) > 0 THEN 1 ELSE 0 END", m.body, ^needle))}
+         sum(fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.mentions_user))}
     )
     |> Repo.all()
     |> Map.new(fn {channel_id, count, mentions} ->
       {channel_id, %{count: count, mentions: mentions || 0}}
     end)
+  end
+
+  @doc """
+  The followed threads with replies the user has not read, keyed by root id:
+  `%{root_id => %{channel_id, count}}`. Only agents' replies count, as in
+  `summary/1`; a thread never opened since it was followed counts every one.
+  """
+  @spec thread_summary(User.t()) :: %{
+          optional(String.t()) => %{channel_id: String.t(), count: pos_integer}
+        }
+  def thread_summary(%User{id: user_id}) do
+    from(r in ThreadRead,
+      join: m in Canopy.Messages.Message,
+      on: m.thread_id == r.root_id,
+      where: r.user_id == ^user_id and r.following == true,
+      where: not is_nil(m.agent_id) and m.kind != "system",
+      where: is_nil(r.last_read_at) or m.inserted_at > r.last_read_at,
+      group_by: [r.root_id, m.channel_id],
+      select: {r.root_id, m.channel_id, count(m.id)}
+    )
+    |> Repo.all()
+    |> Map.new(fn {root_id, channel_id, count} ->
+      {root_id, %{channel_id: channel_id, count: count}}
+    end)
+  end
+
+  @doc "True when `body` mentions the user as `@` + their display name, in any case."
+  def mentions?(body, %User{} = user) when is_binary(body),
+    do: String.contains?(String.downcase(body), needle(user))
+
+  def mentions?(_body, _user), do: false
+
+  # A blank display name would make every `@` a mention; it matches nothing.
+  defp needle(%User{display_name: name}) do
+    case String.trim(name || "") do
+      "" -> "@\u0000"
+      name -> "@" <> String.downcase(name)
+    end
   end
 end

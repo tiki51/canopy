@@ -67,4 +67,41 @@ defmodule Canopy.TimelineTest do
 
     assert Timeline.get!(e1.id).message.id == m1.id
   end
+
+  test "the channel scope leaves out what only a thread shows; list_thread/2 is the thread" do
+    %{channel: channel, agent: agent, user: user, session: session} = scenario()
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+    {:ok, quiet} = Messages.thread_reply(root.id, {:agent, agent.id}, "quiet")
+    {:ok, loud} = Messages.thread_reply(root.id, {:agent, agent.id}, "loud", to_channel: true)
+
+    {:ok, turn} =
+      Timeline.record(%{
+        channel_id: channel.id,
+        agent_id: agent.id,
+        event_type: "agent_turn_completed",
+        ref_id: session.id,
+        thread_id: root.id,
+        in_channel: false,
+        payload: %{}
+      })
+
+    {:ok, after_root} = Messages.post_user_message(channel.id, user.id, "after")
+
+    assert Enum.map(Timeline.list(channel.id, scope: :channel), & &1.ref_id) ==
+             [root.id, loud.id, after_root.id]
+
+    assert length(Timeline.list(channel.id)) == 5
+
+    thread = Timeline.list_thread(root.id)
+    assert Enum.map(thread, & &1.id) == Enum.map(thread, & &1.id) |> Enum.sort()
+    assert [%{ref_id: root_id} | rest] = thread
+    assert root_id == root.id
+    assert Enum.map(rest, &(&1.ref_id || &1.id)) == [quiet.id, loud.id, session.id]
+    assert List.last(rest).id == turn.id
+
+    # the newest events of a long thread, after the root
+    assert [%{ref_id: ^root_id}, %{id: last_id}] = Timeline.list_thread(root.id, limit: 1)
+    assert last_id == turn.id
+    assert Timeline.list_thread("msg_missing") == []
+  end
 end
