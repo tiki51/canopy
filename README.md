@@ -128,6 +128,11 @@ touching the agents you changed.
 
 ### 2. Connect an engine
 
+The first time you open Canopy, a short setup walks you through steps 2 and 3: your name, a
+look, which engines are ready and a default model for each, how much agents may do on their
+own, and your first project. Skip it, or run it again any time from **Settings**. The rest
+of this section is what it checks, for when an engine isn't ready.
+
 **Claude Code (recommended).** Open **Settings** from the gear in the rail and find the
 *Claude Code* panel. The defaults assume `claude` is on your `PATH`. Press **Check Claude
 Code**; Canopy runs the binary and reports its version and whether it is logged in. Two

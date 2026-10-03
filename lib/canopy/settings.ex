@@ -158,6 +158,24 @@ defmodule Canopy.Settings do
      |> Ecto.Changeset.add_error(field, "#{engine} #{message}")}
   end
 
+  # -- First-run setup ----------------------------------------------------------
+
+  @doc "Whether first-run setup (`/welcome`) has been finished or skipped."
+  def onboarded?, do: not is_nil(get().onboarded_at)
+
+  @doc """
+  Records that setup was finished or skipped, so `/` stops sending the user to
+  `/welcome`. Running setup again stamps it again.
+  """
+  def mark_onboarded do
+    get()
+    |> Ecto.Changeset.change(onboarded_at: DateTime.utc_now())
+    |> Repo.update()
+  end
+
+  @doc "Whether the user has replaced the default display name (\"You\")."
+  def user_named?, do: get().user_display_name not in [nil, "", "You"]
+
   @doc "Replaces the MCP token. Callers must re-register the MCP entry with OpenCode."
   def rotate_mcp_token do
     result =

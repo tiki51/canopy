@@ -34,8 +34,11 @@ if [ ! -d "$REPO/.git" ]; then
   git -C "$REPO" -c user.email=e2e@canopy.local -c user.name=e2e commit -q -m "init"
 fi
 
+# Setup counts as done, so `/` behaves as on an existing install; the
+# onboarding spec drives /welcome itself.
 mix run -e "
   {:ok, _} = Canopy.Settings.update(%{opencode_url: \"$FAKE_URL\"})
+  {:ok, _} = Canopy.Settings.mark_onboarded()
   Canopy.Repositories.get_by_path(\"$REPO\") ||
     ({:ok, _} = Canopy.Repositories.create(%{name: \"e2e-repo\", path: \"$REPO\"}))
 "

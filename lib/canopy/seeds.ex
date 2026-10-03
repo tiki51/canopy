@@ -11,7 +11,36 @@ defmodule Canopy.Seeds do
     IO.puts("settings: opencode_url=#{settings.opencode_url}")
     IO.puts("user: #{user.display_name} (#{user.id})")
 
-    agents = [
+    for attrs <- starter_agents() do
+      case Agents.get_by_name(attrs.name) do
+        nil ->
+          {:ok, agent} = Agents.create(attrs)
+          IO.puts("created agent @#{agent.name}")
+
+        agent ->
+          IO.puts("agent @#{agent.name} already exists")
+      end
+    end
+
+    # The cost auditor answers "Request audit" on the Costs page.
+    case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
+      {nil, %{id: id}} ->
+        {:ok, _} = Canopy.Costs.Auditor.assign(id)
+        IO.puts("assigned @finops as the cost auditor")
+
+      _ ->
+        :ok
+    end
+  end
+
+  @doc """
+  The names of the starter agents. First-run setup moves those still on
+  OpenCode with no model to Claude Code when only Claude Code works.
+  """
+  def agent_names, do: Enum.map(starter_agents(), & &1.name)
+
+  defp starter_agents do
+    [
       %{
         name: "backend",
         group: "Engineering",
@@ -233,26 +262,5 @@ defmodule Canopy.Seeds do
         """
       }
     ]
-
-    for attrs <- agents do
-      case Agents.get_by_name(attrs.name) do
-        nil ->
-          {:ok, agent} = Agents.create(attrs)
-          IO.puts("created agent @#{agent.name}")
-
-        agent ->
-          IO.puts("agent @#{agent.name} already exists")
-      end
-    end
-
-    # The cost auditor answers "Request audit" on the Costs page.
-    case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
-      {nil, %{id: id}} ->
-        {:ok, _} = Canopy.Costs.Auditor.assign(id)
-        IO.puts("assigned @finops as the cost auditor")
-
-      _ ->
-        :ok
-    end
   end
 end

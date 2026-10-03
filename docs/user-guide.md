@@ -117,23 +117,53 @@ If you use OpenCode, start it in a second terminal and leave it running:
 opencode serve --port 4096
 ```
 
-Then, in the browser:
-
-1. **Settings**: for Claude Code, press *Check Claude Code* in its panel. For OpenCode,
-   confirm the URL, press *Check connection*, and **install the identity plugin** once
-   (Settings explains where); it stamps the OpenCode session id into every Canopy tool
-   call so Canopy knows which agent is speaking. Restart `opencode serve` afterwards.
-   Then pick a **default model** per engine in the same panels (and Claude Code's default
-   effort): every agent without a model of its own runs on it.
-2. **Agents**: pick each agent's engine, and override the model per agent only where it
-   needs a different one. Claude Code agents also take a permission mode.
-3. **Repositories**: add a project folder.
-4. **New channel**: pick the repository, the members, and an owner. Post a message. The
-   owner wakes up, works, and posts back.
-
 Canopy binds to `127.0.0.1` only. There is no login, so keep it that way unless you are
 on a network you trust: when running from source, `CANOPY_BIND=0.0.0.0 mix phx.server`
 opts in for one run. The Homebrew build always stays on loopback.
+
+### First-run setup
+
+The first time you open Canopy, a short setup asks six things, one per page:
+
+1. **Your name**: what agents call you, prefilled from your global git `user.name` when
+   there is one.
+2. **A look**: light, dark, or following the system, and one of the four palettes. It applies
+   as you click and is kept in this browser.
+3. **Your engines**: Canopy checks both engines at once. Claude Code shows its version and
+   the account it is logged in as; OpenCode shows its version and URL. Below them, pick the
+   **default model** for each engine that answered (and Claude Code's default effort);
+   agents without a model of their own run on it. The OpenCode model list comes from
+   OpenCode itself, so it stays disabled until OpenCode answers. When only Claude Code is
+   ready, *Move the starter agents to Claude Code* (ticked) puts the seeded agents that are
+   still on OpenCode with no model of their own onto Claude Code, so they can answer.
+4. **How much agents do on their own**: a preset for the brakes (see
+   [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
+   *Custom* to set them yourself.
+5. **Your first project**: a folder on this Mac. A folder that is not a git repository yet
+   gets `git init`. *Skip this step* if you would rather add one later.
+6. **You're set**: a summary, each line linking to its place in Settings. *Start a channel*
+   opens New channel with your project already picked; *Look around first* opens Agents.
+
+Every step saves when you press *Continue*, so closing the tab halfway keeps what you chose.
+*Skip setup* (top right) ends it at once; either way it does not come back by itself.
+**Settings → Run setup again** reopens it, prefilled with your current choices.
+
+If setup says an engine isn't ready:
+
+- **Claude Code not found**: install it, or give the path to `claude` in the field that
+  appears and press *Check*; a path that works is saved as the binary. Under `brew
+  services`, Canopy uses your login shell's `PATH`; set `CANOPY_PATH` if it still can't
+  find it. **Not logged in**: run `claude` once in a terminal, then *Check again*.
+- **OpenCode not running**: start `opencode serve --port 4096`, then *Check again*. A
+  server somewhere else is set in Settings → OpenCode server. Also **install the identity
+  plugin** once (Settings explains where); it stamps the OpenCode session id into every
+  Canopy tool call so Canopy knows which agent is speaking. Restart `opencode serve`
+  afterwards.
+- **Neither**: you can still finish; agents won't reply until one engine works.
+
+Then post your first message in the new channel. The owner wakes up, works, and posts back.
+Each agent's engine and model can be changed on the Agents page; override the model only
+where an agent needs a different one. Claude Code agents also take a permission mode.
 
 ### The layout
 
@@ -155,7 +185,9 @@ with a count when it has scheduled tasks.
 
 ## 3. Settings
 
-Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
+Settings is where Canopy meets OpenCode. Open it from the gear in the rail. **Run setup
+again**, top right, reopens [first-run setup](#first-run-setup) with your current choices
+filled in.
 
 ![Settings, light](user-guide/images/settings-light.png)
 
@@ -185,7 +217,11 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
   turn already running keeps its model.
 - **You**: the display name on your messages. Agents mention you with it, and the
   sidebar's mention badges count those.
-- **Conversation**: the brakes, both optional. *One agent at a time per channel* makes
+- **Conversation**: the brakes, both optional. Three preset cards at the top set them in
+  one click (*Careful*, *Balanced*, *Autonomous*; see
+  [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)); the card
+  in force is ticked, and a *custom* tag shows when the controls below match none of them.
+  *One agent at a time per channel* makes
   agents woken together take turns instead of running at once (an agent waiting on your
   answer to a card does not count; see [Questions](#questions)). *Minutes a Claude Code
   question waits for you* (10 by default, up to 29, since Claude Code itself gives up on a
@@ -688,6 +724,19 @@ can optionally be paused after a set number of agent turns without you. When tha
 and the number is reached, the channel holds further wake-ups, posts a note, and shows a
 **Continue** bar above the composer; your next message, or Continue, resets the count.
 Both behaviours live under Settings → Conversation.
+
+Three presets set both at once, in first-run setup and at the top of Settings →
+Conversation:
+
+| Preset | One at a time | Pause after |
+|---|---|---|
+| **Careful** | on | 3 agent turns without you |
+| **Balanced** (the default) | on | 6 agent turns without you |
+| **Autonomous** | off | never: agents keep going until the work is done or you step in |
+
+Autonomous is the fastest and spends the most tokens, so keep an eye on the Costs page.
+Agents running side by side also share the repository's working tree, so their edits and
+test runs can collide. Anything else is *Custom*: set the controls yourself.
 
 ---
 

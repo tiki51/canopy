@@ -14,6 +14,8 @@ defmodule CanopyWeb.SettingsLive do
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
+  alias Canopy.Settings.Presets
+  alias CanopyWeb.{AppearanceComponents, PresetComponents}
 
   @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
 
@@ -228,6 +230,27 @@ defmodule CanopyWeb.SettingsLive do
 
       {:error, changeset} ->
         {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
+    end
+  end
+
+  # A preset card saves its brakes at once.
+  def handle_event("apply_preset", %{"preset" => id}, socket) do
+    case Presets.get(id) do
+      nil ->
+        {:noreply, socket}
+
+      preset ->
+        case Settings.update(preset.attrs) do
+          {:ok, setting} ->
+            {:noreply,
+             socket
+             |> assign(:setting, setting)
+             |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
+             |> put_flash(:info, "#{preset.name} preset saved. #{chatter_saved(setting)}")}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Could not apply the #{preset.name} preset.")}
+        end
     end
   end
 
@@ -448,6 +471,11 @@ defmodule CanopyWeb.SettingsLive do
         title="Settings"
         subtitle="Engines, your name, appearance, and the MCP bridge"
       >
+        <:actions>
+          <.link navigate={~p"/welcome"} id="run-setup" class="btn btn-soft btn-sm">
+            <.icon name="hero-sparkles" class="size-4" /> Run setup again
+          </.link>
+        </:actions>
         <Layouts.panel
           id="opencode-panel"
           title="OpenCode server"
@@ -690,6 +718,23 @@ defmodule CanopyWeb.SettingsLive do
           title="Conversation"
           description="Agents wake each other by mentioning and by replying to the owner. This is the brake."
         >
+          <:actions>
+            <span
+              :if={Presets.match(@setting) == :custom}
+              id="chatter-custom"
+              class="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-medium text-base-content/70"
+            >
+              custom
+            </span>
+          </:actions>
+          <PresetComponents.preset_cards
+            id="chatter-presets"
+            selected={Presets.match(@setting)}
+            event="apply_preset"
+          />
+          <p class="mt-2 mb-4 text-xs text-base-content/60">
+            A preset sets the controls below at once; change them one by one for anything in between.
+          </p>
           <.form
             for={@chatter_form}
             id="chatter-form"
@@ -1039,54 +1084,9 @@ defmodule CanopyWeb.SettingsLive do
     """
   end
 
-  # Palettes offered in Settings → Appearance. The CSS lives in app.css and the
-  # ids are repeated in the <head> script of root.html.heex. `selected` spells
-  # the classes out per id so Tailwind sees them.
-  @palettes [
-    %{
-      id: "blue-hour",
-      name: "Blue Hour Jungle",
-      description: "Night navy, jungle green, sky-blue links.",
-      default: true,
-      selected:
-        "[[data-palette=blue-hour]_&]:border-transparent [[data-palette=blue-hour]_&]:ring-2 [[data-palette=blue-hour]_&]:ring-primary",
-      check: "[[data-palette=blue-hour]_&]:block"
-    },
-    %{
-      id: "moss",
-      name: "Moss & Paper",
-      description: "Warm paper and olive, moss green, clay links.",
-      default: false,
-      selected:
-        "[[data-palette=moss]_&]:border-transparent [[data-palette=moss]_&]:ring-2 [[data-palette=moss]_&]:ring-primary",
-      check: "[[data-palette=moss]_&]:block"
-    },
-    %{
-      id: "graphite",
-      name: "Graphite",
-      description: "Neutral greys with a single indigo accent.",
-      default: false,
-      selected:
-        "[[data-palette=graphite]_&]:border-transparent [[data-palette=graphite]_&]:ring-2 [[data-palette=graphite]_&]:ring-primary",
-      check: "[[data-palette=graphite]_&]:block"
-    },
-    %{
-      id: "ember",
-      name: "Ember",
-      description: "Cream and roast brown, orange actions, teal links.",
-      default: false,
-      selected:
-        "[[data-palette=ember]_&]:border-transparent [[data-palette=ember]_&]:ring-2 [[data-palette=ember]_&]:ring-primary",
-      check: "[[data-palette=ember]_&]:block"
-    }
-  ]
-
-  # Mode and palette live in this browser's localStorage and are applied by the
-  # <head> script, so the panel holds no server state: the selected mode and
-  # palette are styled from the attributes on <html>, like the rail's toggle.
+  # Mode and palette live in this browser's localStorage, so the panel holds no
+  # server state (see `CanopyWeb.AppearanceComponents`).
   defp appearance_panel(assigns) do
-    assigns = assign(assigns, palettes: @palettes)
-
     ~H"""
     <Layouts.panel
       id="appearance-panel"
@@ -1094,144 +1094,13 @@ defmodule CanopyWeb.SettingsLive do
       description="How Canopy looks in this browser. The rail's sun/moon switch changes the same setting."
     >
       <div class="flex flex-col gap-5">
-        <div>
-          <div
-            id="appearance-mode-label"
-            class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-base-content/60"
-          >
-            Mode
-          </div>
-          <div class="join" role="group" aria-labelledby="appearance-mode-label">
-            <button
-              type="button"
-              id="appearance-mode-system"
-              class="btn btn-sm join-item border-base-300 [[data-theme-source=system]_&]:bg-primary/15 [[data-theme-source=system]_&]:text-primary [[data-theme-source=system]_&]:border-primary/40"
-              phx-click={JS.dispatch("phx:set-theme")}
-              data-phx-theme="system"
-            >
-              <.icon name="hero-computer-desktop-micro" class="size-4" /> System
-            </button>
-            <button
-              type="button"
-              id="appearance-mode-light"
-              class="btn btn-sm join-item border-base-300 [[data-theme=light][data-theme-source=user]_&]:bg-primary/15 [[data-theme=light][data-theme-source=user]_&]:text-primary [[data-theme=light][data-theme-source=user]_&]:border-primary/40"
-              phx-click={JS.dispatch("phx:set-theme")}
-              data-phx-theme="light"
-            >
-              <.icon name="hero-sun-micro" class="size-4" /> Light
-            </button>
-            <button
-              type="button"
-              id="appearance-mode-dark"
-              class="btn btn-sm join-item border-base-300 [[data-theme=dark][data-theme-source=user]_&]:bg-primary/15 [[data-theme=dark][data-theme-source=user]_&]:text-primary [[data-theme=dark][data-theme-source=user]_&]:border-primary/40"
-              phx-click={JS.dispatch("phx:set-theme")}
-              data-phx-theme="dark"
-            >
-              <.icon name="hero-moon-micro" class="size-4" /> Dark
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <div
-            id="appearance-palette-label"
-            class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-base-content/60"
-          >
-            Palette
-          </div>
-          <div
-            id="appearance-palettes"
-            class="grid gap-3 sm:grid-cols-2"
-            role="radiogroup"
-            aria-labelledby="appearance-palette-label"
-            phx-update="ignore"
-            phx-hook=".PaletteRadios"
-          >
-            <button
-              :for={palette <- @palettes}
-              type="button"
-              id={"palette-#{palette.id}"}
-              role="radio"
-              aria-checked="false"
-              data-phx-palette={palette.id}
-              phx-click={JS.dispatch("phx:set-palette")}
-              class={[
-                "group relative flex cursor-pointer flex-col gap-2 rounded-xl border border-base-300 bg-base-200 p-3 text-left transition hover:border-base-content/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                palette.selected
-              ]}
-            >
-              <div
-                class="flex h-20 overflow-hidden rounded-lg border border-base-300"
-                aria-hidden="true"
-              >
-                <.palette_preview palette={palette.id} mode="light" />
-                <.palette_preview palette={palette.id} mode="dark" />
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-semibold">{palette.name}</span>
-                <span
-                  :if={palette.default}
-                  class="rounded-full bg-base-300/70 px-1.5 py-0.5 text-[11px] font-medium text-base-content/70"
-                >
-                  Default
-                </span>
-                <.icon
-                  name="hero-check-circle-mini"
-                  class={["ml-auto hidden size-4 text-primary", palette.check]}
-                />
-              </div>
-              <p class="text-xs text-base-content/60">{palette.description}</p>
-            </button>
-          </div>
-          <script :type={Phoenix.LiveView.ColocatedHook} name=".PaletteRadios">
-            export default {
-              mounted() {
-                const current = document.documentElement.dataset.palette
-                const radios = [...this.el.querySelectorAll("[role=radio]")]
-                radios.forEach((el) => el.setAttribute("aria-checked", String(el.dataset.phxPalette === current)))
-                // Arrow keys move between cards, as in a native radio group.
-                this.el.addEventListener("keydown", (e) => {
-                  const step = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[e.key]
-                  if (!step) return
-                  e.preventDefault()
-                  const next = radios[(radios.indexOf(document.activeElement) + step + radios.length) % radios.length]
-                  next.focus()
-                  next.click()
-                })
-              }
-            }
-          </script>
-        </div>
+        <AppearanceComponents.appearance_picker />
 
         <p class="text-xs text-base-content/60">
           Agent colours are set per agent on the Agents page and look the same in every palette.
         </p>
       </div>
     </Layouts.panel>
-    """
-  end
-
-  attr :palette, :string, required: true
-  attr :mode, :string, required: true
-
-  # A miniature of the app painted in one palette and mode, whatever the page uses.
-  defp palette_preview(assigns) do
-    ~H"""
-    <div data-theme={@mode} data-palette={@palette} class="flex flex-1 bg-base-100">
-      <div class="w-2 border-r border-base-300/60 bg-neutral"></div>
-      <div class="flex w-8 flex-col gap-1 border-r border-base-300 bg-base-200 p-1">
-        <div class="h-1 rounded-full bg-base-content/30"></div>
-        <div class="h-1.5 rounded bg-primary/40"></div>
-        <div class="h-1 rounded-full bg-base-content/30"></div>
-        <div class="h-1 rounded-full bg-base-content/30"></div>
-      </div>
-      <div class="flex flex-1 flex-col gap-1 bg-base-100 p-1.5">
-        <div class="h-1 w-3/4 rounded-full bg-base-content/70"></div>
-        <div class="h-1 w-1/2 rounded-full bg-base-content/30"></div>
-        <div class="h-1 w-1/3 rounded-full bg-secondary"></div>
-        <div class="mt-auto h-2 w-5 self-end rounded-sm bg-primary"></div>
-      </div>
-    </div>
     """
   end
 

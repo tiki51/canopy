@@ -40,6 +40,9 @@ defmodule Canopy.Settings.Setting do
     field :claude_default_effort, :string
     field :opencode_default_provider, :string
     field :opencode_default_model, :string
+    # when first-run setup was finished or skipped; nil sends `/` to /welcome.
+    # Set only by `Canopy.Settings.mark_onboarded/0`, never cast.
+    field :onboarded_at, :utc_datetime_usec
 
     timestamps(type: :utc_datetime_usec)
   end

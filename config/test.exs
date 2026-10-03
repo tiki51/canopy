@@ -43,6 +43,10 @@ config :canopy, Oban, testing: :manual
 # Claude Code turns spawn a script that prints canned stream-json (see test/support/fake_claude.sh).
 config :canopy, :claude_code, binary: Path.expand("../test/support/fake_claude.sh", __DIR__)
 
+# First-run setup prefills the display name from `git config --global user.name`;
+# tests answer for git instead of shelling out (see CanopyWeb.OnboardingLive).
+config :canopy, :git_user_name, ""
+
 config :canopy, :opencode,
   base_url: "http://opencode.test",
   client: Canopy.OpenCode.ClientMock,

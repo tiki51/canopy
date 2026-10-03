@@ -26,6 +26,11 @@ defmodule CanopyWeb.Router do
 
     get "/", PageController, :home
 
+    # First-run setup: no sidebar, so none of CanopyWeb.Nav's loading.
+    live_session :onboarding, on_mount: [] do
+      live "/welcome", OnboardingLive
+    end
+
     live_session :default, on_mount: [CanopyWeb.Nav] do
       live "/settings", SettingsLive
       live "/costs", CostsLive

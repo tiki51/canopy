@@ -164,6 +164,10 @@ defmodule Mix.Tasks.Canopy.Demo do
         updated
       end)
 
+    # The engine and model choices are made above, so first-run setup is not
+    # needed; it stays available from Settings.
+    {:ok, _} = Canopy.Settings.mark_onboarded()
+
     channel =
       Canopy.Channels.get_by_name(repository.id, "payment-retries") ||
         Canopy.Channels.create(%{
@@ -193,6 +197,7 @@ defmodule Mix.Tasks.Canopy.Demo do
                   ~/.config/opencode/plugins/canopy.js to cover every repository)
 
     #{next}
+    Run setup any time from Settings.
     """)
   end
 

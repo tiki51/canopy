@@ -149,6 +149,36 @@ defmodule Canopy.Agents do
   @doc "Puts every active agent of the engine on its default effort. Returns how many changed."
   def inherit_default_effort(engine), do: inherit(engine, :effort, effort: nil)
 
+  @doc """
+  How many active agents among `names` are still on `engine` with no model of
+  their own: the ones `move_to_engine/3` would move from it.
+  """
+  def movable_count(names, engine) when is_list(names) and is_binary(engine),
+    do: Repo.aggregate(movable(names, engine), :count)
+
+  @doc """
+  Moves the active agents among `names` that are still on `from_engine` with
+  no model of their own to `to_engine`, where they inherit its default model
+  and effort. Agents the user configured are left alone. Returns how many moved.
+  """
+  def move_to_engine(names, from_engine, to_engine) when is_list(names) do
+    true = to_engine in Canopy.Engine.names()
+
+    {count, _} =
+      Repo.update_all(movable(names, from_engine),
+        set: [engine: to_engine, model_provider: nil, updated_at: DateTime.utc_now()]
+      )
+
+    if count > 0, do: Settings.broadcast_defaults_changed()
+
+    {:ok, count}
+  end
+
+  defp movable(names, engine) do
+    from a in Agent,
+      where: a.name in ^names and a.engine == ^engine and a.active == true and is_nil(a.model_id)
+  end
+
   defp inherit(engine, field, set) do
     {count, _} =
       Repo.update_all(

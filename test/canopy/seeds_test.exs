@@ -26,6 +26,8 @@ defmodule Canopy.SeedsTest do
              "test"
            ]
 
+    assert Enum.sort(Seeds.agent_names()) == Enum.map(Agents.list(), & &1.name)
+
     backend = Agents.get_by_name("backend")
     assert {:ok, _} = Agents.update(backend, %{role: "Customized role"})
     assert {:ok, custom_auditor} = Agents.create(%{name: "custom-auditor"})

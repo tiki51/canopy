@@ -155,5 +155,29 @@ defmodule Canopy.AgentsTest do
       assert Agents.get!(cc_own.id).effort == nil
       assert Agents.get!(cc_own.id).model_id == "opus"
     end
+
+    test "move_to_engine/3 moves only the named agents still on the engine with no model" do
+      bare = agent_fixture(%{name: "bare"})
+      own = agent_fixture(%{name: "own", model_provider: "opencode", model_id: "big-pickle"})
+      moved = agent_fixture(%{name: "moved", engine: "claude_code", model_id: nil})
+      retired = agent_fixture(%{name: "retired", active: false})
+      other = agent_fixture(%{name: "not-a-starter"})
+
+      names = ["bare", "own", "moved", "retired"]
+      assert Agents.movable_count(names, "opencode") == 1
+
+      Settings.subscribe()
+      assert {:ok, 1} = Agents.move_to_engine(names, "opencode", "claude_code")
+      assert_receive {:settings, :default_models_changed}
+
+      assert %{engine: "claude_code", model_id: nil, model_provider: nil} = Agents.get!(bare.id)
+      assert Agents.get!(own.id).engine == "opencode"
+      assert Agents.get!(moved.id).engine == "claude_code"
+      assert Agents.get!(retired.id).engine == "opencode"
+      assert Agents.get!(other.id).engine == "opencode"
+
+      assert {:ok, 0} = Agents.move_to_engine(names, "opencode", "claude_code")
+      refute_receive {:settings, :default_models_changed}, 50
+    end
   end
 end

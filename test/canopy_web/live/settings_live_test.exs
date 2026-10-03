@@ -289,6 +289,38 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert Canopy.Settings.chatter_limit() == nil
   end
 
+  test "Run setup again opens first-run setup", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    assert has_element?(view, "a#run-setup[href='/welcome']")
+  end
+
+  test "the conversation presets show the one in force and save on a click", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    assert has_element?(view, "#chatter-presets-balanced[aria-checked=true]")
+    refute has_element?(view, "#chatter-custom")
+    # Settings has the controls themselves below, so no Custom card
+    refute has_element?(view, "#chatter-presets-custom")
+
+    view |> element("#chatter-presets-careful") |> render_click()
+    assert %{serialize_turns: true, chatter_pause: true, chatter_limit: 3} = Settings.get()
+    assert has_element?(view, "#chatter-presets-careful[aria-checked=true]")
+    assert has_element?(view, "#chatter-form input[name='setting[chatter_limit]'][value='3']")
+    assert render(view) =~ "Careful preset saved. Channels pause after 3 agent turns"
+
+    view |> element("#chatter-presets-autonomous") |> render_click()
+    refute Settings.serialize_turns?()
+    assert Settings.chatter_limit() == nil
+
+    view
+    |> form("#chatter-form",
+      setting: %{serialize_turns: "true", chatter_pause: "true", chatter_limit: "12"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#chatter-custom")
+    refute has_element?(view, "#chatter-presets [aria-checked=true]")
+  end
+
   test "how long a Claude Code question waits sits next to the turn setting", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings")
 

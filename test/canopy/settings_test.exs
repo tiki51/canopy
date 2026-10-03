@@ -133,4 +133,62 @@ defmodule Canopy.SettingsTest do
       refute_receive {:settings, :default_models_changed}, 50
     end
   end
+
+  describe "first-run setup" do
+    alias Canopy.Repo
+    alias Canopy.Settings.{Presets, Setting}
+
+    test "a fresh row is not onboarded; mark_onboarded/0 stamps it, and again later" do
+      Repo.delete_all(Setting)
+      refute Settings.onboarded?()
+
+      assert {:ok, %{onboarded_at: first}} = Settings.mark_onboarded()
+      assert Settings.onboarded?()
+
+      assert {:ok, %{onboarded_at: second}} = Settings.mark_onboarded()
+      assert DateTime.compare(second, first) == :gt
+    end
+
+    test "onboarded_at is not cast by update/1" do
+      Repo.update_all(Setting, set: [onboarded_at: nil])
+
+      assert {:ok, setting} = Settings.update(%{onboarded_at: DateTime.utc_now()})
+      assert setting.onboarded_at == nil
+      refute Settings.onboarded?()
+    end
+
+    test "user_named?/0 is false while the name is the default" do
+      refute Settings.user_named?()
+      {:ok, _} = Settings.update(%{user_display_name: "Ada"})
+      assert Settings.user_named?()
+    end
+
+    test "Presets.match/1 names the preset a row is on, or :custom" do
+      setting = Settings.get()
+
+      for preset <- Presets.all() do
+        assert Presets.match(struct(setting, preset.attrs)) == preset.id
+      end
+
+      assert Presets.match(setting) == :balanced
+
+      assert Presets.match(%{setting | chatter_limit: 12}) == :custom
+      assert Presets.match(%{setting | serialize_turns: false}) == :custom
+
+      # with pausing off the limit does nothing, so any limit is Autonomous
+      assert Presets.match(%{setting | serialize_turns: false, chatter_pause: false}) ==
+               :autonomous
+    end
+
+    test "every preset's attrs are valid settings" do
+      for preset <- Presets.all() do
+        assert Setting.changeset(Settings.get(), preset.attrs).valid?, inspect(preset.id)
+        assert {:ok, setting} = Settings.update(preset.attrs)
+        assert Presets.match(setting) == preset.id
+      end
+
+      assert Presets.get("careful") == Presets.get(:careful)
+      assert Presets.get("nope") == nil
+    end
+  end
 end

@@ -390,6 +390,98 @@ defmodule CanopyWeb.Layouts do
     """
   end
 
+  @doc """
+  A shell-less layout for first-run setup: a centred column with the Canopy
+  mark, a step rail, the page, and a footer for Back/Continue. No rail or
+  sidebar, so it works the same at every width.
+  """
+  attr :flash, :map, required: true
+  attr :steps, :list, required: true, doc: "`%{id, label, path}` in order"
+  attr :current, :string, required: true, doc: "the id of the step being shown"
+  slot :actions, doc: "top right, e.g. Skip setup"
+  slot :footer
+  slot :inner_block, required: true
+
+  def focus(assigns) do
+    assigns =
+      assign(assigns, :current_index, Enum.find_index(assigns.steps, &(&1.id == assigns.current)))
+
+    ~H"""
+    <div class="min-h-dvh bg-base-100 text-base-content">
+      <div class="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-4 py-6 sm:px-6 sm:py-10">
+        <header class="flex items-center justify-between gap-4">
+          <div class="flex items-center gap-2.5">
+            <img
+              src={~p"/images/canopy-icon-64.png"}
+              alt=""
+              width="32"
+              height="32"
+              class="size-8 rounded-lg shadow-sm"
+            />
+            <span class="text-base font-semibold">Canopy</span>
+          </div>
+          <div :if={@actions != []} class="flex items-center gap-2">
+            {render_slot(@actions)}
+          </div>
+        </header>
+
+        <nav aria-label="Setup steps" class="mt-8">
+          <ol id="welcome-steps" class="flex items-start">
+            <li
+              :for={{step, index} <- Enum.with_index(@steps)}
+              id={"welcome-step-#{step.id}"}
+              data-state={step_state(index, @current_index)}
+              class="flex flex-1 flex-col items-center gap-1.5"
+            >
+              <.link
+                patch={step.path}
+                class="group flex flex-col items-center gap-1.5"
+                aria-current={if index == @current_index, do: "step"}
+              >
+                <span class={[
+                  "flex size-7 items-center justify-center rounded-full border text-xs font-semibold transition",
+                  index < @current_index && "border-primary bg-primary text-primary-content",
+                  index == @current_index &&
+                    "border-primary bg-primary/15 text-primary ring-4 ring-primary/15",
+                  index > @current_index &&
+                    "border-base-300 bg-base-200 text-base-content/60 group-hover:border-base-content/30"
+                ]}>
+                  <.icon :if={index < @current_index} name="hero-check-micro" class="size-4" />
+                  <span :if={index >= @current_index}>{index + 1}</span>
+                </span>
+                <span class={[
+                  "hidden text-[11px] font-medium sm:block",
+                  index == @current_index && "text-base-content",
+                  index != @current_index && "text-base-content/60"
+                ]}>
+                  {step.label}
+                </span>
+              </.link>
+            </li>
+          </ol>
+        </nav>
+
+        <main class="mt-8 flex-1 sm:mt-10">
+          {render_slot(@inner_block)}
+        </main>
+
+        <footer
+          :if={@footer != []}
+          class="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-base-300 pt-4"
+        >
+          {render_slot(@footer)}
+        </footer>
+      </div>
+    </div>
+
+    <.flash_group flash={@flash} />
+    """
+  end
+
+  defp step_state(index, current) when index < current, do: "done"
+  defp step_state(index, current) when index == current, do: "current"
+  defp step_state(_index, _current), do: "upcoming"
+
   @doc false
   def group_slug(group), do: group |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
 

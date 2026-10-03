@@ -17,6 +17,37 @@ the OpenCode *Default provider* to `opencode` and *Default model* to `gpt-5-nano
 seeded agents have no model of their own, so they all follow it.
 The end-to-end run in Phase 9 cost about $0.02 with that model.
 
+## 0b. First-run setup
+
+`mix canopy.demo` marks setup as done, so `/` goes straight to the channel. To see it as a
+fresh install does, use a scratch database:
+
+```bash
+CANOPY_DB=/tmp/canopy-fresh.db mix ecto.create
+CANOPY_DB=/tmp/canopy-fresh.db mix ecto.migrate
+CANOPY_DB=/tmp/canopy-fresh.db mix run priv/repo/seeds.exs
+CANOPY_DB=/tmp/canopy-fresh.db PORT=4001 mix phx.server     # http://localhost:4001
+```
+
+- [ ] `/` redirects to `/welcome`. The name field holds your global git `user.name` (or is
+      empty); a blank name is refused.
+- [ ] Palette and mode apply as you click and survive a reload; the done step names them.
+- [ ] Engines: both cards go green with versions (Claude Code also shows the login email).
+      Stop `opencode serve` and press *Check again*: the OpenCode card explains how to start
+      it, its model picker disappears, and *Move the 13 starter agents to Claude Code* shows.
+      Continue with it ticked moves them (Agents page shows Claude Code).
+- [ ] Pace: *Careful* saves 3 turns; Settings → Conversation then shows Careful ticked.
+- [ ] Project: a plain folder under your home is added with the "initialised" note; *Start
+      a channel* opens New channel with it selected. `/` no longer redirects.
+- [ ] Settings → *Run setup again* opens `/welcome` prefilled; *Skip setup* lands on a
+      channel or Repositories with "Setup skipped".
+
+An existing database is never sent through setup: the migration that adds `onboarded_at`
+stamps a settings row that already exists. To check it, copy a database from before this
+change, run `CANOPY_DB=<copy> mix ecto.migrate`, and confirm
+`sqlite3 <copy> "select onboarded_at from settings"` prints a time
+(`test/canopy/migrations/add_onboarded_at_to_settings_test.exs` covers the same rule).
+
 ## 1. Settings: connection and plugin
 
 Open **Settings** (gear icon in the left rail).
