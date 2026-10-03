@@ -431,6 +431,19 @@ defmodule CanopyWeb.Layouts do
         current_repository_id={@current_repository_id}
       />
 
+      <%!-- Desktop notifications and the "(n)" title prefix
+           (assets/js/hooks/notifier.js): where you are and how much waits
+           on you; the "canopy:notify" notes Nav pushes land here. --%>
+      <div
+        id="canopy-notifier"
+        phx-hook="Notifier"
+        hidden
+        data-channel-id={@current_channel_id}
+        data-attention={attention_total(@attention)}
+        data-attention-channel={attention_channel(@attention)}
+      >
+      </div>
+
       <%!-- Outside #app-nav for the same reason as the DM picker; the dialog
            opens in the top layer anyway. --%>
       <CanopyWeb.CommandPalette.palette
@@ -852,6 +865,19 @@ defmodule CanopyWeb.Layouts do
       {if @state.mentions > 0, do: @state.mentions}
     </span>
     """
+  end
+
+  # Everything waiting on the user, across channels, for the title prefix.
+  defp attention_total(attention),
+    do: attention |> Map.values() |> Enum.map(&Canopy.Attention.total/1) |> Enum.sum()
+
+  # The first channel with something waiting, where a collapsed "more
+  # updates" notification goes.
+  defp attention_channel(attention) do
+    attention
+    |> Enum.filter(fn {_id, entry} -> Canopy.Attention.total(entry) > 0 end)
+    |> Enum.map(fn {id, _entry} -> id end)
+    |> Enum.min(fn -> nil end)
   end
 
   # A channel with question or permission cards, or a playbook sign-off,

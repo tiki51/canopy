@@ -7,9 +7,11 @@
 //                                 or Nav's release_hold on any page)
 //   {dmPicker: true}              opens the "new direct message" modal
 //   {theme: "system"|"light"|"dark"}
+//   {notify: true|false}          the desktop notifications master switch
 //
 // `ctx`: {path, hold, channel: {id, kind, archived} | null, repoId,
-// repos: [{id, name}], playbooks: [{id, name}]}. No DOM here.
+// repos: [{id, name}], playbooks: [{id, name}], notify: "on" | "off" |
+// "blocked" | "unsupported" | null}. No DOM here.
 
 const PAGES = [
   ["search", "Search", "/search", "find messages turns files"],
@@ -42,6 +44,22 @@ const STATIC = [
   {id: "theme-system", label: "Theme: System", keywords: ["appearance", "mode", "auto"], action: {theme: "system"}},
   {id: "theme-light", label: "Theme: Light", keywords: ["appearance", "mode"], action: {theme: "light"}},
   {id: "theme-dark", label: "Theme: Dark", keywords: ["appearance", "mode", "night"], action: {theme: "dark"}},
+  // the wording follows the switch in this browser; blocked still offers "on",
+  // which explains itself in Settings
+  {
+    id: "notify-off",
+    label: "Turn desktop notifications off",
+    keywords: ["notifications", "alerts", "mute", "quiet", "disable"],
+    when: ctx => ctx.notify === "on",
+    action: {notify: false},
+  },
+  {
+    id: "notify-on",
+    label: "Turn desktop notifications on",
+    keywords: ["notifications", "alerts", "unmute", "enable"],
+    when: ctx => ctx.notify === "off" || ctx.notify === "blocked",
+    action: {notify: true},
+  },
   {
     id: "release-hold",
     label: "Release hold",

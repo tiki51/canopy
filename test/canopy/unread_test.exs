@@ -112,4 +112,38 @@ defmodule Canopy.UnreadTest do
     # the same test made the user follow the thread
     assert Threads.following?(root.id, user)
   end
+
+  describe "mentions?/2" do
+    test "matches @ and the display name as a whole name, in any case" do
+      user = %Canopy.Users.User{display_name: "You"}
+
+      for body <- ["@You look", "thanks @you,", "over to @you.", "@YOU", "(@you)"],
+          do: assert(Unread.mentions?(body, user), body)
+
+      for body <- ["@youngblood", "@you_two", "@you-know-who", "you", "@yo u", "no mention"],
+          do: refute(Unread.mentions?(body, user), body)
+    end
+
+    test "a name with spaces or accents, and a blank name that matches nothing" do
+      assert Unread.mentions?("ping @steven barber please", %Canopy.Users.User{
+               display_name: "Steven Barber"
+             })
+
+      assert Unread.mentions?("@ZOË?", %Canopy.Users.User{display_name: "Zoë"})
+      refute Unread.mentions?("@Zoëy", %Canopy.Users.User{display_name: "Zoë"})
+      refute Unread.mentions?("@ anyone", %Canopy.Users.User{display_name: "  "})
+      refute Unread.mentions?(nil, %Canopy.Users.User{display_name: "You"})
+    end
+
+    test "a message to @youngblood no longer counts as a mention of You" do
+      %{channel: channel, agent: agent, user: user} = scenario()
+      :ok = Unread.mark_read(channel.id, user)
+      {:ok, a} = Messages.post_agent_message(channel.id, agent.id, "@youngblood has it")
+      {:ok, b} = Messages.post_agent_message(channel.id, agent.id, "@#{user.display_name}: done")
+
+      refute a.mentions_user
+      assert b.mentions_user
+      assert %{count: 2, mentions: 1} = Unread.summary(user)[channel.id]
+    end
+  end
 end

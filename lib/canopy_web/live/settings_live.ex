@@ -16,7 +16,7 @@ defmodule CanopyWeb.SettingsLive do
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, PresetComponents}
+  alias CanopyWeb.{AppearanceComponents, NotifyComponents, PresetComponents}
 
   @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
 
@@ -518,7 +518,7 @@ defmodule CanopyWeb.SettingsLive do
     >
       <Layouts.page
         title="Settings"
-        subtitle="Engines, your name, appearance, and the MCP bridge"
+        subtitle="Engines, your name, appearance, notifications, and the MCP bridge"
       >
         <:actions>
           <.link navigate={~p"/welcome"} id="run-setup" class="btn btn-soft btn-sm">
@@ -801,6 +801,8 @@ defmodule CanopyWeb.SettingsLive do
         </Layouts.panel>
 
         <.appearance_panel />
+
+        <.notifications_panel />
 
         <Layouts.panel
           id="chatter-panel"
@@ -1261,6 +1263,21 @@ defmodule CanopyWeb.SettingsLive do
           Agent colours are set per agent on the Agents page and look the same in every palette.
         </p>
       </div>
+    </Layouts.panel>
+    """
+  end
+
+  # Desktop notifications belong to this browser (permission is per browser
+  # and origin), so the panel holds no server state (see
+  # `CanopyWeb.NotifyComponents`).
+  defp notifications_panel(assigns) do
+    ~H"""
+    <Layouts.panel
+      id="notifications-panel"
+      title="Notifications"
+      description="Desktop notifications from this browser when an agent needs you while you look elsewhere. Nothing leaves this machine."
+    >
+      <NotifyComponents.notify_prefs />
     </Layouts.panel>
     """
   end

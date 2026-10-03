@@ -39,7 +39,8 @@ defmodule Canopy.Unread do
   @doc """
   Unread counts for every channel that has any, keyed by channel id. A message
   mentions the user when it contains `@` followed by their display name, in any
-  case (`mentions?/2`, recorded on the message when it is posted).
+  case and as a whole name (`mentions?/2`, recorded on the message when it is
+  posted).
   """
   @spec summary(User.t()) :: summary
   def summary(%User{id: user_id}) do
@@ -84,17 +85,22 @@ defmodule Canopy.Unread do
     end)
   end
 
-  @doc "True when `body` mentions the user as `@` + their display name, in any case."
-  def mentions?(body, %User{} = user) when is_binary(body),
-    do: String.contains?(String.downcase(body), needle(user))
-
-  def mentions?(_body, _user), do: false
-
-  # A blank display name would make every `@` a mention; it matches nothing.
-  defp needle(%User{display_name: name}) do
+  @doc """
+  True when `body` mentions the user as `@` + their display name, in any case,
+  as a whole name: `@you,` and `@You.` mention "You", `@youngblood` does not.
+  The sidebar's mention count and desktop notifications both rest on it.
+  """
+  def mentions?(body, %User{display_name: name}) when is_binary(body) do
+    # A blank display name would make every `@` a mention; it matches nothing.
     case String.trim(name || "") do
-      "" -> "@\u0000"
-      name -> "@" <> String.downcase(name)
+      "" ->
+        false
+
+      name ->
+        needle = Regex.escape("@" <> String.downcase(name))
+        Regex.match?(~r/#{needle}(?![\p{L}\p{N}_-])/u, String.downcase(body))
     end
   end
+
+  def mentions?(_body, _user), do: false
 end

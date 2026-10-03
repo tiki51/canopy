@@ -14,8 +14,10 @@ defmodule CanopyWeb.CommandPalette do
   (`assets/js/hooks/command_palette.js`). Matching runs in the browser
   (`assets/js/command_palette/match.js`).
 
-  Two things ask the server, and `CanopyWeb.Nav` answers them on every page:
-  `cmdk:files` (a filename search) and `cmdk:stop` (`/stop` for another channel).
+  Three things ask the server, and `CanopyWeb.Nav` answers them on every page:
+  `cmdk:files` (a filename search), `cmdk:stop` (`/stop` for another channel)
+  and `cmdk:notify` (the desktop notifications switch, which lives in the
+  browser, was flipped: a flash confirms it).
 
   DOM ids use the `cmdk-` prefix: "palette" already means the colour palette.
   """

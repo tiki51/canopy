@@ -2,8 +2,9 @@ defmodule CanopyWeb.OnboardingLive do
   @moduledoc """
   First-run setup at `/welcome`: the display name, the look (kept in the
   browser), which engines are ready and the default model for each, how much
-  agents may do on their own (a conversation preset), and the first
-  repository. `/` sends a fresh install here until setup is finished or
+  agents may do on their own (a conversation preset) and whether this browser
+  shows desktop notifications (kept in the browser, like the look), and the
+  first repository. `/` sends a fresh install here until setup is finished or
   skipped (`Canopy.Settings.onboarded?/0`); Settings → *Run setup again*
   comes back any time.
 
@@ -19,7 +20,7 @@ defmodule CanopyWeb.OnboardingLive do
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Repositories.Repository
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, PresetComponents}
+  alias CanopyWeb.{AppearanceComponents, NotifyComponents, PresetComponents}
 
   @steps [
     %{id: "name", label: "You"},
@@ -1011,6 +1012,16 @@ defmodule CanopyWeb.OnboardingLive do
       <p class="mt-4 text-xs text-base-content/60">
         A paused channel shows a Continue button; your next message also resumes it.
       </p>
+
+      <%!-- How you hear that you're needed: kept in this browser, not saved by
+           Continue; the same controls as Settings → Notifications. --%>
+      <div id="welcome-notify" class="mt-8">
+        <h2 class="mb-1 text-sm font-semibold">Hear about it when you're elsewhere</h2>
+        <p class="mb-3 text-xs text-base-content/60">
+          Optional. Applies to this browser right away; Settings → Notifications has the details.
+        </p>
+        <NotifyComponents.notify_prefs kinds={false} />
+      </div>
     </section>
     """
   end
@@ -1109,6 +1120,13 @@ defmodule CanopyWeb.OnboardingLive do
         </.summary_line>
         <.summary_line id="summary-pace" href={~p"/settings#chatter-panel"} icon="hero-hand-raised">
           Agents: <strong>{@preset_name}</strong>.
+        </.summary_line>
+        <.summary_line
+          id="summary-notify"
+          href={~p"/settings#notifications-panel"}
+          icon="hero-bell"
+        >
+          Desktop notifications: <NotifyComponents.current_notify id="summary-notify-state" />.
         </.summary_line>
         <.summary_line id="summary-project" href={~p"/repositories"} icon="hero-folder">
           <%= cond do %>

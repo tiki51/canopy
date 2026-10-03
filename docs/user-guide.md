@@ -153,10 +153,15 @@ The first time you open Canopy, a short setup asks six things, one per page:
    still on OpenCode with no model of their own onto Claude Code, so they can answer.
 4. **How much agents do on their own**: a preset for the brakes (see
    [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
-   *Custom* to set them yourself.
+   *Custom* to set them yourself. Below the presets, an optional **Desktop notifications**
+   switch (off unless you turn it on): flipping it on is when the browser asks to allow
+   them, and the page says at once whether it did, whether the browser blocks them, or
+   whether this page can't have them (see [Notifications](#notifications)). It is kept in
+   this browser, like the look; *Continue* and *Skip setup* leave it as it is.
 5. **Your first project**: a folder on this Mac. A folder that is not a git repository yet
    gets `git init`. *Skip this step* if you would rather add one later.
-6. **You're set**: a summary, each line linking to its place in Settings. *Start a channel*
+6. **You're set**: a summary, each line linking to its place in Settings (including whether
+   desktop notifications are on in this browser). *Start a channel*
    opens New channel with your project already picked; *Look around first* opens Agents.
 
 Every step saves when you press *Continue*, so closing the tab halfway keeps what you chose.
@@ -193,7 +198,11 @@ of mentions. Opening the channel clears both. A blue badge with a question mark 
 count means question or permission cards in that channel are waiting on you, so a
 question asked in a channel you are not looking at is not missed. It stays until you
 answer or dismiss them; a card whose agent stopped waiting counts for a day, then stays
-answerable without the badge. Archived channels never show it. Agent rows show a green dot while the agent is working and a small clock
+answerable without the badge. Archived channels never show it. The browser tab's title
+carries the same number across all channels, as in "(2) #site-review · Canopy", so you
+can see from another tab that something waits on you; with
+[desktop notifications](#notifications) on, Canopy can also tell you outside the browser.
+Agent rows show a green dot while the agent is working and a small clock
 with a count when it has scheduled tasks.
 
 A reply that stays inside a thread does not make its channel bold, unless it mentions you.
@@ -212,6 +221,7 @@ pages.
 
 A first character narrows the search: `#` channels, `@` agents, teams and DMs, `>` commands
 (pages, *New channel in* a repository, *New direct message*, *Start playbook*, the theme,
+*Turn desktop notifications off* (or *on*, following the switch in this browser),
 *Release hold*, and the open channel's header actions such as *Stop all agents here*), and
 `/` slash commands. **Backspace** on an empty box removes the filter.
 
@@ -359,6 +369,51 @@ filled in.
 Both choices are kept in this browser, not in the database, so another browser (or
 another port) starts from the defaults. Agent colours are set per agent and look the
 same in every palette.
+
+### Notifications
+
+Desktop notifications tell you when something needs you while you are looking at another
+app or another tab. They come from the open Canopy tab, through the browser: nothing is
+sent anywhere, no push service is involved, and with no Canopy tab open there are none.
+
+- **Desktop notifications: On / Off**, at the top, is the master switch. It is off until
+  you turn it on. The first time, turning it on is what makes the browser ask to allow
+  notifications; Canopy never asks on its own. Turning it off stops them at once in every
+  open tab of this browser (it does not revoke the browser's permission; the browser's site
+  settings do that). The command palette flips it too: type `>notif` and pick *Turn desktop
+  notifications off* (or *on*).
+- **Notify me when** (enabled while the switch is on; each keeps its value while it is off):
+  - **An agent needs you**: a question or permission card, or a playbook step waiting for
+    your sign-off. Clicking the notification opens the channel at the card.
+  - **An agent mentions you**: by your display name as a whole word (`@You`, `@you,` but
+    not `@Youngblood`), or anything an agent writes to you in a DM. A click opens the
+    message, or its thread for a reply in a thread. Several in one channel group into one
+    ("3 new mentions in #site-review"). Replies in threads you follow notify only when they
+    mention you, and reactions never do.
+  - **Work finished**, while Canopy is in the background: a channel went quiet after a run
+    of turns (nothing working, queued, waiting on a card, waiting for a lock, or mid
+    playbook run), it paused at the chatter budget, or its task was completed. It says who
+    worked, for how many turns and how long, or that the run stopped with an error. Runs
+    you started, schedules, GitHub watches and playbooks count; agents talking among
+    themselves do not, and neither does a channel you stopped yourself.
+  - **Play a sound**: off by default; on, the system's notification sound plays.
+- **Send a test notification** shows one at once.
+
+A notification is not shown when you are already looking: the Canopy tab is in front and
+focused and, for cards and mentions, on that channel (for *Work finished*, any Canopy tab
+in front). With several Canopy tabs open, only one of them shows it. At most four arrive in
+a minute; the rest are summed up in one ("5 more updates in Canopy"). A tab that was asleep
+or offline (a closed lid) tells you once, when it reconnects, about cards from the last
+half hour it never showed; mentions and finished work from that time are not repeated.
+
+The switch says **blocked** when the browser refuses: allow notifications in the browser's
+site settings (the icon left of the address) and, on macOS, in System Settings →
+Notifications → your browser, then turn the switch on again. It says notifications **can't
+be shown here** when Canopy is opened at a network address (the `CANOPY_BIND=0.0.0.0`
+case): browsers allow them only at `http://127.0.0.1` or `http://localhost`.
+
+Everything here is kept in this browser and followed by its other tabs; another browser
+starts with notifications off.
 
 Scroll down for the MCP bridge.
 
@@ -1038,6 +1093,9 @@ terminal instead also clears the card. Which actions ask is up to each agent's c
 for Claude Code agents, the allowlist in Settings; for OpenCode agents, the configuration in
 the repository's `.opencode/opencode.json` (for example, `{ "permission": { "edit": "ask" } }`).
 
+A waiting card can also raise a [desktop notification](#notifications) when you are
+looking elsewhere.
+
 If the agent stops waiting before you answer (its turn ended, was stopped, or a Claude
 Code prompt waited 30 minutes), the card stays and says so. Approving it then posts a
 message from you in the channel, for example `@backend Approved: Bash make test (once).
@@ -1436,7 +1494,8 @@ accepted, the coordinator role follows it.
 
 A step with `approval: user` waits for you. When the coordinator advances past it, the
 chip turns amber ("waiting for you"), the timeline says "bug-fix is waiting for your
-sign-off", and the channel gets a "needs you" badge in the sidebar. In the panel:
+sign-off", and the channel gets a "needs you" badge in the sidebar (and, with
+[desktop notifications](#notifications) on, a notification). In the panel:
 
 - **Approve** completes the step and moves the run on (to the step the coordinator asked
   for, else the next one, or completes it), and wakes the coordinator with your answer.
@@ -1758,6 +1817,7 @@ service started by `brew services` uses the defaults.
 | `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
 | Search doesn't find part of a word (`worker` in `PaymentWorker`) | Words are matched whole or by their start: search `Payment*`, or the whole word. Code separators (`_ / . - :`) split words, so `charge` finds `enqueue_charge` |
+| No desktop notifications | Check, in order: Settings → Notifications says *On* (not *blocked*; *Send a test notification* shows one); macOS System Settings → Notifications → your browser allows them, and no Focus mode is hiding banners; you were not looking at that channel in a focused Canopy tab (then nothing is shown, by design); Canopy is open at `127.0.0.1` or `localhost`, not a network address (`CANOPY_BIND=0.0.0.0`); a Canopy tab is open (nothing arrives without one, and a sleeping Mac misses what happened meanwhile) |
 | The Agents page is empty | Seeding is a separate step: `canopy seed` (Homebrew) or `mix run priv/repo/seeds.exs` (source); either adds any missing default without overwriting agents you edited |
 
 ### Regenerating the screenshots

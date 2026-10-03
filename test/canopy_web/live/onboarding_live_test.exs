@@ -331,6 +331,19 @@ defmodule CanopyWeb.OnboardingLiveTest do
       refute has_element?(view, "#welcome-team-custom")
     end
 
+    test "offers the desktop notifications switch, kept in the browser", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
+
+      assert has_element?(view, "#welcome-notify #notify-prefs[phx-update='ignore']")
+      assert has_element?(view, "#welcome-notify #notify-enabled[role='switch']")
+      # the details stay in Settings
+      refute has_element?(view, "#welcome-notify #notify-kinds")
+
+      # Continue saves the preset only: notifications have no server side
+      view |> form("#welcome-team-form") |> render_submit()
+      assert_patch(view, ~p"/welcome?step=repository")
+    end
+
     test "Careful and Autonomous save their brakes", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/welcome?step=team")
 
@@ -448,6 +461,8 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert has_element?(view, "#summary-engines", "OpenCode ✗")
       assert has_element?(view, "#summary-model", "opus")
       assert has_element?(view, "#summary-pace", "Careful")
+      # on or off is the browser's to say (<html data-notify>, set by notify.js)
+      assert has_element?(view, "#summary-notify #summary-notify-state")
       refute has_element?(view, "#skip-setup")
     end
 

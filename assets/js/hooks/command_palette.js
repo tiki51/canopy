@@ -129,6 +129,7 @@ const CommandPalette = {
       repoId: ctx.repo_id,
       repos: items.filter(i => i.t === "repo"),
       playbooks: items.filter(i => i.t === "playbook"),
+      notify: window.canopyNotifier ? window.canopyNotifier.status() : null,
     }
   },
 
@@ -439,6 +440,19 @@ const CommandPalette = {
     else if (action.push) this.pushEvent(action.push, action.payload || {}, () => {})
     else if (action.dmPicker) this.pushEventTo("#dm-picker-component", "open_picker", {}, () => {})
     else if (action.theme) this.setTheme(action.theme)
+    else if ("notify" in action) this.setNotify(action.notify)
+  },
+
+  // The desktop notifications switch (../notify.js). Choosing "on" is the
+  // click the browser's permission prompt needs; Nav confirms with a flash,
+  // and a browser that refuses sends the user to Settings, which explains.
+  setNotify(on) {
+    const notifier = window.canopyNotifier
+    if (!notifier) return
+    notifier.setEnabled(on).then(ok => {
+      if (ok) this.pushEvent("cmdk:notify", {on}, () => {})
+      else this.js().navigate("/settings")
+    })
   },
 
   // The palette never posts: a slash command is written into the composer,

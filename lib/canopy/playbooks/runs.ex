@@ -62,6 +62,11 @@ defmodule Canopy.Playbooks.Runs do
   defp live_query(channel_id),
     do: where(Run, [r], r.channel_id == ^channel_id and r.status in ^Run.live_statuses())
 
+  @doc "The status of the channel's run in progress (`active`, `awaiting_approval`), or nil."
+  def live_status(channel_id) when is_binary(channel_id) do
+    channel_id |> live_query() |> select([r], r.status) |> Repo.one()
+  end
+
   @doc "A channel's runs, newest first."
   def list_for_channel(channel_id, limit \\ 20) do
     Repo.all(

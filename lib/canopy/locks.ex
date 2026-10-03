@@ -501,6 +501,20 @@ defmodule Canopy.Locks do
     )
   end
 
+  @doc """
+  Whether an agent session of the channel still has lock work ahead: it waits
+  in a lock's line, or was granted one its wake has not used yet. The channel
+  is not quiet while it does (`Canopy.Runtime.ChannelServer`).
+  """
+  def waiting_in_channel?(channel_id) do
+    Repo.exists?(
+      from c in Claim,
+        where:
+          c.channel_id == ^channel_id and not is_nil(c.session_id) and
+            (c.status == "waiting" or (c.status == "held" and is_nil(c.turn_ref)))
+    )
+  end
+
   @doc "The turn that starts for a grant wake takes ownership of the claims it hands over."
   def stamp_turn(_session_id, [], _turn_ref), do: :ok
 

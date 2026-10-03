@@ -19,6 +19,24 @@ defmodule Canopy.Runtime.ChannelServer do
       started works for (nil: the channel), and nil again when it ends; also
       sent on `Canopy.Threads`' topic for views that span channels
 
+  Output on the global `"runtime:activity"` topic (`Canopy.Runtime.subscribe_activity/0`):
+    * `{:channel_quiet, channel_id, %{run_id, agent_ids, turns, errors,
+      duration_ms, paused?, trigger}}` — a run of turns is over: the channel
+      went quiet (see Quiet below). Desktop notifications use it.
+
+  Quiet. A run starts with the first turn after the channel was last quiet,
+  and every turn that starts meanwhile joins it. When a turn ends with
+  nothing else in flight or waiting (no turn, a turn blocked on a card
+  included; nothing queued, in line, or deferred), a quiet check follows
+  after `:quiet_ms` (default 3 s, longer while a late steer may still be
+  adopted), which absorbs the reply a turn posts and the wake it causes.
+  The channel is quiet if nothing started meanwhile, no session of it waits
+  for a lock, and no playbook run is in progress (a run mid-step or held for
+  a sign-off is not over); lock and run changes check again. A Stop, or the
+  user aborting the last turn, ends the run without a signal; a run that was
+  only a compaction has none. `trigger` is "user" when any turn of the run
+  was the user's, otherwise the first turn's trigger.
+
   Thread-scoped turns. A wake for a message in a thread remembers the thread's
   root; a turn started from it works for that thread: its started, finished,
   and error lines belong to the thread (only the thread panel shows them),
@@ -157,7 +175,10 @@ defmodule Canopy.Runtime.ChannelServer do
     deferred: %{},
     # engine_session_id => when its last turn ended with steers the engine
     # could not confirm (monotonic ms); a busy report soon after is adopted
-    steered_ends: %{}
+    steered_ends: %{},
+    # the run of turns in progress, nil while the channel is quiet:
+    # %{id, ref, started_at, agent_ids, turns, errors, trigger} (see Quiet)
+    run: nil
   ]
 
   defstruct @fields
@@ -293,6 +314,8 @@ defmodule Canopy.Runtime.ChannelServer do
     :ok = Engine.subscribe_repository(state.repository.id)
     :ok = Settings.subscribe()
     :ok = Locks.subscribe(state.repository.id)
+    # a playbook run in progress keeps the channel from going quiet
+    :ok = Canopy.Playbooks.Runs.subscribe()
     # a lock granted to a session here while no server ran (a restart) still
     # waits for its wake; sent to self so init does not prompt an engine
     send(self(), :wake_pending_grants)
@@ -702,8 +725,20 @@ defmodule Canopy.Runtime.ChannelServer do
     {:noreply, state}
   end
 
+  def handle_info({:quiet_check, ref}, %{run: %{ref: ref}} = state),
+    do: {:noreply, quiet_check(state)}
+
+  # A playbook run moved on, or a lock's line changed: a run held open for
+  # either may be over now.
+  def handle_info({:playbook_runs, :changed, id}, %{channel: %{id: id}} = state),
+    do: {:noreply, schedule_quiet(state)}
+
+  def handle_info({:locks_changed, _repository_id}, state),
+    do: {:noreply, schedule_quiet(state)}
+
   # `{:reactions, _}` from `Canopy.Reactions` ends here on purpose: a reaction
-  # never wakes anyone, lifts a pause, or steers a turn.
+  # never wakes anyone, lifts a pause, or steers a turn. So does a stale
+  # `{:quiet_check, _}`: a turn started after it was scheduled.
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp stalled_turn?(state) do
@@ -1882,6 +1917,7 @@ defmodule Canopy.Runtime.ChannelServer do
       | turns: Map.put(state.turns, session.engine_session_id, turn),
         telemetry: Map.put(state.telemetry, agent_id, card)
     }
+    |> open_run(trigger)
   end
 
   # Every attachment is materialised under the repository's .canopy/files/ so
@@ -1898,6 +1934,119 @@ defmodule Canopy.Runtime.ChannelServer do
     end)
 
     plan
+  end
+
+  # -- Quiet ------------------------------------------------------------------
+
+  # Every turn that starts joins the run in progress, or opens one, and moves
+  # its ref on, so a quiet check scheduled before it lapses. A compaction
+  # only keeps an open run going: on its own it is not work anyone asked for.
+  defp open_run(%{run: nil} = state, "compact"), do: state
+
+  defp open_run(%{run: nil} = state, trigger) do
+    run = %{
+      id: Canopy.ID.generate("run"),
+      ref: make_ref(),
+      started_at: System.monotonic_time(:millisecond),
+      agent_ids: MapSet.new(),
+      turns: 0,
+      errors: 0,
+      trigger: trigger
+    }
+
+    %{state | run: run}
+  end
+
+  defp open_run(%{run: run} = state, trigger) do
+    trigger = if trigger == "user", do: "user", else: run.trigger
+    %{state | run: %{run | ref: make_ref(), trigger: trigger}}
+  end
+
+  # A finished turn counts toward its run (a compaction does not). The user's
+  # Stop, or their abort of the last turn, ends the run unreported: they were
+  # there. Otherwise, once nothing is in flight or waiting, a check follows.
+  defp note_run_turn(%{run: nil} = state, _turn, _outcome), do: state
+
+  defp note_run_turn(%{run: run} = state, turn, outcome) do
+    run =
+      if turn.trigger == "compact",
+        do: run,
+        else: %{
+          run
+          | agent_ids: MapSet.put(run.agent_ids, turn.agent_id),
+            turns: run.turns + 1,
+            errors: run.errors + if(match?({:error, _}, outcome), do: 1, else: 0)
+        }
+
+    state = %{state | run: run}
+
+    if state.stopped? or (outcome == :stopped and idle?(state)),
+      do: %{state | run: nil},
+      else: schedule_quiet(state)
+  end
+
+  defp schedule_quiet(%{run: %{ref: ref}} = state) do
+    if idle?(state), do: Process.send_after(self(), {:quiet_check, ref}, quiet_delay(state))
+    state
+  end
+
+  defp schedule_quiet(state), do: state
+
+  # Nothing in flight (a turn blocked on a card is in flight), queued behind a
+  # turn, in line for the channel, or deferred until a poster's turn ends.
+  # Wakes held by a chatter pause do not count: the run is over until the user
+  # says go on, and the signal says it paused.
+  defp idle?(state) do
+    state.turns == %{} and state.waiting == [] and
+      Enum.all?(state.queues, fn {_sid, queue} -> queue == [] end) and
+      Enum.all?(state.deferred, fn {_agent_id, entries} -> entries == [] end)
+  end
+
+  # A turn that ended with steers the engine could not confirm may be
+  # followed by a busy period that is adopted as a turn: wait that out too.
+  defp quiet_delay(state) do
+    now = System.monotonic_time(:millisecond)
+
+    adopt =
+      state.steered_ends
+      |> Map.values()
+      |> Enum.map(&(&1 + @adopt_window_ms - now))
+      |> Enum.max(fn -> 0 end)
+
+    max(Application.get_env(:canopy, :quiet_ms, 3_000), adopt)
+  end
+
+  # Still idle and nothing ahead: the run is over. A session waiting for a
+  # lock, or a playbook run in progress, keeps it open; their changes check
+  # again (`{:locks_changed, _}`, `{:playbook_runs, :changed, _}`).
+  defp quiet_check(%{run: run} = state) do
+    cond do
+      state.stopped? ->
+        %{state | run: nil}
+
+      not idle?(state) ->
+        state
+
+      Locks.waiting_in_channel?(state.channel.id) or
+          Canopy.Playbooks.Runs.live_status(state.channel.id) != nil ->
+        state
+
+      true ->
+        Canopy.Runtime.broadcast_activity(
+          {:channel_quiet, state.channel.id,
+           %{
+             run_id: run.id,
+             agent_ids: MapSet.to_list(run.agent_ids),
+             turns: run.turns,
+             errors: run.errors,
+             duration_ms: System.monotonic_time(:millisecond) - run.started_at,
+             paused?: is_list(state.paused),
+             trigger: run.trigger
+           }}
+        )
+
+        %{state | run: nil}
+    end
   end
 
   # -- Locks ------------------------------------------------------------------
@@ -2481,18 +2630,21 @@ defmodule Canopy.Runtime.ChannelServer do
 
         state = release_deferred(state, who.agent_id)
 
-        cond do
-          state.pending_switch? ->
-            state = apply_switch(state)
-            if state.pending_switch?, do: state, else: start_next_waiting(state)
+        state =
+          cond do
+            state.pending_switch? ->
+              state = apply_switch(state)
+              if state.pending_switch?, do: state, else: start_next_waiting(state)
 
-          # compaction runs as a turn of its own: the queue drains after it
-          Map.has_key?(state.turns, sid) ->
-            state
+            # compaction runs as a turn of its own: the queue drains after it
+            Map.has_key?(state.turns, sid) ->
+              state
 
-          true ->
-            state |> drain_queue(session, who.agent_id) |> start_next_waiting()
-        end
+            true ->
+              state |> drain_queue(session, who.agent_id) |> start_next_waiting()
+          end
+
+        note_run_turn(state, turn, outcome)
     end
   end
 

@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { sql } from "./site-helpers";
+import { stubNotifications } from "./notify-helpers";
 
 // bin/server.sh marks setup done so `/` behaves as on an existing install;
 // these specs clear `onboarded_at` straight in the e2e database (the server
@@ -98,6 +99,52 @@ test.describe("first-run setup", () => {
     await page.locator("#save-profile").click();
     await expect(page.locator("#flash-info")).toContainText("Display name saved");
     await page.evaluate(() => localStorage.clear());
+  });
+
+  test("the pace step turns desktop notifications on, and the summary says so", async ({ context, page }) => {
+    await stubNotifications(context);
+    await page.goto("/welcome?step=team");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+
+    const prefs = page.locator("#welcome-notify #notify-prefs");
+    await expect(prefs).toHaveAttribute("data-state", "off");
+    await expect(page.locator("#welcome-notify #notify-kinds")).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__requests)).toBe(0);
+
+    // the switch is the click the browser's prompt needs
+    await page.locator("#notify-enabled").check();
+    await expect(prefs).toHaveAttribute("data-state", "on");
+    await expect(page.locator("#notify-granted")).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__requests)).toBe(1);
+
+    await page.locator("#welcome-continue").click();
+    await expect(page).toHaveURL(/step=repository/);
+    await page.locator("#welcome-skip-repository").click();
+    await expect(page).toHaveURL(/step=done/);
+    await expect(page.locator("#summary-notify")).toContainText("Desktop notifications: on", { useInnerText: true });
+    await page.evaluate(() => localStorage.clear());
+  });
+
+  test("a browser that blocks notifications, or a page that can't have them, says so on the pace step", async ({ browser }) => {
+    const blocked = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+    await stubNotifications(blocked, { answer: "denied" });
+    const page = await blocked.newPage();
+    await page.goto("/welcome?step=team");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await page.locator("#notify-enabled").click();
+    await expect(page.locator("#notify-prefs")).toHaveAttribute("data-state", "blocked");
+    await expect(page.locator("#notify-blocked")).toBeVisible();
+    await page.goto("/welcome?step=done");
+    await expect(page.locator("#summary-notify")).toContainText("blocked by the browser", { useInnerText: true });
+    await blocked.close();
+
+    const lan = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+    await stubNotifications(lan, { unsupported: true });
+    const other = await lan.newPage();
+    await other.goto("/welcome?step=team");
+    await expect(other.locator("#notify-prefs")).toHaveAttribute("data-state", "unsupported");
+    await expect(other.locator("#notify-unsupported")).toContainText("http://127.0.0.1");
+    await lan.close();
   });
 
   test("Skip setup finishes it and goes home", async ({ page }) => {

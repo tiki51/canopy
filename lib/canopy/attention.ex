@@ -11,8 +11,14 @@ defmodule Canopy.Attention do
   (`playbook: true`), for the sidebar's glyph; that alone counts for nothing.
   """
 
-  alias Canopy.{PermissionRequests, QuestionRequests}
+  import Ecto.Query, only: [from: 2]
+
+  alias Canopy.{PermissionRequests, QuestionRequests, Repo}
+  alias Canopy.Channels.Channel
+  alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.Playbooks.Runs
+  alias Canopy.QuestionRequests.QuestionRequest
+  alias Canopy.Timeline.Event
 
   @type entry :: %{
           questions: non_neg_integer,
@@ -43,6 +49,33 @@ defmodule Canopy.Attention do
          playbook: Map.has_key?(runs, id)
        }}
     end)
+  end
+
+  @doc """
+  The `question_requested` and `permission_requested` events of the cards
+  still waiting on the user that were raised (or raised again) since
+  `since`, in open channels, oldest first, with the asking agent. Desktop
+  notifications use them to catch up after a page reconnects.
+  """
+  def pending_card_events(%DateTime{} = since) do
+    [{QuestionRequest, "question_requested"}, {PermissionRequest, "permission_requested"}]
+    |> Enum.flat_map(fn {schema, type} ->
+      Repo.all(
+        from e in Event,
+          join: r in ^schema,
+          on: r.id == e.ref_id,
+          join: c in Channel,
+          on: c.id == r.channel_id,
+          where: e.event_type == ^type and r.status == "pending" and c.status == "open",
+          where: e.inserted_at > ^since
+      )
+    end)
+    # a card raised again (reopened on replay) has one event per raise
+    |> Enum.sort_by(& &1.id)
+    |> Enum.reverse()
+    |> Enum.uniq_by(& &1.ref_id)
+    |> Enum.reverse()
+    |> Repo.preload(:agent)
   end
 
   @doc "How many things in the summary entry wait on the user."

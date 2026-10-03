@@ -13,13 +13,23 @@ defmodule CanopyWeb.Nav do
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
 
-  It also answers the command palette's two server questions on every page:
-  `cmdk:files` (a filename search) and `cmdk:stop` (`/stop` in a channel you are
-  not in); see `CanopyWeb.CommandPalette`.
+  Every page also pushes desktop notification notes to the browser as
+  `"canopy:notify"` (`CanopyWeb.Notify`): for cards, mentions, sign-offs and
+  completed tasks from `"timeline:all"`, and for channels that went quiet
+  (`Canopy.Runtime.subscribe_activity/0`). On connecting it pushes the cards
+  still waiting from the last half hour as `"canopy:pending"`, so a page that
+  was asleep or offline can catch up.
+
+  It also answers the command palette's server questions on every page:
+  `cmdk:files` (a filename search), `cmdk:stop` (`/stop` in a channel you are
+  not in) and `cmdk:notify` (the desktop notifications switch was flipped: a
+  flash says so); see `CanopyWeb.CommandPalette`.
   """
 
   import Phoenix.Component
   import Phoenix.LiveView
+
+  alias CanopyWeb.Notify
 
   alias Canopy.{
     Agents,
@@ -48,6 +58,7 @@ defmodule CanopyWeb.Nav do
       Canopy.Playbooks.Runs.subscribe()
       Teams.subscribe()
       Playbooks.subscribe()
+      Runtime.subscribe_activity()
     end
 
     socket =
@@ -58,8 +69,30 @@ defmodule CanopyWeb.Nav do
       |> assign_new(:current_channel_id, fn -> nil end)
       |> assign_new(:current_repository_id, fn -> nil end)
       |> attach_hook(:canopy_nav_path, :handle_params, &handle_params/3)
+      |> push_pending()
 
     {:cont, socket}
+  end
+
+  # A page that (re)connects hears of the cards still waiting from the last
+  # half hour, in case it missed their notes (asleep, offline). The browser
+  # shows only those it never showed or saw (assets/js/notify.js).
+  @catch_up_minutes 30
+
+  defp push_pending(socket) do
+    if connected?(socket) do
+      since = DateTime.add(DateTime.utc_now(), -@catch_up_minutes, :minute)
+
+      case since
+           |> Attention.pending_card_events()
+           |> Enum.map(&note(socket, &1))
+           |> Enum.reject(&is_nil/1) do
+        [] -> socket
+        notes -> push_event(socket, "canopy:pending", %{notes: notes})
+      end
+    else
+      socket
+    end
   end
 
   @doc "Reloads repositories, channels, and agents for the sidebar."
@@ -146,6 +179,17 @@ defmodule CanopyWeb.Nav do
   defp handle_event("cmdk:stop", _params, socket),
     do: {:halt, %{ok: false}, put_flash(socket, :error, "That channel no longer exists.")}
 
+  # The palette flipped this browser's desktop notifications switch; the
+  # switch itself lives in the browser (assets/js/notify.js).
+  defp handle_event("cmdk:notify", %{"on" => on}, socket) do
+    message =
+      if on == true,
+        do: "Desktop notifications are on in this browser.",
+        else: "Desktop notifications are off in this browser."
+
+    {:halt, %{}, put_flash(socket, :info, message)}
+  end
+
   defp handle_event(_event, _params, socket), do: {:cont, socket}
 
   defp stop_label(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
@@ -176,8 +220,8 @@ defmodule CanopyWeb.Nav do
   # A message anywhere may change the unread marks. The channel view sees its
   # own copy of the event first and marks the channel read, so this refresh
   # already reflects that.
-  defp handle_info({:timeline_any, %{event_type: "message"}}, socket),
-    do: {:halt, refresh_unread(socket)}
+  defp handle_info({:timeline_any, %{event_type: "message"} = event}, socket),
+    do: {:halt, socket |> refresh_unread() |> notify(event)}
 
   # A thread read, followed, or unfollowed elsewhere (another tab): the badge
   # follows, and the page may want it too (dots, the inbox).
@@ -185,11 +229,21 @@ defmodule CanopyWeb.Nav do
 
   # A question or permission card raised, answered, or detached anywhere: the
   # "needs you" badges follow, so a card in a channel nobody is looking at is seen.
-  defp handle_info({:timeline_any, %{event_type: "question_" <> _}}, socket),
-    do: {:halt, refresh_attention(socket)}
+  defp handle_info({:timeline_any, %{event_type: "question_" <> _} = event}, socket),
+    do: {:halt, socket |> refresh_attention() |> notify(event)}
 
-  defp handle_info({:timeline_any, %{event_type: "permission_" <> _}}, socket),
-    do: {:halt, refresh_attention(socket)}
+  defp handle_info({:timeline_any, %{event_type: "permission_" <> _} = event}, socket),
+    do: {:halt, socket |> refresh_attention() |> notify(event)}
+
+  # A sign-off requested or a task completed: a desktop notification may say
+  # so. The page may want the event too.
+  defp handle_info({:timeline_any, %{event_type: type} = event}, socket)
+       when type in ~w(playbook_approval_requested task_updated),
+       do: {:cont, notify(socket, event)}
+
+  # A channel's run of turns is over: "Work finished", when the browser wants it.
+  defp handle_info({:channel_quiet, _channel_id, _info} = signal, socket),
+    do: {:halt, notify(socket, signal)}
 
   # Schedule changes update the sidebar counts; the page may also want the event.
   defp handle_info({:hold, _what}, socket), do: {:halt, assign(socket, :hold, Hold.reason())}
@@ -208,6 +262,35 @@ defmodule CanopyWeb.Nav do
     do: {:cont, assign(socket, :schedule_counts, Schedules.active_counts_by_agent())}
 
   defp handle_info(_message, socket), do: {:cont, socket}
+
+  # The page decides whether to show it (`assets/js/notify.js`); the channel
+  # comes from what the sidebar already holds.
+  defp notify(socket, signal) do
+    case note(socket, signal) do
+      nil -> socket
+      note -> push_event(socket, "canopy:notify", note)
+    end
+  end
+
+  defp note(socket, signal) do
+    channel_id =
+      case signal do
+        {:channel_quiet, channel_id, _info} -> channel_id
+        %{channel_id: channel_id} -> channel_id
+      end
+
+    Notify.classify(signal, %{
+      channel: known_channel(socket.assigns, channel_id) || Channels.get(channel_id),
+      names: Map.new(socket.assigns.agents, &{&1.id, &1.name})
+    })
+  end
+
+  defp known_channel(assigns, channel_id) do
+    Enum.find(assigns.dms, &(&1.id == channel_id)) ||
+      Enum.find_value(assigns.repositories, fn repository ->
+        Enum.find(repository.channels, &(&1.id == channel_id))
+      end)
+  end
 
   defp handle_params(params, uri, socket) do
     path = URI.parse(uri).path || "/"

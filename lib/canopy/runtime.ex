@@ -501,4 +501,17 @@ defmodule Canopy.Runtime do
       pid -> ChannelServer.status(pid)
     end
   end
+
+  @activity_topic "runtime:activity"
+
+  @doc """
+  Subscribes the caller to what channel processes say about every channel:
+  `{:channel_quiet, channel_id, info}` when a channel's run of turns is over
+  (see `Canopy.Runtime.ChannelServer`).
+  """
+  def subscribe_activity, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @activity_topic)
+
+  @doc false
+  def broadcast_activity(message),
+    do: Phoenix.PubSub.broadcast(Canopy.PubSub, @activity_topic, message)
 end

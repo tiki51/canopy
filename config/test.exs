@@ -70,3 +70,7 @@ config :canopy, :opencode,
 config :canopy, :github,
   client: Canopy.GitHub.Mock,
   binary: Path.expand("../test/support/fake_gh.sh", __DIR__)
+
+# A channel that goes quiet says so at once (Canopy.Runtime.ChannelServer's
+# quiet check), so tests assert on the signal without waiting.
+config :canopy, :quiet_ms, 0

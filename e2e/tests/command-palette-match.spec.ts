@@ -96,6 +96,14 @@ test.describe("command palette matcher", () => {
     expect(inDm).toContain("stop-all");
     expect(inDm).not.toContain("members");
 
+    // the desktop notifications switch: the wording follows this browser's state
+    expect(ids({ notify: "on" })).toContain("notify-off");
+    expect(ids({ notify: "on" })).not.toContain("notify-on");
+    expect(ids({ notify: "off" })).toContain("notify-on");
+    expect(ids({ notify: "blocked" })).toContain("notify-on");
+    expect(ids({ notify: "unsupported" })).not.toContain("notify-on");
+    expect(outside.filter(id => id.startsWith("notify-"))).toEqual([]);
+
     const archived = ids({ path: "/channels/ch_3", channel: { id: "ch_3", kind: "channel", archived: true } });
     expect(archived).not.toContain("stop-all");
     expect(archived).toContain("changes");
