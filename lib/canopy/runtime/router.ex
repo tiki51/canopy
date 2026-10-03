@@ -27,6 +27,13 @@ defmodule Canopy.Runtime.Router do
   listener (the owner; every agent in a DM) and an agent's wakes nobody,
   never the owner: a thread is a side conversation, and the owner can read
   it. Mentions always win.
+
+  Interrupts: a wake for a user's message sent to interrupt
+  (`message.interrupt`, decided at send time) carries `steer?: true` for
+  each agent the message mentions, or every target in a DM, where every
+  message is addressed. The channel server then hands it to the agent's turn
+  in flight at its next step instead of queueing it behind the turn. Owner
+  and thread fallbacks, and anything an agent sent, never steer.
   """
   def wakeups(event, ctx) do
     event
@@ -125,14 +132,20 @@ defmodule Canopy.Runtime.Router do
       end
 
     charges = team_charges(message)
+    interrupt? = interrupt?(message)
 
     targets
     |> Enum.uniq()
     |> Enum.map(fn target ->
-      case Map.get(charges, target) do
-        nil -> {{:root, target}, wake}
-        charge -> {{:root, target}, put_charge(wake, charge)}
-      end
+      wake =
+        case Map.get(charges, target) do
+          nil -> wake
+          charge -> put_key(wake, :charge, charge)
+        end
+
+      if interrupt? and (target in message.mentions or dm?(ctx)),
+        do: {{:root, target}, put_key(wake, :steer?, true)},
+        else: {{:root, target}, wake}
     end)
   end
 
@@ -211,8 +224,14 @@ defmodule Canopy.Runtime.Router do
         do: {id, {message.id, team_id}}
   end
 
-  defp put_charge(text, charge) when is_binary(text), do: %{text: text, charge: charge}
-  defp put_charge(%{} = wake, charge), do: Map.put(wake, :charge, charge)
+  defp put_key(text, key, value) when is_binary(text), do: Map.put(%{text: text}, key, value)
+  defp put_key(%{} = wake, key, value), do: Map.put(wake, key, value)
+
+  # Only the user's own post or thread reply, sent to interrupt.
+  defp interrupt?(%{agent_id: nil, kind: kind} = message) when kind in ["post", "thread_reply"],
+    do: Map.get(message, :interrupt) == true
+
+  defp interrupt?(_message), do: false
 
   defp documents_of(message) do
     case Map.get(message, :documents) do

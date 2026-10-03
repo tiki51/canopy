@@ -2,7 +2,11 @@
 // e2e/fake-opencode.mjs stands in for `opencode serve`. Canopy spawns it once
 // per turn exactly as it spawns Claude Code (see Canopy.ClaudeCode.Command):
 // it reads one stream-json `user` line from stdin and prints stream-json on
-// stdout until the `result` line.
+// stdout until the `result` line. Lines written to stdin while it runs (a
+// message steered into the turn) are read at the next tool round, the way
+// Claude Code is believed to fold `priority: "next"` messages, and the result
+// lists their uuids in `user_message_uuids`; one that comes after the last
+// tool is left unread, so Canopy sends it again.
 //
 // It is also an MCP client: it calls Canopy's real MCP server with the bearer
 // token from --mcp-config, so messages, delegations, handoffs and schedules
@@ -15,7 +19,7 @@
 // standing in for the transcript Claude Code would keep between turns.
 //
 //   FAKE_TURN_DELAY_MS   pause per tool call (default 50; the site specs use 2500)
-//   FAKE_CLAUDE_VERSION  what --version prints
+//   FAKE_CLAUDE_VERSION  what --version prints and system/init reports
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -26,7 +30,7 @@ const argv = process.argv.slice(2);
 const out = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 
 if (argv[0] === "--version") {
-  console.log(`${process.env.FAKE_CLAUDE_VERSION || "2.1.4"} (Claude Code)`);
+  console.log(`${process.env.FAKE_CLAUDE_VERSION || "2.1.283"} (Claude Code)`);
   process.exit(0);
 }
 if (argv[0] === "auth") {
@@ -200,7 +204,27 @@ async function tool(name, input, run, { hold = 1 } = {}) {
   }
   await sleep(Math.max(0, TURN_DELAY * hold - (Date.now() - started)));
   out({ type: "user", session_id: sid, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result, is_error: error }] } });
+  foldQueued();
   return { result, input: decision.updatedInput || input, error };
+}
+
+// ---- messages steered into the turn ---------------------------------------------------
+const queued = []; // stdin lines after the prompt, not read yet
+const consumed = []; // the uuids of the ones read, for the result
+const foldedTexts = [];
+const textOf = (content) =>
+  typeof content === "string" ? content : (content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+
+function foldQueued() {
+  while (queued.length) {
+    try {
+      const msg = JSON.parse(queued.shift());
+      if (msg.uuid) consumed.push(msg.uuid);
+      foldedTexts.push(textOf(msg.message?.content));
+    } catch {
+      // not a message
+    }
+  }
 }
 
 // ---- tools ---------------------------------------------------------------------------
@@ -242,6 +266,10 @@ const canopy = (name, args = {}) =>
   }, { hold: 0.3 });
 
 function finish(text, extra = {}) {
+  for (const folded of foldedTexts) {
+    const body = folded.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim();
+    if (body) text = `${text}\n\nRe your message: “${body}”`;
+  }
   modelCall([{ type: "text", text }], "end_turn");
   out({
     type: "result",
@@ -253,6 +281,7 @@ function finish(text, extra = {}) {
     session_id: sid,
     total_cost_usd: Number(cost.toFixed(6)),
     usage,
+    user_message_uuids: consumed,
     ...extra,
   });
 }
@@ -517,27 +546,32 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
+// The first line is the prompt; later ones wait in `queued` for a tool round.
 function readPrompt() {
   return new Promise((resolve) => {
     let buf = "";
+    let first = true;
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
       buf += chunk;
-      const nl = buf.indexOf("\n");
-      if (nl >= 0) {
-        process.stdin.pause();
-        resolve(buf.slice(0, nl));
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (first) {
+          first = false;
+          resolve(line);
+        } else queued.push(line);
       }
     });
-    process.stdin.on("end", () => resolve(buf));
+    process.stdin.on("end", () => first && resolve(buf));
   });
 }
 
 const line = await readPrompt();
 let prompt = "";
 try {
-  const content = JSON.parse(line).message?.content;
-  prompt = typeof content === "string" ? content : (content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  prompt = textOf(JSON.parse(line).message?.content);
 } catch {
   prompt = line;
 }
@@ -552,7 +586,7 @@ const configured = (() => {
 })();
 const mcpServers = [{ name: "canopy", status: mcp ? "connected" : "failed" }, ...configured.map((name) => ({ name, status: "pending" }))];
 const tools = ["Read", "Edit", "Bash", ...(mcp ? ["mcp__canopy__message_send", "mcp__canopy__messages_read", "mcp__canopy__pass", "mcp__canopy__permission"] : [])];
-out({ type: "system", subtype: "init", session_id: sid, cwd, model, permissionMode: opts.mode || "default", claude_code_version: process.env.FAKE_CLAUDE_VERSION || "2.1.4", mcp_servers: mcpServers, tools });
+out({ type: "system", subtype: "init", session_id: sid, cwd, model, permissionMode: opts.mode || "default", claude_code_version: process.env.FAKE_CLAUDE_VERSION || "2.1.283", mcp_servers: mcpServers, tools });
 
 try {
   if (prompt.trim() === "/compact") {

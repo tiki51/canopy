@@ -264,6 +264,31 @@ defmodule CanopyWeb.SettingsLiveTest do
     end
   end
 
+  test "interrupting a working agent is off by default, marked experimental, and can be turned on",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    refute has_element?(
+             view,
+             "#chatter-form input[name='setting[interrupt_on_mention]'][checked]"
+           )
+
+    assert has_element?(view, "#interrupt-help", "Experimental")
+
+    view
+    |> form("#chatter-form",
+      setting: %{chatter_pause: "true", chatter_limit: "6", interrupt_on_mention: "true"}
+    )
+    |> render_submit()
+
+    assert Canopy.Settings.interrupt_on_mention?()
+
+    assert has_element?(
+             view,
+             "#chatter-form input[name='setting[interrupt_on_mention]'][checked]"
+           )
+  end
+
   test "the conversation brake can be tuned or turned off", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings")
     assert has_element?(view, "#chatter-form input[name='setting[chatter_pause]'][checked]")

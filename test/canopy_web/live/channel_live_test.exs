@@ -637,6 +637,89 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "interrupts" do
+    defp sent_message do
+      assert_receive {:timeline, %{event_type: "message", message: %{agent_id: nil} = message}},
+                     2_000
+
+      message
+    end
+
+    test "off by default: no send menu, and nothing a message says interrupts", ctx do
+      Timeline.subscribe(ctx.channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      refute has_element?(view, "#composer-send-menu")
+      refute has_element?(view, "#composer-form[data-interrupt]")
+
+      view
+      |> form("#composer-form", message: %{body: "@#{ctx.agent.name} look"})
+      |> render_submit()
+
+      refute sent_message().interrupt
+    end
+
+    test "on: Enter interrupts, Alt+Enter and the send menu do not", ctx do
+      {:ok, _} = Canopy.Settings.update(%{interrupt_on_mention: true})
+      Timeline.subscribe(ctx.channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, "#composer-send-menu #composer-send-no-interrupt")
+      assert has_element?(view, "#composer-form[data-interrupt=true]")
+
+      view
+      |> form("#composer-form", message: %{body: "@#{ctx.agent.name} look"})
+      |> render_submit()
+
+      assert sent_message().interrupt
+
+      # Alt+Enter: the Composer hook sets the hidden input for that one send
+      view
+      |> form("#composer-form", message: %{body: "@#{ctx.agent.name} later"})
+      |> render_submit(%{"interrupt" => "toggle"})
+
+      refute sent_message().interrupt
+
+      # the send menu's button says the same
+      view
+      |> form("#composer-form", message: %{body: "@#{ctx.agent.name} later still"})
+      |> put_submitter("#composer-send-no-interrupt")
+      |> render_submit()
+
+      refute sent_message().interrupt
+    end
+
+    test "a message steered into a turn shows on its live card, with Interrupt now", ctx do
+      {:ok, _} = Canopy.Settings.update(%{interrupt_on_mention: true})
+      %{channel: channel, agent: agent} = ctx
+      sid = ctx.session.engine_session_id
+      stub(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => %{"type" => "busy"}}} end)
+      Timeline.subscribe(channel.id)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view |> form("#composer-form", message: %{body: "go"}) |> render_submit()
+      assert_receive {:agent_status, _, :busy}, 2_000
+
+      view
+      |> form("#composer-form", message: %{body: "@#{agent.name} use the other file"})
+      |> render_submit()
+
+      assert_receive {:timeline, %{event_type: "agent_interrupted"}}, 2_000
+      assert_receive {:steer, _, %{pending: 1}}, 2_000
+      assert has_element?(view, "#steer-chip-#{agent.id}", "Interrupting after current step")
+      assert has_element?(view, "#member-#{agent.id}-steers", "1 waiting")
+
+      expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
+      view |> element("#interrupt-now-#{agent.id}") |> render_click()
+
+      assert_receive {:timeline, %{event_type: "agent_interrupted", payload: %{"mode" => "now"}}},
+                     2_000
+
+      # the turn ends: the chip goes with it
+      broadcast_status(channel.id, agent.id, :idle)
+      refute has_element?(view, "#steer-chip-#{agent.id}")
+      refute has_element?(view, "#member-#{agent.id}-steers")
+    end
+  end
+
   describe "telemetry" do
     test "a telemetry broadcast renders the working card and idle clears it", ctx do
       %{channel: channel, agent: agent} = ctx

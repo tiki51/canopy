@@ -17,6 +17,15 @@ const streams = new Set(); // SSE clients on GET /event
 const sessions = new Map(); // id -> {parentID, title}
 const pendingPermissions = new Map(); // per_id -> resume fn
 const aborted = new Set(); // session ids aborted mid-turn (long turns stop early)
+// Sessions with a turn running (GET /session/status lists them as busy), and
+// what a prompt_async to a busy session left for the running turn: real
+// OpenCode saves the message and its loop reads it at the next step, so the
+// fake folds it in after the next tool, or at the turn's end at the latest.
+const busy = new Set();
+const inbox = new Map(); // sessionID -> [prompt text]
+// Bumped by every abort: a long turn checks it is still its own session's
+// generation, so a turn started right after an abort cannot revive it.
+const generation = new Map(); // sessionID -> number
 let dialogue = 0; // lines spoken in the load-test back-and-forth (site screenshots)
 const pendingQuestions = new Map(); // que_id -> {request, resume}
 let mcp = null; // {url, headers} of the latest POST /mcp; the tool calls below use it
@@ -277,6 +286,7 @@ async function storyTurn(sessionID, text, cwd) {
   const done = (reply, cost) => finishTurn(sessionID, messageID, part, reply, cost);
 
   aborted.delete(sessionID);
+  busy.add(sessionID);
   emit("session.status", { sessionID, status: { type: "busy" } });
   await sleep(TURN_DELAY / 2);
 
@@ -411,18 +421,19 @@ async function runTurn(sessionID, text, cwd) {
   const messageID = nextId("msg");
   const part = (extra) => ({ id: nextId("prt"), sessionID, messageID, ...extra });
   // one tool call, pending -> running (for TURN_DELAY, so the live card shows it) -> completed
-  const tool = async (name, input, title, output = "") => {
+  const tool = async (name, input, title, output = "", hold = TURN_DELAY) => {
     const callID = nextId("call");
     const toolID = nextId("prt");
     const base = { id: toolID, sessionID, messageID, type: "tool", callID, tool: name };
     const start = Date.now();
     emit("message.part.updated", { sessionID, part: { ...base, state: { status: "pending", input: {} } } });
     emit("message.part.updated", { sessionID, part: { ...base, state: { status: "running", input, time: { start } } } });
-    await sleep(TURN_DELAY);
+    await sleep(hold);
     const metadata = name === "bash" ? { output, exit: 0, truncated: false } : {};
     emit("message.part.updated", { sessionID, part: { ...base, state: { status: "completed", input, title, output, metadata, time: { start, end: Date.now() } } } });
   };
   aborted.delete(sessionID);
+  busy.add(sessionID);
   emit("session.status", { sessionID, status: { type: "busy" } });
   await sleep(TURN_DELAY);
 
@@ -529,7 +540,10 @@ async function runTurn(sessionID, text, cwd) {
   }
 
   const inline = text;
-  // Site "Stop all" shot: a long turn that keeps calling tools until aborted.
+  // Site "Stop all" shot: a long turn that keeps calling tools until aborted
+  // ("slowly": the k6 run takes six seconds, the other calls half a second).
+  // A message steered in mid-turn (e2e/tests/interrupt.spec.ts) is read
+  // after the call that is running, and ends the turn.
   if (/under load|checkout suite/i.test(inline) && /new Canopy message/i.test(text)) {
     const steps = [
       ["bash", { command: "k6 run load/checkout.js --vus 100" }, "k6 run load/checkout.js"],
@@ -537,11 +551,20 @@ async function runTurn(sessionID, text, cwd) {
       ["grep", { pattern: "priceCart" }, "priceCart"],
       ["bash", { command: "npm test -- checkout" }, "npm test -- checkout"],
     ];
-    for (let i = 0; i < 60 && !aborted.has(sessionID); i++) {
+    const slowly = /\bslowly\b/i.test(inline);
+    const gen = generation.get(sessionID) || 0;
+    const live = () => !aborted.has(sessionID) && (generation.get(sessionID) || 0) === gen;
+    for (let i = 0; i < 60 && live(); i++) {
       const [name, input, title] = steps[i % steps.length];
-      await tool(name, input, title);
+      await tool(name, input, title, "", slowly ? (title.startsWith("k6") ? 6000 : 500) : TURN_DELAY);
+      if (live() && inbox.get(sessionID)?.length) {
+        return finishTurn(sessionID, messageID, part, "Stopped the checkout suite as you asked.", 0.0031);
+      }
     }
-    aborted.delete(sessionID);
+    if (live()) {
+      aborted.delete(sessionID);
+      busy.delete(sessionID);
+    }
     return;
   }
 
@@ -661,8 +684,20 @@ async function runTurn(sessionID, text, cwd) {
   finishTurn(sessionID, messageID, part, reply, 0.0012);
 }
 
-// The final text, the cost, and back to idle.
+// The body of the message a wake prompt carries inline.
+const messageText = (text) => text.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
+
+// The final text, the cost, and back to idle. Messages steered into the turn
+// and not read yet are read now, as one more step would: the user message
+// shows up, and the reply quotes it.
 function finishTurn(sessionID, messageID, part, reply, cost) {
+  const folded = inbox.get(sessionID) || [];
+  inbox.delete(sessionID);
+  for (const text of folded) {
+    emit("message.updated", { info: { id: nextId("msg"), sessionID, role: "user", time: { created: Date.now() } } });
+    reply = `${reply}\n\nRe your message: “${messageText(text)}”`;
+  }
+  busy.delete(sessionID);
   const textID = nextId("prt");
   emit("message.part.updated", { sessionID, part: part({ id: textID, type: "text", text: "", time: { start: Date.now() } }) });
   emit("message.part.delta", { sessionID, messageID, partID: textID, field: "text", delta: reply });
@@ -719,7 +754,7 @@ const server = http.createServer(async (req, res) => {
       emit("session.created", { info: { id, projectID: "fake", parentID: body.parentID, title: body.title } });
       return json(res, 200, { id, parentID: body.parentID, title: body.title });
     }
-    if (req.method === "GET" && p === "/session/status") return json(res, 200, {});
+    if (req.method === "GET" && p === "/session/status") return json(res, 200, Object.fromEntries([...busy].map((id) => [id, { type: "busy" }])));
     if (req.method === "GET" && p === "/permission") return json(res, 200, []);
     if (req.method === "GET" && p === "/question") return json(res, 200, [...pendingQuestions.values()].map((q) => q.request));
     if (req.method === "GET" && p === "/vcs/status") return json(res, 200, []);
@@ -736,12 +771,23 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const text = (body.parts || []).map((x) => x.text || "").join("\n");
       res.writeHead(204); res.end();
-      runTurn(m[1], text, url.searchParams.get("directory")).catch((e) => console.error("[fake-opencode] turn failed", e));
+      // a busy session takes the message into its running turn
+      if (busy.has(m[1])) {
+        inbox.set(m[1], [...(inbox.get(m[1]) || []), text]);
+        return;
+      }
+      runTurn(m[1], text, url.searchParams.get("directory")).catch((e) => {
+        busy.delete(m[1]);
+        console.error("[fake-opencode] turn failed", e);
+      });
       return;
     }
     if (req.method === "POST" && p.match(/^\/session\/([^/]+)\/summarize$/)) { await readBody(req); return json(res, 200, true); }
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/abort$/))) {
       aborted.add(m[1]);
+      generation.set(m[1], (generation.get(m[1]) || 0) + 1);
+      busy.delete(m[1]);
+      inbox.delete(m[1]);
       emit("session.status", { sessionID: m[1], status: { type: "idle" } });
       emit("session.idle", { sessionID: m[1] });
       return json(res, 200, true);

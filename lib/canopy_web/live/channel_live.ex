@@ -44,6 +44,7 @@ defmodule CanopyWeb.ChannelLive do
     Repositories,
     Runtime,
     Schedules,
+    Settings,
     Tasks,
     Teams,
     Threads,
@@ -337,6 +338,8 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:receipts, receipts(events))
     |> assign(:turn_ids, turn_ids(events))
     |> assign(:turn_threads, Runtime.turn_threads(id))
+    |> assign(:steers, Runtime.steers(id))
+    |> assign(:interrupt_on?, Settings.interrupt_on_mention?())
     |> assign(:message_ids, message_ids(events))
     |> assign(:summaries, Messages.thread_summaries(root_ids(events)))
     |> assign(:thread_unread, thread_unread(Map.put(socket.assigns, :user, user)))
@@ -711,6 +714,20 @@ defmodule CanopyWeb.ChannelLive do
 
   def handle_info({:flush_text, agent_id}, socket), do: {:noreply, flush_text(socket, agent_id)}
 
+  # The user's messages steered into an agent's turn (nil: none any more).
+  def handle_info({:steer, agent_id, nil}, socket),
+    do: {:noreply, assign(socket, :steers, Map.delete(socket.assigns.steers, agent_id))}
+
+  # The chip lives on the agent's live card: one that has shown nothing yet
+  # appears with it.
+  def handle_info({:steer, agent_id, info}, socket) do
+    {:noreply,
+     socket
+     |> assign(:steers, Map.put(socket.assigns.steers, agent_id, info))
+     |> put_live(agent_id, live_card(socket, agent_id))
+     |> mark_working(agent_id)}
+  end
+
   def handle_info({:agent_status, agent_id, status}, socket) do
     socket =
       if status in [:busy, :awaiting_user] do
@@ -720,6 +737,7 @@ defmodule CanopyWeb.ChannelLive do
         act = socket.assigns.act
 
         socket
+        |> assign(:steers, Map.delete(socket.assigns.steers, agent_id))
         |> assign(:telemetry, Map.delete(socket.assigns.telemetry, agent_id))
         |> assign(:pending_text, Map.delete(socket.assigns.pending_text, agent_id))
         |> assign(:act, %{
@@ -1212,6 +1230,21 @@ defmodule CanopyWeb.ChannelLive do
 
   defp cid(socket), do: socket.assigns.channel.id
 
+  # Whether a mention of a working agent reaches it mid-turn: the setting,
+  # read now, flipped for this message by Alt+Enter or the send menu
+  # (`"interrupt" => "toggle"`). With the setting off nothing interrupts.
+  defp interrupt_opts(params) do
+    on? = Settings.interrupt_on_mention?()
+    [interrupt: on? and params["interrupt"] != "toggle"]
+  end
+
+  # The agents a mention would interrupt (the composer's hint): working, not
+  # waiting on a card; none while interrupts are off.
+  defp working_names(false, _statuses, _names), do: []
+
+  defp working_names(true, statuses, names),
+    do: for({agent_id, :busy} <- statuses, name = Map.get(names, agent_id), do: name)
+
   # One send path for both composers: `:main` (the channel's) and `:thread`
   # (the thread panel's), each with its own uploads and picked files. On a
   # failed send the text stays in the composer and the stored files go.
@@ -1281,8 +1314,8 @@ defmodule CanopyWeb.ChannelLive do
   # -- Events ------------------------------------------------------------------
 
   @impl true
-  def handle_event("send", %{"message" => %{"body" => body}}, socket) do
-    submit(socket, body, :main, [])
+  def handle_event("send", %{"message" => %{"body" => body}} = params, socket) do
+    submit(socket, body, :main, interrupt_opts(params))
   end
 
   # The thread panel's composer: the reply lands in the open thread, and the
@@ -1294,9 +1327,12 @@ defmodule CanopyWeb.ChannelLive do
         {:noreply, socket}
 
       %{root: root} ->
-        submit(socket, body, :thread,
-          thread_id: root.id,
-          to_channel: params["also_send"] == "true"
+        submit(
+          socket,
+          body,
+          :thread,
+          [thread_id: root.id, to_channel: params["also_send"] == "true"] ++
+            interrupt_opts(params)
         )
     end
   end
@@ -1363,6 +1399,19 @@ defmodule CanopyWeb.ChannelLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Abort failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("interrupt_now", %{"agent-id" => agent_id}, socket) do
+    case Runtime.interrupt_now(cid(socket), agent_id) do
+      :ok ->
+        {:noreply, socket}
+
+      {:error, :nothing_pending} ->
+        {:noreply, put_flash(socket, :info, "Nothing to interrupt: the agent already read it.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Interrupt failed: #{inspect(reason)}")}
     end
   end
 
@@ -2033,6 +2082,7 @@ defmodule CanopyWeb.ChannelLive do
             run={@run}
             names={@names}
             editing_playbook?={@editing_playbook?}
+            steers={@steers}
           />
 
           <PlaybookComponents.run_panel
@@ -2160,6 +2210,7 @@ defmodule CanopyWeb.ChannelLive do
               open_rows={rows_of(@act.open_rows, "telemetry-" <> agent_id)}
               highlight={live_in_panel?(@activity, agent_id)}
               auto_open?={@act.auto_open?}
+              steer={Map.get(@steers, agent_id)}
             />
 
             <.permission_card
@@ -2189,6 +2240,8 @@ defmodule CanopyWeb.ChannelLive do
             class={(@thread || @activity) && "max-lg:hidden"}
             submit="send"
             waiting={@waiting_on_user}
+            interrupt={@interrupt_on?}
+            working={working_names(@interrupt_on?, @agent_statuses, @names)}
             form={@composer}
             agent_names={@agent_names}
             member_names={@member_names}
@@ -2243,6 +2296,9 @@ defmodule CanopyWeb.ChannelLive do
           activity={@activity}
           receipts={@receipts}
           agent_statuses={@agent_statuses}
+          steers={@steers}
+          interrupt={@interrupt_on?}
+          working={working_names(@interrupt_on?, @agent_statuses, @names)}
         />
 
         <.activity_panel
@@ -2375,6 +2431,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :run, :any, default: nil
   attr :names, :map, default: %{}
   attr :editing_playbook?, :boolean, default: false
+  attr :steers, :map, default: %{}, doc: "`%{agent_id => %{pending}}` steered into turns"
 
   defp repo_root(%{repository: %{path: path}}), do: path
   defp repo_root(_channel), do: nil
@@ -2692,6 +2749,14 @@ defmodule CanopyWeb.ChannelLive do
               class="text-xs text-info"
             >
               waiting on you
+            </span>
+            <span
+              :if={Map.has_key?(@steers, member.id)}
+              id={"member-#{member.id}-steers"}
+              class="text-xs text-secondary"
+              title="Your messages it will read mid-turn"
+            >
+              {@steers[member.id].pending} waiting
             </span>
             <button
               :if={Map.get(@agent_statuses, member.id) in [:busy, :awaiting_user]}
@@ -3188,6 +3253,9 @@ defmodule CanopyWeb.ChannelLive do
   attr :activity, :map, default: nil
   attr :receipts, :map, default: %{}
   attr :agent_statuses, :map, default: %{}
+  attr :steers, :map, default: %{}
+  attr :interrupt, :boolean, default: false
+  attr :working, :list, default: []
 
   # A thread in the side panel: the root, its replies and the turn cards of
   # work done for it, the live card and cards of an agent working here, and a
@@ -3270,6 +3338,7 @@ defmodule CanopyWeb.ChannelLive do
           open?={MapSet.member?(@act.open_live, agent_id)}
           open_rows={rows_of(@act.open_rows, "telemetry-" <> agent_id)}
           auto_open?={@act.auto_open?}
+          steer={Map.get(@steers, agent_id)}
         />
         <.permission_card :for={request <- @permissions} request={request} names={@names} />
         <.question_card :for={request <- @questions} request={request} names={@names} />
@@ -3284,6 +3353,8 @@ defmodule CanopyWeb.ChannelLive do
           thread
           also_send={channel_title(@channel)}
           waiting={@waiting}
+          interrupt={@interrupt}
+          working={@working}
           form={@form}
           agent_names={@agent_names}
           member_names={@member_names}
@@ -3530,6 +3601,12 @@ defmodule CanopyWeb.ChannelLive do
   attr :placeholder, :string, required: true
   attr :waiting, :list, default: [], doc: "`[{agent_name, card_dom_id}]` blocked on a card"
 
+  attr :interrupt, :boolean,
+    default: false,
+    doc: "a mention of a working agent reaches it mid-turn (the setting)"
+
+  attr :working, :list, default: [], doc: "names of the agents working now (with `interrupt`)"
+
   # The channel's composer and the thread panel's share this one component and
   # the one Composer hook (autocomplete, team names, the highlight layer, the
   # awaiting hint), told apart by their ids.
@@ -3565,6 +3642,8 @@ defmodule CanopyWeb.ChannelLive do
         data-teams={Jason.encode!(@team_names)}
         data-channels={Jason.encode!(@channel_names)}
         data-awaiting={Jason.encode!(Enum.map(@waiting, &elem(&1, 0)))}
+        data-working={Jason.encode!(@working)}
+        data-interrupt={@interrupt && "true"}
         data-members={Jason.encode!(@member_names)}
         data-team-members={Jason.encode!(@team_members)}
         data-channel-refs={Jason.encode!(@channel_refs)}
@@ -3573,8 +3652,12 @@ defmodule CanopyWeb.ChannelLive do
         data-scope={@scope}
         class="relative"
       >
+        <%!-- Alt+Enter and the send menu send the other way round from the
+             setting: "toggle" (see interrupt_opts/1). The hook sets it. --%>
+        <input type="hidden" name="interrupt" id={"#{@id}-interrupt"} value="" />
         <%!-- Filled by the Composer hook when the draft mentions an agent that
-             is blocked on a card: a message is never taken as the card's answer. --%>
+             is blocked on a card (a message is never taken as the card's
+             answer), or one that is working while mentions interrupt. --%>
         <div
           id={"#{@id}-awaiting-hint"}
           phx-update="ignore"
@@ -3735,15 +3818,47 @@ defmodule CanopyWeb.ChannelLive do
             <button
               type="submit"
               id={"#{@id}-send"}
-              class="btn btn-sm btn-primary btn-square ml-auto"
+              class={["btn btn-sm btn-primary btn-square ml-auto", @interrupt && "rounded-r-none"]}
               title="Send (Enter)"
             >
               <.icon name="hero-paper-airplane-mini" class="size-4" />
             </button>
+            <%!-- With interrupts on, the other way to send: without interrupting
+                 a working agent (also Alt+Enter). --%>
+            <div :if={@interrupt} id={"#{@id}-send-menu"} class="dropdown dropdown-top dropdown-end">
+              <button
+                type="button"
+                tabindex="0"
+                id={"#{@id}-send-menu-toggle"}
+                class="btn btn-sm btn-primary btn-square w-5 rounded-l-none border-l border-primary-content/20"
+                title="More ways to send"
+                aria-label="More ways to send"
+              >
+                <.icon name="hero-chevron-up-mini" class="size-3.5" />
+              </button>
+              <div
+                tabindex="0"
+                class="dropdown-content z-20 mb-1 w-64 rounded-lg border border-base-300 bg-base-100 p-1 shadow-lg"
+              >
+                <button
+                  type="submit"
+                  name="interrupt"
+                  value="toggle"
+                  id={"#{@id}-send-no-interrupt"}
+                  class="flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-base-200"
+                >
+                  <span>Send without interrupting</span>
+                  <span class="text-[11px] text-base-content/60">
+                    A working agent reads it after its turn · Alt+Enter
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <p :if={@main?} class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
-          Enter to send · Shift+Enter for a new line · paste or drop files to attach · {Commands.help()}
+          Enter to send · Shift+Enter for a new line<span :if={@interrupt}> · Alt+Enter: send without interrupting</span>
+          · paste or drop files to attach · {Commands.help()}
         </p>
         <p :if={!@main?} class="mt-1.5 hidden px-1 text-[11px] text-base-content/45 sm:block">
           Enter to send · Esc closes the thread when the box is empty

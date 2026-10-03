@@ -58,7 +58,21 @@ defmodule Canopy.Engine.OpenCode do
   def subscribe(session), do: Canopy.Engine.subscribe_session(session.engine_session_id)
 
   @impl true
-  def send_prompt(ctx, state, session, agent, %{text: text, system: system} = prompt) do
+  def send_prompt(ctx, state, session, agent, prompt) do
+    body = prompt_body(agent, prompt)
+
+    case client().prompt_async(
+           ctx.repository.path,
+           session.engine_session_id,
+           body,
+           state.client_opts
+         ) do
+      {:ok, _} -> {:ok, %{attachments: length(body.parts) - 1}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp prompt_body(agent, %{text: text, system: system} = prompt) do
     # Documents the plan marks as parts ride along; the rest were materialised
     # under the repository and the prompt names their paths.
     parts =
@@ -76,23 +90,40 @@ defmodule Canopy.Engine.OpenCode do
 
     # The agent's own model, else Canopy's OpenCode default; with neither the
     # OpenCode agent's (or the server's) own default applies.
-    body =
-      case Agents.effective_model(agent) do
-        %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
-          Map.put(body, :model, %{providerID: p, modelID: m})
+    case Agents.effective_model(agent) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
+        Map.put(body, :model, %{providerID: p, modelID: m})
 
-        _ ->
-          body
-      end
+      _ ->
+        body
+    end
+  end
 
-    case client().prompt_async(
-           ctx.repository.path,
-           session.engine_session_id,
-           body,
-           state.client_opts
-         ) do
-      {:ok, _} -> {:ok, %{attachments: length(parts)}}
-      {:error, reason} -> {:error, reason}
+  # A prompt to a busy session does not start a second run: OpenCode saves the
+  # message and its running loop reads it at the next step (believed from
+  # the 1.18.11 source; unverified live, see the Agent Interrupt plan). The
+  # status check first keeps a steer from starting a run of its own on an
+  # idle session. The body is the prompt's, without `tools` (sticky), and
+  # with the same system text, so the next step keeps Canopy's. OpenCode
+  # cannot say whether the message was read: `confirms: false`.
+  @impl true
+  def steer(ctx, state, session, message) do
+    sid = session.engine_session_id
+
+    case client().session_status(ctx.repository.path, state.client_opts) do
+      {:ok, %{^sid => %{"type" => type}}} when type != "idle" ->
+        body = session.agent_id |> Agents.get!() |> prompt_body(message) |> Map.delete(:tools)
+
+        case client().prompt_async(ctx.repository.path, sid, body, state.client_opts) do
+          {:ok, _} -> {:ok, %{confirms: false}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _} ->
+        {:error, :not_running}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

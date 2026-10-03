@@ -9,6 +9,9 @@ defmodule Canopy.Engine.Event do
     * `:agent_status`      data: `%{status: :idle | :busy | :retry, raw: map}`
     * `:agent_completed`   data: `%{}`
     * `:agent_error`       data: `%{error: map}`
+    * `:prompts_unconsumed` data: `%{refs: [String.t()]}` (steered messages the
+      turn never read, by `Canopy.Engine.steer/4` ref; sent just before the
+      turn's `:agent_completed` / `:agent_error`)
     * `:session_updated`   data: `%{session: map}`
     * `:session_deleted`   data: `%{session: map}`
     * `:mcp_servers`       data: `%{servers: [%{name, status, tool_count}]}` (what the session loaded this turn)

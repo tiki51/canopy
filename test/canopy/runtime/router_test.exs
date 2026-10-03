@@ -434,6 +434,82 @@ defmodule Canopy.Runtime.RouterTest do
     end
   end
 
+  describe "interrupts" do
+    defp steer?(wake) when is_map(wake), do: Map.get(wake, :steer?, false)
+    defp steer?(_text), do: false
+
+    test "a user's message sent to interrupt steers each agent it mentions" do
+      event = message_event(%{mentions: [@reviewer], interrupt: true})
+      assert [{{:root, @reviewer}, wake}] = Router.wakeups(event, ctx())
+      assert steer?(wake)
+      assert wake.text =~ "Message ID: msg_1"
+    end
+
+    test "without the flag nothing steers" do
+      event = message_event(%{mentions: [@reviewer], interrupt: false})
+      assert [{{:root, @reviewer}, wake}] = Router.wakeups(event, ctx())
+      refute steer?(wake)
+    end
+
+    test "the owner and thread fallbacks never steer, nor does an agent's mention" do
+      assert [{{:root, @backend}, owner}] =
+               Router.wakeups(message_event(%{interrupt: true}), ctx())
+
+      refute steer?(owner)
+
+      thread = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @reviewer} end})
+
+      event =
+        message_event(%{thread_id: "msg_root", kind: "thread_reply", interrupt: true})
+
+      assert [{{:root, @reviewer}, author}] = Router.wakeups(event, thread)
+      refute steer?(author)
+
+      agent = message_event(%{agent_id: @backend, mentions: [@reviewer], interrupt: true})
+      assert [{{:root, @reviewer}, wake}] = Router.wakeups(agent, ctx())
+      refute steer?(wake)
+    end
+
+    test "a thread reply that mentions the agent steers it" do
+      event =
+        message_event(%{
+          thread_id: "msg_root",
+          kind: "thread_reply",
+          mentions: [@reviewer],
+          interrupt: true
+        })
+
+      assert [{{:root, @reviewer}, wake}] = Router.wakeups(event, ctx())
+      assert steer?(wake)
+    end
+
+    test "in a DM every target steers" do
+      ctx = ctx(%{channel: %{name: "dm", kind: "dm"}})
+      event = message_event(%{interrupt: true})
+      wakes = Router.wakeups(event, ctx)
+      assert length(wakes) == 2
+      assert Enum.all?(wakes, fn {_target, wake} -> steer?(wake) end)
+    end
+
+    test "a team mention steers its members and keeps the charge" do
+      event =
+        message_event(%{
+          mentions: [@backend, @reviewer],
+          team_mentions: [
+            %{"team_id" => "tm_1", "name" => "core", "agent_ids" => [@backend, @reviewer]}
+          ],
+          interrupt: true
+        })
+
+      wakes = Router.wakeups(event, ctx())
+      assert length(wakes) == 2
+
+      assert Enum.all?(wakes, fn {_t, wake} ->
+               steer?(wake) and wake.charge == {"msg_1", "tm_1"}
+             end)
+    end
+  end
+
   test "playbook and watch events wake nobody" do
     for type <-
           ~w(playbook_started playbook_step_started playbook_step_completed playbook_step_skipped

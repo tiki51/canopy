@@ -4,8 +4,22 @@ defmodule Canopy.ClaudeCode.Turn do
 
   Spawns the command, writes the prompt line, decodes every stdout line with
   `Canopy.ClaudeCode.Events`, and broadcasts the events on the engine topics
-  under the session's id. Ends when the `result` line arrives (the port is
-  closed, which is the process's EOF) or the process exits first.
+  under the session's id. Ends when the final `result` line arrives (the
+  port is closed, which is the process's EOF) or the process exits first.
+
+  Steering (`steer/3`): while the turn runs, more user lines can be written
+  to stdin, each with a client `uuid` and `priority: "next"`, which Claude
+  Code is believed to fold into the running turn between tool rounds (found
+  in the 2.1.283 binary, not verified live: see the Agent Interrupt plan).
+  One that arrives too late to fold runs as a further turn in the same
+  process: a `result` with `queued_turn_count > 0` reports its usage but does
+  not end the turn, and stdin and stdout stay open until a result with none
+  queued. That final result's `:agent_completed` / `:agent_error` is preceded
+  by `:prompts_unconsumed` for every written uuid no result listed in
+  `user_message_uuids` (a CLI that never reports the field counts them all as
+  read), and a process that dies or is killed reports every one of them, so
+  the runtime sends them again. Steering is refused once the turn is done or
+  being aborted, and below `:steer_min_version` (read from `system/init`).
 
   Recoveries, each tried once:
 
@@ -45,6 +59,18 @@ defmodule Canopy.ClaudeCode.Turn do
   @doc "Interrupts the turn; the result still arrives and is reported as completed."
   def abort(server), do: GenServer.call(server, :abort)
 
+  @doc """
+  Writes a further user `line` (built with `Canopy.ClaudeCode.Command.user_message/2`,
+  carrying `ref` as its uuid) into the running turn. `{:error, :not_running}`
+  once the turn is done or being aborted; `{:error, :unsupported}` below the
+  minimum CLI version, or before the CLI said which version it is.
+  """
+  def steer(server, line, ref) do
+    GenServer.call(server, {:steer, line, ref})
+  catch
+    :exit, _ -> {:error, :not_running}
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -60,6 +86,19 @@ defmodule Canopy.ClaudeCode.Turn do
       cwd: Keyword.get(opts, :cwd),
       compact?: Keyword.get(opts, :compact?, false),
       stall_ms: Keyword.get(opts, :stall_ms, @default_stall_ms),
+      # nil: any CLI may be steered
+      steer_min_version: Keyword.get(opts, :steer_min_version),
+      # from system/init
+      version: nil,
+      # the uuids of the lines steer/3 wrote to this process, in order
+      written_refs: [],
+      # written to a process that was replaced (a resend): never read
+      lost_refs: [],
+      # every result's user_message_uuids, and whether any result had the field
+      consumed_refs: MapSet.new(),
+      uuids_reported?: false,
+      # results seen; only the first may be a dropped prompt
+      results: 0,
       port: nil,
       os_pid: nil,
       buffer: "",
@@ -106,6 +145,8 @@ defmodule Canopy.ClaudeCode.Turn do
        state
        | port: port,
          os_pid: os_pid,
+         lost_refs: state.lost_refs ++ state.written_refs,
+         written_refs: [],
          buffer: "",
          acc: Events.new(state.cwd),
          saw_assistant?: false,
@@ -120,6 +161,20 @@ defmodule Canopy.ClaudeCode.Turn do
     signal(state, "-INT")
     Process.send_after(self(), :abort_deadline, @abort_grace_ms)
     {:reply, :ok, %{state | aborted?: true}}
+  end
+
+  def handle_call({:steer, line, ref}, _from, state) do
+    cond do
+      state.port == nil or state.done? or state.aborted? ->
+        {:reply, {:error, :not_running}, state}
+
+      not steerable_version?(state) ->
+        {:reply, {:error, :unsupported}, state}
+
+      true ->
+        Port.command(state.port, line)
+        {:reply, :ok, %{state | written_refs: state.written_refs ++ [ref]}}
+    end
   end
 
   @impl true
@@ -214,7 +269,7 @@ defmodule Canopy.ClaudeCode.Turn do
 
   defp handle_line(%{"type" => "result"} = json, state) do
     {events, acc} = Events.normalize(json, state.acc)
-    state = %{state | acc: acc}
+    state = state |> Map.put(:acc, acc) |> note_consumed(json)
 
     cond do
       dropped_prompt?(json, state) ->
@@ -222,9 +277,16 @@ defmodule Canopy.ClaudeCode.Turn do
         close(state.port)
         {:noreply, %{state | port: nil, resend_retried?: true}, {:continue, :spawn}}
 
+      # A steered line that came too late to fold runs as a further turn in
+      # this process: its usage counts, the turn goes on. An abort ends it.
+      queued_turns(json) > 0 and not state.aborted? ->
+        events |> Enum.reject(&terminal?/1) |> broadcast(state)
+        {:noreply, %{state | results: state.results + 1}}
+
       true ->
         events
         |> Enum.map(&if(state.aborted?, do: as_completed(&1), else: &1))
+        |> add_unconsumed(unconsumed(state))
         |> broadcast(state)
 
         close(state.port)
@@ -236,14 +298,70 @@ defmodule Canopy.ClaudeCode.Turn do
     {events, acc} = Events.normalize(json, state.acc)
     broadcast(events, state)
     saw? = state.saw_assistant? or json["type"] == "assistant"
-    {:noreply, %{state | acc: acc, saw_assistant?: saw?}}
+    state = %{state | acc: acc, saw_assistant?: saw?}
+
+    case json do
+      %{"type" => "system", "subtype" => "init", "claude_code_version" => version}
+      when is_binary(version) ->
+        {:noreply, %{state | version: version}}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  defp queued_turns(%{"queued_turn_count" => n}) when is_integer(n), do: n
+  defp queued_turns(_json), do: 0
+
+  defp terminal?(%Event{type: type}), do: type in [:agent_completed, :agent_error]
+
+  defp note_consumed(state, %{"user_message_uuids" => uuids}) when is_list(uuids),
+    do: %{
+      state
+      | consumed_refs: MapSet.union(state.consumed_refs, MapSet.new(uuids)),
+        uuids_reported?: true
+    }
+
+  defp note_consumed(state, _json), do: state
+
+  # What the turn never read: lines written to a process that was replaced,
+  # and, when the CLI reports what it consumed, every written line it did not
+  # list. A CLI that never reports the field counts them as read.
+  defp unconsumed(state) do
+    read =
+      if state.uuids_reported?,
+        do: Enum.reject(state.written_refs, &MapSet.member?(state.consumed_refs, &1)),
+        else: []
+
+    state.lost_refs ++ read
+  end
+
+  # Just before the terminal event, so the runtime knows before the turn closes.
+  defp add_unconsumed(events, []), do: events
+
+  defp add_unconsumed(events, refs) do
+    {before, terminal} = Enum.split_with(events, &(not terminal?(&1)))
+    before ++ [%Event{type: :prompts_unconsumed, data: %{refs: refs}} | terminal]
+  end
+
+  defp steerable_version?(%{steer_min_version: nil}), do: true
+  defp steerable_version?(%{version: nil}), do: false
+
+  defp steerable_version?(%{version: version, steer_min_version: min}) do
+    with {:ok, have} <- Version.parse(version),
+         {:ok, need} <- Version.parse(min) do
+      Version.compare(have, need) != :lt
+    else
+      _ -> false
+    end
   end
 
   # Claude Code answered without ever calling the model on a turn that asked
   # for work: the prompt was lost to housekeeping. Compaction turns look the
   # same and are fine.
   defp dropped_prompt?(json, state) do
-    not state.compact? and not state.resend_retried? and not state.saw_assistant? and
+    state.results == 0 and not state.compact? and not state.resend_retried? and
+      not state.saw_assistant? and
       json["num_turns"] == 0 and (json["result"] || "") == ""
   end
 
@@ -256,14 +374,18 @@ defmodule Canopy.ClaudeCode.Turn do
     end)
   end
 
+  # Whatever was written to the process is unread as far as anyone knows.
   defp fail(state, reason) do
     broadcast(
-      [
-        %Event{
-          type: :agent_error,
-          data: %{error: %{"name" => "claude", "data" => %{"message" => reason}}}
-        }
-      ],
+      add_unconsumed(
+        [
+          %Event{
+            type: :agent_error,
+            data: %{error: %{"name" => "claude", "data" => %{"message" => reason}}}
+          }
+        ],
+        state.lost_refs ++ state.written_refs
+      ),
       state
     )
 

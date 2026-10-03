@@ -81,6 +81,10 @@ needs through Canopy's tools. That keeps turns cheap and is why the Costs page m
 - **A handoff** wakes the target, who must accept or decline.
 - **A scheduled task** wakes its agent at the chosen time.
 
+If the agent you mention is already working, your message waits until its whole turn ends.
+With the experimental [interrupt setting](#redirecting-a-working-agent-experimental) on,
+it reads your message after its current step instead.
+
 Write "the researcher agent" if you want the owner to handle something *about* the
 researcher; write `@researcher` if you want the researcher itself to answer.
 
@@ -245,7 +249,12 @@ filled in.
   waiting tool call after 30) is how long a Claude Code agent sits on a question before it
   ends its turn; the card stays open and your answer still reaches it. *Minutes an agent
   may keep a lock across turns* (30 by default) is how long a [lock](#locks) an agent asked
-  to keep survives its turns before Canopy frees it anyway. *Pause a channel after agents have taken turns without me* is a check-in:
+  to keep survives its turns before Canopy frees it anyway. *Mentioning a working agent
+  interrupts it (experimental)*, off by default, hands your mention of an agent that is
+  working to its turn at the next step instead of after the turn (see
+  [Redirecting a working agent](#redirecting-a-working-agent-experimental)); it stays off
+  until the way Claude Code and OpenCode take a message mid-turn has been checked against
+  the real engines. *Pause a channel after agents have taken turns without me* is a check-in:
   when it is on, a channel holds after the number of agent turns you set until you type
   or press Continue. Leave it off when you want agents to run autonomously for as long as
   the work takes, and use spend limits as the backstop instead.
@@ -594,6 +603,10 @@ Four slash commands are built in:
 | `/stop` | Aborts every turn in the channel and holds it until you reply or press Continue |
 
 While an agent is working, a second message from you queues and runs when the turn ends.
+With the experimental interrupt setting on, a message that mentions the working agent
+reaches it after its current step instead; **Alt+Enter** (or *Send without interrupting*
+in the menu beside Send) sends one the old way. See
+[Redirecting a working agent](#redirecting-a-working-agent-experimental).
 
 ### Compact timeline and the Activity view
 
@@ -832,6 +845,41 @@ and the card closes into a finished card.
 
 ![Agent replied, dark](user-guide/images/agent-replied-dark.png)
 
+### Redirecting a working agent (experimental)
+
+Off by default: turn on *Mentioning a working agent interrupts it* under Settings →
+Conversation. It is experimental because how Claude Code and OpenCode take a message in
+the middle of a turn has not been checked against the real engines yet; until then, treat
+it as a preview.
+
+With it on, an @mention of an agent that is working, from you, in the channel (or in the
+thread the agent is working in), goes into the turn it is running. The agent finishes the
+command or tool call it is on, a long test run included, then reads your message before
+its next step, and carries on, changes course, or answers. Its live card shows a chip,
+*Interrupting after current step*, with the call running now and how long it has run, and
+its pill shows *1 waiting*. With Activity on, the feed says "@agent will read your message
+after its current step". The finished line then reads "@agent finished · took 1 message
+mid-turn · …".
+
+- **Interrupt now**, on the chip, does not wait for the current step: it stops the turn
+  (the running command too) and starts a new one with your message at once. The feed says
+  "<you> interrupted @agent", then "@agent was interrupted by <you>" and a new "started
+  working" line.
+- **Alt+Enter**, or *Send without interrupting* in the menu beside Send, sends one message
+  the old way: it waits for the turn to end. While your draft mentions a working agent, a
+  hint above the box says which way it will go.
+- Only a mention from you interrupts. An unaddressed message to the owner, a message
+  mentioning the agent from another thread or from the channel while it works in a thread,
+  agents' mentions, `/delegate`, `/handoff` and schedules all wait for the turn as before.
+  In a DM every message counts as a mention.
+- An agent waiting on a [question or permission card](#questions) gets your message once
+  the card is answered; the message is never taken as the answer.
+- A message is never lost: if the turn ends without having read it (or you pressed
+  Interrupt now), it goes to the agent again as its next turn, marked as possibly already
+  seen. **Stop all** drops it with everything else that was waiting.
+- It starts no turn of its own, so it does not wait for *One agent at a time* and does not
+  count against the pause.
+
 ### Permissions
 
 When an agent's engine is configured to ask for an action, the agent pauses and a permission card
@@ -871,6 +919,9 @@ agent waits until its turn ends.
 
 A message in the composer is never taken as the card's answer. If your draft mentions an
 agent that is waiting on a card, a hint above the message box says so; answer on the card.
+With the experimental interrupt setting on, the hint reads "@agent is waiting on the card
+above. Your message reaches it once the card is answered": the message goes into the turn
+then, not after it.
 
 An agent does not wait forever:
 
@@ -898,7 +949,9 @@ Acknowledgements do not bounce between agents.
 
 Within a channel, agents take turns. An agent woken while another works waits in order
 (its dot shows amber) and starts when the channel is free. An agent blocked on a question
-or permission card is waiting on you, not working, so it does not hold the line.
+or permission card is waiting on you, not working, so it does not hold the line. With the
+experimental interrupt setting on, your mention of the agent that is working doesn't wait
+in line and doesn't count as a turn: it goes into the turn already running.
 
 Agents are meant to run on their own: they wake each other, delegate, hand off, and
 schedule follow-ups without you in the loop. If you want a periodic check-in, a channel
@@ -1422,6 +1475,7 @@ given a team, they answer with its members to pick from.
 | Key or command | Effect |
 |---|---|
 | Enter | Send |
+| Alt+Enter | With the experimental interrupt setting on: send without interrupting a working agent |
 | Shift+Enter | New line |
 | Esc | In the thread panel, with its composer empty: close the panel |
 | `@` | Suggest agents, then teams; mentioning a non-member only hints at `/i` |
@@ -1442,6 +1496,9 @@ given a team, they answer with its members to pick from.
 | `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
 | `@agent passed: note` | The agent chose not to reply |
 | `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
+| `@agent will read your message after its current step` | Experimental: your mention went into its running turn (Activity view only) |
+| `<you> interrupted @agent` / `@agent was interrupted by <you>` | Experimental: you pressed Interrupt now; a new turn starts with your message |
+| `@agent finished · took 1 message mid-turn · …` | Experimental: the turn read your message mid-turn |
 | `@agent stopped with an error` | The turn failed; the pill's dot is red |
 | `@a delegated to @b: …` / `completed the delegation` | A delegation and its result |
 | `handed this task to` / `accepted the handoff` / `ownership moved` | A handoff |

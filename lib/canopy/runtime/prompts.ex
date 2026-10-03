@@ -350,6 +350,23 @@ defmodule Canopy.Runtime.Prompts do
   defp playbook_step_line(_), do: ""
 
   @doc """
+  Put before a wake's text when it is handed to the agent's turn in flight
+  (steered): the agent reads it at its next step, mid-turn.
+  """
+  def steer_preface do
+    "The user sent this while you were working. Read it before you go on. If it changes or cancels what you are doing, follow it and drop the old plan. If it asks something, answer in the channel. Otherwise carry on.\n\n"
+  end
+
+  @doc """
+  Put before a steered wake's text when it is sent again as a turn of its
+  own: the turn it was handed to ended before reading it (or was
+  interrupted), so the agent may have seen it already.
+  """
+  def steer_redelivery do
+    "Your previous turn ended before you read this message (if you did read it, do not act on it twice):\n\n"
+  end
+
+  @doc """
   Appended to a delegation wake that a message about it joined before the
   delegate started: the message to read, without a second set of instructions.
   """

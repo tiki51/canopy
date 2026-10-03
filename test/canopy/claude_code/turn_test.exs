@@ -346,4 +346,216 @@ defmodule Canopy.ClaudeCode.TurnTest do
     ref = Process.monitor(second)
     assert_receive {:DOWN, ^ref, :process, ^second, :normal}, 5_000
   end
+
+  describe "steering" do
+    defp versioned_init(version \\ "9.9.9"),
+      do: Map.put(init_line("SESSION_ID"), :claude_code_version, version)
+
+    # The turn has started a tool call when the steer arrives; the fake then
+    # reads the steered line and prints `steer_lines`, with STEER_UUID.
+    defp steered(ctx, steer_lines, opts \\ []) do
+      script =
+        script!(ctx.dir, [
+          Keyword.get(opts, :init, versioned_init()),
+          %{
+            type: "assistant",
+            session_id: "SESSION_ID",
+            message: %{
+              id: "msg_1",
+              content: [
+                %{type: "tool_use", id: "toolu_1", name: "Bash", input: %{command: "mix test"}}
+              ]
+            }
+          }
+        ])
+
+      steer = script!(ctx.dir, steer_lines)
+
+      start(
+        ctx,
+        [{"FAKE_CLAUDE_SCRIPT", script}, {"FAKE_CLAUDE_STEER_SCRIPT", steer}],
+        Keyword.get(opts, :turn, [])
+      )
+    end
+
+    defp tool_result,
+      do: %{
+        type: "user",
+        session_id: "SESSION_ID",
+        message: %{
+          content: [
+            %{type: "tool_result", tool_use_id: "toolu_1", content: "ok", is_error: false}
+          ]
+        }
+      }
+
+    defp text_line(text),
+      do: %{
+        type: "assistant",
+        session_id: "SESSION_ID",
+        message: %{
+          id: "msg_t#{System.unique_integer([:positive])}",
+          content: [%{type: "text", text: text}]
+        }
+      }
+
+    defp steer_line(ref, text \\ "change of plan"),
+      do: Command.user_message(text, uuid: ref, priority: "next")
+
+    test "a steered line reaches stdin with its uuid and priority; the turn ends once", ctx do
+      pid =
+        steered(ctx, [
+          tool_result(),
+          text_line("Changing plan as asked."),
+          result_line("SESSION_ID", %{user_message_uuids: ["first", "STEER_UUID"]})
+        ])
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      ref = Ecto.UUID.generate()
+      assert :ok = Turn.steer(pid, steer_line(ref), ref)
+
+      assert_receive {:engine_event,
+                      %Event{type: :text_done, data: %{text: "Changing plan" <> _}}},
+                     5_000
+
+      assert_receive {:engine_event, %Event{type: :agent_completed}}, 5_000
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+      refute_received {:engine_event, %Event{type: :agent_completed}}
+      refute_received {:engine_event, %Event{type: :prompts_unconsumed}}
+
+      assert [_first, steered] = stdin_lines(ctx.log)
+      assert steered =~ ~s("priority":"next")
+      assert steered =~ ~s("uuid":"#{ref}")
+    end
+
+    test "a result with a queued turn keeps the process open until the final one", ctx do
+      pid =
+        steered(ctx, [
+          tool_result(),
+          text_line("Done with the first part."),
+          result_line("SESSION_ID", %{queued_turn_count: 1, total_cost_usd: 0.01}),
+          text_line("Now your message."),
+          result_line("SESSION_ID", %{user_message_uuids: ["STEER_UUID"], total_cost_usd: 0.02})
+        ])
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      ref = Ecto.UUID.generate()
+      assert :ok = Turn.steer(pid, steer_line(ref), ref)
+
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+
+      # both results' usage, then one end, after the second
+      assert [{:turn_usage, 0.01}, {:turn_usage, 0.02}, {:agent_completed, nil}] = ends()
+      refute_received {:engine_event, %Event{type: :prompts_unconsumed}}
+    end
+
+    defp ends(acc \\ []) do
+      receive do
+        {:engine_event, %Event{type: :turn_usage, data: %{cost: cost}}} ->
+          ends([{:turn_usage, cost} | acc])
+
+        {:engine_event, %Event{type: type}} when type in [:agent_completed, :agent_error] ->
+          ends([{type, nil} | acc])
+
+        {:engine_event, _} ->
+          ends(acc)
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "a final result that does not list the steered uuid reports it unconsumed", ctx do
+      pid =
+        steered(ctx, [
+          tool_result(),
+          result_line("SESSION_ID", %{user_message_uuids: ["first"]})
+        ])
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      ref = Ecto.UUID.generate()
+      assert :ok = Turn.steer(pid, steer_line(ref), ref)
+
+      assert_receive {:engine_event, %Event{type: :prompts_unconsumed, data: %{refs: [^ref]}}},
+                     5_000
+
+      assert_receive {:engine_event, %Event{type: :agent_completed}}, 5_000
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+    end
+
+    test "a CLI that never reports user_message_uuids counts the line as read", ctx do
+      pid = steered(ctx, [tool_result(), result_line("SESSION_ID")])
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      ref = Ecto.UUID.generate()
+      assert :ok = Turn.steer(pid, steer_line(ref), ref)
+      assert_receive {:engine_event, %Event{type: :agent_completed}}, 5_000
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+      refute_received {:engine_event, %Event{type: :prompts_unconsumed}}
+    end
+
+    test "after the final result there is nothing to steer", ctx do
+      script = script!(ctx.dir, [versioned_init(), result_line("SESSION_ID")])
+      pid = start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}])
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+
+      ref = Ecto.UUID.generate()
+      assert Turn.steer(pid, steer_line(ref), ref) == {:error, :not_running}
+    end
+
+    test "a killed process reports every written line unconsumed", ctx do
+      script = script!(ctx.dir, [versioned_init()])
+      pid = start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}, {"FAKE_CLAUDE_SLEEP", "30"}])
+      assert_receive {:engine_event, %Event{type: :agent_status}}, 5_000
+
+      ref = Ecto.UUID.generate()
+      assert :ok = Turn.steer(pid, steer_line(ref), ref)
+      send(pid, :abort_deadline)
+
+      assert_receive {:engine_event, %Event{type: :prompts_unconsumed, data: %{refs: [^ref]}}},
+                     5_000
+
+      assert_receive {:engine_event, %Event{type: :agent_error}}, 5_000
+      assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+    end
+
+    test "below the minimum version, or before the CLI says which, steering is refused", ctx do
+      ref = Ecto.UUID.generate()
+      gate = [turn: [steer_min_version: "2.1.283"]]
+
+      old =
+        steered(
+          ctx,
+          [tool_result(), result_line("SESSION_ID")],
+          [init: versioned_init("2.1.0")] ++ gate
+        )
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      assert Turn.steer(old, steer_line(ref), ref) == {:error, :unsupported}
+      assert :ok = Turn.abort(old)
+      assert_receive {:DOWN, _, :process, ^old, :normal}, 5_000
+
+      unknown =
+        steered(
+          ctx,
+          [tool_result(), result_line("SESSION_ID")],
+          [init: init_line("SESSION_ID")] ++ gate
+        )
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      assert Turn.steer(unknown, steer_line(ref), ref) == {:error, :unsupported}
+      assert :ok = Turn.abort(unknown)
+      assert_receive {:DOWN, _, :process, ^unknown, :normal}, 5_000
+
+      new =
+        steered(
+          ctx,
+          [tool_result(), result_line("SESSION_ID")],
+          [init: versioned_init("2.1.283")] ++ gate
+        )
+
+      assert_receive {:engine_event, %Event{type: :tool_started}}, 5_000
+      assert :ok = Turn.steer(new, steer_line(ref), ref)
+      assert_receive {:DOWN, _, :process, ^new, :normal}, 5_000
+    end
+  end
 end

@@ -8,7 +8,13 @@
 //
 // When the draft mentions an agent that is blocked on a question or permission
 // card (the form's data-awaiting), a hint says the message will not answer the
-// card: the text never round-trips, so the hint is drawn here.
+// card: the text never round-trips, so the hint is drawn here. With interrupts
+// on (data-interrupt), a mention of an agent that is working (data-working)
+// gets a hint too: it reads the message after its current step.
+//
+// Alt+Enter sends the other way round from the setting (without interrupting
+// a working agent): the form's hidden `interrupt` input says "toggle" for
+// that one submit.
 //
 // Mentions, channels and commands in the draft are highlighted by a layer
 // behind the textarea (composer_highlight.js).
@@ -59,7 +65,7 @@ const Composer = {
         }
         this.renderAwaitingHint()
       })
-      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting", "data-scope"]})
+      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting", "data-working", "data-interrupt", "data-scope"]})
     }
 
     const layer = this.el.dataset.highlight && document.querySelector(this.el.dataset.highlight)
@@ -155,8 +161,17 @@ const Composer = {
 
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
-      if (this.el.value.trim() !== "" && this.el.form) this.el.form.requestSubmit()
+      if (this.el.value.trim() !== "" && this.el.form) this.sendDraft(e.altKey)
     }
+  },
+
+  // `toggle`: Alt+Enter, sent the other way round from the setting. The
+  // input is reset once the submit has read it, so the next Enter is plain.
+  sendDraft(toggle) {
+    const input = this.el.form.querySelector("input[name=interrupt]")
+    if (input) input.value = toggle ? "toggle" : ""
+    this.el.form.requestSubmit()
+    if (input) setTimeout(() => { input.value = "" }, 0)
   },
 
   // The `@word` or `#word` immediately before the caret, if any.
@@ -238,12 +253,13 @@ const Composer = {
     if (this.highlighter) this.highlighter.destroy()
   },
 
-  // Agents named in the draft that are waiting on a card in this channel. A
-  // name inside code wakes nobody, so it doesn't count.
-  awaitingMentioned() {
+  // Agents named in the draft out of the form's list `key` (data-awaiting:
+  // waiting on a card; data-working: working). A name inside code wakes
+  // nobody, so it doesn't count.
+  mentionedFrom(key) {
     let names = []
     try {
-      names = JSON.parse((this.el.form && this.el.form.dataset.awaiting) || "[]")
+      names = JSON.parse((this.el.form && this.el.form.dataset[key]) || "[]")
     } catch (_e) {
       return []
     }
@@ -256,15 +272,22 @@ const Composer = {
 
   renderAwaitingHint() {
     if (!this.hint) return
-    const names = this.awaitingMentioned()
-    if (names.length === 0) {
+    const interrupt = Boolean(this.el.form && this.el.form.dataset.interrupt === "true")
+    const awaiting = this.mentionedFrom("awaiting")
+    const working = interrupt ? this.mentionedFrom("working").filter(name => !awaiting.includes(name)) : []
+    const lines = awaiting
+      .map(name =>
+        interrupt
+          ? `@${name} is waiting on the card above. Your message reaches it once the card is answered.`
+          : `@${name} is waiting on the card above. A message will reach it only after it's answered.`
+      )
+      .concat(working.map(name => `@${name} is working; it will read this after its current step (Alt+Enter: after its turn).`))
+    if (lines.length === 0) {
       this.hint.classList.add("hidden")
       this.hint.textContent = ""
       return
     }
-    this.hint.textContent = names
-      .map(name => `@${name} is waiting on the card above. A message will reach it only after it's answered.`)
-      .join(" ")
+    this.hint.textContent = lines.join(" ")
     this.hint.classList.remove("hidden")
   },
 

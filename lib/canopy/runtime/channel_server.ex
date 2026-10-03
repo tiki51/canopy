@@ -47,6 +47,18 @@ defmodule Canopy.Runtime.ChannelServer do
   wake starts takes ownership of the claim. The watchdog also runs the lock
   lease for this channel's claims.
 
+  Interrupts (steering). A user's message sent to interrupt that mentions an
+  agent already working in this channel, in the scope that turn works for
+  (the channel, or the same thread), is handed to that turn rather than
+  queued behind it: the engine gives it to the model at its next tool or
+  step boundary (`Canopy.Engine.steer/4`). It starts no turn, so neither the
+  chatter budget nor one turn at a time applies. A turn blocked on a card
+  holds the message until the card is answered, so it is never taken as the
+  answer. A steered message is never lost: when the turn ends without having
+  read it (the engine says so with `:prompts_unconsumed`, or the user pressed
+  Interrupt now, which aborts the turn), it is sent again as the agent's next
+  turn. Off by default (`Canopy.Settings.interrupt_on_mention?/0`).
+
   The MCP tools rarely call this process (`canopy_pass`, and lock tools asking
   for the turn in flight); they write through contexts and the resulting
   timeline events arrive here like any other.
@@ -97,6 +109,11 @@ defmodule Canopy.Runtime.ChannelServer do
   # merged with another wake, neither text may be dropped.
   @automation_triggers ~w(scheduled watch playbook playbook_nudge)
 
+  # A busy report for a session whose turn just ended with steers the engine
+  # could not confirm (OpenCode): a steer that landed after the idle started
+  # a new busy period, adopted as a turn so its work lands.
+  @adopt_window_ms 10_000
+
   # Appended to a wake that replaced an earlier one still waiting for the same agent.
   @merged_wake_note "\nOther messages arrived while you were busy; this wake stands for all of them, and canopy_messages_read returns everything new.\n"
 
@@ -137,7 +154,10 @@ defmodule Canopy.Runtime.ChannelServer do
     limit_noted: nil,
     # agent_id => [{target, wake, message}] caused by that agent's posts while
     # its turn was still running; released, merged per target, when it ends
-    deferred: %{}
+    deferred: %{},
+    # engine_session_id => when its last turn ended with steers the engine
+    # could not confirm (monotonic ms); a busy report soon after is adopted
+    steered_ends: %{}
   ]
 
   defstruct @fields
@@ -180,6 +200,17 @@ defmodule Canopy.Runtime.ChannelServer do
       do: GenServer.call(server, {:respond_question, question_request_id, outcome})
 
   def abort(server, agent_id), do: GenServer.call(server, {:abort, agent_id})
+
+  @doc """
+  Interrupt now: while a message steered into the agent's turn is still
+  pending, aborts the turn (the running tool too) and sends the message as
+  the agent's next turn at once. `{:error, :nothing_pending}` when the turn
+  has no steered message, or is already being interrupted.
+  """
+  def interrupt_now(server, agent_id), do: GenServer.call(server, {:interrupt_now, agent_id})
+
+  @doc "`%{agent_id => %{pending, held, message_id}}` for every turn messages were steered into."
+  def steers(server), do: GenServer.call(server, :steers)
 
   @doc """
   Stops everything in the channel: aborts every turn in flight, drops every
@@ -402,10 +433,13 @@ defmodule Canopy.Runtime.ChannelServer do
   # closing the turns starts nothing. The channel then holds wakes like a
   # chatter pause: the user's next message or Continue lifts it.
   def handle_call(:stop_all, _from, state) do
+    # messages steered into the turns are dropped with them: with the channel
+    # stopped, finishing those turns sends nothing again
     dropped =
       length(state.waiting) + length(state.paused || []) +
         (state.queues |> Map.values() |> Enum.map(&length/1) |> Enum.sum()) +
-        (state.deferred |> Map.values() |> Enum.map(&length/1) |> Enum.sum())
+        (state.deferred |> Map.values() |> Enum.map(&length/1) |> Enum.sum()) +
+        (state.turns |> Map.values() |> Enum.map(&length(Map.get(&1, :steers, []))) |> Enum.sum())
 
     Enum.each(waiting_agent_ids(state), &broadcast(state, {:agent_status, &1, :idle}))
 
@@ -417,7 +451,8 @@ defmodule Canopy.Runtime.ChannelServer do
         paused: [],
         stopped?: true,
         chatter: 0,
-        charged: MapSet.new()
+        charged: MapSet.new(),
+        steered_ends: %{}
     }
 
     turns = state.turns
@@ -449,6 +484,39 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   def handle_call(:stopped?, _from, state), do: {:reply, state.stopped? == true, state}
+
+  # The turn is aborted rather than stopped: when the engine reports the end,
+  # it closes as interrupted and every message steered into it goes out
+  # again, at once, as the agent's next turn.
+  def handle_call({:interrupt_now, agent_id}, _from, state) do
+    with %{} = session <- Map.get(state.sessions, agent_id),
+         %{steers: [_ | _]} = turn <- Map.get(state.turns, session.engine_session_id),
+         false <- Map.get(turn, :interrupted?, false) or Map.get(turn, :stopped?, false) do
+      {mod, es, state} = engine_of(state, session)
+
+      case mod.abort(ctx(state), es, session) do
+        {:ok, _} ->
+          record_interrupted(state, turn, List.last(turn.steers), "now")
+
+          {:reply, :ok,
+           update_turn(state, session.engine_session_id, &Map.put(&1, :interrupted?, true))}
+
+        error ->
+          {:reply, error, state}
+      end
+    else
+      _ -> {:reply, {:error, :nothing_pending}, state}
+    end
+  end
+
+  def handle_call(:steers, _from, state) do
+    steers =
+      for {_sid, %{steers: [_ | _]} = turn} <- state.turns,
+          into: %{},
+          do: {turn.agent_id, steer_info(turn)}
+
+    {:reply, steers, state}
+  end
 
   def handle_call({:telemetry, agent_id}, _from, state),
     do: {:reply, Map.get(state.telemetry, agent_id) || Activity.new(), state}
@@ -878,6 +946,18 @@ defmodule Canopy.Runtime.ChannelServer do
       over_spend_limit?(state) ->
         note_spend_limit(state)
 
+      # The user's message for an agent at work here goes into that turn: it
+      # starts no turn, so it neither waits in line nor counts as one.
+      steerable?(state, target, text) ->
+        steer(state, target, text)
+
+      true ->
+        wake_or_queue(state, target, Map.delete(text, :steer?), limit)
+    end
+  end
+
+  defp wake_or_queue(state, target, text, limit) do
+    cond do
       is_integer(limit) and state.chatter >= limit and not counted?(text) and
           not charged?(state, text) ->
         pause(state, limit, [{target, text}])
@@ -1266,6 +1346,268 @@ defmodule Canopy.Runtime.ChannelServer do
   defp trigger_of(%Timeline.Event{event_type: "handoff_" <> _}), do: "handoff"
   defp trigger_of(_event), do: "other"
 
+  # -- Steering ---------------------------------------------------------------
+  #
+  # A wake marked `steer?` by the router (the user's message sent to
+  # interrupt, mentioning the agent) goes into the agent's turn in flight when
+  # there is one it can join: the same scope (a thread turn takes messages
+  # from its thread, a channel turn from the channel), not a compaction, not
+  # already being stopped or interrupted, on an engine that can steer.
+  # Anything else wakes as before.
+
+  defp steerable?(state, {:root, agent_id}, %{steer?: true} = wake) do
+    with %{} = session <- Map.get(state.sessions, agent_id),
+         %{} = turn <- Map.get(state.turns, session.engine_session_id) do
+      turn.trigger != "compact" and not Map.get(turn, :stopped?, false) and
+        not Map.get(turn, :interrupted?, false) and
+        Map.get(turn, :thread_id) == Map.get(wake, :thread_id) and
+        can_steer?(Engine.for(session))
+    else
+      _ -> false
+    end
+  end
+
+  defp steerable?(_state, _target, _wake), do: false
+
+  # A capability check, not an engine branch: `steer/4` is optional.
+  defp can_steer?(mod), do: Code.ensure_loaded?(mod) and function_exported?(mod, :steer, 4)
+
+  # A turn blocked on a card holds the message until the card is answered;
+  # otherwise it goes to the engine now. One the engine refuses (the turn
+  # just ended, an engine too old) wakes the way it would have without
+  # steering.
+  defp steer(state, {:root, agent_id} = target, wake) do
+    wake = Map.delete(wake, :steer?)
+    session = Map.fetch!(state.sessions, agent_id)
+    sid = session.engine_session_id
+    turn = Map.fetch!(state.turns, sid)
+
+    entry = %{
+      ref: nil,
+      wake: wake,
+      message_id: Map.get(wake, :message_id),
+      confirms: false,
+      held?: false,
+      at: System.system_time(:millisecond)
+    }
+
+    if awaiting?(turn) do
+      add_steer(state, sid, %{entry | held?: true})
+    else
+      case deliver_steer(state, session, entry) do
+        {:ok, entry, state} ->
+          add_steer(state, sid, entry)
+
+        # the turn just ended, or an engine too old to steer: expected
+        {:error, reason, state} when reason in [:not_running, :unsupported] ->
+          wake_or_queue(state, target, wake, chatter_limit())
+
+        {:error, reason, state} ->
+          Logger.warning(
+            "channel #{state.channel.name}: could not steer #{agent_name(agent_id)}'s turn: #{inspect(reason)}"
+          )
+
+          wake_or_queue(state, target, wake, chatter_limit())
+      end
+    end
+  end
+
+  # The engine gets the wake's text behind a preface saying it arrived
+  # mid-turn; attachments ride along as in a prompt.
+  defp deliver_steer(state, session, entry) do
+    {mod, es, state} = engine_of(state, session)
+    plan = materialize_attachments(state, Map.get(entry.wake, :attachments, []))
+    ref = Ecto.UUID.generate()
+    agent = Agents.get!(session.agent_id)
+
+    message = %{
+      text: Prompts.steer_preface() <> entry.wake.text,
+      system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
+      attachments: plan,
+      ref: ref
+    }
+
+    case mod.steer(ctx(state), es, session, message) do
+      {:ok, %{confirms: confirms}} ->
+        {:ok, %{entry | ref: ref, confirms: confirms == true, held?: false}, state}
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  defp add_steer(state, sid, entry) do
+    state = update_turn(state, sid, &Map.update(&1, :steers, [entry], fn s -> s ++ [entry] end))
+    turn = Map.fetch!(state.turns, sid)
+    record_interrupted(state, turn, entry, "next_step")
+    broadcast(state, {:steer, turn.agent_id, steer_info(turn)})
+    state
+  end
+
+  # The card the turn was blocked on is answered: the messages it held go to
+  # the engine now. One the engine refuses stays held and goes out again when
+  # the turn ends.
+  defp deliver_held(state, sid) do
+    with %{steers: steers, session: session} <- Map.get(state.turns, sid),
+         true <- Enum.any?(steers, & &1.held?) do
+      {steers, state} =
+        Enum.map_reduce(steers, state, fn
+          %{held?: true} = entry, acc ->
+            case deliver_steer(acc, session, entry) do
+              {:ok, entry, acc} ->
+                {entry, acc}
+
+              {:error, reason, acc} ->
+                Logger.info(
+                  "channel #{acc.channel.name}: a held message stays queued: #{inspect(reason)}"
+                )
+
+                {entry, acc}
+            end
+
+          entry, acc ->
+            {entry, acc}
+        end)
+
+      state = update_turn(state, sid, &Map.put(&1, :steers, steers))
+      turn = Map.fetch!(state.turns, sid)
+      broadcast(state, {:steer, turn.agent_id, steer_info(turn)})
+      state
+    else
+      _ -> state
+    end
+  end
+
+  # What the live card shows: how many messages went into the turn, how many
+  # wait for a card to be answered, and the newest.
+  defp steer_info(turn) do
+    steers = Map.get(turn, :steers, [])
+
+    %{
+      pending: length(steers),
+      held: Enum.count(steers, & &1.held?),
+      message_id: steers |> List.last() |> then(&(&1 && &1.message_id))
+    }
+  end
+
+  # `mode`: "next_step" when a message went into the turn (or waits for its
+  # card), "now" for Interrupt now. `tool` is the call running at that moment.
+  defp record_interrupted(state, turn, entry, mode) do
+    tool =
+      case Activity.current(Map.get(state.telemetry, turn.agent_id) || Activity.new()) do
+        %{label: label} -> label
+        _ -> nil
+      end
+
+    {:ok, _} =
+      Timeline.record(
+        Map.merge(
+          %{
+            channel_id: state.channel.id,
+            agent_id: turn.agent_id,
+            event_type: "agent_interrupted",
+            ref_id: turn.session.id,
+            payload: %{
+              "message_id" => entry && entry.message_id,
+              "mode" => mode,
+              "tool" => tool,
+              "held" => (entry && entry.held?) == true
+            }
+          },
+          thread_scope(Map.get(turn, :thread_id))
+        )
+      )
+  end
+
+  # The turn ended. Every message it held, every one it never read (the
+  # engine's `:prompts_unconsumed`), or all of them when it was interrupted,
+  # go to the front of the session's queue, merged in order, with a line
+  # saying the last turn may not have read them: the next turn starts from
+  # them. Nothing goes out again once the user stopped the channel.
+  defp redeliver_steers(%{stopped?: true} = state, _turn, _outcome), do: state
+
+  defp redeliver_steers(state, turn, outcome) do
+    unconsumed = Map.get(turn, :unconsumed, MapSet.new())
+
+    wakes =
+      for entry <- Map.get(turn, :steers, []),
+          outcome == :interrupted or entry.held? or MapSet.member?(unconsumed, entry.ref),
+          do: redelivery(entry.wake)
+
+    case wakes do
+      [] ->
+        state
+
+      [first | rest] ->
+        wake = Enum.reduce(rest, first, &merge_wake(&2, &1))
+        sid = turn.session.engine_session_id
+
+        queue =
+          case Map.get(state.queues, sid, []) do
+            [] -> [wake]
+            [queued | more] -> [merge_wake(wake, queued) | more]
+          end
+
+        %{state | queues: Map.put(state.queues, sid, queue)}
+    end
+  end
+
+  defp redelivery(wake) do
+    preface = Prompts.steer_redelivery()
+
+    wake
+    |> Map.update!(:text, &(preface <> &1))
+    |> then(
+      &if &1[:channel_text],
+        do: Map.update!(&1, :channel_text, fn t -> preface <> t end),
+        else: &1
+    )
+  end
+
+  # Remembers a turn that ended with steers the engine could not confirm, so
+  # a busy report soon after (the steer landed just after the idle) is
+  # adopted; any other end forgets it.
+  defp note_steered_end(state, sid, turn, :ok) do
+    if Enum.any?(Map.get(turn, :steers, []), &(not &1.held? and not &1.confirms)),
+      do: %{
+        state
+        | steered_ends: Map.put(state.steered_ends, sid, System.monotonic_time(:millisecond))
+      },
+      else: %{state | steered_ends: Map.delete(state.steered_ends, sid)}
+  end
+
+  defp note_steered_end(state, sid, _turn, _outcome),
+    do: %{state | steered_ends: Map.delete(state.steered_ends, sid)}
+
+  defp adoptable?(state, sid) do
+    case Map.get(state.steered_ends, sid) do
+      nil ->
+        false
+
+      ended_at ->
+        not Map.has_key?(state.turns, sid) and
+          System.monotonic_time(:millisecond) - ended_at < @adopt_window_ms
+    end
+  end
+
+  # The engine went busy for a steer that landed after its turn ended: that
+  # run becomes a turn here, so its activity, cost and reply land as usual.
+  defp adopt_turn(state, sid, who) do
+    state = %{state | steered_ends: Map.delete(state.steered_ends, sid)}
+
+    case session_for(state, sid) do
+      nil ->
+        state
+
+      session ->
+        Logger.info(
+          "channel #{state.channel.name}: adopting #{agent_name(who.agent_id)}'s run #{sid} started by a late steer"
+        )
+
+        begin_turn(state, session, who.agent_id, "user", 0, adopted: true)
+    end
+  end
+
   defp do_wake(state, {:root, agent_id}, text) do
     case ensure_root_session(state, agent_id) do
       {:ok, session, state} ->
@@ -1424,10 +1766,12 @@ defmodule Canopy.Runtime.ChannelServer do
   # The engine accepted a prompt: the session is busy until it reports done.
   # Options: `delegation_ids`, the delegations the wake handed over;
   # `lock_claim_ids`, the granted locks the turn now owns; `thread_id`, the
-  # thread the turn works for (nil: the channel).
+  # thread the turn works for (nil: the channel); `adopted`, a run the engine
+  # started on its own for a late steer.
   defp begin_turn(state, session, agent_id, trigger, attachments, opts \\ []) do
     delegation_ids = Keyword.get(opts, :delegation_ids, [])
     lock_claim_ids = Keyword.get(opts, :lock_claim_ids, [])
+    adopted? = Keyword.get(opts, :adopted, false)
     thread_id = Keyword.get(opts, :thread_id)
     ref = Canopy.ID.generate("turn")
     :ok = Locks.stamp_turn(session.id, lock_claim_ids, ref)
@@ -1485,7 +1829,10 @@ defmodule Canopy.Runtime.ChannelServer do
       # documents sent along in the prompt; they stay in the session's context
       attachments: attachments,
       # the messages the agent posted during the turn (its fallback reply too)
-      message_ids: []
+      message_ids: [],
+      # messages the user steered into the turn (see steer/3), in order
+      steers: [],
+      adopted?: adopted?
     }
 
     {model, _source} = turn_model(agent_id)
@@ -1879,7 +2226,20 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp handle_execution(%{type: :agent_status, data: %{status: :busy}}, _who, state), do: state
+  defp handle_execution(
+         %{type: :agent_status, data: %{status: :busy}, session_id: sid},
+         who,
+         state
+       ) do
+    if adoptable?(state, sid), do: adopt_turn(state, sid, who), else: state
+  end
+
+  # Steered messages the turn never read; they go out again when it ends.
+  defp handle_execution(%{type: :prompts_unconsumed, data: %{refs: refs}} = event, _who, state) do
+    update_turn(state, event.session_id, fn turn ->
+      Map.update(turn, :unconsumed, MapSet.new(refs), &MapSet.union(&1, MapSet.new(refs)))
+    end)
+  end
 
   # The engine's model call failed and it is backing off before trying again.
   # Remembered on the turn, so the watchdog can tell a long retry loop from
@@ -1917,11 +2277,13 @@ defmodule Canopy.Runtime.ChannelServer do
        do: state
 
   defp handle_execution(%{type: :agent_error, data: %{error: error}} = event, who, state) do
-    if Map.get(state.turns[event.session_id], :stopped?) do
-      # the engine's report of an abort the user asked for is not an error
-      finish_turn(state, event.session_id, who, :stopped)
-    else
-      record_agent_error(state, event, who, error_message(error))
+    turn = state.turns[event.session_id]
+
+    # the engine's report of an abort the user asked for is not an error
+    cond do
+      Map.get(turn, :stopped?) -> finish_turn(state, event.session_id, who, :stopped)
+      Map.get(turn, :interrupted?) -> finish_turn(state, event.session_id, who, :interrupted)
+      true -> record_agent_error(state, event, who, error_message(error))
     end
   end
 
@@ -1965,8 +2327,15 @@ defmodule Canopy.Runtime.ChannelServer do
 
       {turn, turns} ->
         state = %{state | turns: turns}
-        # the user's Abort, however the engine reported it
-        outcome = if Map.get(turn, :stopped?), do: :stopped, else: outcome
+
+        # the user's Abort or Interrupt now, however the engine reported it
+        outcome =
+          cond do
+            Map.get(turn, :stopped?) -> :stopped
+            Map.get(turn, :interrupted?) -> :interrupted
+            true -> outcome
+          end
+
         detach_prompts(turn.session)
         # reload: the struct captured at prompt time still says "idle", so a
         # changeset built from it would see no change
@@ -1975,8 +2344,11 @@ defmodule Canopy.Runtime.ChannelServer do
         {:ok, _} =
           case outcome do
             # the user stopped it: nothing went wrong, the session is idle
-            ok when ok in [:ok, :stopped] -> AgentSessions.set_status(session, "idle")
-            {:error, reason} -> AgentSessions.set_status(session, "error", reason)
+            ok when ok in [:ok, :stopped, :interrupted] ->
+              AgentSessions.set_status(session, "idle")
+
+            {:error, reason} ->
+              AgentSessions.set_status(session, "error", reason)
           end
 
         # The summary goes in before the reply so its activity card sits above
@@ -2001,31 +2373,36 @@ defmodule Canopy.Runtime.ChannelServer do
           ref_id: session.id,
           thread_id: thread_id,
           in_channel: is_nil(thread_id),
-          payload: %{
-            "tools" => turn.tools,
-            "files" => MapSet.to_list(turn.files),
-            "cost" => turn.cost,
-            "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
-            "outcome" => outcome_label(outcome),
-            "model" => model,
-            "model_source" => model_source,
-            # the delegations the turn was woken for: the first, and all
-            "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
-            "delegation_ids" => Map.get(turn, :delegation_ids, []),
-            "activity" => Activity.to_payload(card),
-            "activity_meta" => Activity.meta_payload(card),
-            # what the turn posted, so a reply can link back to its activity
-            "message_ids" => message_ids,
-            "passed" => is_binary(turn.passed),
-            "note" => turn.passed,
-            "trigger" => turn.trigger,
-            "thread_id" => thread_id,
-            "attachments" => Map.get(turn, :attachments, 0),
-            "steps" => turn.steps,
-            "context" => turn.context,
-            "tokens" => turn.tokens,
-            "final_text" => if(turn.posted?, do: final_text(turn))
-          }
+          payload:
+            %{
+              "tools" => turn.tools,
+              "files" => MapSet.to_list(turn.files),
+              "cost" => turn.cost,
+              "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
+              "outcome" => outcome_label(outcome),
+              "model" => model,
+              "model_source" => model_source,
+              # the delegations the turn was woken for: the first, and all
+              "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
+              "delegation_ids" => Map.get(turn, :delegation_ids, []),
+              "activity" => Activity.to_payload(card),
+              "activity_meta" => Activity.meta_payload(card),
+              # what the turn posted, so a reply can link back to its activity
+              "message_ids" => message_ids,
+              "passed" => is_binary(turn.passed),
+              "note" => turn.passed,
+              "trigger" => turn.trigger,
+              "thread_id" => thread_id,
+              "attachments" => Map.get(turn, :attachments, 0),
+              "steps" => turn.steps,
+              "context" => turn.context,
+              "tokens" => turn.tokens,
+              "final_text" => if(turn.posted?, do: final_text(turn)),
+              # the messages the user steered into the turn, that reached it
+              "interrupted_by" =>
+                for(%{held?: false} = s <- Map.get(turn, :steers, []), do: s.message_id)
+            }
+            |> then(&if Map.get(turn, :adopted?), do: Map.put(&1, "adopted", true), else: &1)
         }
 
         {:ok, %{summary: summary}} =
@@ -2052,8 +2429,15 @@ defmodule Canopy.Runtime.ChannelServer do
 
         broadcast(state, {:agent_status, who.agent_id, status_after_turn(state, who, outcome)})
         broadcast_turn_thread(state, who.agent_id, nil)
+        if Map.get(turn, :steers, []) != [], do: broadcast(state, {:steer, who.agent_id, nil})
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
+
+        state =
+          state
+          |> redeliver_steers(turn, outcome)
+          |> note_steered_end(sid, turn, outcome)
+
         state = if outcome == :ok, do: maybe_compact(state, session, turn, who), else: state
 
         state = release_deferred(state, who.agent_id)
@@ -2095,6 +2479,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp outcome_label(:ok), do: "ok"
   defp outcome_label(:stopped), do: "stopped"
+  defp outcome_label(:interrupted), do: "interrupted"
   defp outcome_label({:error, _}), do: "error"
 
   # The DM now works in another repository. Once nothing is in flight, forget
@@ -2274,9 +2659,10 @@ defmodule Canopy.Runtime.ChannelServer do
       end
 
       case mod.compact(ctx(state), es, session, Agents.get!(who.agent_id)) do
+        # the engine's own busy period for the summary is not a late steer
         :ok ->
           record.()
-          state
+          %{state | steered_ends: Map.delete(state.steered_ends, session.engine_session_id)}
 
         # The engine compacts by running a turn: track it so its events and
         # cost land, and so nothing else is sent until it ends.
@@ -2443,8 +2829,13 @@ defmodule Canopy.Runtime.ChannelServer do
 
           state = %{state | turns: Map.put(state.turns, sid, turn)}
           broadcast(state, {:agent_status, turn.agent_id, turn_status(state, turn.agent_id)})
-          if MapSet.size(ids) == 0, do: Locks.touch(state.repository.id, turn.session.id)
-          state
+
+          if MapSet.size(ids) == 0 do
+            Locks.touch(state.repository.id, turn.session.id)
+            deliver_held(state, sid)
+          else
+            state
+          end
         else
           state
         end

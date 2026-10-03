@@ -56,6 +56,11 @@ defmodule Canopy.Engine.ClaudeCode do
     "mcp__canopy__*"
   ]
   @permission_tool "mcp__canopy__permission"
+  # The CLI version whose binary documents folding queued stdin messages into
+  # a running turn (`priority`, `user_message_uuids`). Unverified live, and
+  # older versions were not checked: Phase 0 of the Agent Interrupt plan sets
+  # the real floor. `config :canopy, :claude_code, steer_min_version:` overrides.
+  @steer_min_version "2.1.283"
   @default_mcp_tool_timeout_ms :timer.minutes(30)
 
   @impl true
@@ -152,6 +157,23 @@ defmodule Canopy.Engine.ClaudeCode do
 
     with {:ok, _pid} <- start_turn(ctx, state, session, agent, blocks, system: prompt.system) do
       {:ok, %{attachments: attached}}
+    end
+  end
+
+  # The message goes to the turn's stdin with its ref as the uuid and
+  # `priority: "next"`; the turn reports the refs its results never listed
+  # as consumed (`:prompts_unconsumed`).
+  @impl true
+  def steer(_ctx, _state, session, %{text: text, ref: ref} = message) do
+    case ClaudeCode.Supervisor.whereis(session.engine_session_id) do
+      nil ->
+        {:error, :not_running}
+
+      pid ->
+        {blocks, _attached} = content(text, Map.get(message, :attachments, []))
+        line = Command.user_message(blocks, uuid: ref, priority: "next")
+
+        with :ok <- ClaudeCode.Turn.steer(pid, line, ref), do: {:ok, %{confirms: true}}
     end
   end
 
@@ -389,7 +411,8 @@ defmodule Canopy.Engine.ClaudeCode do
         message: Command.user_message(content),
         stderr_file: stderr_file,
         cwd: ctx.repository.path,
-        compact?: Keyword.get(opts, :compact?, false)
+        compact?: Keyword.get(opts, :compact?, false),
+        steer_min_version: config(:steer_min_version, @steer_min_version)
       ]
 
       turn_opts =

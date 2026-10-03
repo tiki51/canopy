@@ -143,7 +143,34 @@ defmodule Canopy.Engine do
   @callback mcp_inventory(Canopy.Repositories.Repository.t(), opts :: keyword()) ::
               {:ok, Canopy.MCP.Inventory.Engine.t()} | {:error, term()}
 
-  @optional_callbacks mcp_inventory: 2
+  @typedoc """
+  A message for a turn in flight: like `t:prompt/0` (the text, the turn's
+  system text, the attachment plan), plus `ref`, Canopy's id for this
+  delivery (a plain UUID).
+  """
+  @type steer :: %{
+          text: String.t(),
+          system: String.t(),
+          attachments: [{Canopy.Documents.Document.t(), :part | :path}],
+          ref: String.t()
+        }
+
+  @doc """
+  Delivers a message into the session's running turn; the engine hands it to
+  the model at its next tool or step boundary, and the turn carries on.
+  `confirms: true` when the adapter will report, just before the turn's
+  terminal event, which refs the turn never consumed (`:prompts_unconsumed`);
+  `false` when it cannot tell (they count as consumed). `{:error,
+  :not_running}` when no turn is running (the runtime queues the wake
+  instead); `{:error, :unsupported}` when the engine version cannot steer.
+  The runtime checks for this callback with `function_exported?/3`: an engine
+  without it never steers.
+  """
+  @callback steer(ctx, engine_state, session, steer) ::
+              {:ok, %{confirms: boolean()}}
+              | {:error, :not_running | :unsupported | term()}
+
+  @optional_callbacks mcp_inventory: 2, steer: 4
 
   # -- Dispatch ---------------------------------------------------------------
 

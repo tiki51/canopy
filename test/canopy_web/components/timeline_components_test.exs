@@ -132,6 +132,43 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert turn.("error") =~ "stopped with an error"
   end
 
+  test "interrupts read as sentences; a steered turn says what it took mid-turn" do
+    text = fn type, payload ->
+      TimelineComponents.event_text(
+        %{event_type: type, agent_id: "agt_1", payload: payload},
+        %{"agt_1" => "backend"},
+        "Priya"
+      )
+    end
+
+    assert text.("agent_interrupted", %{"mode" => "next_step"}) ==
+             "@backend will read your message after its current step"
+
+    assert text.("agent_interrupted", %{"mode" => "next_step", "held" => true}) ==
+             "@backend will read your message once the card is answered"
+
+    assert text.("agent_interrupted", %{"mode" => "now"}) == "Priya interrupted @backend"
+
+    assert text.("agent_turn_completed", %{
+             "outcome" => "ok",
+             "interrupted_by" => ["msg_1"],
+             "tools" => 3
+           }) == "@backend finished · took 1 message mid-turn · 3 tools"
+
+    assert text.("agent_turn_completed", %{"outcome" => "interrupted", "interrupted_by" => ["m"]}) ==
+             "@backend was interrupted by Priya"
+
+    assert TimelineComponents.activity_class(%{
+             event_type: "agent_interrupted",
+             payload: %{"mode" => "next_step"}
+           }) == "routine"
+
+    refute TimelineComponents.activity_class(%{
+             event_type: "agent_interrupted",
+             payload: %{"mode" => "now"}
+           })
+  end
+
   test "question events read as sentences, not raw event names" do
     text = fn type, payload ->
       TimelineComponents.event_text(

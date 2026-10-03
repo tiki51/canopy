@@ -38,6 +38,11 @@ defmodule Canopy.Messages do
       `:team_mentions`, default none)
     * `:id` — the message's id, chosen ahead (a turn names its reply on its
       summary before posting it)
+    * `:interrupt` — a user's post or thread reply only: whether an agent it
+      mentions that is working reads it after its current step rather than
+      after its turn (default `Canopy.Settings.interrupt_on_mention?/0`, so a
+      programmatic post such as a late answer follows the setting); agents'
+      messages never interrupt
   """
   def post_user_message(channel_id, user_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "post"}, opts)
@@ -504,6 +509,7 @@ defmodule Canopy.Messages do
       |> Map.put(:team_mentions, team_mentions)
       |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
       |> Map.put(:mentions_user, Canopy.Unread.mentions?(attrs.body, Canopy.Users.local()))
+      |> Map.put(:interrupt, interrupt?(attrs, opts))
 
     with {:ok, document_ids} <- check_attachments(Keyword.get(opts, :attachments, [])) do
       Multi.new()
@@ -544,7 +550,8 @@ defmodule Canopy.Messages do
             "sent_to_channel" => message.sent_to_channel,
             "user_id" => message.user_id,
             "mentions" => message.mentions,
-            "attachments" => document_ids
+            "attachments" => document_ids,
+            "interrupt" => message.interrupt
           }
         }
       end)
@@ -565,6 +572,13 @@ defmodule Canopy.Messages do
       end
     end
   end
+
+  # Only the user's own posts and thread replies may interrupt a working agent.
+  defp interrupt?(%{user_id: user_id, kind: kind}, opts)
+       when is_binary(user_id) and kind in ["post", "thread_reply"],
+       do: Keyword.get_lazy(opts, :interrupt, &Canopy.Settings.interrupt_on_mention?/0) == true
+
+  defp interrupt?(_attrs, _opts), do: false
 
   # Attachments are document ids that must exist; duplicates collapse and
   # order is kept. Errors are strings so tools and the UI can show them as is.

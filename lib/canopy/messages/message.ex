@@ -28,6 +28,9 @@ defmodule Canopy.Messages.Message do
     # the body mentions the local user (`Canopy.Unread.mentions?/2`), worked
     # out once on insert so every unread and follow check agrees
     field :mentions_user, :boolean, default: false
+    # a user message sent to interrupt: an agent it mentions that is working
+    # reads it after its current step, not after its turn (Agent Interrupt)
+    field :interrupt, :boolean, default: false
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -61,7 +64,8 @@ defmodule Canopy.Messages.Message do
       :team_mentions,
       :opencode_message_id,
       :sent_to_channel,
-      :mentions_user
+      :mentions_user,
+      :interrupt
     ])
     |> update_change(:body, &String.trim/1)
     |> validate_required([:channel_id, :kind])

@@ -247,6 +247,7 @@ defmodule CanopyWeb.SettingsLive do
     "chatter_pause",
     "chatter_limit",
     "serialize_turns",
+    "interrupt_on_mention",
     "question_wait_minutes",
     "lock_hold_minutes"
   ]
@@ -841,6 +842,18 @@ defmodule CanopyWeb.SettingsLive do
               the next one starts, and when you answer, the waiting agent carries on alongside it.
               What agents really contend for (the test suite, e2e ports, screenshot runs) is
               guarded by locks either way: they take turns on those, whatever this says.
+            </p>
+            <.input
+              field={@chatter_form[:interrupt_on_mention]}
+              type="checkbox"
+              label="Mentioning a working agent interrupts it (experimental)"
+            />
+            <p id="interrupt-help" class="-mt-1 text-xs text-base-content/60">
+              When you @mention an agent that's working, it reads your message after its current
+              step instead of after its turn; a running command is allowed to finish. Alt+Enter, or
+              the menu beside Send, sends one message without interrupting. Experimental and off
+              by default: how Claude Code and OpenCode take a message mid-turn has not been checked
+              against the real engines yet. Off, your message waits until the agent's turn ends.
             </p>
             <div class="max-w-xs">
               <.input

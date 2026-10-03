@@ -44,6 +44,9 @@ defmodule Canopy.Runtime do
       channel-level actions and cannot be sent in a thread.
     * `:to_channel` — with `:thread_id`, also show the reply in the channel
       feed ("also send to channel")
+    * `:interrupt` — whether an agent the message mentions that is working
+      reads it after its current step (default: the setting; see
+      `Canopy.Messages.post_user_message/4`)
   """
   def post_user_message(channel_id, body, opts \\ []) do
     if Channels.archived?(Channels.get!(channel_id)) do
@@ -332,6 +335,30 @@ defmodule Canopy.Runtime do
   def abort(channel_id, agent_id) do
     {:ok, pid} = ensure_channel(channel_id)
     ChannelServer.abort(pid, agent_id)
+  end
+
+  @doc """
+  Interrupt now: aborts the agent's turn while a message the user steered
+  into it is pending, and sends the message as the agent's next turn.
+  `{:error, :nothing_pending}` when there is none.
+  """
+  def interrupt_now(channel_id, agent_id) do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.interrupt_now(pid, agent_id)
+  end
+
+  @doc """
+  `%{agent_id => %{pending, held, message_id}}` for the turns in flight that
+  the user steered messages into; for a view that is mounting. Empty when the
+  channel's process is not running.
+  """
+  def steers(channel_id) do
+    case Supervisor.whereis(channel_id) do
+      nil -> %{}
+      pid -> ChannelServer.steers(pid)
+    end
+  catch
+    :exit, _ -> %{}
   end
 
   @doc """

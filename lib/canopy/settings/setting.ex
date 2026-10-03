@@ -19,6 +19,9 @@ defmodule Canopy.Settings.Setting do
     field :chatter_limit, :integer, default: 6
     # one agent turn at a time per channel; others wait in order
     field :serialize_turns, :boolean, default: true
+    # a mention of a working agent reaches its turn at the next step (steering);
+    # experimental and off until the engines' behaviour is verified live
+    field :interrupt_on_mention, :boolean, default: false
     # how long a Claude Code agent's question blocks its turn before the agent
     # moves on and the answer arrives later as a new message
     field :question_wait_minutes, :integer, default: 10
@@ -61,6 +64,7 @@ defmodule Canopy.Settings.Setting do
       :chatter_pause,
       :chatter_limit,
       :serialize_turns,
+      :interrupt_on_mention,
       :question_wait_minutes,
       :lock_hold_minutes,
       :hold_reason,

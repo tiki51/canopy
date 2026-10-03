@@ -135,6 +135,21 @@ defmodule Canopy.ClaudeCode.CommandTest do
              JSON.decode!(Command.user_message(blocks))
   end
 
+  test "user_message carries a steer's uuid and priority; without options it is unchanged" do
+    line = Command.user_message("change of plan", uuid: "u-1", priority: "next")
+    assert [_] = String.split(line, "\n", trim: true)
+
+    assert JSON.decode!(line) == %{
+             "type" => "user",
+             "message" => %{"role" => "user", "content" => "change of plan"},
+             "uuid" => "u-1",
+             "priority" => "next"
+           }
+
+    assert Command.user_message("hello", []) == Command.user_message("hello")
+    refute Command.user_message("hello") =~ "uuid"
+  end
+
   defp pair(%{args: args}, flag) do
     case Enum.drop_while(args, &(&1 != flag)) do
       [^flag, value | _] -> value

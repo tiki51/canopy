@@ -203,6 +203,13 @@ defmodule Canopy.Settings do
   @doc "Whether a channel runs one agent turn at a time (others queue) or lets agents run in parallel."
   def serialize_turns?, do: get().serialize_turns
 
+  @doc """
+  Whether a user's mention of a working agent reaches its turn at the next
+  step rather than after the turn (Agent Interrupt). Experimental: off by
+  default until the engines' behaviour is verified live.
+  """
+  def interrupt_on_mention?, do: get().interrupt_on_mention == true
+
   @doc "How long a Claude Code question blocks its turn before going async, in milliseconds."
   def question_wait_ms, do: :timer.minutes(get().question_wait_minutes || 10)
 

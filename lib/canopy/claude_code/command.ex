@@ -147,10 +147,22 @@ defmodule Canopy.ClaudeCode.Command do
   @doc """
   One stream-json `user` line. `content` is a string or a list of content
   blocks (`%{type: "text", text: ...}`, `%{type: "image", source: ...}`).
+
+  Options, for a message written while the turn runs (a steer): `:uuid`, the
+  client id `result.user_message_uuids` reports back once the turn consumed
+  it, and `:priority` (`"now" | "next" | "later"`; `"next"` folds it in at
+  the next tool round). A turn's first line sends neither.
   """
-  def user_message(content) when is_binary(content) or is_list(content) do
-    JSON.encode!(%{type: "user", message: %{role: "user", content: content}}) <> "\n"
+  def user_message(content, opts \\ []) when is_binary(content) or is_list(content) do
+    %{type: "user", message: %{role: "user", content: content}}
+    |> put_present(:uuid, opts[:uuid])
+    |> put_present(:priority, opts[:priority])
+    |> JSON.encode!()
+    |> Kernel.<>("\n")
   end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   defp flag(_name, nil), do: []
   defp flag(_name, ""), do: []

@@ -342,6 +342,9 @@ defmodule CanopyWeb.CostsLive do
                         <span :if={t.outcome == "stopped"} class="badge badge-xs badge-ghost">
                           stopped
                         </span>
+                        <span :if={t.outcome == "interrupted"} class="badge badge-xs badge-ghost">
+                          interrupted
+                        </span>
                       </td>
                       <td class="text-right tabular-nums">{t.tools}</td>
                       <td class="text-right tabular-nums">{t.steps}</td>

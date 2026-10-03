@@ -65,6 +65,29 @@ defmodule Canopy.MessagesTest do
     assert Enum.map(events, & &1.ref_id) == [message.id, reply.id, post.id]
   end
 
+  test "a user's message interrupts as the setting says, unless told; agents' never do",
+       %{channel: channel, agent: agent, user: user} do
+    {:ok, off} = Messages.post_user_message(channel.id, user.id, "hi")
+    refute off.interrupt
+
+    {:ok, _} = Canopy.Settings.update(%{interrupt_on_mention: true})
+    {:ok, on} = Messages.post_user_message(channel.id, user.id, "hi again")
+    assert on.interrupt
+    assert Timeline.for_message(on.id).payload["interrupt"] == true
+
+    {:ok, opted_out} = Messages.post_user_message(channel.id, user.id, "later", interrupt: false)
+    refute opted_out.interrupt
+
+    {:ok, reply} = Messages.thread_reply(on.id, {:user, user.id}, "in the thread")
+    assert reply.interrupt
+
+    {:ok, from_agent} = Messages.post_agent_message(channel.id, agent.id, "hi", interrupt: true)
+    refute from_agent.interrupt
+
+    {:ok, note} = Messages.post_user_note(channel.id, user.id, "a note")
+    refute note.interrupt
+  end
+
   test "an invalid message writes no timeline row", %{channel: channel, user: user} do
     assert {:error, changeset} = Messages.post_user_message(channel.id, user.id, "   ")
     assert %{body: [_ | _]} = errors_on(changeset)

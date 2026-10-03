@@ -577,6 +577,9 @@ defmodule CanopyWeb.TimelineComponents do
   # the step that starts is already named on the line of the one that ended
   def activity_class(%{event_type: "playbook_step_started"}), do: "routine"
   def activity_class(%{event_type: "session_compacted"}), do: "routine"
+  # a message handed to a working agent; Interrupt now stays visible
+  def activity_class(%{event_type: "agent_interrupted", payload: %{"mode" => "next_step"}}),
+    do: "routine"
 
   def activity_class(%{event_type: "agent_turn_completed", payload: p}) do
     cond do
@@ -597,11 +600,18 @@ defmodule CanopyWeb.TimelineComponents do
   what it is doing (the verb and the call running now), for how long, and
   how much it has done; opening it (`toggle_activity_card`) renders the
   rows. A turn blocked on a permission or question card says it is waiting
-  for the user.
+  for the user. While the user's messages wait to be read mid-turn (`steer`,
+  `%{pending, held}`), a chip says when the agent will read them, with
+  Interrupt now.
   """
   attr :agent_id, :string, required: true
   attr :name, :string, required: true
   attr :card, :map, required: true
+
+  attr :steer, :map,
+    default: nil,
+    doc: "`%{pending, held}`: the user's messages steered into the turn"
+
   attr :root, :string, default: nil
   attr :channel_id, :string, default: nil, doc: "for the Open in panel link"
   attr :status, :atom, default: :busy
@@ -706,6 +716,45 @@ defmodule CanopyWeb.TimelineComponents do
       <span class="sr-only" aria-live="polite">
         {if @waiting?, do: "@#{@name} is waiting for you", else: "@#{@name} is #{@verb}"}
       </span>
+      <div
+        :if={@steer}
+        id={"steer-chip-#{@agent_id}"}
+        class="flex items-center gap-2 border-t border-secondary/20 px-4 py-1.5 text-xs text-base-content/70"
+      >
+        <.icon name="hero-forward-mini" class="size-4 shrink-0 text-secondary" />
+        <span class="min-w-0 truncate">
+          <%= cond do %>
+            <% @steer.held == @steer.pending -> %>
+              Your {if @steer.pending == 1, do: "message", else: "#{@steer.pending} messages"} reach @{@name} once the card is answered
+            <% @current -> %>
+              Interrupting after current step:
+              <span class="font-mono">{relative_paths(@current.label, @root)}</span>
+              <span
+                :if={@current[:started_at]}
+                id={"steer-elapsed-#{@agent_id}"}
+                class="tabular-nums"
+                phx-hook=".Elapsed"
+                phx-update="ignore"
+                data-started-at={@current[:started_at]}
+              />
+            <% true -> %>
+              Interrupting after current step
+          <% end %>
+          <span :if={@steer.pending > 1 and @steer.held != @steer.pending}>
+            · {@steer.pending} messages
+          </span>
+        </span>
+        <button
+          type="button"
+          id={"interrupt-now-#{@agent_id}"}
+          class="btn btn-ghost btn-xs ml-auto shrink-0 text-warning"
+          phx-click="interrupt_now"
+          phx-value-agent-id={@agent_id}
+          title="Stop the current step now and read your message"
+        >
+          Interrupt now
+        </button>
+      </div>
       <.activity_body
         :if={@open?}
         id={"telemetry-#{@agent_id}"}
@@ -1700,11 +1749,15 @@ defmodule CanopyWeb.TimelineComponents do
 
   defp outcome_icon(%{"outcome" => "error"}), do: "hero-x-circle-mini"
   defp outcome_icon(%{"outcome" => "stopped"}), do: "hero-stop-circle-mini"
+  defp outcome_icon(%{"outcome" => "interrupted"}), do: "hero-forward-mini"
   defp outcome_icon(%{"passed" => true}), do: "hero-forward-mini"
   defp outcome_icon(_payload), do: "hero-check-circle-mini"
 
   defp outcome_class(%{"outcome" => "error"}), do: "text-error"
-  defp outcome_class(%{"outcome" => "stopped"}), do: "text-base-content/50"
+
+  defp outcome_class(%{"outcome" => outcome}) when outcome in ["stopped", "interrupted"],
+    do: "text-base-content/50"
+
   defp outcome_class(_payload), do: "text-success/70"
 
   @tally_nouns [
@@ -2214,12 +2267,20 @@ defmodule CanopyWeb.TimelineComponents do
         verb =
           cond do
             p["outcome"] == "stopped" -> "was stopped by #{user}"
+            p["outcome"] == "interrupted" -> "was interrupted by #{user}"
             p["outcome"] != "ok" -> "stopped with an error"
             p["passed"] -> "passed" <> suffix(p["note"])
             true -> "finished"
           end
 
         Enum.join([agent <> " " <> verb | turn_stats(p)], " · ")
+
+      "agent_interrupted" ->
+        cond do
+          p["mode"] == "now" -> "#{user} interrupted #{agent}"
+          p["held"] -> "#{agent} will read your message once the card is answered"
+          true -> "#{agent} will read your message after its current step"
+        end
 
       "agent_error" ->
         "#{agent} hit an error: #{p["reason"]}"
@@ -2664,6 +2725,7 @@ defmodule CanopyWeb.TimelineComponents do
 
   defp turn_stats(p) do
     [
+      if(p["outcome"] == "ok", do: mid_turn(p["interrupted_by"])),
       count(p["tools"], "tool"),
       count(length(List.wrap(p["files"])), "file"),
       if(is_number(p["cost"]) and p["cost"] > 0, do: format_cost(p["cost"])),
@@ -2671,6 +2733,11 @@ defmodule CanopyWeb.TimelineComponents do
     ]
     |> Enum.reject(&is_nil/1)
   end
+
+  # The messages the user steered into a turn that finished on its own.
+  defp mid_turn([_]), do: "took 1 message mid-turn"
+  defp mid_turn([_ | _] = ids), do: "took #{length(ids)} messages mid-turn"
+  defp mid_turn(_), do: nil
 
   defp schedule_timing(%{"kind" => "recurring", "cron" => cron}),
     do: Canopy.Schedules.describe_cron(cron)
@@ -2715,6 +2782,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("session_compacted"), do: "hero-arrows-pointing-in-mini"
   defp event_icon("agent_turn_completed"), do: "hero-check-circle-mini"
   defp event_icon("agent_error"), do: "hero-exclamation-triangle-mini"
+  defp event_icon("agent_interrupted"), do: "hero-forward-mini"
   defp event_icon("delegation_" <> _), do: "hero-arrow-uturn-right-mini"
   defp event_icon("handoff_" <> _), do: "hero-arrow-right-circle-mini"
   defp event_icon("task_updated"), do: "hero-clipboard-document-check-mini"

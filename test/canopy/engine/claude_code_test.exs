@@ -218,6 +218,171 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     refute File.exists?(ctx.log)
   end
 
+  describe "steering" do
+    setup do
+      {:ok, _} = Canopy.Settings.update(%{interrupt_on_mention: true})
+      :ok
+    end
+
+    # The turn stops at a Bash call; the fake then waits for a steered line
+    # and prints `steer_lines` (STEER_UUID: that line's uuid).
+    defp steer_scripts(ctx, steer_lines, version \\ "9.9.9") do
+      dir = Path.dirname(ctx.log)
+
+      write = fn name, lines ->
+        path = Path.join(dir, name)
+        File.write!(path, Enum.map_join(lines, "\n", &JSON.encode!/1) <> "\n")
+        path
+      end
+
+      script =
+        write.("steer-turn.jsonl", [
+          %{
+            type: "system",
+            subtype: "init",
+            session_id: "SESSION_ID",
+            model: "claude-haiku-4-5",
+            mcp_servers: [],
+            claude_code_version: version
+          },
+          %{
+            type: "assistant",
+            session_id: "SESSION_ID",
+            message: %{
+              id: "msg_1",
+              content: [
+                %{type: "tool_use", id: "toolu_1", name: "Bash", input: %{command: "mix test"}}
+              ]
+            }
+          }
+        ])
+
+      steer = write.("steer-fold.jsonl", steer_lines)
+
+      Application.put_env(:canopy, :claude_code,
+        binary: @fake,
+        env: [
+          {"FAKE_CLAUDE_SCRIPT", script},
+          {"FAKE_CLAUDE_STEER_SCRIPT", steer},
+          {"FAKE_CLAUDE_LOG", ctx.log}
+        ]
+      )
+    end
+
+    defp folded(uuids),
+      do: [
+        %{
+          type: "user",
+          session_id: "SESSION_ID",
+          message: %{
+            content: [
+              %{type: "tool_result", tool_use_id: "toolu_1", content: "ok", is_error: false}
+            ]
+          }
+        },
+        %{
+          type: "assistant",
+          session_id: "SESSION_ID",
+          message: %{id: "msg_2", content: [%{type: "text", text: "Switched to the other file."}]}
+        },
+        %{
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          num_turns: 2,
+          result: "Switched to the other file.",
+          session_id: "SESSION_ID",
+          total_cost_usd: 0.02,
+          user_message_uuids: uuids,
+          usage: %{input_tokens: 5, output_tokens: 3}
+        }
+      ]
+
+    defp stdin_lines(log),
+      do:
+        log
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "STDIN "))
+
+    # The coder's turn is at its Bash call.
+    defp working(ctx) do
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} run the tests")
+      coder_id = ctx.coder.id
+      assert_receive {:timeline, %{event_type: "agent_started", agent_id: ^coder_id}}, 5_000
+
+      assert_receive {:telemetry, ^coder_id, %Canopy.Engine.Event{type: :tool_started}}, 5_000
+    end
+
+    test "a mention mid-turn goes into the running process: one turn, read mid-turn", ctx do
+      steer_scripts(ctx, folded(["STEER_UUID"]))
+      working(ctx)
+
+      {:ok, message} =
+        Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} use the other file")
+
+      assert_receive {:timeline, %{event_type: "agent_interrupted"}}, 5_000
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+      assert payload["outcome"] == "ok"
+      assert payload["interrupted_by"] == [message.id]
+      refute_receive {:timeline, %{event_type: "agent_started"}}, 300
+
+      assert [_prompt, steered] = stdin_lines(ctx.log)
+      assert steered =~ ~s("priority":"next")
+      assert steered =~ "The user sent this while you were working"
+      assert steered =~ message.id
+    end
+
+    test "a steer the turn never read is sent again as the next turn", ctx do
+      steer_scripts(ctx, folded([]))
+      working(ctx)
+
+      {:ok, message} =
+        Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} use the other file")
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 10_000
+
+      # the next turn starts from it, and is at its own Bash call
+      coder_id = ctx.coder.id
+      assert_receive {:timeline, %{event_type: "agent_started"}}, 5_000
+      assert_receive {:telemetry, ^coder_id, %Canopy.Engine.Event{type: :tool_started}}, 5_000
+
+      assert [_prompt, _steered, redelivered] = stdin_lines(ctx.log)
+      assert redelivered =~ "Your previous turn ended before you read this message"
+      assert redelivered =~ message.id
+      refute redelivered =~ ~s("priority")
+
+      assert {:ok, _} = Runtime.stop_all(ctx.channel.id)
+    end
+
+    test "below the minimum CLI version the mention waits for the turn", ctx do
+      steer_scripts(ctx, folded(["STEER_UUID"]), "2.1.0")
+      working(ctx)
+
+      {:ok, message} =
+        Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} use the other file")
+
+      refute_receive {:timeline, %{event_type: "agent_interrupted"}}, 300
+      assert [_prompt] = stdin_lines(ctx.log)
+
+      # the user's Abort ends the turn; the waiting message starts the next
+      assert {:ok, _} = Runtime.abort(ctx.channel.id, ctx.coder.id)
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_turn_completed", payload: %{"outcome" => "stopped"}}},
+                     10_000
+
+      coder_id = ctx.coder.id
+      assert_receive {:telemetry, ^coder_id, %Canopy.Engine.Event{type: :tool_started}}, 5_000
+      assert [_prompt, next] = stdin_lines(ctx.log)
+      assert next =~ message.id
+      refute next =~ "while you were working"
+
+      assert {:ok, _} = Runtime.stop_all(ctx.channel.id)
+    end
+  end
+
   describe "default model and effort" do
     defp argv(log) do
       log |> File.read!() |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "ARGV "))
