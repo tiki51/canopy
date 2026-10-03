@@ -32,6 +32,7 @@ import SidebarScroll from "./hooks/sidebar_scroll"
 import SidePanel from "./hooks/side_panel"
 import CopyLink from "./hooks/copy_link"
 import CommandPalette from "./hooks/command_palette"
+import SearchNav from "./hooks/search_nav"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
@@ -47,6 +48,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     SidePanel,
     CopyLink,
     CommandPalette,
+    SearchNav,
   },
 })
 

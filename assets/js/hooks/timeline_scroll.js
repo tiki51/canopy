@@ -6,6 +6,11 @@
 // opens on that reply instead of the bottom. data-scope names what the feed
 // shows (a thread's root); a new scope resets the pin and the reveal.
 //
+// The channel feed (data-highlights) also answers the server: a link to one
+// message (`?msg=`, from search) pushes "timeline:highlight" with the row's
+// id, which is scrolled to the centre and flashed, and the pin let go so the
+// feed stays there; "timeline:bottom" (Jump to latest) pins it again.
+//
 // Two details matter. Programmatic scrolling is instant: a smooth scroll
 // fires intermediate scroll events that look like the reader leaving the
 // bottom. And growth is watched with a ResizeObserver on the feed, so new
@@ -29,7 +34,30 @@ const TimelineScroll = {
     })
     this.observer.observe(feed)
 
+    if (this.el.dataset.highlights !== undefined) {
+      this.handleEvent("timeline:highlight", ({id}) => this.highlight(id, 0))
+      this.handleEvent("timeline:bottom", () => {
+        this.stick = true
+        this.scrollToBottom()
+      })
+    }
+
     if (!this.revealTarget()) this.scrollToBottom()
+  },
+
+  // The row may render a frame after the event arrives; a few tries cover it.
+  highlight(id, tries) {
+    const row = document.getElementById(id)
+    if (!row || !this.el.contains(row)) {
+      if (tries < 10) requestAnimationFrame(() => this.highlight(id, tries + 1))
+      return
+    }
+    this.stick = false
+    row.scrollIntoView({block: "center", behavior: "instant"})
+    row.classList.remove("search-hit")
+    // restart the animation when the same row is pointed at again
+    void row.offsetWidth
+    row.classList.add("search-hit")
   },
 
   // A new data-scope (the thread panel showing another thread) starts over:

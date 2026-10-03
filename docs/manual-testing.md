@@ -554,6 +554,23 @@ repository you own; watches only read.
       the palette fills the width; typing does not zoom the page.
 - [ ] Dark mode: the palette, its active row, and the mode chip read clearly.
 
+## 10m. Search
+
+- [ ] Click the rail's magnifier and type part of a word from a recent message → results
+      appear while you type, the word highlighted, and the URL carries `?q=`.
+- [ ] Search a path an agent changed (`README.md`) → its turn shows with the path
+      highlighted; it opens in the channel's activity panel.
+- [ ] Each filter (Channel, From, Date with a custom range, Archived, Sort) and each tab
+      changes the URL and the results; reload the page → the same search comes back.
+- [ ] Open a message older than the loaded feed (a long channel) → the channel opens on it,
+      flashed, with **Jump to latest** above the composer; post from another tab → the pill
+      counts it and the feed stays put; click the pill → back at the bottom with the new
+      message.
+- [ ] A thread reply opens its thread at the reply; a file opens in a new tab.
+- [ ] ↑/↓ then Enter in the search box opens a result; Esc clears the box.
+- [ ] On a phone (390 px): the filters fold behind **Filters (n)**; no sideways scroll.
+- [ ] In the command palette, type a word no channel has → Shift+Enter opens Search with it.
+
 ## 10h. Lean context
 
 - [ ] Post a short message → the agent's finished line shows no `canopy_messages_read` call

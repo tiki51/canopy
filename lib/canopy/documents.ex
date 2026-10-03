@@ -36,7 +36,8 @@ defmodule Canopy.Documents do
 
   Returns `{:ok, %Document{}}`, `{:error, :too_large}`, `{:error, :unreadable}`,
   or `{:error, %Ecto.Changeset{}}`. The bytes are written inside the insert
-  transaction and removed again if it fails.
+  transaction and removed again if it fails; the search index entry
+  (`Canopy.Search.index_document/2`, read from `source`) goes in with it.
   """
   def create(attrs) when is_map(attrs) do
     source = Map.fetch!(attrs, :source)
@@ -62,7 +63,8 @@ defmodule Canopy.Documents do
 
       Repo.transaction(fn ->
         with {:ok, document} <- Repo.insert(Document.changeset(%Document{}, row)),
-             :ok <- Store.put(document.id, source) do
+             :ok <- Store.put(document.id, source),
+             :ok <- Canopy.Search.index_document(document, source) do
           Repo.preload(document, @preloads)
         else
           {:error, %Ecto.Changeset{} = changeset} -> Repo.rollback(changeset)
@@ -311,6 +313,29 @@ defmodule Canopy.Documents do
     |> Repo.all()
   end
 
+  @doc """
+  Where each of `ids` was first posted: `%{document_id => %{message_id,
+  channel_id}}`, for the documents attached to any message.
+  """
+  def first_usages([]), do: %{}
+
+  def first_usages(ids) when is_list(ids) do
+    first =
+      from(a in Attachment,
+        where: a.document_id in ^ids,
+        group_by: a.document_id,
+        select: %{document_id: a.document_id, message_id: min(a.message_id)}
+      )
+
+    from(m in Canopy.Messages.Message,
+      join: f in subquery(first),
+      on: f.message_id == m.id,
+      select: {f.document_id, %{message_id: m.id, channel_id: m.channel_id}}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   @doc "The whole file."
   def read(%Document{id: id}), do: Store.read(id)
 
@@ -356,9 +381,9 @@ defmodule Canopy.Documents do
   # ------------------------------------------------------------------ delete
 
   @doc """
-  Removes the row (attachments cascade) and the bytes, then broadcasts
-  `{:document_deleted, id, message_ids}` with the messages it was attached to,
-  so open channels can redraw them.
+  Removes the row (attachments and the search entry go with it) and the
+  bytes, then broadcasts `{:document_deleted, id, message_ids}` with the
+  messages it was attached to, so open channels can redraw them.
   """
   def delete(%Document{} = document) do
     message_ids = document |> usages() |> Enum.map(& &1.message_id)

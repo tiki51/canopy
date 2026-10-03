@@ -102,6 +102,13 @@ defmodule CanopyWeb.Layouts do
             />
           </.link>
           <.rail_link
+            id="rail-search"
+            navigate={~p"/search"}
+            icon="hero-magnifying-glass"
+            title="Search"
+            active={@current_path == "/search"}
+          />
+          <.rail_link
             navigate={~p"/repositories"}
             icon="hero-folder"
             title="Repositories"

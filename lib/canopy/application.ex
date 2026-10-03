@@ -18,6 +18,8 @@ defmodule Canopy.Application do
       {Phoenix.PubSub, name: Canopy.PubSub},
       # Durable jobs: scheduled agent tasks
       {Oban, Application.fetch_env!(:canopy, Oban)},
+      # Documents shared before the search index existed get indexed once
+      Canopy.Search.Backfill,
       # Per-repository SSE subscriptions to the OpenCode server
       Canopy.OpenCode.Supervisor,
       # One `claude -p` process per Claude Code turn, and the prompts they wait on

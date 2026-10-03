@@ -91,6 +91,46 @@ defmodule Canopy.Timeline do
   end
 
   @doc """
+  The events after `after_id` in ascending id order: the oldest `:limit`
+  (default #{@default_limit}) of them, for paging forward through history.
+  Takes `:scope` as `list/2` does.
+  """
+  def list_after(channel_id, after_id, opts \\ []) when is_binary(after_id) do
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    Event
+    |> where([e], e.channel_id == ^channel_id and e.id > ^after_id)
+    |> maybe_scope(Keyword.get(opts, :scope))
+    |> order_by([e], asc: e.id)
+    |> limit(^limit)
+    |> preload(^@preloads)
+    |> Repo.all()
+  end
+
+  @doc """
+  A window of history around one event, in ascending id order: up to
+  `:before` (default 50) events older than `event_id`, the event itself, and
+  up to `:after` (default 50) newer ones. Takes `:scope` as `list/2` does.
+  """
+  def list_around(channel_id, event_id, opts \\ []) when is_binary(event_id) do
+    scope = Keyword.get(opts, :scope)
+
+    older =
+      list(channel_id, limit: Keyword.get(opts, :before, 50), before: event_id, scope: scope)
+
+    newer =
+      Event
+      |> where([e], e.channel_id == ^channel_id and e.id >= ^event_id)
+      |> maybe_scope(scope)
+      |> order_by([e], asc: e.id)
+      |> limit(^(Keyword.get(opts, :after, 50) + 1))
+      |> preload(^@preloads)
+      |> Repo.all()
+
+    older ++ newer
+  end
+
+  @doc """
   A thread's events in ascending id order: the root's own `message` event
   first, then the latest `:limit` (default #{@default_limit}) events of the
   thread: its replies and the turn cards of work done for it. `[]` when the

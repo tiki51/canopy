@@ -3,6 +3,13 @@ defmodule CanopyWeb.ChannelLive do
   The main screen: one channel's header, feed, live agent telemetry, permission
   cards, pending handoffs, task form, the repository's locks, and the composer.
 
+  `?msg=<message id>` points at a message in the feed (search results link
+  there): it is scrolled to and flashed, and one older than the loaded feed
+  opens a window of history around it. While the feed shows history, new
+  events are held back and counted on the Jump to latest pill; Load newer
+  pages forward, and the pill (or sending a message) returns to the live
+  feed. A thread reply opens in its thread instead (`?thread=…&reply=…`).
+
   A thread opens in the side panel beside the feed (`?thread=<message id>`,
   with `&reply=<id>` to point at one reply): its own stream, its own composer,
   and the live card and cards of an agent working for it. The feed shows only
@@ -62,6 +69,8 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Tasks.Task
 
   @page_size 100
+  # events either side of a message a link points at, when it is older than the feed
+  @history_window 50
   @thread_page 200
   @archived_answer "This channel is archived. Unarchive (Reopen) the channel to answer."
   @branch_interval 15_000
@@ -94,6 +103,7 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:activity, nil)
      |> assign(:act, new_act(false))
      |> assign(:pending_text, %{})
+     |> assign(:first_page, nil)
      |> allow_upload(:files,
        accept: :any,
        max_entries: Messages.max_attachments(),
@@ -120,7 +130,119 @@ defmodule CanopyWeb.ChannelLive do
         _ -> load_channel(socket, id)
       end
 
-    {:noreply, socket |> attach_from_params(params) |> panel_from_params(params)}
+    params = reply_params(params)
+
+    {:noreply,
+     socket
+     |> attach_from_params(params)
+     |> panel_from_params(params)
+     |> message_from_params(params)
+     |> stream_first_page()}
+  end
+
+  # A newly loaded channel's feed goes in once the params have had their say:
+  # a link to an old message replaces the first page with history around it.
+  defp stream_first_page(%{assigns: %{first_page: events}} = socket) when is_list(events),
+    do: socket |> assign(:first_page, nil) |> stream(:timeline, events, reset: true)
+
+  defp stream_first_page(socket), do: socket
+
+  # `?msg=` naming a thread reply opens it where it lives: its thread.
+  defp reply_params(%{"msg" => id} = params)
+       when is_binary(id) and not is_map_key(params, "thread") do
+    case Messages.get(id) do
+      %{thread_id: root_id} when is_binary(root_id) ->
+        params |> Map.delete("msg") |> Map.merge(%{"thread" => root_id, "reply" => id})
+
+      _ ->
+        params
+    end
+  end
+
+  defp reply_params(params), do: params
+
+  # `?msg=msg_…` points at a message in the feed: it is scrolled to and
+  # flashed; one older than the loaded feed opens a window of history around
+  # it first. A link is followed once, not again on every patch.
+  defp message_from_params(%{assigns: %{msg_target: id}} = socket, %{"msg" => id}), do: socket
+
+  defp message_from_params(socket, %{"msg" => id}) when is_binary(id) do
+    socket = assign(socket, :msg_target, id)
+
+    case Timeline.for_message(id) do
+      %{channel_id: channel_id, in_channel: true} = event
+      when channel_id == socket.assigns.channel.id ->
+        socket
+        |> then(
+          &if(MapSet.member?(&1.assigns.message_ids, id), do: &1, else: open_history(&1, event))
+        )
+        |> push_event("timeline:highlight", %{id: "evt-" <> event.id})
+
+      _ ->
+        put_flash(socket, :error, "That message isn't in this channel.")
+    end
+  end
+
+  defp message_from_params(socket, _params), do: assign(socket, :msg_target, nil)
+
+  # The feed becomes a window of history around `event`. When that window
+  # already reaches the newest event, the feed is simply live again.
+  defp open_history(socket, event) do
+    channel_id = cid(socket)
+
+    events =
+      Timeline.list_around(channel_id, event.id,
+        before: @history_window,
+        after: @history_window,
+        scope: :channel
+      )
+
+    newest = List.last(events)
+    latest = channel_id |> Timeline.list(limit: 1, scope: :channel) |> List.first()
+
+    socket
+    |> reset_feed(events)
+    |> assign(:has_earlier?, Enum.count(events, &(&1.id < event.id)) >= @history_window)
+    |> assign(:window, if(latest && latest.id != newest.id, do: :history, else: :live))
+    |> assign(:newest_event_id, newest.id)
+    |> assign(:held, 0)
+  end
+
+  # Back to the live feed: its newest page, pinned to the bottom.
+  defp to_latest(socket) do
+    events = Timeline.list(cid(socket), limit: @page_size, scope: :channel)
+
+    socket
+    |> reset_feed(events)
+    |> assign(:has_earlier?, length(events) >= @page_size)
+    |> assign(:window, :live)
+    |> assign(:newest_event_id, nil)
+    |> assign(:held, 0)
+    |> push_event("timeline:bottom", %{})
+  end
+
+  # The feed's stream and what is known about what it holds, replaced.
+  defp reset_feed(socket, events) do
+    socket
+    |> assign(:first_page, nil)
+    |> assign(:summaries, Messages.thread_summaries(root_ids(events)))
+    |> assign(:message_ids, message_ids(events))
+    |> assign(:turn_ids, turn_ids(events))
+    |> assign(:receipts, Map.merge(socket.assigns.receipts, receipts(events)))
+    |> assign(:oldest_event_id, events |> List.first() |> then(&(&1 && &1.id)))
+    |> stream(:timeline, events, reset: true)
+  end
+
+  # Another page of the feed (earlier or newer), added to what it holds.
+  defp merge_feed(socket, events) do
+    socket
+    |> assign(
+      :summaries,
+      Map.merge(socket.assigns.summaries, Messages.thread_summaries(root_ids(events)))
+    )
+    |> assign(:message_ids, MapSet.union(socket.assigns.message_ids, message_ids(events)))
+    |> assign(:turn_ids, MapSet.union(socket.assigns.turn_ids, turn_ids(events)))
+    |> assign(:receipts, Map.merge(receipts(events), socket.assigns.receipts))
   end
 
   # The side panel shows one thing: a thread, or an agent's activity.
@@ -351,6 +473,10 @@ defmodule CanopyWeb.ChannelLive do
     |> stream(:thread, [], reset: true)
     |> assign(:oldest_event_id, events |> List.first() |> then(&(&1 && &1.id)))
     |> assign(:has_earlier?, length(events) >= @page_size)
+    |> assign(:window, :live)
+    |> assign(:newest_event_id, nil)
+    |> assign(:held, 0)
+    |> assign(:msg_target, nil)
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
     |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
@@ -375,7 +501,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign_task(Tasks.for_channel(id))
     |> assign_composer("")
     |> assign_branch()
-    |> stream(:timeline, events, reset: true)
+    |> assign(:first_page, events)
     |> schedule_branch_refresh()
   end
 
@@ -963,6 +1089,10 @@ defmodule CanopyWeb.ChannelLive do
   # Only the thread shows what stays in it.
   defp insert_event(socket, %{in_channel: false}), do: socket
 
+  # Reading history: new events wait, counted on the Jump to latest pill.
+  defp insert_event(%{assigns: %{window: :history}} = socket, _event),
+    do: update(socket, :held, &(&1 + 1))
+
   defp insert_event(socket, %{event_type: "agent_turn_completed", id: id} = event) do
     socket
     |> assign(:turn_ids, MapSet.put(socket.assigns.turn_ids, id))
@@ -1354,7 +1484,8 @@ defmodule CanopyWeb.ChannelLive do
              |> reset_composer(composer)
              |> assign(picked_key, [])
              |> outsider_hint(result)
-             |> push_event("composer:clear", %{id: input})}
+             |> push_event("composer:clear", %{id: input})
+             |> then(&if(composer == :main and history?(&1), do: to_latest(&1), else: &1))}
 
           {:error, reason} ->
             # the files were stored for a message that never happened
@@ -2121,13 +2252,7 @@ defmodule CanopyWeb.ChannelLive do
 
     {:noreply,
      socket
-     |> assign(
-       :summaries,
-       Map.merge(socket.assigns.summaries, Messages.thread_summaries(root_ids(older)))
-     )
-     |> assign(:message_ids, MapSet.union(socket.assigns.message_ids, message_ids(older)))
-     |> assign(:turn_ids, MapSet.union(socket.assigns.turn_ids, turn_ids(older)))
-     |> assign(:receipts, Map.merge(receipts(older), socket.assigns.receipts))
+     |> merge_feed(older)
      |> assign(
        :oldest_event_id,
        older |> List.first() |> then(&(&1 && &1.id)) || socket.assigns.oldest_event_id
@@ -2135,6 +2260,30 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:has_earlier?, length(older) >= @page_size)
      |> stream(:timeline, Enum.reverse(older), at: 0)}
   end
+
+  # History pages forward; the newest page makes the feed live again.
+  def handle_event("load_newer", _params, %{assigns: %{window: :history}} = socket) do
+    newer =
+      Timeline.list_after(cid(socket), socket.assigns.newest_event_id,
+        limit: @page_size,
+        scope: :channel
+      )
+
+    socket = socket |> merge_feed(newer) |> stream(:timeline, newer)
+
+    {:noreply,
+     if length(newer) < @page_size do
+       socket |> assign(:window, :live) |> assign(:held, 0) |> assign(:newest_event_id, nil)
+     else
+       assign(socket, :newest_event_id, List.last(newer).id)
+     end}
+  end
+
+  def handle_event("load_newer", _params, socket), do: {:noreply, socket}
+
+  def handle_event("jump_to_latest", _params, socket), do: {:noreply, to_latest(socket)}
+
+  defp history?(socket), do: socket.assigns.window == :history
 
   defp select_file(socket, path) do
     changes = socket.assigns.changes || %{files: [], selected: nil, diff: nil, error: nil}
@@ -2308,6 +2457,7 @@ defmodule CanopyWeb.ChannelLive do
             class="flex-1 overflow-y-auto scroll-smooth"
             phx-hook="TimelineScroll"
             data-feed="#timeline"
+            data-highlights
           >
             <div :if={@has_earlier?} class="flex justify-center py-2">
               <button
@@ -2358,6 +2508,17 @@ defmodule CanopyWeb.ChannelLive do
               />
             </div>
 
+            <div :if={@window == :history} class="flex justify-center py-2">
+              <button
+                type="button"
+                id="load-newer"
+                class="btn btn-xs btn-ghost text-base-content/60"
+                phx-click="load_newer"
+              >
+                Load newer
+              </button>
+            </div>
+
             <%!-- A turn working for a thread shows its live card and its cards in
              the thread panel; the feed keeps the channel's own. --%>
             <.telemetry_card
@@ -2388,6 +2549,20 @@ defmodule CanopyWeb.ChannelLive do
               request={request}
               names={@names}
             />
+          </div>
+
+          <div :if={@window == :history} class="relative z-10 h-0">
+            <button
+              type="button"
+              id="jump-to-latest"
+              class="btn btn-sm btn-primary absolute bottom-3 left-1/2 -translate-x-1/2 gap-1 rounded-full shadow-lg"
+              phx-click="jump_to_latest"
+            >
+              <.icon name="hero-arrow-down-mini" class="size-4" /> Jump to latest
+              <span :if={@held > 0} id="jump-to-latest-count" class="font-normal opacity-80">
+                · {@held} new
+              </span>
+            </button>
           </div>
 
           <.limit_bar
@@ -2640,6 +2815,14 @@ defmodule CanopyWeb.ChannelLive do
           >
             <.icon name="hero-archive-box-mini" class="size-3" /> archived
           </span>
+          <.link
+            navigate={~p"/search?#{[channel: @channel.id]}"}
+            id="search-channel"
+            class="btn btn-xs btn-ghost"
+            title="Search this channel"
+          >
+            <.icon name="hero-magnifying-glass-mini" class="size-4" />
+          </.link>
           <button
             :if={!Channels.dm?(@channel)}
             type="button"

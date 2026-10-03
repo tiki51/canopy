@@ -254,6 +254,11 @@ const CommandPalette = {
   },
 
   choose(alt) {
+    const query = this.input.value.trim()
+    if (this.rows.length === 0 && alt && !this.mode && !this.step && query.length >= 2) {
+      this.row(searchEntry(query)).enter()
+      return
+    }
     const row = this.rows[this.active]
     const action = row && (alt ? row.alt : row.enter)
     if (action) action()
@@ -287,13 +292,20 @@ const CommandPalette = {
       ">": [["Commands", this.commandEntries(), MODE_LIMIT]],
     }[this.mode || "none"]
 
-    return specs
+    const groups = specs
       .map(([name, list, limit]) => {
         const ranked = rank(list, query, opts)
         return {name, best: ranked.length ? ranked[0].score : -Infinity, rows: ranked.slice(0, limit).map(r => this.row(r.item))}
       })
       .filter(group => group.rows.length > 0)
       .sort((a, b) => b.best - a.best)
+
+    // the Search page looks inside messages, turns and files; it goes last,
+    // so Enter keeps opening the best name match (with none, ⇧↵ searches)
+    if (!this.mode && groups.length > 0 && query.trim().length >= 2) {
+      groups.push({name: "Search", rows: [this.row(searchEntry(query.trim()))]})
+    }
+    return groups
   },
 
   // Nothing typed: where you have been, what needs you, and the pages.
@@ -408,6 +420,8 @@ const CommandPalette = {
       }
       case "command":
         return {...entry, enter: () => this.run(entry.command), hints: ["↵ run"]}
+      case "search":
+        return {...entry, enter: go(`/search?q=${encodeURIComponent(entry.query)}`), hints: ["↵ search"]}
       case "slash": {
         const here = this.currentChannel()
         const hint = !here ? "↵ choose a channel" : entry.command.prefill ? "↵ write" : "↵ run"
@@ -628,6 +642,7 @@ const CommandPalette = {
   emptyText() {
     const channel = this.currentChannel()
     if (this.mode === "/" && channel && channel.archived) return "Slash commands can't run in an archived channel."
+    if (!this.mode && !this.step && this.input.value.trim().length >= 2) return "No matches. ⇧↵ searches messages, turns and files."
     return "No matches."
   },
 
@@ -649,6 +664,7 @@ const ICONS = {
   repo: "hero-folder-mini",
   file: "hero-document-mini",
   command: "hero-command-line-mini",
+  search: "hero-magnifying-glass-mini",
 }
 
 function toEntry(item) {
@@ -694,6 +710,10 @@ function toEntry(item) {
   return null
 }
 
+function searchEntry(query) {
+  return {key: "search", kind: "search", query, label: `Search everywhere for “${query}”`, fields: [query]}
+}
+
 function fileEntry(file) {
   return {key: `file:${file.id}`, kind: "file", id: file.id, file, fields: [file.filename]}
 }
@@ -706,6 +726,7 @@ function rowLabel(row) {
     case "file":
       return row.file.filename
     case "command":
+    case "search":
       return row.label
     case "slash":
       return row.command.usage

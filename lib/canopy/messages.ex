@@ -379,7 +379,8 @@ defmodule Canopy.Messages do
   end
 
   @doc """
-  Full-text search over a channel's messages.
+  Full-text search over a channel's messages, on the shared index
+  (`Canopy.Search`), in plain relevance order.
 
   Bare words are matched as whole tokens, `"quoted phrases"` as phrases, and a
   trailing `*` requests a prefix match (`retr*`). Returns
@@ -389,46 +390,29 @@ defmodule Canopy.Messages do
   def search(channel_id, query, opts \\ []) do
     limit = opts |> Keyword.get(:limit, @default_limit) |> clamp_limit()
 
-    case to_fts_query(query) do
-      "" ->
-        []
+    %{results: results} =
+      Canopy.Search.search(query,
+        sources: ["message"],
+        channel_ids: [channel_id],
+        include_archived: true,
+        sort: :rank,
+        limit: limit,
+        min_chars: 1,
+        marks: {"**", "**"},
+        snippet: {1, "...", 16}
+      )
 
-      fts_query ->
-        Repo.all(
-          from m in Message,
-            join: f in "messages_fts",
-            on: fragment("? = ?", f.rowid, m.rowid),
-            where: m.channel_id == ^channel_id,
-            where: fragment("? MATCH ?", f.messages_fts, ^fts_query),
-            order_by: fragment("bm25(?)", f.messages_fts),
-            limit: ^limit,
-            select: %{
-              message: m,
-              snippet: fragment("snippet(?, 0, '**', '**', '...', 16)", f.messages_fts),
-              rank: fragment("bm25(?)", f.messages_fts)
-            }
-        )
-        |> Enum.map(fn %{message: message} = hit ->
-          %{hit | message: Repo.preload(message, @preloads)}
-        end)
-    end
+    Enum.map(results, fn %{record: message, snippet: snippet, rank: rank} ->
+      %{message: Repo.preload(message, @preloads), snippet: snippet, rank: rank}
+    end)
   end
 
   @doc """
   Converts free text into a safe FTS5 query: every term becomes a quoted
   token or phrase, with `*` kept for prefix matches. Returns `""` when the
-  text contains no searchable term.
+  text contains no searchable term. See `Canopy.Search.Query.to_fts/2`.
   """
-  def to_fts_query(text) when is_binary(text) do
-    ~r/"[^"]*"\*?|\S+/
-    |> Regex.scan(text)
-    |> Enum.map(&List.first/1)
-    |> Enum.map(&term_to_fts/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join(" ")
-  end
-
-  def to_fts_query(_), do: ""
+  def to_fts_query(text), do: Canopy.Search.Query.to_fts(text)
 
   @doc """
   Returns the ids of agents mentioned as `@name` in `body`, in order of first
@@ -596,34 +580,6 @@ defmodule Canopy.Messages do
           nil -> {:ok, ids}
           missing -> {:error, "unknown document #{missing}"}
         end
-    end
-  end
-
-  defp term_to_fts(term) do
-    {inner, prefix?} =
-      case term do
-        <<?", _::binary>> ->
-          {stripped, prefix?} = strip_prefix_star(term)
-          {String.trim(stripped, "\""), prefix?}
-
-        _ ->
-          strip_prefix_star(term)
-      end
-
-    inner = inner |> String.replace("\"", "") |> String.trim()
-
-    cond do
-      not Regex.match?(~r/[[:alnum:]]/u, inner) -> ""
-      prefix? -> ~s("#{inner}"*)
-      true -> ~s("#{inner}")
-    end
-  end
-
-  defp strip_prefix_star(term) do
-    if String.ends_with?(term, "*") do
-      {String.trim_trailing(term, "*"), true}
-    else
-      {term, false}
     end
   end
 

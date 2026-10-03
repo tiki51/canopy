@@ -13,6 +13,10 @@ config :canopy, Canopy.Repo,
 # Document bytes for tests go under _build so they never mix with dev files.
 config :canopy, files_dir: Path.expand("../_build/test/tmp/files", __DIR__)
 
+# Tests index documents themselves (Canopy.Search.Backfill.run/0); the boot task
+# would race the sandbox.
+config :canopy, :search_backfill, false
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :canopy, CanopyWeb.Endpoint,

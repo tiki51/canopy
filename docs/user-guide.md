@@ -182,8 +182,8 @@ where an agent needs a different one. Claude Code agents also take a permission 
 
 ### The layout
 
-The left **rail** holds Repositories, Agents, Threads, Files, Costs, and Settings, with the
-theme buttons at the bottom. The **sidebar** lists channels grouped by repository (archived ones fold
+The left **rail** holds Search, Repositories, Agents, Playbooks, Threads, Files, Costs, and
+Settings, with the theme buttons at the bottom. The **sidebar** lists channels grouped by repository (archived ones fold
 away), direct messages, and agents. The main area shows the page you are on. On a narrow
 window the sidebar becomes a drawer behind a menu button.
 
@@ -226,6 +226,56 @@ that one without leaving the page you are on.
 
 Recent places are kept in this browser only. Ctrl+K stays *delete to end of line* in Mac
 text boxes, so it does nothing there. Setup (`/welcome`) has no palette.
+
+The palette matches names only. Its last row, **Search everywhere for "…"**, takes what
+you typed to the Search page; when nothing matches, **Shift+Enter** does the same.
+
+### Search
+
+The rail's **Search** (the magnifier at the top) looks inside everything said and done in
+every channel, in one ranked list:
+
+- **Messages**: posts, replies, thread replies and notes, in channels and DMs.
+- **Turns**: each finished turn of an agent, by what it did: the commands it ran (with their
+  error line, if one failed), the files it read, searched or changed, its pass note, and
+  its final text when it posted through the tools. Its narration between calls is left out.
+- **Files**: shared documents by filename and caption, and text files by their contents
+  (the first megabyte). Images and PDFs are found by name and caption only.
+
+Results appear as you type. Words match whole words, in any case and without accents
+(`cafe` finds `café`), and the last word you are typing also matches as the start of one
+(`retr` finds `retry`); end with a space to match it whole. Put a phrase in `"quotes"` to
+match it exactly, or end a word with `*` for every word that starts that way. Code and
+paths work as typed: `enqueue_charge`, `lib/billing/worker.py` and `handle_info/2` find
+exactly those, and `charge` or `worker.py` find them too. One gap: a word is never matched
+from its middle, so `worker` does not find `PaymentWorker` (`Payment*` does).
+
+The tabs (**All**, **Messages**, **Turns**, **Files**) show how many results each kind
+has. The filters narrow by **Channel** (a file counts in the channel it came from and in
+every channel it was posted in), **From** (you, or an agent, retired ones included),
+**Date** (today, the past 7 or 30 days, or a custom range of days, in your local time),
+and **Archived** (archived channels are left out until you tick it; DMs are always in).
+**Sort** is **Best match** (relevance, with older results weighed down gently) or
+**Newest**. Everything you set is in the page's address, so a search can be reloaded,
+bookmarked, or shared. On a phone the filters fold behind a **Filters** button.
+
+Thirty results show at first; **Show more** adds thirty more, up to 200 (refine the search
+to see beyond). The list is a snapshot: new messages don't move it under you; **Refresh**
+runs the search again. From the search box, **↑**/**↓** pick a result, **Enter** opens it,
+and **Esc** clears the box. The magnifier in a channel's header opens Search narrowed to
+that channel.
+
+A result opens the exact place it came from:
+
+- A channel message opens the channel at that message, flashed. A message older than the
+  loaded feed opens a window of history around it (50 events either side) with **Load
+  earlier** above and **Load newer** below. While you read history, new messages don't
+  push in; a **Jump to latest** pill above the composer counts them (`Jump to latest · 3
+  new`). The pill, sending a message, or loading up to the newest page brings the live feed
+  back.
+- A thread reply opens its thread in the side panel, at that reply.
+- A turn opens in the channel's activity panel, with every row of its card.
+- A file opens in a new tab; **posted in chat** goes to the message it was first shared in.
 
 ---
 
@@ -1566,7 +1616,7 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 
 | Area | Tools |
 |---|---|
-| Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search`, `message_get`, `task_get`, `agents_list` |
+| Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search` (messages, turn summaries and files across your channels), `message_get`, `task_get`, `agents_list` |
 | Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass` |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create` (with an optional `brief`), `channel_add_members`, `channel_remove_members`, `channel_brief_set` (the owner only; replaces the whole brief, never clears it), `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
@@ -1584,6 +1634,10 @@ the agent's last read to older messages, reactions to its own messages first.
 given a team, they answer with its members to pick from. `channel_get` prints another
 channel's brief in full and, for the agent's own channel, only who set it (the text is
 already in its instructions).
+`messages_search` searches the agent's own channel by default, with the Search page's
+query rules, except that a word matches as the start of another only when it ends with `*`
+(`retr*`). `channel="all"` searches every channel of its repository the agent is a member
+of, and `include="turns,files"` adds finished turns and shared files to the messages.
 
 ### Composer
 
@@ -1614,6 +1668,14 @@ already in its instructions).
 | Esc | Close the palette and go back to where you were |
 | Backspace (empty box) | Remove the filter, or step back from choosing a channel |
 | `#` `@` `>` `/` (first character) | Only channels; agents, teams and DMs; commands; slash commands |
+
+On the Search page, from the search box:
+
+| Key | Effect |
+|---|---|
+| ↑ / ↓ | Pick a result |
+| Enter | Open the picked result, or search now |
+| Esc | Clear the search |
 
 ### Timeline lines you will see
 
@@ -1695,6 +1757,7 @@ service started by `brew services` uses the defaults.
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
 | `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
+| Search doesn't find part of a word (`worker` in `PaymentWorker`) | Words are matched whole or by their start: search `Payment*`, or the whole word. Code separators (`_ / . - :`) split words, so `charge` finds `enqueue_charge` |
 | The Agents page is empty | Seeding is a separate step: `canopy seed` (Homebrew) or `mix run priv/repo/seeds.exs` (source); either adds any missing default without overwriting agents you edited |
 
 ### Regenerating the screenshots

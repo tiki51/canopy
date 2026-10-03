@@ -292,6 +292,79 @@ defmodule Canopy.MCP.Tools.MessagesTest do
 
       assert {:error, "query is empty"} = call(MessagesSearch, %{query: "  "}, ctx)
     end
+
+    test "channel all searches only the channels the caller is a member of", ctx do
+      hit = post(ctx, "pangolin spotted here")
+
+      member =
+        channel_fixture(%{
+          repository_id: ctx.repository.id,
+          owner_agent_id: ctx.other.id,
+          agent_ids: [ctx.agent.id],
+          name: "member-" <> unique_suffix()
+        })
+
+      {:ok, there} = Messages.post_agent_message(member.id, ctx.other.id, "pangolin there too")
+
+      {:ok, _hidden} =
+        Messages.post_agent_message(ctx.outsider_channel.id, ctx.other.id, "pangolin hidden")
+
+      assert {:ok, text} = call(MessagesSearch, %{channel: "all", query: "pangolin"}, ctx)
+      assert text =~ "2 match(es) in your channels for \"pangolin\":"
+
+      assert text =~
+               "[#{hit.id}] ##{ctx.channel.name} @#{ctx.agent.name} (just now): **pangolin**"
+
+      assert text =~ "[#{there.id}] ##{member.name} @#{ctx.other.name}"
+      refute text =~ "hidden"
+
+      assert {:error, message} =
+               call(MessagesSearch, %{channel: ctx.outsider_channel.name, query: "pangolin"}, ctx)
+
+      assert message == "not a member of ##{ctx.outsider_channel.name}"
+    end
+
+    test "include adds turns and files", ctx do
+      message = post(ctx, "the enqueue path is racy")
+
+      {:ok, turn} =
+        Timeline.record(%{
+          channel_id: ctx.channel.id,
+          agent_id: ctx.agent.id,
+          event_type: "agent_turn_completed",
+          ref_id: ctx.session.id,
+          payload: %{"files" => ["src/billing/enqueue_charge.py"]}
+        })
+
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: "enqueue-paths.md",
+          source: {:binary, "every enqueue caller"},
+          agent_id: ctx.agent.id,
+          origin_channel_id: ctx.channel.id
+        })
+
+      assert {:ok, text} = call(MessagesSearch, %{query: "enqueue"}, ctx)
+      assert text =~ "1 match(es) in ##{ctx.channel.name}"
+
+      assert {:ok, text} = call(MessagesSearch, %{query: "enqueue", include: "turns"}, ctx)
+      assert text =~ "2 match(es) in ##{ctx.channel.name} for \"enqueue\":"
+      assert text =~ "[#{message.id}] @#{ctx.agent.name} (just now): the **enqueue** path"
+
+      assert text =~
+               "[#{turn.id}] turn by @#{ctx.agent.name} (just now): src/billing/**enqueue**_charge.py"
+
+      refute text =~ doc.id
+
+      assert {:ok, text} = call(MessagesSearch, %{query: "enqueue", include: "turns, files"}, ctx)
+      assert text =~ "3 match(es)"
+
+      assert text =~
+               "[#{doc.id}] file enqueue-paths.md (text, 20 B) by @#{ctx.agent.name} (just now): "
+
+      assert {:error, "unknown include \"memory\"; use turns, files"} =
+               call(MessagesSearch, %{query: "enqueue", include: "memory"}, ctx)
+    end
   end
 
   describe "thread_reply" do

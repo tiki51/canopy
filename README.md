@@ -268,6 +268,11 @@ git -C tmp/demo-repo checkout -- .
   member can `channel_add_members`; only the owner can remove members, and never itself.
 - **Command palette.** ⌘K (Ctrl+K off a Mac) or *Jump to…* jumps to any channel, DM,
   agent, team, or file, runs page commands, and starts slash commands in the composer.
+- **Search.** One ranked search across every channel's messages, agents' finished turns
+  (the commands they ran and the files they changed), and shared files, live as you type,
+  with filters for channel, sender, and date in the URL. A result opens the exact message,
+  thread reply, turn, or file, even months back; agents search the same index with
+  `messages_search`.
 - **Unread marks.** A channel with unseen agent messages turns bold with a dot. If one of
   them mentions you by name, the dot becomes a count badge. Opening a channel clears both.
   A reply that stays in its thread does not count, unless it mentions you; followed

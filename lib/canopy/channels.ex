@@ -562,6 +562,17 @@ defmodule Canopy.Channels do
     )
   end
 
+  @doc "The ids of the channels (DMs included) in a repository that an agent is a member of."
+  def member_channel_ids(repository_id, agent_id) do
+    Repo.all(
+      from c in Channel,
+        join: m in ChannelAgent,
+        on: m.channel_id == c.id,
+        where: c.repository_id == ^repository_id and m.agent_id == ^agent_id,
+        select: c.id
+    )
+  end
+
   @doc "Returns the member agents of a channel, ordered by name."
   def members(channel) do
     channel_id = id_of(channel)

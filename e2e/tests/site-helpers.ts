@@ -91,8 +91,9 @@ export async function shot(
 
 /** Runs SQL against the e2e database (the server keeps running; SQLite is in WAL mode). */
 export function sql(statement: string): string {
-  // The messages table's update trigger writes to the messages_fts virtual
-  // table, which the sqlite3 CLI refuses unless the schema is trusted.
+  // The search index triggers on messages and timeline events write to the
+  // search_fts virtual table, which the sqlite3 CLI refuses unless the schema
+  // is trusted.
   return execFileSync("sqlite3", ["-cmd", "PRAGMA trusted_schema=ON", db, statement], { encoding: "utf8" }).trim();
 }
 

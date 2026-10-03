@@ -301,13 +301,22 @@
 @keyframes message-target { from { background: color-mix(in oklab, var(--color-primary) 18%, transparent); } }
 .message-target { animation: message-target 2.4s ease-out; }
 
+/* A message a search result (`?msg=`) pointed at: a primary ring that fades. */
+@keyframes search-hit {
+  from, 40% {
+    box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--color-primary) 70%, transparent);
+    background: color-mix(in oklab, var(--color-primary) 12%, transparent);
+  }
+}
+.search-hit { animation: search-hit 2s ease-out; }
+
 /* The side panel is a full-screen overlay below lg; it slides in. */
 @keyframes side-panel-in { from { transform: translateX(100%); } }
 @media (max-width: 63.999rem) {
   .side-panel { animation: side-panel-in 180ms ease-out; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .side-panel, .message-target { animation: none; }
+  .side-panel, .message-target, .search-hit { animation: none; }
 }
 
 /* Keyboard hints: ⌘K on a Mac, Ctrl K elsewhere (app.js sets data-platform). */

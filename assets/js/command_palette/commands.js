@@ -12,6 +12,7 @@
 // repos: [{id, name}], playbooks: [{id, name}]}. No DOM here.
 
 const PAGES = [
+  ["search", "Search", "/search", "find messages turns files"],
   ["repositories", "Repositories", "/repositories", "folder repos git"],
   ["agents", "Agents", "/agents", "people bots"],
   ["teams", "Teams", "/teams", "groups"],

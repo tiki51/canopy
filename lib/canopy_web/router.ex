@@ -51,6 +51,7 @@ defmodule CanopyWeb.Router do
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
       live "/threads", ThreadsLive
+      live "/search", SearchLive
     end
 
     get "/dm/:agent_id", DmController, :show

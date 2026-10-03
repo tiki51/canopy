@@ -283,7 +283,7 @@ defmodule Canopy.Runtime.Prompts do
 
   defp reply_lines(nil) do
     """
-    canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older ones. Do the work, then post your findings with canopy_message_send.
+    canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older messages and turn summaries. Do the work, then post your findings with canopy_message_send.
     Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.\
     """
   end
