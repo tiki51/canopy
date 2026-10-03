@@ -325,3 +325,13 @@
 /* The command palette's active row (assets/js/hooks/command_palette.js);
    system colours keep a visible outline. */
 @media (forced-colors: active) { #cmdk-list [aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; } }
+
+/* Transcript kind filters (CanopyWeb.ChannelLive.Transcript): a class on the
+   list hides that kind's rows; the Show buttons toggle it in the browser. */
+.transcript-list.hide-prompt [data-kind="prompt"],
+.transcript-list.hide-text [data-kind="text"],
+.transcript-list.hide-text [data-kind="reasoning"],
+.transcript-list.hide-text [data-kind="thinking_hidden"],
+.transcript-list.hide-tool [data-kind="tool"],
+.transcript-list.hide-tool [data-kind="step"],
+.transcript-list.hide-note [data-kind="engine_note"] { display: none; }

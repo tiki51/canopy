@@ -367,8 +367,15 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert :ok = Runtime.reset_session(ctx.channel.id, ctx.agent.id, "user")
 
     assert_receive {:timeline,
-                    %{event_type: "session_reset", payload: %{"engine_session_id" => ^old_sid}}},
+                    %{
+                      event_type: "session_reset",
+                      payload: %{"engine_session_id" => ^old_sid} = p
+                    }},
                    2_000
+
+    # enough to read the old session's transcript once its row is gone
+    assert p["engine"] == "opencode"
+    assert p["directory"] == ctx.repository.path
 
     assert AgentSessions.get_root(ctx.channel.id, ctx.agent.id) == nil
     assert {:error, :no_session} = Runtime.reset_session(ctx.channel.id, ctx.agent.id)
@@ -951,6 +958,38 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     assert_receive {:timeline,
                     %{event_type: "agent_turn_completed", payload: %{"trigger" => "agent"}}},
+                   2_000
+  end
+
+  test "a turn records its engine, directory, session and first and last engine messages", ctx do
+    expect_prompt(self())
+    sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^sid, _}, 2_000
+
+    assert_receive {:timeline, %{event_type: "agent_started", payload: started}}, 2_000
+    assert started["engine"] == "opencode"
+    assert started["directory"] == ctx.repository.path
+    assert started["engine_session_id"] == sid
+
+    for id <- ["msg_a1", "msg_a2", "msg_a3"] do
+      emit(sid, :step_completed, %{message_id: id, reason: "stop", cost: 0.0, tokens: %{}})
+    end
+
+    emit(sid, :agent_completed, %{})
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: p}}, 2_000
+    assert p["engine_session_id"] == sid
+    assert p["engine_message_ids"] == %{"first" => "msg_a1", "last" => "msg_a3"}
+
+    # a turn without a model call has no ids to record
+    expect_prompt(self())
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "again")
+    assert_receive {:prompted, ^sid, _}, 2_000
+    emit(sid, :agent_completed, %{})
+
+    assert_receive {:timeline,
+                    %{event_type: "agent_turn_completed", payload: %{"engine_message_ids" => nil}}},
                    2_000
   end
 

@@ -568,7 +568,8 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   [Agent memory](#13-agent-memory).
 - **Scheduled**: the agent's schedules across all channels, each with a link and a cancel
   button.
-- **Channels**: every channel the agent belongs to, owned ones marked.
+- **Channels**: every channel the agent belongs to, owned ones marked, each with a
+  **Transcript** link to the agent's [session transcript](#the-session-transcript) there.
 - **Message** opens (or creates) your direct message with the agent. **Edit** opens the
   form. The power icon deactivates the agent.
 
@@ -783,9 +784,10 @@ branch, and one pill per member. A member's dot is grey when idle, green while w
 amber while waiting for its turn, blue with "waiting on you" while it is blocked on a
 question or permission card, and red after an error. A small padlock on a pill means the
 agent holds a lock; a clock means it is waiting for one. A working or waiting agent's pill
-has an **Abort** button; an idle agent's pill has a small reset arrow that drops its OpenCode
-session in this channel (with a confirmation) so its next turn starts with a clean
-context.
+has an **Abort** button; an idle agent's pill has a small reset arrow that drops its engine
+session (OpenCode or Claude Code) in this channel, with a confirmation, so its next turn
+starts with a clean context. Every pill also has a document icon that opens the agent's
+[session transcript](#the-session-transcript).
 
 When the channel has a [brief](#brief-panel), a one-line **BRIEF** strip is pinned under
 the header, showing its first line. Click it to open the whole brief; the strip remembers,
@@ -1147,6 +1149,56 @@ and the card closes into a finished card.
 ![Agent replied, light](user-guide/images/agent-replied-light.png)
 
 ![Agent replied, dark](user-guide/images/agent-replied-dark.png)
+
+### The session transcript
+
+The channel shows what an agent chose to post. Its **transcript** shows why: the agent's
+whole engine session in the channel, read back from the engine (Claude Code's session
+file, or OpenCode's history over its API). Canopy keeps no copy.
+
+Open it from the document icon on the agent's member pill, from **Transcript** next to the
+channel on the agent's page, from **View in transcript →** at the bottom of an opened turn
+card (or the transcript icon in the activity side panel), or from **earlier transcript** on
+a *reset @agent's session* line. Reading never blocks the agent; it works while it is busy.
+
+What it shows, oldest first, 50 entries at a time (**Load older** / **Load newer**):
+
+- **Prompts**: every message Canopy sent the agent, collapsed after three lines. A message
+  you sent into a running turn ([experimental](#redirecting-a-working-agent-experimental))
+  is marked *sent mid-turn*, where the engine took it in. Images show as chips, never their
+  bytes.
+- **System prompt**: Canopy's text (role, collaboration rules, the channel brief, the
+  playbooks), collapsed at the top. Claude Code also records its own built-in sections,
+  shown separately. A *System prompt changed* chip marks where a later turn ran with
+  different text, for example after you edited the brief.
+- **Text and reasoning**: the model's words between tool calls. OpenCode keeps reasoning
+  text. Claude Code doesn't record its thinking: a muted *Thought* row marks where it
+  thought.
+- **Tools**: one row per call, with its result paired in; click to see the input and the
+  output (outputs over 16 KB keep their first 4 KB and last 12 KB).
+- **Steps**: one muted line per model call, with its tokens and model.
+- **Compaction**: a band where the context was summarised, with the summary. The agent
+  saw only the summary from there on; the entries before it stay readable above.
+- **Turn dividers**: Canopy's own line before each turn (when, what woke it, calls, cost,
+  time), so the transcript reads alongside the channel; ↗ opens that turn's activity in
+  the channel.
+
+**Show** filters prompts, text, tools and engine notes (lines the engine added itself, off
+by default). **Follow live**, on the current session, keeps the newest entry in view as
+the agent works; with it off, a *↓ N new entries* pill says what arrived.
+
+**Redaction.** Before anything reaches the page, Canopy's own tokens (every agent's MCP
+token and the one in Settings) are replaced by `[canopy session token]`, and anything that
+looks like a credential (API keys, `Bearer` tokens, private keys, passwords in URLs,
+`secret=` values) is masked `••••`; the entry gets a *redacted* chip. There is no switch to
+turn it off: screenshots and screen-shares leak. The engine's own files are the way to the
+raw text.
+
+**Old sessions.** Resetting a session doesn't delete it from the engine, and the session
+picker lists the earlier ones: sessions you reset, and the per-delegation sessions agents
+used before they kept one session per channel (read-only, like everything here). Claude
+Code removes old session files itself (`cleanupPeriodDays`, 30 days by default); a session
+it no longer has, or one OpenCode no longer has, says so.
 
 ### Redirecting a working agent (experimental)
 
@@ -1906,7 +1958,7 @@ Reactions leave no line: they show as chips under the message.
 | `bug-fix has been on Fix for 30 min with no activity; nudged @agent` | A stall nudge |
 | `a watch found 2 new items for @agent (failed CI on main in acme/app)` | A GitHub watch fired |
 | `session was compacted` | Context was summarised to stay under the cap |
-| `reset @agent's session` | You dropped the agent's session in this channel |
+| `reset @agent's session · earlier transcript` | You dropped the agent's session in this channel; the link opens the old session's [transcript](#the-session-transcript) |
 
 ### Environment
 
@@ -1939,6 +1991,8 @@ service started by `brew services` uses the defaults.
 | OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
+| An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its pill: every prompt, tool call and result |
+| The transcript says Claude Code no longer has the session | Claude Code deletes session files after `cleanupPeriodDays` (30 by default, in its `settings.json`); Canopy keeps no copy |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |
 | A question card says the agent stopped waiting | Answer it anyway: the answer is posted as your message and wakes the agent. Dismiss it if it no longer matters |

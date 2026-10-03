@@ -4,8 +4,9 @@ defmodule Canopy.Engine do
   harness that runs an agent's session (OpenCode today, Claude Code next).
 
   An engine owns the private session of each agent in a channel. Canopy asks it
-  to start sessions, send prompts, abort, compact, and answer permission and
-  question prompts, and listens for the normalized `Canopy.Engine.Event`s it
+  to start sessions, send prompts, abort, compact, answer permission and
+  question prompts, and (optionally) read a session's history back as a
+  transcript, and listens for the normalized `Canopy.Engine.Event`s it
   broadcasts on the topics below. Everything else (routing, prompts, activity
   cards, costs, the MCP tools) is engine-neutral.
 
@@ -170,7 +171,51 @@ defmodule Canopy.Engine do
               {:ok, %{confirms: boolean()}}
               | {:error, :not_running | :unsupported | term()}
 
-  @optional_callbacks mcp_inventory: 2, steer: 4
+  @typedoc """
+  Which engine session to read a transcript from. Not an AgentSession: a
+  reset session's row is gone, but the engine may still have it. `directory`
+  is the repository path the session ran in, when known.
+  """
+  @type transcript_ref :: %{engine_session_id: String.t(), directory: String.t() | nil}
+
+  @typedoc """
+  One page of a transcript, oldest entry first. `before` reads the entries
+  just older than the page (nil at the session's start); `after` reads what
+  comes after its last entry (the same cursor again once the page is empty,
+  so following a live session keeps its place); `newer?` says whether such
+  entries exist now. Cursors are opaque strings. `system_prompts` is the
+  system text the session ran with, a new entry each time it changed:
+  `canopy` (Canopy's text) and `engine` (the engine's own sections, when it
+  records them). `total` and `compactions` count the whole session.
+  """
+  @type transcript_page :: %{
+          entries: [Canopy.Engine.TranscriptEntry.t()],
+          before: String.t() | nil,
+          after: String.t() | nil,
+          newer?: boolean(),
+          system_prompts: [
+            %{at: DateTime.t() | nil, canopy: String.t() | nil, engine: [String.t()] | nil}
+          ],
+          total: non_neg_integer(),
+          compactions: non_neg_integer()
+        }
+
+  @doc """
+  Reads a page of the session's history from the engine's own store: every
+  prompt, the model's text, tool calls with their results, steps, and
+  compactions, as `Canopy.Engine.TranscriptEntry`s. `ctx` may be nil (the
+  transcript page has no channel process). Options: `limit` (default 50),
+  `before: cursor`, `after: cursor`, `around: {:message_id, id} | {:at,
+  DateTime.t()}` with `fallback_at:` for an unknown message id, else the
+  newest page. Strings come back unredacted: `Canopy.Transcripts` redacts.
+  `{:error, :not_found}` when the engine no longer has the session,
+  `{:error, :unreachable}` when it cannot be asked.
+  """
+  @callback transcript(ctx | nil, transcript_ref, opts :: keyword()) ::
+              {:ok, transcript_page}
+              | {:error, :not_found | :unreachable | :unsupported | term()}
+
+  @optional_callbacks mcp_inventory: 2, steer: 4, transcript: 3
 
   # -- Dispatch ---------------------------------------------------------------
 
@@ -190,6 +235,20 @@ defmodule Canopy.Engine do
 
   @doc "The adapter for an agent or session (anything with an `engine` name)."
   def for(%{engine: name}), do: module!(name)
+
+  @doc """
+  Reads a transcript page through the named engine's adapter (see
+  `c:transcript/3`); `{:error, :unsupported}` when the engine is unknown or
+  its adapter cannot read history.
+  """
+  def transcript(name, ctx, ref, opts \\ []) do
+    with {:ok, mod} <- Map.fetch(engines(), name),
+         true <- Code.ensure_loaded?(mod) and function_exported?(mod, :transcript, 3) do
+      mod.transcript(ctx, ref, opts)
+    else
+      _ -> {:error, :unsupported}
+    end
+  end
 
   # -- Events -----------------------------------------------------------------
 

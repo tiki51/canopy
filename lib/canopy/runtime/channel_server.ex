@@ -412,7 +412,13 @@ defmodule Canopy.Runtime.ChannelServer do
             agent_id: agent_id,
             event_type: "session_reset",
             ref_id: session.id,
-            payload: %{"by" => by, "engine_session_id" => session.engine_session_id}
+            # the engine keeps the session: enough to read its transcript later
+            payload: %{
+              "by" => by,
+              "engine_session_id" => session.engine_session_id,
+              "engine" => session.engine,
+              "directory" => state.repository.path
+            }
           })
 
         state = %{
@@ -1866,7 +1872,12 @@ defmodule Canopy.Runtime.ChannelServer do
             agent_id: agent_id,
             event_type: "agent_started",
             ref_id: session.id,
-            payload: %{"engine_session_id" => session.engine_session_id, "thread_id" => thread_id}
+            payload: %{
+              "engine_session_id" => session.engine_session_id,
+              "engine" => session.engine,
+              "directory" => state.repository.path,
+              "thread_id" => thread_id
+            }
           },
           thread_scope(thread_id)
         )
@@ -1906,6 +1917,9 @@ defmodule Canopy.Runtime.ChannelServer do
       message_ids: [],
       # messages the user steered into the turn (see steer/3), in order
       steers: [],
+      # the engine message ids of the turn's first and last model calls, so
+      # the transcript can find the turn ({first, last}, nil before any)
+      engine_message_ids: nil,
       adopted?: adopted?
     }
 
@@ -2252,7 +2266,10 @@ defmodule Canopy.Runtime.ChannelServer do
               :diff
             ] do
     state = fold_activity(state, agent_id, event)
-    update_turn(state, event.session_id, fn turn -> turn_stats(turn, event) end)
+
+    update_turn(state, event.session_id, fn turn ->
+      turn |> note_message_id(event) |> turn_stats(event)
+    end)
   end
 
   # Streamed text goes to the views only; the finished part replaces it.
@@ -2588,7 +2605,10 @@ defmodule Canopy.Runtime.ChannelServer do
               "final_text" => if(turn.posted?, do: final_text(turn)),
               # the messages the user steered into the turn, that reached it
               "interrupted_by" =>
-                for(%{held?: false} = s <- Map.get(turn, :steers, []), do: s.message_id)
+                for(%{held?: false} = s <- Map.get(turn, :steers, []), do: s.message_id),
+              # where the turn sits in the engine's own history (the transcript)
+              "engine_session_id" => turn.session.engine_session_id,
+              "engine_message_ids" => message_ids_payload(Map.get(turn, :engine_message_ids))
             }
             |> then(&if Map.get(turn, :adopted?), do: Map.put(&1, "adopted", true), else: &1)
         }
@@ -2791,6 +2811,21 @@ defmodule Canopy.Runtime.ChannelServer do
   # nor pauses the channel when it finally starts.
   defp counted(wake), do: Map.put(wake, :counted?, true)
   defp counted?(wake), do: Map.get(wake, :counted?, false)
+
+  # Every model call names its engine message; the first and the last place
+  # the turn in the session's transcript.
+  defp note_message_id(turn, %{type: :step_completed, data: %{message_id: id}})
+       when is_binary(id) do
+    case Map.get(turn, :engine_message_ids) do
+      nil -> Map.put(turn, :engine_message_ids, {id, id})
+      {first, _last} -> Map.put(turn, :engine_message_ids, {first, id})
+    end
+  end
+
+  defp note_message_id(turn, _event), do: turn
+
+  defp message_ids_payload({first, last}), do: %{"first" => first, "last" => last}
+  defp message_ids_payload(nil), do: nil
 
   defp turn_stats(turn, %{type: :tool_completed}), do: %{turn | tools: turn.tools + 1}
 

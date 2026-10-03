@@ -45,7 +45,11 @@ config :phoenix,
 config :canopy, Oban, testing: :manual
 
 # Claude Code turns spawn a script that prints canned stream-json (see test/support/fake_claude.sh).
-config :canopy, :claude_code, binary: Path.expand("../test/support/fake_claude.sh", __DIR__)
+# Transcripts are read from fixtures, never the real ~/.claude (tests that read one
+# point `config_dir` at test/support/claude_code_fixtures/transcripts).
+config :canopy, :claude_code,
+  binary: Path.expand("../test/support/fake_claude.sh", __DIR__),
+  default_config_dir: Path.expand("../test/support/claude_code_fixtures/none", __DIR__)
 
 # The repository page's MCP inventory reads config files from fixtures, never
 # the real home (see Canopy.MCP.Inventory).

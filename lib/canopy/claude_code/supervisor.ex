@@ -1,7 +1,8 @@
 defmodule Canopy.ClaudeCode.Supervisor do
   @moduledoc """
   Owns the `Canopy.ClaudeCode.Turn` processes: one per engine session while a
-  turn runs, registered by engine session id in `Canopy.ClaudeCode.TurnRegistry`.
+  turn runs, registered by engine session id in `Canopy.ClaudeCode.TurnRegistry`;
+  and `Canopy.ClaudeCode.TranscriptIndex`, the line index the transcript page reads through.
   """
 
   use Supervisor
@@ -22,7 +23,8 @@ defmodule Canopy.ClaudeCode.Supervisor do
   def init(_opts) do
     children = [
       {Registry, keys: :unique, name: @registry},
-      {DynamicSupervisor, name: @dynamic, strategy: :one_for_one}
+      {DynamicSupervisor, name: @dynamic, strategy: :one_for_one},
+      Canopy.ClaudeCode.TranscriptIndex
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

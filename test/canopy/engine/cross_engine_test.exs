@@ -30,9 +30,23 @@ defmodule Canopy.Engine.CrossEngineTest do
             mcp_servers: []
           },
           %{
+            type: "stream_event",
+            session_id: "SESSION_ID",
+            event: %{type: "message_start", message: %{id: "msg_1", usage: %{input_tokens: 5}}}
+          },
+          %{
             type: "assistant",
             session_id: "SESSION_ID",
             message: %{id: "msg_1", content: [%{type: "text", text: "Done."}]}
+          },
+          %{
+            type: "stream_event",
+            session_id: "SESSION_ID",
+            event: %{
+              type: "message_delta",
+              usage: %{output_tokens: 2},
+              delta: %{stop_reason: "end_turn"}
+            }
           },
           %{
             type: "result",
@@ -89,13 +103,17 @@ defmodule Canopy.Engine.CrossEngineTest do
     assert_receive {:timeline,
                     %{
                       event_type: "agent_turn_completed",
-                      payload: %{"delegation_id" => did, "cost" => 0.002}
+                      payload: %{"delegation_id" => did, "cost" => 0.002} = payload
                     }},
                    10_000
 
     assert did == delegation.id
 
     session = AgentSessions.get!(Delegations.get!(delegation.id).child_session_id)
+
+    # where the turn sits in the Claude Code transcript: the API message ids
+    assert payload["engine_session_id"] == session.engine_session_id
+    assert payload["engine_message_ids"] == %{"first" => "msg_1", "last" => "msg_1"}
     assert session.id == AgentSessions.get_root(ctx.channel.id, ctx.coder.id).id
     assert session.engine == "claude_code"
     assert is_nil(session.parent_session_id)

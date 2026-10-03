@@ -59,8 +59,67 @@ const nextId = (p) => `${p}_fake${String(++counter).padStart(4, "0")}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function emit(type, properties) {
+  record(type, properties);
   const line = `data: ${JSON.stringify({ id: nextId("evt"), type, properties })}\n\n`;
   for (const res of streams) res.write(line);
+}
+
+// ---- session history (GET /session/:id/message) -----------------------------
+// What OpenCode stores per session, as `[{info, parts}]`: each prompt as a user
+// message (with its `system` text), and every part the fake emits under the
+// assistant message it names. The transcript page reads it back.
+const history = new Map(); // sessionID -> [{info, parts}]
+const historyOf = (sessionID) => {
+  if (!history.has(sessionID)) history.set(sessionID, []);
+  return history.get(sessionID);
+};
+function logUser(sessionID, body) {
+  const id = nextId("msg");
+  const parts = (body.parts || []).map((p) =>
+    p.type === "file"
+      ? { id: nextId("prt"), sessionID, messageID: id, type: "file", mime: p.mime, filename: p.filename, url: p.url }
+      : { id: nextId("prt"), sessionID, messageID: id, type: "text", text: p.text || "" });
+  const info = { id, sessionID, role: "user", time: { created: Date.now() }, agent: body.agent || "build", model: body.model || { providerID: "opencode", modelID: "gpt-5-nano" } };
+  if (body.system) info.system = body.system;
+  historyOf(sessionID).push({ info, parts });
+  return id;
+}
+function assistantMessage(sessionID, messageID, extra = {}) {
+  const log = historyOf(sessionID);
+  let message = log.find((m) => m.info.id === messageID);
+  if (!message) {
+    const parent = [...log].reverse().find((m) => m.info.role === "user");
+    message = {
+      info: { id: messageID, sessionID, role: "assistant", parentID: parent?.info.id, modelID: "gpt-5-nano", providerID: "opencode", mode: "build", agent: "build", time: { created: Date.now() } },
+      parts: [],
+    };
+    log.push(message);
+  }
+  Object.assign(message.info, extra);
+  return message;
+}
+function record(type, p) {
+  if (type === "message.part.updated" && p.part?.sessionID && p.part.messageID) {
+    const message = assistantMessage(p.part.sessionID, p.part.messageID);
+    const i = message.parts.findIndex((x) => x.id === p.part.id);
+    if (i >= 0) message.parts[i] = p.part;
+    else message.parts.push(p.part);
+  } else if (type === "message.updated" && p.info?.role === "assistant" && p.info.sessionID) {
+    const { time, ...rest } = p.info;
+    assistantMessage(p.info.sessionID, p.info.id, rest);
+  }
+}
+// A summarize leaves what OpenCode's compaction leaves: a user message with a
+// compaction part, then the summary as an assistant message.
+function logCompaction(sessionID) {
+  const userID = nextId("msg");
+  const log = historyOf(sessionID);
+  log.push({ info: { id: userID, sessionID, role: "user", time: { created: Date.now() }, agent: "build" }, parts: [{ id: nextId("prt"), sessionID, messageID: userID, type: "compaction", auto: false }] });
+  const summaryID = nextId("msg");
+  log.push({
+    info: { id: summaryID, sessionID, role: "assistant", parentID: userID, mode: "compaction", summary: true, modelID: "gpt-5-nano", providerID: "opencode", time: { created: Date.now() } },
+    parts: [{ id: nextId("prt"), sessionID, messageID: summaryID, type: "text", text: "Summary of the session so far: the agent read README.md and answered in the channel." }],
+  });
 }
 
 function json(res, status, body) {
@@ -690,6 +749,10 @@ async function runTurn(sessionID, text, cwd) {
     }
   }
 
+  // "big context" reports a model call past Canopy's compaction cap, so the
+  // turn is followed by a summarize (e2e/tests/transcript.spec.ts)
+  if (/big context/i.test(text)) emit("message.part.updated", { sessionID, part: part({ type: "step-finish", reason: "stop", cost: 0.0009, tokens: { input: 50000, output: 30, reasoning: 0, cache: { read: 0, write: 0 } } }) });
+
   void channel;
   finishTurn(sessionID, messageID, part, reply, 0.0012);
 }
@@ -785,6 +848,8 @@ const server = http.createServer(async (req, res) => {
       // system text (e2e/tests/brief.spec.ts) and the wake text
       const known = sessions.get(m[1]);
       if (known) Object.assign(known, { lastSystem: body.system ?? null, lastText: text });
+      // stored at once, like OpenCode, even when a running turn reads it later
+      logUser(m[1], body);
       res.writeHead(204); res.end();
       // a busy session takes the message into its running turn
       if (busy.has(m[1])) {
@@ -797,7 +862,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    if (req.method === "POST" && p.match(/^\/session\/([^/]+)\/summarize$/)) { await readBody(req); return json(res, 200, true); }
+    if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/summarize$/))) { await readBody(req); logCompaction(m[1]); return json(res, 200, true); }
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/abort$/))) {
       aborted.add(m[1]);
       generation.set(m[1], (generation.get(m[1]) || 0) + 1);
@@ -830,7 +895,19 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, true);
     }
-    if (req.method === "GET" && (m = p.match(/^\/session\/([^/]+)\/(children|message|diff)$/))) return json(res, 200, []);
+    // The session's history, oldest first; `before` (a message id) and `limit`
+    // as the fake reads them (OpenCode's own paging is unverified, and Canopy
+    // fetches the whole list). An unknown session is a 404, as in OpenCode.
+    if (req.method === "GET" && (m = p.match(/^\/session\/([^/]+)\/message$/))) {
+      if (!sessions.has(m[1])) return json(res, 404, { name: "NotFoundError", data: { message: `Session not found: ${m[1]}` } });
+      let out = history.get(m[1]) || [];
+      const before = url.searchParams.get("before");
+      if (before) { const i = out.findIndex((x) => x.info.id === before); if (i >= 0) out = out.slice(0, i); }
+      const limit = Number(url.searchParams.get("limit") || 0);
+      if (limit > 0) out = out.slice(-limit);
+      return json(res, 200, out);
+    }
+    if (req.method === "GET" && (m = p.match(/^\/session\/([^/]+)\/(children|diff)$/))) return json(res, 200, []);
     if (req.method === "GET" && (m = p.match(/^\/session\/([^/]+)$/))) return json(res, 200, { id: m[1], ...(sessions.get(m[1]) || {}) });
     json(res, 404, { error: `fake-opencode: no route for ${req.method} ${p}` });
   } catch (e) {

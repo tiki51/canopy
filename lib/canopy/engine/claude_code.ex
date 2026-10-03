@@ -250,6 +250,33 @@ defmodule Canopy.Engine.ClaudeCode do
   @impl true
   def context_cap, do: @context_cap
 
+  # -- Transcripts ----------------------------------------------------------------
+
+  # Claude Code keeps every session as a JSONL file under its config dir;
+  # see Canopy.ClaudeCode.Transcript.
+  @impl true
+  def transcript(_ctx, ref, opts), do: ClaudeCode.Transcript.read(transcripts_dir(), ref, opts)
+
+  @doc """
+  Where the CLI keeps its sessions: the config dir from the config override
+  or Settings, else `config :canopy, :claude_code, default_config_dir:`
+  (tests point it at fixtures), else `CLAUDE_CONFIG_DIR` as Canopy's turns
+  inherit it, else `~/.claude`.
+  """
+  def transcripts_dir(settings \\ Settings.get()) do
+    case normalize_config_dir(configured_config_dir(settings)) do
+      {:ok, dir} when is_binary(dir) ->
+        dir
+
+      _ ->
+        config(:default_config_dir, nil) || present(System.get_env("CLAUDE_CONFIG_DIR")) ||
+          Path.expand("~/.claude")
+    end
+  end
+
+  defp present(""), do: nil
+  defp present(value), do: value
+
   # -- MCP inventory --------------------------------------------------------------
 
   @doc """

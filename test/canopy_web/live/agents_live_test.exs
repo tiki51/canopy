@@ -138,6 +138,13 @@ defmodule CanopyWeb.AgentsLiveTest do
 
       assert has_element?(view, "#agent-channel-#{channel.id}", "owner")
       assert has_element?(view, "#agent-channel-#{dm.id}", "@#{agent.name}")
+
+      assert has_element?(
+               view,
+               "#agent-channel-#{channel.id}-transcript[href='/channels/#{channel.id}/agents/#{agent.id}/transcript']",
+               "Transcript"
+             )
+
       assert has_element?(view, "#agent-schedules", "Nothing scheduled for this agent.")
 
       assert has_element?(view, "#message-agent-#{agent.id}[href='/dm/#{agent.id}']", "Message")

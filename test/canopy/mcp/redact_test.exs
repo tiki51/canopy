@@ -99,4 +99,67 @@ defmodule Canopy.MCP.RedactTest do
       assert Redact.token(nil) == nil
     end
   end
+
+  describe "secrets/2" do
+    defp secret(text, known \\ []), do: Redact.secrets(text, known)
+
+    test "replaces Canopy's own tokens by value" do
+      token = "PlantedMcpToken0123456789abcdefXYZ"
+
+      assert secret("the raw token: #{token}.", [token, nil, "short"]) ==
+               {"the raw token: [canopy session token].", true}
+    end
+
+    test "masks credential shapes" do
+      for {text, expected} <- [
+            {"Authorization: Bearer abcdefghijklmnop1234", "Authorization: Bearer #{@mask}"},
+            {"key sk-ant-api03-FAKEfakeFAKE0123", "key #{@mask}"},
+            {"OPENAI=sk-proj-0123456789abcdefghijKLMN", "OPENAI=#{@mask}"},
+            {"ghp_0123456789abcdefghijABCDEFGHIJ pushed", "#{@mask} pushed"},
+            {"github_pat_11ABCDEFG0123456789_abcdefghij", @mask},
+            {"aws AKIAABCDEFGHIJKLMNOP done", "aws #{@mask} done"},
+            {"slack xoxb-1234-5678-abcdefghij", "slack #{@mask}"},
+            {"SECRET_KEY_BASE=abc123def456", "SECRET_KEY_BASE=#{@mask}"},
+            {"git clone https://bob:hunter22@github.com/acme/app",
+             "git clone https://#{@mask}@github.com/acme/app"},
+            {~s({"api_key": "live_9f8e7d6c5b4a"}), ~s({"api_key": "#{@mask}"})},
+            {"DB_PASSWORD=correct-horse-42", "DB_PASSWORD=#{@mask}"},
+            {"token: a1b2c3d4e5f6g7h8", "token: #{@mask}"}
+          ] do
+        assert secret(text) == {expected, true}, "for #{text}"
+      end
+    end
+
+    test "masks a private key block, even one cut off" do
+      pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----\nafter"
+      assert {text, true} = secret(pem)
+      refute text =~ "MIIEow"
+      assert text =~ "after"
+
+      assert {cut, true} = secret("start -----BEGIN PRIVATE KEY-----\nMIIEow")
+      refute cut =~ "MIIEow"
+    end
+
+    test "drops inlined image bytes" do
+      data = "data:image/png;base64," <> String.duplicate("iVBORw0KGgo", 10)
+      assert secret("see #{data} here") == {"see [data URL] here", true}
+    end
+
+    test "leaves ordinary text alone" do
+      for text <- [
+            "the token is valid; refresh it later",
+            "a uuid 0b6e4c8c-943a-4b6e-8f2d-6597a1b2c3d4 and a sha 3f2a9c1d",
+            "input_tokens: 12345678",
+            "api_key = System.get_env(\"API_KEY\")",
+            "token: ${GITHUB_TOKEN}",
+            "Basic usage of the API",
+            "https://example.com/search?q=retries&page=2",
+            "risk-assessment-checklist-for-payments"
+          ] do
+        assert secret(text) == {text, false}, "for #{text}"
+      end
+
+      assert secret(nil) == {nil, false}
+    end
+  end
 end

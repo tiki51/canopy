@@ -35,6 +35,8 @@ defmodule CanopyWeb.ChannelLiveTest do
     stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
 
     stub(OC, :prompt_async, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
+    # the transcript page reads a session's history
+    stub(OC, :messages, fn _dir, _sid, _query, _opts -> {:ok, []} end)
 
     stub(OC, :create_session, fn _dir, _body, _opts ->
       {:ok, %{"id" => "ses_" <> Fixtures.unique_suffix()}}
@@ -2134,10 +2136,94 @@ defmodule CanopyWeb.ChannelLiveTest do
       %{channel: channel, agent: agent, session: session} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
 
+      # the confirmation names the agent's own engine
+      assert has_element?(
+               view,
+               ~s(#reset-session-#{agent.id}[data-canopy-confirm*="fresh OpenCode session"])
+             )
+
       view |> element("#reset-session-#{agent.id}") |> render_click()
       assert render(view) =~ "reset @#{agent.name}&#39;s session"
       assert Canopy.AgentSessions.get_root(channel.id, agent.id) == nil
       refute Canopy.Repo.get(Canopy.AgentSessions.AgentSession, session.id)
+
+      # the old session stays readable from the line
+      [reset] = Timeline.list(channel.id, types: ["session_reset"]) |> Enum.take(-1)
+
+      assert view
+             |> element("#line-#{reset.id}-transcript", "earlier transcript")
+             |> render_click()
+             |> follow_redirect(conn_of(ctx))
+             |> then(fn {:ok, _view, html} -> html end) =~ "Transcript"
+    end
+
+    test "a Claude Code member's confirmation says Claude Code", ctx do
+      coder =
+        Fixtures.agent_fixture(%{
+          name: "coder#{Fixtures.unique_suffix()}",
+          engine: "claude_code"
+        })
+
+      channel =
+        Fixtures.channel_fixture(%{
+          repository_id: ctx.repository.id,
+          owner_agent_id: coder.id
+        })
+
+      on_exit(fn -> Runtime.stop_channel(channel.id) end)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      assert has_element?(
+               view,
+               ~s(#reset-session-#{coder.id}[data-canopy-confirm*="fresh Claude Code session"])
+             )
+    end
+  end
+
+  describe "transcript links" do
+    test "each member pill and an opened turn card link to the transcript", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer} = ctx
+
+      {:ok, turn} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "agent_turn_completed",
+          payload: %{"tools" => 1, "outcome" => "ok", "final_text" => "Done."}
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      assert has_element?(
+               view,
+               ~s(#transcript-#{agent.id}[href="/channels/#{channel.id}/agents/#{agent.id}/transcript"])
+             )
+
+      assert has_element?(view, "#transcript-#{reviewer.id}")
+
+      refute has_element?(view, "#turn-#{turn.id}-transcript")
+      view |> element("#turn-toggle-#{turn.id}") |> render_click()
+
+      assert has_element?(
+               view,
+               ~s(#turn-#{turn.id}-transcript[href="/channels/#{channel.id}/agents/#{agent.id}/transcript?turn=#{turn.id}"])
+             )
+
+      # and from the activity panel
+      view |> element("#turn-#{turn.id}-panel") |> render_click()
+
+      assert has_element?(
+               view,
+               ~s(#activity-panel-transcript[href="/channels/#{channel.id}/agents/#{agent.id}/transcript?turn=#{turn.id}"])
+             )
+
+      {:ok, _transcript, html} =
+        view
+        |> element("#transcript-#{agent.id}")
+        |> render_click()
+        |> follow_redirect(conn_of(ctx))
+
+      assert html =~ "@#{agent.name} · Transcript"
     end
   end
 

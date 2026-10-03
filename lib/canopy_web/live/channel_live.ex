@@ -3125,6 +3125,15 @@ defmodule CanopyWeb.ChannelLive do
             >
               {@steers[member.id].pending} waiting
             </span>
+            <.link
+              navigate={~p"/channels/#{@channel.id}/agents/#{member.id}/transcript"}
+              id={"transcript-#{member.id}"}
+              class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/40 hover:text-base-content"
+              title={"@#{member.name}'s session transcript"}
+              aria-label={"Open @#{member.name}'s session transcript"}
+            >
+              <.icon name="hero-document-text-mini" class="size-3.5" />
+            </.link>
             <button
               :if={Map.get(@agent_statuses, member.id) in [:busy, :awaiting_user]}
               type="button"
@@ -3143,7 +3152,7 @@ defmodule CanopyWeb.ChannelLive do
               class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/40 hover:text-base-content"
               phx-click="reset_session"
               phx-value-agent-id={member.id}
-              data-canopy-confirm={"Reset @#{member.name}'s session in this channel? Its next turn starts with a fresh OpenCode session; channel messages are kept."}
+              data-canopy-confirm={"Reset @#{member.name}'s session in this channel? Its next turn starts with a fresh #{Canopy.Engine.label(member.engine)} session; channel messages are kept, and the old session stays readable in its transcript."}
               title="Reset session (fresh context on the next turn)"
             >
               <.icon name="hero-arrow-path-mini" class="size-3.5" />
@@ -4116,6 +4125,15 @@ defmodule CanopyWeb.ChannelLive do
           <.icon name="hero-clipboard-document-list-mini" class="size-4" />
           <span data-copy-label class="sr-only">Copy</span>
         </button>
+        <.link
+          navigate={transcript_path(@channel.id, @agent_id, @target)}
+          id="activity-panel-transcript"
+          class="btn btn-ghost btn-xs btn-square"
+          title="View in the session transcript"
+          aria-label="View in the session transcript"
+        >
+          <.icon name="hero-document-text-mini" class="size-4" />
+        </.link>
         <button
           type="button"
           id="activity-panel-copy-link"
@@ -4204,6 +4222,13 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   defp clock_ms(ms), do: ms |> DateTime.from_unix!(:millisecond) |> short_time()
+
+  # A finished turn lands on its place in the transcript; a running one on the newest entries.
+  defp transcript_path(channel_id, agent_id, "live:" <> _),
+    do: ~p"/channels/#{channel_id}/agents/#{agent_id}/transcript"
+
+  defp transcript_path(channel_id, agent_id, event_id),
+    do: ~p"/channels/#{channel_id}/agents/#{agent_id}/transcript?#{[turn: event_id]}"
 
   # What a timeline item shows of the view's activity state: a finished
   # card's open state, open rows, loaded details, and the panel highlight.

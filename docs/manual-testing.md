@@ -217,6 +217,31 @@ what fails"*, on an OpenCode agent and again on a Claude Code agent.
       header counts match the rows.
 - [ ] Claude Code: the live card shows tokens and no cost; the finished card has the cost.
 
+## 5c. Session transcript
+
+Do this on an OpenCode agent and again on a Claude Code agent.
+
+- [ ] The document icon on the agent's member pill opens its transcript: the prompts Canopy
+      sent, the collapsed system prompt (Claude Code also shows its built-in sections), the
+      model's text, tool rows that open to input and output, and step lines. Claude Code
+      shows its thinking as muted *Thought* rows with no text.
+- [ ] *View in transcript →* in an opened turn card, and the transcript icon in the
+      activity side panel, land on that turn, its divider highlighted.
+- [ ] Ask the agent to `cat` its MCP config (Claude Code: the `mcp.json` in its scratch
+      dir; any agent: echo a fake `sk-ant-…` key): the tool row shows `[canopy session
+      token]` / `••••` and a *redacted* chip; no token text in the page source.
+- [ ] *Follow live* on a working agent: new entries arrive without a reload; with Follow
+      off a *↓ N new entries* pill appears.
+- [ ] A compacted session (wait for *session was compacted*, or `/compact` a Claude Code
+      session) shows the *Context compacted* band with its summary; earlier entries stay
+      above it.
+- [ ] Reset the session from the pill (the confirmation names the agent's own engine),
+      then follow *earlier transcript* on the reset line; after the next turn, the session
+      picker lists the reset session and switches to it.
+- [ ] On the agent's page, *Transcript* next to each channel opens the same page.
+- [ ] At phone width (390 px) the page has no sideways scroll; long output scrolls inside
+      its box.
+
 ## 6. Permission approval
 
 Permission cards appear when OpenCode's rules say *ask*. The default `build` agent allows

@@ -1240,6 +1240,14 @@ defmodule CanopyWeb.AgentsLive do
                 </span>
                 <span :if={channel.status == "archived"} class="badge badge-ghost badge-xs">archived</span>
                 <span class="ml-auto truncate text-xs text-base-content/60">{channel.repository.name}</span>
+                <.link
+                  navigate={~p"/channels/#{channel.id}/agents/#{@agent.id}/transcript"}
+                  id={"agent-channel-#{channel.id}-transcript"}
+                  class="btn btn-ghost btn-xs shrink-0 gap-1 text-base-content/60"
+                  title={"@#{@agent.name}'s session transcript in this channel"}
+                >
+                  <.icon name="hero-document-text-mini" class="size-3.5" /> Transcript
+                </.link>
               </li>
             </ul>
             <p :if={@agent_channels == []} class="text-xs text-base-content/60">

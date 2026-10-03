@@ -1,0 +1,387 @@
+[
+ {
+  "info": {
+   "id": "msg_u1",
+   "sessionID": "ses_transcript1",
+   "role": "user",
+   "time": {
+    "created": 1759312800000
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode",
+    "modelID": "gpt-5-nano"
+   },
+   "tools": {
+    "canopy_*": true
+   },
+   "system": "You are Backend (@backend), an AI coworker in Canopy.\n\nCollaborate through the canopy tools."
+  },
+  "parts": [
+   {
+    "id": "prt_u1a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_u1",
+    "type": "text",
+    "text": "You have a new Canopy message in #payments from @priya.\nMessage ID: msg_c1\n\nWhy do retries charge twice?"
+   },
+   {
+    "id": "prt_u1b",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_u1",
+    "type": "file",
+    "mime": "image/png",
+    "filename": "shot.png",
+    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_a1",
+   "sessionID": "ses_transcript1",
+   "role": "assistant",
+   "time": {
+    "created": 1759312801000,
+    "completed": 1759312806000
+   },
+   "parentID": "msg_u1",
+   "modelID": "gpt-5-nano",
+   "providerID": "opencode",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/tmp/canopy-repo",
+    "root": "/tmp/canopy-repo"
+   },
+   "cost": 0.002,
+   "tokens": {
+    "input": 1200,
+    "output": 80,
+    "reasoning": 10,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls"
+  },
+  "parts": [
+   {
+    "id": "prt_a1a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "step-start",
+    "snapshot": "abc"
+   },
+   {
+    "id": "prt_a1b",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "reasoning",
+    "text": "",
+    "time": {
+     "start": 1759312801100,
+     "end": 1759312801100
+    }
+   },
+   {
+    "id": "prt_a1c",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "reasoning",
+    "text": "The worker and the webhook both enqueue.",
+    "time": {
+     "start": 1759312801200,
+     "end": 1759312801300
+    }
+   },
+   {
+    "id": "prt_a1d",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "text",
+    "text": "I'll read the worker first.",
+    "time": {
+     "start": 1759312801400,
+     "end": 1759312801500
+    }
+   },
+   {
+    "id": "prt_a1e",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "tool",
+    "callID": "call_1",
+    "tool": "read",
+    "state": {
+     "status": "completed",
+     "input": {
+      "filePath": "/tmp/canopy-repo/lib/worker.ex"
+     },
+     "output": "defmodule Worker do\nend",
+     "title": "lib/worker.ex",
+     "metadata": {},
+     "time": {
+      "start": 1759312801600,
+      "end": 1759312801720
+     }
+    }
+   },
+   {
+    "id": "prt_a1f",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "tool",
+    "callID": "call_2",
+    "tool": "bash",
+    "state": {
+     "status": "error",
+     "input": {
+      "command": "mix test"
+     },
+     "error": "exit 1: 1 failure\nGITHUB_TOKEN=ghp_FAKEfakeFAKEfake0123456789abcd",
+     "time": {
+      "start": 1759312801800,
+      "end": 1759312804800
+     }
+    }
+   },
+   {
+    "id": "prt_a1g",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "tool",
+    "callID": "call_3",
+    "tool": "edit",
+    "state": {
+     "status": "error",
+     "input": {
+      "filePath": "lib/worker.ex"
+     },
+     "error": "The user rejected permission to use this specific tool call.",
+     "time": {
+      "start": 1759312804900,
+      "end": 1759312805000
+     }
+    }
+   },
+   {
+    "id": "prt_a1h",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "patch",
+    "hash": "h1",
+    "files": [
+     "/tmp/canopy-repo/lib/worker.ex"
+    ]
+   },
+   {
+    "id": "prt_a1i",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "step-finish",
+    "reason": "tool-calls",
+    "cost": 0.0012,
+    "tokens": {
+     "input": 1200,
+     "output": 80,
+     "reasoning": 10,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   {
+    "id": "prt_a1j",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "text",
+    "text": "(tool output summarised)",
+    "synthetic": true,
+    "time": {
+     "start": 1759312805100
+    }
+   },
+   {
+    "id": "prt_a1k",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a1",
+    "type": "step-finish",
+    "reason": "stop",
+    "cost": 0.0004,
+    "tokens": {
+     "input": 1300,
+     "output": 20,
+     "reasoning": 0,
+     "cache": {
+      "read": 1000,
+      "write": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_u2",
+   "sessionID": "ses_transcript1",
+   "role": "user",
+   "time": {
+    "created": 1759312860000
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode",
+    "modelID": "gpt-5-nano"
+   },
+   "tools": {
+    "canopy_*": true
+   },
+   "system": "You are Backend (@backend), an AI coworker in Canopy.\n\nCollaborate through the canopy tools."
+  },
+  "parts": [
+   {
+    "id": "prt_u2a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_u2",
+    "type": "compaction",
+    "auto": true
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_a2",
+   "sessionID": "ses_transcript1",
+   "role": "assistant",
+   "time": {
+    "created": 1759312861000,
+    "completed": 1759312866000
+   },
+   "parentID": "msg_u2",
+   "modelID": "gpt-5-nano",
+   "providerID": "opencode",
+   "mode": "compaction",
+   "agent": "build",
+   "path": {
+    "cwd": "/tmp/canopy-repo",
+    "root": "/tmp/canopy-repo"
+   },
+   "cost": 0.002,
+   "tokens": {
+    "input": 1200,
+    "output": 80,
+    "reasoning": 10,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls",
+   "summary": true
+  },
+  "parts": [
+   {
+    "id": "prt_a2a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a2",
+    "type": "text",
+    "text": "Summary: the retry worker and the webhook race on enqueue_charge."
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_u3",
+   "sessionID": "ses_transcript1",
+   "role": "user",
+   "time": {
+    "created": 1759312920000
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode",
+    "modelID": "gpt-5-nano"
+   },
+   "tools": {
+    "canopy_*": true
+   },
+   "system": "You are Backend (@backend), an AI coworker in Canopy.\n\nCollaborate through the canopy tools.\n\nChannel brief: log every retry."
+  },
+  "parts": [
+   {
+    "id": "prt_u3a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_u3",
+    "type": "text",
+    "text": "Now add a test."
+   },
+   {
+    "id": "prt_u3b",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_u3",
+    "type": "text",
+    "text": "Called the Read tool with the following input: {}",
+    "synthetic": true
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_a3",
+   "sessionID": "ses_transcript1",
+   "role": "assistant",
+   "time": {
+    "created": 1759312921000,
+    "completed": 1759312926000
+   },
+   "parentID": "msg_u3",
+   "modelID": "gpt-5-nano",
+   "providerID": "opencode",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/tmp/canopy-repo",
+    "root": "/tmp/canopy-repo"
+   },
+   "cost": 0.002,
+   "tokens": {
+    "input": 1200,
+    "output": 80,
+    "reasoning": 10,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls",
+   "error": {
+    "name": "MessageAbortedError",
+    "data": {
+     "message": "The operation was aborted."
+    }
+   }
+  },
+  "parts": [
+   {
+    "id": "prt_a3a",
+    "sessionID": "ses_transcript1",
+    "messageID": "msg_a3",
+    "type": "tool",
+    "callID": "call_4",
+    "tool": "bash",
+    "state": {
+     "status": "running",
+     "input": {
+      "command": "mix test --trace"
+     },
+     "time": {
+      "start": 1759312921500
+     }
+    }
+   }
+  ]
+ }
+]

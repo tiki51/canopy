@@ -407,6 +407,13 @@ defmodule Canopy.Engine.OpenCode do
   defp client_opts(opts),
     do: [base_url: Keyword.get(opts, :base_url) || Settings.get().opencode_url]
 
+  # -- Transcripts ------------------------------------------------------------------
+
+  # The session's history from OpenCode's own store, over HTTP; see
+  # Canopy.OpenCode.Transcript. Options as the callback's, plus `:base_url`.
+  @impl true
+  def transcript(_ctx, ref, opts), do: OpenCode.Transcript.read(ref, opts, client_opts(opts))
+
   # -- MCP inventory --------------------------------------------------------------
 
   @doc """

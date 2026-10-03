@@ -59,6 +59,7 @@ defmodule CanopyWeb.Router do
       live "/playbooks/:id/start", PlaybooksLive, :start
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
+      live "/channels/:id/agents/:agent_id/transcript", ChannelLive.Transcript
       live "/threads", ThreadsLive
       live "/search", SearchLive
     end

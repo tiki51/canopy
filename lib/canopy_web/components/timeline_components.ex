@@ -143,6 +143,35 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  # The session the reset dropped is still the engine's: one click reads it.
+  def timeline_item(
+        %{event: %{event_type: "session_reset", payload: %{"engine_session_id" => sid}}} =
+          assigns
+      )
+      when is_binary(sid) and is_binary(assigns.event.agent_id) do
+    ~H"""
+    <div id={@id} data-activity={activity_class(@event)}>
+      <.system_line
+        id={"line-#{@event.id}"}
+        icon={event_icon(@event.event_type)}
+        tone={event_tone(@event)}
+        at={@event.inserted_at}
+      >
+        {event_text(@event, @names, @user_name)} ·
+        <.link
+          navigate={
+            ~p"/channels/#{@event.channel_id}/agents/#{@event.agent_id}/transcript?#{[session: @event.payload["engine_session_id"]]}"
+          }
+          id={"line-#{@event.id}-transcript"}
+          class="link link-hover"
+        >
+          earlier transcript
+        </.link>
+      </.system_line>
+    </div>
+    """
+  end
+
   def timeline_item(assigns) do
     ~H"""
     <div id={@id} data-activity={activity_class(@event)}>
@@ -1057,6 +1086,20 @@ defmodule CanopyWeb.TimelineComponents do
         mentions={@mentions}
         class="border-t border-base-300/70"
       />
+      <div
+        :if={@open? and @event.agent_id}
+        class="flex justify-end border-t border-base-300/70 px-4 py-1"
+      >
+        <.link
+          navigate={
+            ~p"/channels/#{@event.channel_id}/agents/#{@event.agent_id}/transcript?#{[turn: @event.id]}"
+          }
+          id={"turn-#{@event.id}-transcript"}
+          class="link link-hover text-[11px] text-base-content/60"
+        >
+          View in transcript →
+        </.link>
+      </div>
     </section>
     """
   end
