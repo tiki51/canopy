@@ -36,6 +36,10 @@ defmodule CanopyWeb.Layouts do
   attr :agents, :list, default: [], doc: "active agents, from CanopyWeb.Nav"
   attr :unread, :map, default: %{}, doc: "channel_id => %{count, mentions}, from CanopyWeb.Nav"
 
+  attr :attention, :map,
+    default: %{},
+    doc: "channel_id => %{questions, permissions} waiting on the user, from CanopyWeb.Nav"
+
   attr :schedule_counts, :map,
     default: %{},
     doc: "agent_id => active schedules, from CanopyWeb.Nav"
@@ -45,7 +49,10 @@ defmodule CanopyWeb.Layouts do
   attr :current_path, :string, default: "/"
   attr :current_channel_id, :string, default: nil
   attr :current_repository_id, :string, default: nil, doc: "repository of the open channel"
-  attr :agent_statuses, :map, default: %{}, doc: "agent_id => :idle | :busy | :error"
+
+  attr :agent_statuses, :map,
+    default: %{},
+    doc: "agent_id => :idle | :queued | :busy | :awaiting_user | :error"
 
   slot :inner_block, required: true
 
@@ -190,11 +197,14 @@ defmodule CanopyWeb.Layouts do
                     name="hero-archive-box-mini"
                     class="ml-auto size-3.5 opacity-60"
                   />
-                  <.unread_mark
-                    unread={@unread}
-                    channel_id={channel.id}
-                    current_id={@current_channel_id}
-                  />
+                  <span class="ml-auto flex shrink-0 items-center gap-1">
+                    <.attention_mark attention={@attention} channel_id={channel.id} />
+                    <.unread_mark
+                      unread={@unread}
+                      channel_id={channel.id}
+                      current_id={@current_channel_id}
+                    />
+                  </span>
                 </.link>
               </li>
               <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/60">
@@ -265,7 +275,14 @@ defmodule CanopyWeb.Layouts do
                 <span class={["truncate", unread_class(@unread, dm.id, @current_channel_id)]}>
                   {Canopy.Channels.dm_label(dm)}
                 </span>
-                <.unread_mark unread={@unread} channel_id={dm.id} current_id={@current_channel_id} />
+                <span class="ml-auto flex shrink-0 items-center gap-1">
+                  <.attention_mark attention={@attention} channel_id={dm.id} />
+                  <.unread_mark
+                    unread={@unread}
+                    channel_id={dm.id}
+                    current_id={@current_channel_id}
+                  />
+                </span>
               </.link>
             </li>
             <li :if={@dms == []} class="px-2 text-xs text-base-content/60">
@@ -425,6 +442,16 @@ defmodule CanopyWeb.Layouts do
       <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
       <span class="relative inline-flex size-2 rounded-full bg-success" />
     </span>
+    """
+  end
+
+  def status_dot(%{status: :awaiting_user} = assigns) do
+    ~H"""
+    <span
+      class="inline-block size-2 shrink-0 rounded-full bg-info ring-2 ring-info/30"
+      data-status="awaiting_user"
+      title="Waiting on you"
+    />
     """
   end
 
@@ -655,6 +682,32 @@ defmodule CanopyWeb.Layouts do
       title={unread_title(@state)}
     >
       {if @state.mentions > 0, do: @state.mentions}
+    </span>
+    """
+  end
+
+  # A channel with question or permission cards waiting on the user gets a
+  # "needs you" badge, open or not: it is a state to act on, not unread news.
+  attr :attention, :map, required: true
+  attr :channel_id, :string, required: true
+
+  defp attention_mark(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :total,
+        Canopy.Attention.total(Map.get(assigns.attention, assigns.channel_id))
+      )
+
+    ~H"""
+    <span
+      :if={@total > 0}
+      id={"attention-#{@channel_id}"}
+      data-attention={@total}
+      class="flex h-4 shrink-0 items-center gap-0.5 rounded-full bg-info px-1.5 text-[10px] font-bold leading-none text-info-content"
+      title={"#{@total} #{if @total == 1, do: "card", else: "cards"} waiting on you"}
+    >
+      <.icon name="hero-question-mark-circle-micro" class="size-3" />{@total}
     </span>
     """
   end

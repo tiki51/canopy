@@ -8,6 +8,11 @@ defmodule Canopy.ClaudeCode.Prompts do
   `await/2`s; the runtime's reply arrives through `answer/2`. Registering
   before broadcasting means an answer can never arrive before anyone waits.
 
+  While a session has a prompt open, its turn prints nothing (the CLI waits on
+  the tool call), so `Canopy.ClaudeCode.Turn` asks `waiting?/1` before calling
+  a quiet process stalled. When the turn's process ends, `drop_session/1`
+  releases whatever it still waited on: nobody is left to read the answer.
+
   Also remembers "always" replies per session for the rest of the process's
   life, so a tool approved with Always is not asked about again.
   """
@@ -29,6 +34,15 @@ defmodule Canopy.ClaudeCode.Prompts do
     :exit, _ -> {:error, :timeout}
   end
 
+  @doc "Whether the session has a prompt open (registered and not yet answered or expired)."
+  def waiting?(session_id), do: GenServer.call(__MODULE__, {:waiting?, session_id})
+
+  @doc """
+  Forgets every prompt the session still has open; a blocked `await/2` gets
+  `{:error, :gone}`. Called when the session's turn process ends.
+  """
+  def drop_session(session_id), do: GenServer.call(__MODULE__, {:drop_session, session_id})
+
   @doc "Answers a prompt; `{:error, :gone}` when nothing waits under that id."
   def answer(request_id, reply), do: GenServer.call(__MODULE__, {:answer, request_id, reply})
 
@@ -49,6 +63,21 @@ defmodule Canopy.ClaudeCode.Prompts do
         :prompt_timeout_ms,
         @default_timeout_ms
       )
+
+  @doc """
+  How long an `AskUserQuestion` blocks its turn before the agent is told to
+  move on (Settings, `question_wait_minutes`; `config :canopy, :claude_code,
+  question_wait_ms:` overrides it, for tests). Never longer than `timeout_ms/0`.
+  """
+  def question_timeout_ms do
+    wait =
+      case Keyword.get(Application.get_env(:canopy, :claude_code, []), :question_wait_ms) do
+        ms when is_integer(ms) and ms > 0 -> ms
+        _ -> Canopy.Settings.question_wait_ms()
+      end
+
+    min(wait, timeout_ms())
+  end
 
   @impl true
   def init(_opts), do: {:ok, %{open: %{}, always: %{}}}
@@ -95,6 +124,23 @@ defmodule Canopy.ClaudeCode.Prompts do
         GenServer.reply(waiter, {:ok, reply})
         {:reply, :ok, drop(state, id)}
     end
+  end
+
+  def handle_call({:waiting?, session_id}, _from, state),
+    do:
+      {:reply,
+       Enum.any?(state.open, fn {_, e} -> e.session_id == session_id and e.reply == nil end),
+       state}
+
+  def handle_call({:drop_session, session_id}, _from, state) do
+    {gone, open} = Map.split_with(state.open, fn {_, e} -> e.session_id == session_id end)
+
+    Enum.each(gone, fn {_, entry} ->
+      if entry.timer, do: Process.cancel_timer(entry.timer)
+      if entry.waiter, do: GenServer.reply(entry.waiter, {:error, :gone})
+    end)
+
+    {:reply, :ok, %{state | open: open}}
   end
 
   def handle_call(:pending, _from, state) do

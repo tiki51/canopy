@@ -11,6 +11,11 @@ defmodule Canopy.ClaudeCode.Supervisor do
   @registry Canopy.ClaudeCode.TurnRegistry
   @dynamic Canopy.ClaudeCode.TurnSupervisor
 
+  # A turn reports its result before its process has finished exiting, so the
+  # next turn for the session can arrive while the last one is still
+  # registered. It waits this long for that process to go.
+  @handoff_wait_ms 5_000
+
   def start_link(opts \\ []), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
@@ -23,14 +28,48 @@ defmodule Canopy.ClaudeCode.Supervisor do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  @doc "Starts a turn for the session; `{:error, :busy}` while one is already running."
-  def start_turn(session_id, opts) do
+  @doc """
+  Starts a turn for the session. While the session's previous turn process is
+  still alive (finishing after its result), waits up to `wait_ms` for it to
+  exit; `{:error, :busy}` if it is still running then.
+  """
+  def start_turn(session_id, opts, wait_ms \\ @handoff_wait_ms) do
     spec = {Turn, [name: via(session_id), session_id: session_id] ++ opts}
+    start_child(spec, System.monotonic_time(:millisecond) + wait_ms)
+  end
 
+  defp start_child(spec, deadline) do
     case DynamicSupervisor.start_child(@dynamic, spec) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, _pid}} -> {:error, :busy}
-      other -> other
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        if await_exit(pid, deadline - System.monotonic_time(:millisecond)),
+          do: start_child(spec, deadline),
+          else: {:error, :busy}
+
+      other ->
+        other
+    end
+  end
+
+  defp await_exit(_pid, remaining) when remaining <= 0, do: false
+
+  defp await_exit(pid, remaining) do
+    ref = Process.monitor(pid)
+
+    receive do
+      # already gone: the registry has yet to forget it, so give it a moment
+      {:DOWN, ^ref, :process, ^pid, :noproc} ->
+        Process.sleep(min(remaining, 5))
+        true
+
+      {:DOWN, ^ref, :process, ^pid, _reason} ->
+        true
+    after
+      remaining ->
+        Process.demonitor(ref, [:flush])
+        false
     end
   end
 

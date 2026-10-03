@@ -2,6 +2,10 @@
 // `@` opens an autocomplete of agents and `#` one of channels. The textarea keeps
 // its text on a failed send; the server pushes "composer:clear" on success.
 //
+// When the draft mentions an agent that is blocked on a question or permission
+// card (the form's data-awaiting), a hint says the message will not answer the
+// card: the text never round-trips, so the hint is drawn here.
+//
 // Height: one row by default, growing with its content up to AUTO_MAX. The
 // browser's resize handle is off (CSS resize-none); the manual-floor tracking
 // below is kept in case it is ever turned back on.
@@ -25,8 +29,17 @@ const Composer = {
       this.el.value = ""
       this.el.style.height = this.manual ? this.manual + "px" : ""
       this.hide()
+      this.renderAwaitingHint()
       this.el.focus()
     })
+
+    // The waiting agents change as cards come and go; LiveView patches the
+    // form's attribute, never the textarea, so watch the attribute.
+    this.hint = document.getElementById("composer-awaiting-hint")
+    if (this.el.form) {
+      this.formObserver = new MutationObserver(() => this.renderAwaitingHint())
+      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting"]})
+    }
 
     // A height we did not set ourselves is the reader dragging the handle.
     this.observer = new ResizeObserver(() => {
@@ -39,6 +52,7 @@ const Composer = {
     this.el.addEventListener("input", () => {
       this.autosize()
       this.refresh()
+      this.renderAwaitingHint()
     })
     this.el.addEventListener("blur", () => setTimeout(() => this.hide(), 150))
     this.el.addEventListener("paste", e => this.onPaste(e))
@@ -176,6 +190,36 @@ const Composer = {
 
   destroyed() {
     if (this.observer) this.observer.disconnect()
+    if (this.formObserver) this.formObserver.disconnect()
+  },
+
+  // Agents named in the draft that are waiting on a card in this channel.
+  awaitingMentioned() {
+    let names = []
+    try {
+      names = JSON.parse((this.el.form && this.el.form.dataset.awaiting) || "[]")
+    } catch (_e) {
+      return []
+    }
+    const text = this.el.value
+    return names.filter(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      return new RegExp(`(^|[^\\w@#])@${escaped}(?![\\w-])`, "i").test(text)
+    })
+  },
+
+  renderAwaitingHint() {
+    if (!this.hint) return
+    const names = this.awaitingMentioned()
+    if (names.length === 0) {
+      this.hint.classList.add("hidden")
+      this.hint.textContent = ""
+      return
+    }
+    this.hint.textContent = names
+      .map(name => `@${name} is waiting on the card above. A message will reach it only after it's answered.`)
+      .join(" ")
+    this.hint.classList.remove("hidden")
   },
 
   autosize() {

@@ -14,7 +14,7 @@ defmodule Canopy.Engine.OpenCode do
 
   @behaviour Canopy.Engine
 
-  alias Canopy.{Documents, Settings}
+  alias Canopy.{Documents, PermissionRequests, QuestionRequests, Settings}
   alias Canopy.Engine.Event
   alias Canopy.OpenCode
   alias Canopy.OpenCode.Client
@@ -136,30 +136,56 @@ defmodule Canopy.Engine.OpenCode do
            state.client_opts
          ) do
       {:ok, _} -> :ok
+      # OpenCode no longer holds this prompt: it restarted, or the session died.
+      {:error, {:http, status, _}} when status in [400, 404] -> {:error, :gone}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  # OpenCode's question tool allows a typed answer unless the question says
+  # `custom: false` (custom is on by default; verified in 1.18.11). Whether an
+  # explicit `custom: false` question refuses one is unverified (see the
+  # Phase 0 notes), so such an answer is never sent: the question is rejected,
+  # which releases the agent's tool call, and the runtime posts the answer to
+  # the channel as a message instead.
   @impl true
-  def reply_question(ctx, state, request, outcome) do
-    dir = ctx.repository.path
-
-    result =
-      case outcome do
-        {:answered, answers} ->
-          client().reply_question(dir, request.opencode_question_id, answers, state.client_opts)
-
-        :rejected ->
-          client().reject_question(dir, request.opencode_question_id, state.client_opts)
+  def reply_question(ctx, state, request, {:answered, answers} = outcome) do
+    if free_text_without_custom?(request.questions, answers) do
+      case reply_question(ctx, state, request, :rejected) do
+        :ok -> {:ok, :as_message}
+        other -> other
       end
-
-    case result do
-      {:ok, _} -> :ok
-      # OpenCode no longer holds this question: it restarted, or the session
-      # died still carrying it.
-      {:error, {:http, status, _}} when status in [400, 404] -> {:error, :gone}
-      {:error, reason} -> {:error, reason}
+    else
+      ctx.repository.path
+      |> client().reply_question(request.opencode_question_id, answers, state.client_opts)
+      |> question_reply(outcome)
     end
+  end
+
+  def reply_question(ctx, state, request, :rejected = outcome) do
+    ctx.repository.path
+    |> client().reject_question(request.opencode_question_id, state.client_opts)
+    |> question_reply(outcome)
+  end
+
+  defp question_reply({:ok, _}, _outcome), do: :ok
+
+  # OpenCode no longer holds this question: it restarted, or the session died
+  # still carrying it.
+  defp question_reply({:error, {:http, status, _}}, _outcome) when status in [400, 404],
+    do: {:error, :gone}
+
+  defp question_reply({:error, reason}, _outcome), do: {:error, reason}
+
+  # Any answer that is not one of the question's own option labels is free
+  # text; only a question that turned `custom` off explicitly may refuse it.
+  defp free_text_without_custom?(questions, answers) do
+    questions
+    |> Enum.zip(answers)
+    |> Enum.any?(fn {question, chosen} ->
+      labels = question |> Map.get("options") |> List.wrap() |> Enum.map(& &1["label"])
+      question["custom"] == false and Enum.any?(List.wrap(chosen), &(&1 not in labels))
+    end)
   end
 
   @impl true
@@ -183,30 +209,72 @@ defmodule Canopy.Engine.OpenCode do
           {:unknown, :unknown}
       end
 
+    repository_id = ctx.repository.id
+
     %{
       busy: busy,
       retrying: retrying,
       permissions:
-        prompts(client().pending_permissions(dir, state.client_opts), :approval_required),
-      questions: prompts(client().pending_questions(dir, state.client_opts), :question_required)
+        prompts(
+          client().pending_permissions(dir, state.client_opts),
+          :approval_required,
+          fn -> known_permissions(repository_id) end
+        ),
+      questions:
+        prompts(
+          client().pending_questions(dir, state.client_opts),
+          :question_required,
+          fn -> known_questions(repository_id) end
+        )
     }
   end
 
-  # A 400/404 means this OpenCode build does not serve the endpoint, which is
-  # the same as nothing pending. Any other failure leaves the answer unknown.
-  defp prompts({:ok, requests}, type) when is_list(requests) do
-    Enum.map(requests, fn req ->
-      %Event{
-        type: type,
-        session_id: req["sessionID"],
-        data: %{request: req},
-        raw_type: "reconcile"
-      }
-    end)
+  # A 400/404 means this OpenCode build does not serve the endpoint (or, for
+  # permissions, fails to serialize a pending patch prompt; see the Phase 0
+  # notes). The list then falls back to the cards Canopy itself holds open for
+  # OpenCode sessions of this repository: those sessions count as blocked, and
+  # any other orphaned turn is still finished. Any other failure leaves the
+  # answer unknown.
+  defp prompts({:ok, requests}, type, _known) when is_list(requests),
+    do: Enum.map(requests, &replay_event(type, &1))
+
+  defp prompts({:error, {:http, status, _}}, type, known) when status in [400, 404],
+    do: Enum.map(known.(), &replay_event(type, &1))
+
+  defp prompts(_, _type, _known), do: :unknown
+
+  defp replay_event(type, req) do
+    %Event{
+      type: type,
+      session_id: req["sessionID"],
+      data: %{request: req, replay: true},
+      raw_type: "reconcile"
+    }
   end
 
-  defp prompts({:error, {:http, status, _}}, _type) when status in [400, 404], do: []
-  defp prompts(_, _type), do: :unknown
+  defp known_questions(repository_id) do
+    for r <- QuestionRequests.waiting_in_repository(repository_id, name()) do
+      %{
+        "id" => r.opencode_question_id,
+        "sessionID" => r.agent_session.engine_session_id,
+        "questions" => r.questions,
+        "tool" => %{"callID" => r.tool_call_id}
+      }
+    end
+  end
+
+  defp known_permissions(repository_id) do
+    for r <- PermissionRequests.waiting_in_repository(repository_id, name()) do
+      %{
+        "id" => r.opencode_permission_id,
+        "sessionID" => r.agent_session.engine_session_id,
+        "permission" => r.permission,
+        "patterns" => r.patterns,
+        "metadata" => r.metadata,
+        "tool" => %{"callID" => r.tool_call_id}
+      }
+    end
+  end
 
   # "provider/model" as configured on the agent; OpenCode's default otherwise.
   @impl true

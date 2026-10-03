@@ -18,13 +18,18 @@ defmodule Canopy.ClaudeCode.Turn do
 
   Abort sends SIGINT; Claude Code then writes an `error_during_execution`
   result, which is reported as a completed turn rather than an error.
-  A turn that prints nothing for `:stall_ms` is killed and reported as an error.
+  A turn that prints nothing for `:stall_ms` is killed and reported as an
+  error, unless it is waiting on a permission or question prompt
+  (`Canopy.ClaudeCode.Prompts.waiting?/1`): the CLI prints nothing while the
+  user decides, and the prompt's own timeout bounds that wait. The first check
+  after the prompt closes restarts the stall window, so the resumed turn gets
+  all of it. When the process ends, any prompt it still waited on is dropped.
   """
 
   use GenServer, restart: :temporary
   require Logger
 
-  alias Canopy.ClaudeCode.Events
+  alias Canopy.ClaudeCode.{Events, Prompts}
   alias Canopy.Engine
   alias Canopy.Engine.Event
 
@@ -64,6 +69,8 @@ defmodule Canopy.ClaudeCode.Turn do
       aborted?: false,
       flag_retried?: false,
       resend_retried?: false,
+      # whether the last stall check found a prompt open
+      prompt_open?: false,
       last_line_at: System.monotonic_time(:millisecond)
     }
 
@@ -150,16 +157,23 @@ defmodule Canopy.ClaudeCode.Turn do
   def handle_info(:stall_check, %{port: nil} = state), do: {:noreply, state}
 
   def handle_info(:stall_check, state) do
-    if System.monotonic_time(:millisecond) - state.last_line_at > state.stall_ms do
-      Logger.warning(
-        "claude turn #{state.session_id}: no output for #{state.stall_ms} ms, killing"
-      )
+    waiting? = Prompts.waiting?(state.session_id)
+    now = System.monotonic_time(:millisecond)
 
-      signal(state, "-KILL")
-      fail(state, "no output from claude for #{div(state.stall_ms, 1000)} s")
-    else
-      schedule_stall_check(state)
-      {:noreply, state}
+    cond do
+      # Quiet because the user has not answered yet: not a stall. Nor is the
+      # quiet just after the answer: the window restarts once the prompt has
+      # closed, so the resumed turn gets all of it.
+      waiting? or state.prompt_open? ->
+        schedule_stall_check(state)
+        {:noreply, %{state | last_line_at: now, prompt_open?: waiting?}}
+
+      now - state.last_line_at > state.stall_ms ->
+        stall(state)
+
+      true ->
+        schedule_stall_check(state)
+        {:noreply, state}
     end
   end
 
@@ -171,14 +185,30 @@ defmodule Canopy.ClaudeCode.Turn do
   def handle_info(:abort_deadline, state), do: {:noreply, state}
   def handle_info(_msg, state), do: {:noreply, state}
 
-  @impl true
-  def terminate(_reason, %{port: port} = state) when port != nil do
+  defp stall(state) do
+    Logger.warning("claude turn #{state.session_id}: no output for #{state.stall_ms} ms, killing")
+
     signal(state, "-KILL")
-    close(port)
+    fail(state, "no output from claude for #{div(state.stall_ms, 1000)} s")
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if state.port do
+      signal(state, "-KILL")
+      close(state.port)
+    end
+
+    # whatever the process still waited on can never be read now
+    drop_prompts(state.session_id)
     :ok
   end
 
-  def terminate(_reason, _state), do: :ok
+  defp drop_prompts(session_id) do
+    Prompts.drop_session(session_id)
+  catch
+    :exit, _ -> :ok
+  end
 
   # -- Lines --------------------------------------------------------------------
 

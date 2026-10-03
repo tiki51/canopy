@@ -17,6 +17,9 @@ defmodule Canopy.Settings.Setting do
     field :chatter_limit, :integer, default: 6
     # one agent turn at a time per channel; others wait in order
     field :serialize_turns, :boolean, default: true
+    # how long a Claude Code agent's question blocks its turn before the agent
+    # moves on and the answer arrives later as a new message
+    field :question_wait_minutes, :integer, default: 10
     # a global stop on agent activity (Canopy.Hold): why, and since when
     field :hold_reason, :string
     field :hold_at, :utc_datetime_usec
@@ -42,6 +45,7 @@ defmodule Canopy.Settings.Setting do
       :chatter_pause,
       :chatter_limit,
       :serialize_turns,
+      :question_wait_minutes,
       :hold_reason,
       :hold_at,
       :auditor_agent_id,
@@ -57,10 +61,17 @@ defmodule Canopy.Settings.Setting do
       :user_display_name,
       :chatter_pause,
       :chatter_limit,
+      :question_wait_minutes,
       :claude_binary
     ])
     |> validate_number(:claude_max_budget_usd, greater_than: 0)
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)
+    # under the 30 minutes after which the Claude Code MCP tool call itself
+    # gives up: at 30 the CLI's timeout would fire first
+    |> validate_number(:question_wait_minutes,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: max_question_wait_minutes()
+    )
     |> validate_length(:user_display_name, max: 80)
     |> validate_length(:collaboration_prompt, max: 20_000)
     |> validate_change(:claude_config_dir, fn :claude_config_dir, value ->
@@ -70,6 +81,9 @@ defmodule Canopy.Settings.Setting do
     end)
     |> validate_url(:opencode_url)
   end
+
+  @doc "The longest a Claude Code question may wait: a minute under the MCP tool timeout."
+  def max_question_wait_minutes, do: 29
 
   @doc "Trims a Claude config directory and expands a leading `~` using HOME."
   def normalize_claude_config_dir(value) when is_binary(value) do

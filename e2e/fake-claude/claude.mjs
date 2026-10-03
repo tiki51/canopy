@@ -431,6 +431,30 @@ async function scheduledCheck(instruction) {
   finish("Posted the 09:00 queue check.");
 }
 
+// ---- questions (e2e/tests/questions.spec.ts) --------------------------------------------
+// "…ask me what to call the release" asks a question with no options (only a
+// typed answer can answer it); "…ask me which colour" one with options. The
+// answer comes back in the same turn, or, once the agent stopped waiting, as a
+// channel message from the user: "@agent Answer to your question "…": …".
+async function askUser(question, options) {
+  const asked = await tool("AskUserQuestion", {
+    questions: [{ question, header: "Question", multiSelect: false, options }],
+  }, (input) => `User has answered your questions: "${question}"="${input.answers?.[question] ?? ""}".`, { hold: 0.2 });
+  if (asked.denied) {
+    if (/hasn't answered yet/.test(asked.message || "")) return finish("Waiting for the user's answer.");
+    await canopy("message_send", { text: "Skipped the question." });
+    return finish("The question was declined.");
+  }
+  await canopy("message_send", { text: `Going with **${asked.input.answers?.[question] || "nothing"}**.` });
+  finish("Answered.");
+}
+
+async function lateAnswer(body) {
+  const answer = body.match(/Answer to your question "[^"]*": ([^\n(]*)/)?.[1]?.trim() || "nothing";
+  await canopy("message_send", { text: `Going with **${answer}** (answered later).` });
+  finish("Picked up the late answer.");
+}
+
 // ---- dispatch ----------------------------------------------------------------------------
 const startedAt = Date.now();
 
@@ -469,7 +493,14 @@ async function turn(prompt) {
       await canopy("pass", {});
       return finish("Nothing to add.");
     }
+    if (/Answer to your question "/.test(body)) return lateAnswer(body);
     if (/charged twice/i.test(body)) return rootCause(body, state);
+    if (/ask me what to call the release/i.test(body)) return askUser("What should the release be called?", []);
+    if (/ask me which colou?r/i.test(body))
+      return askUser("Which colour should the banner be?", [
+        { label: "Green", description: "Calm." },
+        { label: "Orange", description: "Loud." },
+      ]);
     if (/\bgo ahead\b/i.test(body) && story.phase === "planned") return goAhead(state);
     if (/every (weekday|day) at \d{1,2}:\d{2}/i.test(body)) return schedule(body);
     await read("README.md");

@@ -148,17 +148,19 @@ defmodule CanopyWeb.SettingsLive do
     end
   end
 
+  @chatter_fields ["chatter_pause", "chatter_limit", "serialize_turns", "question_wait_minutes"]
+
   def handle_event("validate_chatter", %{"setting" => params}, socket) do
     changeset =
       socket.assigns.setting
-      |> Settings.change(Map.take(params, ["chatter_pause", "chatter_limit", "serialize_turns"]))
+      |> Settings.change(Map.take(params, @chatter_fields))
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, :chatter_form, to_form(changeset, id: "chatter-form"))}
   end
 
   def handle_event("save_chatter", %{"setting" => params}, socket) do
-    case Settings.update(Map.take(params, ["chatter_pause", "chatter_limit", "serialize_turns"])) do
+    case Settings.update(Map.take(params, @chatter_fields)) do
       {:ok, setting} ->
         {:noreply,
          socket
@@ -282,6 +284,7 @@ defmodule CanopyWeb.SettingsLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}
       current_path={@current_path}
@@ -436,7 +439,23 @@ defmodule CanopyWeb.SettingsLive do
             />
             <p class="-mt-1 text-xs text-base-content/60">
               Off, agents woken together all run at once. They get in each other's way and
-              every one of them spends tokens; keep this on unless you want the swarm.
+              every one of them spends tokens; keep this on unless you want the swarm. An agent
+              waiting on your answer to a question or permission card does not hold the channel:
+              the next one starts, and when you answer, the waiting agent carries on alongside it.
+            </p>
+            <div class="max-w-xs">
+              <.input
+                field={@chatter_form[:question_wait_minutes]}
+                type="number"
+                min="1"
+                max={Canopy.Settings.Setting.max_question_wait_minutes()}
+                label="Minutes a Claude Code question waits for you"
+              />
+            </div>
+            <p class="-mt-1 text-xs text-base-content/60">
+              After that the agent ends its turn instead of sitting on the question. The card stays
+              open, and your answer reaches the agent as a message whenever you give it. At most {Canopy.Settings.Setting.max_question_wait_minutes()} minutes: Claude Code gives up
+              on a waiting tool call after 30.
             </p>
             <.input
               field={@chatter_form[:chatter_pause]}

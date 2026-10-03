@@ -74,7 +74,7 @@ defmodule Canopy.Runtime.Prompts do
   defp engine_notes(agent) do
     case Map.get(agent, :engine, "opencode") do
       "claude_code" ->
-        "Your identity travels with every Canopy tool call; there is nothing to set. Questions you ask with AskUserQuestion reach the user as a card in the channel, and their answer comes back to you. A `/compact` message means Canopy is compacting your context; nothing is asked of you."
+        "Your identity travels with every Canopy tool call; there is nothing to set. Questions you ask with AskUserQuestion reach the user as a card in the channel, and their answer usually comes back to you in the same turn. If they have not answered within a few minutes the tool tells you so: end your turn then, and their answer reaches you later as a new message. A `/compact` message means Canopy is compacting your context; nothing is asked of you."
 
       _ ->
         "Never set `canopy_session_id`; Canopy fills it in."
@@ -211,6 +211,75 @@ defmodule Canopy.Runtime.Prompts do
     If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop. Never post an acknowledgement.
     #{time_line()}
     """
+  end
+
+  @doc """
+  The channel message, from the user, that carries an answer the asking
+  agent's question tool could no longer take: the turn that asked had ended or
+  stopped waiting, or (`as_message?: true`) the engine could not take a typed
+  answer in place and reported the question as declined. It mentions the
+  agent, so it wakes it like any message; `delegation_id:` cites the
+  delegation when a delegate's session asked, so it reaches that session.
+  """
+  def answer_message(agent_name, questions, answers, opts \\ []) do
+    pairs = Enum.zip(questions, answers)
+
+    answer =
+      case pairs do
+        [{question, chosen}] ->
+          "Answer to your question \"#{question["question"]}\": #{answer_text(chosen)}"
+
+        _ ->
+          "Answers to your questions:\n" <>
+            Enum.map_join(pairs, "\n", fn {question, chosen} ->
+              "- \"#{question["question"]}\": #{answer_text(chosen)}"
+            end)
+      end
+
+    note =
+      if opts[:as_message?],
+        do:
+          "\n\n(The question tool could not take an answer in my own words, so it reported the question as declined. This is my answer.)",
+        else: ""
+
+    "@#{agent_name} #{answer}#{delegation_ref(opts)}#{note}"
+  end
+
+  defp answer_text(chosen) do
+    case chosen |> List.wrap() |> Enum.reject(&(&1 in [nil, ""])) do
+      [] -> "(no answer)"
+      labels -> Enum.join(labels, ", ")
+    end
+  end
+
+  @doc """
+  The channel message, from the user, that carries an approval the asking
+  agent's permission prompt could no longer take. The approval cannot reach
+  the call that asked, so the agent is told to do it now.
+  """
+  def approval_message(
+        agent_name,
+        %{permission: permission, patterns: patterns},
+        reply,
+        opts \\ []
+      ) do
+    target =
+      case List.wrap(patterns) do
+        [] -> ""
+        list -> " " <> Enum.join(list, ", ")
+      end
+
+    scope = if reply == :always, do: "always", else: "once"
+
+    "@#{agent_name} Approved: #{permission}#{target} (#{scope}). You can do it now." <>
+      delegation_ref(opts)
+  end
+
+  defp delegation_ref(opts) do
+    case opts[:delegation_id] do
+      id when is_binary(id) -> " (delegation #{id})"
+      _ -> ""
+    end
   end
 
   def delegation(%{channel: channel, from: from, delegation_id: delegation_id, task: task}) do

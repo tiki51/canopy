@@ -75,7 +75,38 @@ defmodule Canopy.Runtime.PromptsTest do
     assert claude =~ "Your Claude Code session is your private workbench"
     assert claude =~ "Your identity travels with every Canopy tool call"
     assert claude =~ "AskUserQuestion"
+    # an unanswered question comes back later as a new message
+    assert claude =~ "end your turn then, and their answer reaches you later as a new message"
     refute claude =~ "canopy_session_id"
+  end
+
+  test "a late answer is a message mentioning the agent that names each question and answer" do
+    one = [%{"question" => "Include the attempt number?", "options" => [%{"label" => "Yes"}]}]
+
+    assert Prompts.answer_message("pm", one, [["Yes"]]) ==
+             ~s(@pm Answer to your question "Include the attempt number?": Yes)
+
+    two = one ++ [%{"question" => "Anything else?", "options" => []}]
+    text = Prompts.answer_message("pm", two, [["Yes"], ["keep it short", "and fast"]])
+    assert text =~ "@pm Answers to your questions:"
+    assert text =~ ~s(- "Include the attempt number?": Yes)
+    assert text =~ ~s(- "Anything else?": keep it short, and fast)
+
+    child = Prompts.answer_message("pm", one, [[]], delegation_id: "dl_01ABC", as_message?: true)
+
+    assert child =~
+             ~s[your question "Include the attempt number?": (no answer) (delegation dl_01ABC)]
+
+    assert child =~ "reported the question as declined"
+  end
+
+  test "a late approval is a message saying what was approved and to do it now" do
+    assert Prompts.approval_message("pm", %{permission: "Bash", patterns: ["make test"]}, :always) ==
+             "@pm Approved: Bash make test (always). You can do it now."
+
+    assert Prompts.approval_message("pm", %{permission: "edit", patterns: []}, :once,
+             delegation_id: "dl_01ABC"
+           ) == "@pm Approved: edit (once). You can do it now. (delegation dl_01ABC)"
   end
 
   defp agent_with(opencode_agent) do

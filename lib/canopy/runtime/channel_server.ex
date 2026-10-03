@@ -13,7 +13,18 @@ defmodule Canopy.Runtime.ChannelServer do
 
   Outputs on the channel topic (`"channel:<id>"`):
     * `{:telemetry, agent_id, %Canopy.Engine.Event{}}` — ephemeral tool/text activity
-    * `{:agent_status, agent_id, :idle | :busy | :error}`
+    * `{:agent_status, agent_id, :idle | :queued | :busy | :awaiting_user | :error}`
+
+  Permission and question prompts. A turn whose engine holds a tool call open
+  on a card is marked as awaiting the user (`:awaiting_user`). It still holds
+  its agent (two sessions of one agent never run at once), but under
+  `serialize_turns` it no longer holds the channel: other agents' wakes start
+  while it waits. When the answer comes and the blocked turn resumes, another
+  turn may already be running; that is the one sanctioned overlap of
+  serialized turns. When a turn ends with cards still pending, or the engine
+  stops waiting on one, the cards are detached rather than cleared: they stay
+  answerable, and a late answer is posted to the channel as a message from
+  the user mentioning the agent, which wakes it like any other message.
 
   The MCP tools never call this process; they write through contexts and the
   resulting timeline events arrive here like any other.
@@ -39,6 +50,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
   alias Canopy.Engine
   alias Canopy.Engine.Event
+  alias Canopy.PermissionRequests.PermissionRequest
+  alias Canopy.QuestionRequests.QuestionRequest
   alias Canopy.Runtime.{Activity, Prompts, Router}
 
   @telemetry_cap 200
@@ -48,6 +61,9 @@ defmodule Canopy.Runtime.ChannelServer do
   # long a turn may go without an engine event before it is reconciled.
   @watchdog_ms 60_000
   @turn_stall_ms 120_000
+  # A turn waiting on the user emits nothing, and that is not a stall; it is
+  # still checked against the engine now and then, so a dead engine is noticed.
+  @awaiting_stall_ms 10 * @turn_stall_ms
 
   # How long the engine may keep retrying a failing model call (a provider's
   # usage limit, an outage) before the turn is ended and the channel told.
@@ -113,14 +129,23 @@ defmodule Canopy.Runtime.ChannelServer do
     GenServer.start_link(__MODULE__, opts, if(name, do: [name: name], else: []))
   end
 
+  @doc """
+  Answers a permission prompt. When the engine no longer holds it, an approval
+  is posted to the channel as a message mentioning the agent, saying what it
+  may now do; a rejection only clears the card. `{:error, :archived}` for an
+  approval in an archived channel.
+  """
   def respond_permission(server, permission_request_id, reply)
       when reply in [:once, :always, :reject],
       do: GenServer.call(server, {:respond_permission, permission_request_id, reply})
 
   @doc """
   Answers the question an agent asked through its engine's question tool.
-  `{:answered, answers}` carries one list of chosen option labels per question,
-  in question order; `:rejected` declines to answer.
+  `{:answered, answers}` carries one list of chosen option labels (or free
+  text) per question, in question order; `:rejected` declines to answer. When
+  the engine no longer holds the question, the answer is posted to the
+  channel as a message mentioning the agent. `{:error, :archived}` for an
+  answer in an archived channel.
   """
   def respond_question(server, question_request_id, outcome)
       when outcome == :rejected or elem(outcome, 0) == :answered,
@@ -207,36 +232,57 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_call(msg, from, %__MODULE__{} = state) when map_size(state) != @field_count,
     do: handle_call(msg, from, upgrade(state))
 
+  # The engine is always told, even for a detached card. `:ok` means the
+  # waiting tool call took the answer (a detached card can still be held by
+  # an engine whose abort failed), so the card simply resolves. When the
+  # engine no longer holds the prompt, or a detached card's engine reply
+  # fails, the answer is late: it is posted to the channel instead. An
+  # archived channel takes no answers or approvals, since one may wake an
+  # agent; dismissing still works.
   def handle_call({:respond_permission, request_id, reply}, _from, state) do
-    request = PermissionRequests.get!(request_id)
-    {mod, es, state} = engine_for_request(state, request)
+    if reply != :reject and archived?(state) do
+      {:reply, {:error, :archived}, state}
+    else
+      request = PermissionRequests.get!(request_id)
+      {mod, es, state} = engine_for_request(state, request)
 
-    case mod.reply_permission(ctx(state), es, request, reply) do
-      # :gone — the engine no longer waits on this prompt; nothing to answer,
-      # so the card is cleared rather than stranded
-      ok when ok in [:ok, {:error, :gone}] ->
-        {:reply, resolve_if_pending(request, reply), state}
+      case mod.reply_permission(ctx(state), es, request, reply) do
+        :ok ->
+          {:reply, resolve_if_pending(request, reply), clear_awaiting(state, request)}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:error, reason} when reason != :gone and is_nil(request.detached_at) ->
+          {:reply, {:error, reason}, state}
+
+        _late ->
+          state = clear_awaiting(state, request)
+          {:reply, deliver_late_permission(state, request, reply), state}
+      end
     end
   end
 
   def handle_call({:respond_question, request_id, outcome}, _from, state) do
-    request = QuestionRequests.get!(request_id)
-    {mod, es, state} = engine_for_request(state, request)
+    if outcome != :rejected and archived?(state) do
+      {:reply, {:error, :archived}, state}
+    else
+      request = QuestionRequests.get!(request_id)
+      {mod, es, state} = engine_for_request(state, request)
 
-    case mod.reply_question(ctx(state), es, request, outcome) do
-      :ok ->
-        {:reply, resolve_question_if_pending(request, outcome), state}
+      case mod.reply_question(ctx(state), es, request, outcome) do
+        :ok ->
+          {:reply, resolve_question_if_pending(request, outcome), clear_awaiting(state, request)}
 
-      # The engine no longer holds this question. There is nothing left to
-      # answer, so clear the card rather than stranding it on screen forever.
-      {:error, :gone} ->
-        {:reply, resolve_question_if_pending(request, outcome), state}
+        # the engine could not take the answer in place and released the agent
+        {:ok, :as_message} ->
+          state = clear_awaiting(state, request)
+          {:reply, deliver_late_answer(state, request, outcome, as_message?: true), state}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:error, reason} when reason != :gone and is_nil(request.detached_at) ->
+          {:reply, {:error, reason}, state}
+
+        _late ->
+          state = clear_awaiting(state, request)
+          {:reply, deliver_late_answer(state, request, outcome, []), state}
+      end
     end
   end
 
@@ -352,11 +398,18 @@ defmodule Canopy.Runtime.ChannelServer do
 
   def handle_call(:status, _from, state) do
     # An agent working in any of its sessions is busy, even with a wake for
-    # another of its sessions waiting behind that turn.
+    # another of its sessions waiting behind that turn; one blocked on a card
+    # is shown as waiting on the user, whatever its other sessions do.
     idle = Map.new(state.sessions, fn {agent_id, _session} -> {agent_id, :idle} end)
     queued = Map.new(waiting_agent_ids(state), &{&1, :queued})
     busy = Map.new(state.turns, fn {_sid, turn} -> {turn.agent_id, :busy} end)
-    {:reply, idle |> Map.merge(queued) |> Map.merge(busy), state}
+
+    awaiting =
+      for {_sid, turn} <- state.turns, awaiting?(turn), into: %{} do
+        {turn.agent_id, :awaiting_user}
+      end
+
+    {:reply, idle |> Map.merge(queued) |> Map.merge(busy) |> Map.merge(awaiting), state}
   end
 
   def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
@@ -485,8 +538,12 @@ defmodule Canopy.Runtime.ChannelServer do
     Enum.any?(state.turns, fn {_sid, turn} -> stalled?(turn, now) end)
   end
 
-  defp stalled?(turn, now),
-    do: now - Map.get(turn, :last_event_at, turn.started_at) > @turn_stall_ms
+  # A turn waiting on the user is quiet by design; only the slow check applies.
+  defp stalled?(turn, now) do
+    if awaiting?(turn),
+      do: now - Map.get(turn, :awaiting_since, now) > @awaiting_stall_ms,
+      else: now - Map.get(turn, :last_event_at, turn.started_at) > @turn_stall_ms
+  end
 
   defp retrying_turn?(state) do
     now = System.monotonic_time(:millisecond)
@@ -502,7 +559,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
   @doc false
   def reconcile(state) do
-    Enum.reduce(state.engines, state, fn {mod, es}, acc ->
+    state.engines
+    |> Enum.reduce(state, fn {mod, es}, acc ->
       view = mod.reconcile(ctx(acc), es)
 
       acc
@@ -512,6 +570,20 @@ defmodule Canopy.Runtime.ChannelServer do
       |> replay_prompts(view.permissions)
       |> replay_prompts(view.questions)
     end)
+    |> restart_awaiting_clocks()
+  end
+
+  # A turn still waiting on the user after a reconcile was just checked: its
+  # slow window starts again, so the next check is another window away.
+  defp restart_awaiting_clocks(state) do
+    now = System.monotonic_time(:millisecond)
+
+    turns =
+      Map.new(state.turns, fn {sid, turn} ->
+        if awaiting?(turn), do: {sid, Map.put(turn, :awaiting_since, now)}, else: {sid, turn}
+      end)
+
+    %{state | turns: turns}
   end
 
   # Turns we think are running but the engine reports idle: finish them. A turn
@@ -551,7 +623,7 @@ defmodule Canopy.Runtime.ChannelServer do
             "channel #{acc.channel.name}: finishing orphaned turn #{sid} (engine reports it idle)"
           )
 
-          acc |> clear_stale_prompts(sid) |> finish_turn(sid, who, :ok)
+          finish_turn(acc, sid, who, :ok)
       end
     end)
   end
@@ -616,7 +688,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
     case Map.get(state.index, sid) do
       nil -> %{state | turns: Map.delete(state.turns, sid)}
-      who -> state |> clear_stale_prompts(sid) |> finish_turn(sid, who, outcome)
+      who -> finish_turn(state, sid, who, outcome)
     end
   end
 
@@ -646,35 +718,22 @@ defmodule Canopy.Runtime.ChannelServer do
     state
   end
 
+  # A prompt the engine still lists is re-recorded (a card resolved or detached
+  # here comes back) and marks its turn as awaiting the user again.
   defp replay_prompts(state, events) do
-    Enum.each(events, fn %Event{session_id: sid} = event ->
-      case Map.get(state.index, sid) do
-        nil -> :ok
-        who -> handle_execution(event, who, state)
+    Enum.reduce(events, state, fn %Event{session_id: sid} = event, acc ->
+      case Map.get(acc.index, sid) do
+        nil -> acc
+        who -> handle_execution(event, who, acc)
       end
     end)
-
-    state
   end
 
-  # The turn is over and the engine listed no prompt for it, so any request still
-  # pending here is a phantom nothing can answer. Clear the cards with it.
-  defp clear_stale_prompts(state, sid) do
-    case session_for(state, sid) do
-      nil ->
-        state
-
-      session ->
-        for r <- QuestionRequests.pending_for_channel(state.channel.id),
-            r.agent_session_id == session.id,
-            do: QuestionRequests.resolve(r, :rejected)
-
-        for r <- PermissionRequests.pending_for_channel(state.channel.id),
-            r.agent_session_id == session.id,
-            do: PermissionRequests.resolve(r, :reject)
-
-        state
-    end
+  # The session's turn is over: nothing waits on its cards any more. They stay
+  # answerable; an answer now reaches the agent as a new message.
+  defp detach_prompts(session) do
+    Enum.each(QuestionRequests.waiting_for_session(session.id), &QuestionRequests.detach/1)
+    Enum.each(PermissionRequests.waiting_for_session(session.id), &PermissionRequests.detach/1)
   end
 
   # -- Waking agents ----------------------------------------------------------
@@ -702,7 +761,7 @@ defmodule Canopy.Runtime.ChannelServer do
       over_spend_limit?(state) ->
         note_spend_limit(state)
 
-      is_integer(limit) and state.chatter >= limit ->
+      is_integer(limit) and state.chatter >= limit and not counted?(text) ->
         pause(state, limit, [{target, text}])
 
       # Already in line (a delegation waiting for its delegate, then a message
@@ -712,7 +771,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
       # One turn at a time: agents woken while another works wait their turn,
       # in order. They are counted against the budget when they actually start.
-      Canopy.Settings.serialize_turns?() and map_size(state.turns) > 0 ->
+      # A turn waiting on the user does not count: it is not working.
+      Canopy.Settings.serialize_turns?() and running_turns(state) > 0 ->
         enqueue_waiting(state, target, text)
 
       # One turn per agent, whatever serialize_turns says: a delegate working
@@ -722,7 +782,8 @@ defmodule Canopy.Runtime.ChannelServer do
         enqueue_waiting(state, target, text)
 
       true ->
-        do_wake(%{state | chatter: state.chatter + 1}, target, text)
+        chatter = if counted?(text), do: state.chatter, else: state.chatter + 1
+        do_wake(%{state | chatter: chatter}, target, Map.delete(text, :counted?))
     end
   end
 
@@ -824,14 +885,32 @@ defmodule Canopy.Runtime.ChannelServer do
       else: start_free_waiting(state)
   end
 
-  # One turn at a time: the head of the line starts once the channel is free.
-  defp start_first_waiting(%{turns: turns} = state) when map_size(turns) > 0, do: state
+  # One turn at a time: the first in line whose agent is free starts once no
+  # turn is running (turns waiting on the user do not count). An entry whose
+  # agent still has a turn in another session (waiting on the user, say) keeps
+  # its place. A wake that cannot start (held, dropped, its session failed, or
+  # queued on a session that is waiting) leaves the channel free, so the next
+  # in line is tried until one runs.
+  defp start_first_waiting(state) do
+    if running_turns(state) > 0 do
+      state
+    else
+      case Enum.split_while(state.waiting, fn {t, _} -> busy_elsewhere?(state, t) end) do
+        {_held, []} ->
+          state
 
-  # A wake that cannot start (held, dropped, its session failed) leaves the
-  # channel free, so the next in line is tried until one runs.
-  defp start_first_waiting(%{waiting: [{target, text} | rest]} = state),
-    do:
-      state |> Map.put(:waiting, rest) |> wake_within_budget(target, text) |> start_next_waiting()
+        {held, [{target, text} | rest]} ->
+          state
+          |> Map.put(:waiting, held ++ rest)
+          |> wake_within_budget(target, text)
+          |> start_next_waiting()
+      end
+    end
+  end
+
+  # Turns actually working: a turn blocked on a card is waiting on the user.
+  defp running_turns(state),
+    do: Enum.count(state.turns, fn {_sid, turn} -> not awaiting?(turn) end)
 
   # Turns run side by side: every waiting wake whose agent is free starts, in
   # order, one per agent; the rest keep their place in line.
@@ -1282,6 +1361,9 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  defp engine_for_session(state, nil), do: engine_for_request(state, %{})
+  defp engine_for_session(state, session), do: engine_of(state, session)
+
   defp put_engine_state(state, mod, es), do: %{state | engines: Map.put(state.engines, mod, es)}
 
   defp invalidate_engines(state, reason) do
@@ -1347,6 +1429,12 @@ defmodule Canopy.Runtime.ChannelServer do
     update_turn(state, event.session_id, fn turn -> %{turn | cost: turn.cost + cost} end)
   end
 
+  # A permission or question prompt holds the agent's tool call open until
+  # someone answers it, so the turn stays in flight, marked as awaiting the
+  # user; the card in the feed is the only way to release it. A replayed
+  # prompt (the engine still lists it) brings back a card resolved or
+  # detached here; one already showing is not announced again. A prompt that cannot be recorded would block with no card,
+  # so the engine is told to reject it at once.
   defp handle_execution(
          %{type: :approval_required, data: %{request: req}} = event,
          %{agent_id: agent_id},
@@ -1354,20 +1442,39 @@ defmodule Canopy.Runtime.ChannelServer do
        ) do
     session = session_for(state, event.session_id)
 
-    {:ok, _} =
-      PermissionRequests.record(%{
-        channel_id: state.channel.id,
-        agent_session_id: session && session.id,
-        opencode_permission_id: req["id"],
-        permission: req["permission"],
-        patterns: req["patterns"] || [],
-        metadata: req["metadata"] || %{},
-        tool_call_id: get_in(req, ["tool", "callID"]),
-        status: "pending"
-      })
+    attrs = %{
+      channel_id: state.channel.id,
+      agent_session_id: session && session.id,
+      opencode_permission_id: req["id"],
+      permission: req["permission"],
+      patterns: req["patterns"] || [],
+      metadata: req["metadata"] || %{},
+      tool_call_id: get_in(req, ["tool", "callID"]),
+      status: "pending"
+    }
 
-    broadcast(state, {:telemetry, agent_id, event})
-    state
+    known? = attached?(PermissionRequests.get_by_opencode_id(req["id"] || ""))
+
+    case PermissionRequests.record(attrs, reopen: replay?(event)) do
+      {:ok, request} ->
+        unless known?, do: broadcast(state, {:telemetry, agent_id, event})
+        mark_awaiting(state, event.session_id, request)
+
+      {:error, error} ->
+        Logger.warning(
+          "channel #{state.channel.name}: could not record permission #{inspect(req["id"])}, rejecting it: #{inspect(error)}"
+        )
+
+        request = %PermissionRequest{
+          opencode_permission_id: req["id"],
+          permission: req["permission"],
+          agent_session: session
+        }
+
+        {mod, es, state} = engine_for_session(state, session)
+        _ = mod.reply_permission(ctx(state), es, request, :reject)
+        state
+    end
   end
 
   defp handle_execution(
@@ -1378,16 +1485,13 @@ defmodule Canopy.Runtime.ChannelServer do
     case PermissionRequests.get_by_opencode_id(rid) do
       %{status: "pending"} = request ->
         {:ok, _} = PermissionRequests.resolve(request, reply_atom(reply))
+        clear_awaiting(state, request)
 
       _ ->
-        :ok
+        state
     end
-
-    state
   end
 
-  # A question holds the agent's tool call open until someone answers it, so the
-  # turn stays in flight; the card in the feed is the only way to release it.
   defp handle_execution(
          %{type: :question_required, data: %{request: req}} = event,
          %{agent_id: agent_id},
@@ -1395,28 +1499,72 @@ defmodule Canopy.Runtime.ChannelServer do
        ) do
     session = session_for(state, event.session_id)
 
-    {:ok, _} =
-      QuestionRequests.record(%{
-        channel_id: state.channel.id,
-        agent_session_id: session && session.id,
-        opencode_question_id: req["id"],
-        questions: req["questions"] || [],
-        tool_call_id: get_in(req, ["tool", "callID"]),
-        status: "pending"
-      })
+    attrs = %{
+      channel_id: state.channel.id,
+      agent_session_id: session && session.id,
+      opencode_question_id: req["id"],
+      questions: req["questions"] || [],
+      tool_call_id: get_in(req, ["tool", "callID"]),
+      status: "pending"
+    }
 
-    broadcast(state, {:telemetry, agent_id, event})
-    state
+    known? = attached?(QuestionRequests.get_by_opencode_id(req["id"] || ""))
+
+    case QuestionRequests.record(attrs, reopen: replay?(event)) do
+      {:ok, request} ->
+        unless known?, do: broadcast(state, {:telemetry, agent_id, event})
+        mark_awaiting(state, event.session_id, request)
+
+      {:error, error} ->
+        Logger.warning(
+          "channel #{state.channel.name}: could not record question #{inspect(req["id"])}, rejecting it: #{inspect(error)}"
+        )
+
+        request = %QuestionRequest{
+          opencode_question_id: req["id"],
+          questions: req["questions"] || [],
+          agent_session: session
+        }
+
+        {mod, es, state} = engine_for_session(state, session)
+        _ = mod.reply_question(ctx(state), es, request, :rejected)
+        state
+    end
   end
 
-  defp handle_execution(%{type: :question_resolved, data: %{request_id: rid} = data}, _who, state) do
-    resolve_question(rid, {:answered, normalize_answers(Map.get(data, :answers, []))})
-    state
+  defp handle_execution(
+         %{type: :question_resolved, data: %{request_id: rid} = data},
+         _who,
+         state
+       ),
+       do:
+         resolve_question(state, rid, {:answered, normalize_answers(Map.get(data, :answers, []))})
+
+  defp handle_execution(%{type: :question_rejected, data: %{request_id: rid}}, _who, state),
+    do: resolve_question(state, rid, :rejected)
+
+  # The engine stopped waiting (Claude Code's question wait ran out, or a
+  # prompt's timeout): the agent moves on and the card is detached.
+  defp handle_execution(%{type: :question_expired, data: %{request_id: rid}}, _who, state) do
+    case QuestionRequests.get_by_opencode_id(rid) do
+      %{status: "pending"} = request ->
+        {:ok, request} = QuestionRequests.detach(request)
+        clear_awaiting(state, request)
+
+      _ ->
+        state
+    end
   end
 
-  defp handle_execution(%{type: :question_rejected, data: %{request_id: rid}}, _who, state) do
-    resolve_question(rid, :rejected)
-    state
+  defp handle_execution(%{type: :approval_expired, data: %{request_id: rid}}, _who, state) do
+    case PermissionRequests.get_by_opencode_id(rid) do
+      %{status: "pending"} = request ->
+        {:ok, request} = PermissionRequests.detach(request)
+        clear_awaiting(state, request)
+
+      _ ->
+        state
+    end
   end
 
   defp handle_execution(%{type: :agent_status, data: %{status: :busy}}, _who, state), do: state
@@ -1490,6 +1638,7 @@ defmodule Canopy.Runtime.ChannelServer do
         state = %{state | turns: turns}
         # the user's Abort, however the engine reported it
         outcome = if Map.get(turn, :stopped?), do: :stopped, else: outcome
+        detach_prompts(turn.session)
         # reload: the struct captured at prompt time still says "idle", so a
         # changeset built from it would see no change
         session = AgentSessions.get!(turn.session.id)
@@ -1569,10 +1718,18 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp status_after_turn(state, who, _outcome) do
     cond do
-      agent_busy?(state, who.agent_id) -> :busy
+      agent_busy?(state, who.agent_id) -> turn_status(state, who.agent_id)
       who.agent_id in waiting_agent_ids(state) -> :queued
       true -> :idle
     end
+  end
+
+  # The status of an agent with a turn in flight: waiting on the user when
+  # any of its turns is blocked on a card.
+  defp turn_status(state, agent_id) do
+    if Enum.any?(state.turns, fn {_sid, t} -> t.agent_id == agent_id and awaiting?(t) end),
+      do: :awaiting_user,
+      else: :busy
   end
 
   defp outcome_label(:ok), do: "ok"
@@ -1653,16 +1810,37 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # The wake that queued on the session while its turn ran. Under
+  # serialize_turns, with another turn running (one that started while this
+  # turn waited on the user), it joins the line instead of starting beside it;
+  # it was already counted against the chatter budget when it queued.
   defp drain_queue(state, session, agent_id) do
-    case Map.get(state.queues, session.engine_session_id, []) do
+    sid = session.engine_session_id
+
+    case Map.get(state.queues, sid, []) do
       [] ->
         state
 
       [next | rest] ->
-        state = %{state | queues: Map.put(state.queues, session.engine_session_id, rest)}
-        send_prompt(state, session, agent_id, next)
+        state = %{state | queues: Map.put(state.queues, sid, rest)}
+
+        if Canopy.Settings.serialize_turns?() and running_turns(state) > 0,
+          do: enqueue_waiting(state, session_target(state, sid, agent_id), counted(next)),
+          else: send_prompt(state, session, agent_id, next)
     end
   end
+
+  defp session_target(state, sid, agent_id) do
+    case Map.get(state.index, sid) do
+      %{delegation_id: did} when is_binary(did) -> {:child, did}
+      _ -> {:root, agent_id}
+    end
+  end
+
+  # A wake already counted against the chatter budget: it neither counts again
+  # nor pauses the channel when it finally starts.
+  defp counted(wake), do: Map.put(wake, :counted?, true)
+  defp counted?(wake), do: Map.get(wake, :counted?, false)
 
   defp turn_stats(turn, %{type: :tool_completed}), do: %{turn | tools: turn.tools + 1}
 
@@ -1823,12 +2001,152 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # Answered or rejected elsewhere (another engine client, or our own reply
   # coming back around as an event): record it once.
-  defp resolve_question(opencode_question_id, outcome) do
+  defp resolve_question(state, opencode_question_id, outcome) do
     case QuestionRequests.get_by_opencode_id(opencode_question_id) do
-      %{status: "pending"} = request -> {:ok, _} = QuestionRequests.resolve(request, outcome)
-      _ -> :ok
+      %{status: "pending"} = request ->
+        {:ok, _} = QuestionRequests.resolve(request, outcome)
+        clear_awaiting(state, request)
+
+      _ ->
+        state
     end
   end
+
+  # -- Waiting on the user ----------------------------------------------------
+
+  # Reconciliation marks the prompts it lists as replays (`data.replay`).
+  defp replay?(%Event{data: %{replay: true}}), do: true
+  defp replay?(_event), do: false
+
+  # A card already showing and waiting: a replay of it changes nothing on screen.
+  defp attached?(%{status: "pending", detached_at: nil}), do: true
+  defp attached?(_request), do: false
+
+  defp awaiting?(turn), do: MapSet.size(Map.get(turn, :awaiting_user, MapSet.new())) > 0
+
+  # A card the agent's turn is blocked on. The first one marks the turn as
+  # awaiting the user and, under serialize_turns, frees the channel for the
+  # next wake in line.
+  defp mark_awaiting(state, sid, %{status: "pending", detached_at: nil, id: id}) do
+    case Map.get(state.turns, sid) do
+      nil ->
+        state
+
+      turn ->
+        first? = not awaiting?(turn)
+
+        turn =
+          turn
+          |> Map.put(:awaiting_user, MapSet.put(Map.get(turn, :awaiting_user, MapSet.new()), id))
+          |> Map.put_new(:awaiting_since, System.monotonic_time(:millisecond))
+
+        state = %{state | turns: Map.put(state.turns, sid, turn)}
+
+        if first? do
+          broadcast(state, {:agent_status, turn.agent_id, :awaiting_user})
+          start_next_waiting(state)
+        else
+          state
+        end
+    end
+  end
+
+  defp mark_awaiting(state, _sid, _request), do: state
+
+  # The card no longer blocks its turn (answered, rejected, expired). With
+  # none left, the turn is working again.
+  defp clear_awaiting(state, %{id: id, agent_session: %{engine_session_id: sid}}) do
+    case Map.get(state.turns, sid) do
+      %{awaiting_user: %MapSet{} = ids} = turn ->
+        if MapSet.member?(ids, id) do
+          ids = MapSet.delete(ids, id)
+
+          turn =
+            if MapSet.size(ids) == 0,
+              do: turn |> Map.delete(:awaiting_user) |> Map.delete(:awaiting_since),
+              else: Map.put(turn, :awaiting_user, ids)
+
+          state = %{state | turns: Map.put(state.turns, sid, turn)}
+          broadcast(state, {:agent_status, turn.agent_id, turn_status(state, turn.agent_id)})
+          state
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp clear_awaiting(state, _request), do: state
+
+  # Read fresh: the channel may have been archived since the server started.
+  defp archived?(state), do: Channels.archived?(Channels.get!(state.channel.id))
+
+  # The agent stopped waiting before the user answered. The answer is posted to
+  # the channel as a message from the user mentioning the agent, so it wakes it
+  # through the router like any message (merging, holds, spend limits, the
+  # chatter budget) and stays in the channel for canopy_messages_read. Only
+  # then is the card resolved, naming the message. A rejection only clears the
+  # card.
+  defp deliver_late_answer(_state, %{status: "pending"} = request, :rejected, _opts),
+    do: QuestionRequests.resolve(request, :rejected, by: "user")
+
+  defp deliver_late_answer(state, %{status: "pending"} = request, {:answered, answers}, opts) do
+    body =
+      Prompts.answer_message(
+        asker_name(request),
+        request.questions,
+        answers,
+        [delegation_id: asker_delegation(state, request)] ++ opts
+      )
+
+    with {:ok, message} <- Messages.post_user_message(state.channel.id, Users.local().id, body) do
+      QuestionRequests.resolve(request, {:answered, answers},
+        by: "user",
+        delivered: "message",
+        message_id: message.id
+      )
+    end
+  end
+
+  defp deliver_late_answer(_state, request, _outcome, _opts), do: {:ok, request}
+
+  defp deliver_late_permission(_state, %{status: "pending"} = request, :reject),
+    do: PermissionRequests.resolve(request, :reject)
+
+  defp deliver_late_permission(state, %{status: "pending"} = request, reply) do
+    body =
+      Prompts.approval_message(asker_name(request), request, reply,
+        delegation_id: asker_delegation(state, request)
+      )
+
+    with {:ok, message} <- Messages.post_user_message(state.channel.id, Users.local().id, body) do
+      PermissionRequests.resolve(request, reply, delivered: "message", message_id: message.id)
+    end
+  end
+
+  defp deliver_late_permission(_state, request, _reply), do: {:ok, request}
+
+  defp asker_name(%{agent_session: %{agent: %{name: name}}}), do: name
+  defp asker_name(%{agent_session: %{agent_id: id}}), do: agent_name(id)
+
+  # A delegate's child session asked: the message cites the delegation, so the
+  # router sends it to that session rather than the agent's main one.
+  defp asker_delegation(state, %{agent_session: %{engine_session_id: sid, id: id}}) do
+    case Map.get(state.index, sid) do
+      %{delegation_id: did} when is_binary(did) ->
+        did
+
+      _ ->
+        case Delegations.get_by_child_session(id) do
+          %{id: did} -> did
+          nil -> nil
+        end
+    end
+  end
+
+  defp asker_delegation(_state, _request), do: nil
 
   # OpenCode sends one list of chosen labels per question; older payloads used a
   # bare string per question.

@@ -33,34 +33,22 @@ defmodule Canopy.MCP.Tools.Permission do
 
   # -- Questions ------------------------------------------------------------------
 
+  # An AskUserQuestion blocks the turn for the question wait (Settings, 10
+  # minutes by default), not the full prompt timeout: a user who is away must
+  # not pin the agent. When the wait runs out the agent is told to end its
+  # turn; the card stays open, detached, and the answer reaches the agent later
+  # as a new message.
   defp prompt(ctx, %{tool_name: "AskUserQuestion"} = params) do
     input = params[:input] || %{}
     id = params[:tool_use_id] || "q-" <> unique()
-    questions = Enum.map(List.wrap(input["questions"]), &question_info/1)
 
-    request = %{
-      "id" => id,
-      "questions" => questions,
-      "tool" => %{"callID" => id}
-    }
+    case input |> Map.get("questions") |> List.wrap() |> Enum.map(&question_info/1) do
+      # nothing to show and nothing to answer: a card would wait forever
+      [] ->
+        deny("AskUserQuestion needs at least one question")
 
-    :ok = Prompts.open(id, :question, ctx.session.engine_session_id, request)
-    broadcast(ctx, :question_required, request)
-
-    case Prompts.await(id) do
-      {:ok, {:answered, answers}} ->
-        answers_map =
-          questions
-          |> Enum.zip(List.wrap(answers))
-          |> Map.new(fn {q, labels} -> {q["question"], Enum.join(List.wrap(labels), ", ")} end)
-
-        %{behavior: "allow", updatedInput: Map.put(input, "answers", answers_map)}
-
-      {:ok, :rejected} ->
-        deny("the user declined to answer")
-
-      _ ->
-        deny("nobody answered the question in time")
+      questions ->
+        ask(ctx, id, input, questions)
     end
   end
 
@@ -84,7 +72,7 @@ defmodule Canopy.MCP.Tools.Permission do
       }
 
       :ok = Prompts.open(id, :permission, sid, request)
-      broadcast(ctx, :approval_required, request)
+      broadcast(ctx, :approval_required, %{request: request})
 
       case Prompts.await(id) do
         {:ok, :once} ->
@@ -97,19 +85,62 @@ defmodule Canopy.MCP.Tools.Permission do
         {:ok, :reject} ->
           deny("the user rejected #{tool}")
 
+        {:error, :timeout} ->
+          broadcast(ctx, :approval_expired, %{request_id: id})
+
+          deny(
+            "Nobody approved #{tool} in time. The request stays open in the channel; " <>
+              "if the user approves it later, you will be told in a new message."
+          )
+
         _ ->
           deny("nobody approved #{tool} in time")
       end
     end
   end
 
+  defp ask(ctx, id, input, questions) do
+    request = %{
+      "id" => id,
+      "questions" => questions,
+      "tool" => %{"callID" => id}
+    }
+
+    :ok = Prompts.open(id, :question, ctx.session.engine_session_id, request)
+    broadcast(ctx, :question_required, %{request: request})
+
+    case Prompts.await(id, Prompts.question_timeout_ms()) do
+      {:ok, {:answered, answers}} ->
+        answers_map =
+          questions
+          |> Enum.zip(List.wrap(answers))
+          |> Map.new(fn {q, labels} -> {q["question"], Enum.join(List.wrap(labels), ", ")} end)
+
+        %{behavior: "allow", updatedInput: Map.put(input, "answers", answers_map)}
+
+      {:ok, :rejected} ->
+        deny("the user declined to answer")
+
+      {:error, :timeout} ->
+        broadcast(ctx, :question_expired, %{request_id: id})
+
+        deny(
+          "The user hasn't answered yet. The question stays open in the channel. " <>
+            "End your turn now; their answer will reach you as a new message."
+        )
+
+      _ ->
+        deny("nobody answered the question in time")
+    end
+  end
+
   defp deny(message), do: %{behavior: "deny", message: message}
 
-  defp broadcast(ctx, type, request) do
+  defp broadcast(ctx, type, data) do
     Canopy.Engine.broadcast_event(ctx.repository.id, %Event{
       type: type,
       session_id: ctx.session.engine_session_id,
-      data: %{request: request},
+      data: data,
       raw_type: "claude:permission"
     })
   end
@@ -134,7 +165,9 @@ defmodule Canopy.MCP.Tools.Permission do
 
   defp lines(text, prefix), do: text |> String.split("\n") |> Enum.map(&(prefix <> &1))
 
-  # Claude Code's question shape into the card's (`multiple` instead of `multiSelect`).
+  # Claude Code's question shape into the card's (`multiple` instead of
+  # `multiSelect`). AskUserQuestion always takes an answer in the user's own
+  # words ("Other"), so every question allows one (`custom`).
   defp question_info(%{} = q) do
     %{
       "question" => q["question"] || "",
@@ -143,12 +176,13 @@ defmodule Canopy.MCP.Tools.Permission do
         Enum.map(List.wrap(q["options"]), fn o ->
           %{"label" => o["label"] || "", "description" => o["description"]}
         end),
-      "multiple" => q["multiSelect"] == true
+      "multiple" => q["multiSelect"] == true,
+      "custom" => true
     }
   end
 
   defp question_info(other),
-    do: %{"question" => to_string(other), "options" => [], "multiple" => false}
+    do: %{"question" => to_string(other), "options" => [], "multiple" => false, "custom" => true}
 
   defp unique, do: System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
 end

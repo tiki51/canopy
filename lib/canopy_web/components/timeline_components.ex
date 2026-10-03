@@ -710,21 +710,34 @@ defmodule CanopyWeb.TimelineComponents do
 
   # -- Permission cards --------------------------------------------------------
 
-  @doc "A pending OpenCode permission request with Once / Always / Reject."
+  @doc """
+  A pending permission request with Once / Always / Reject. A detached card
+  (the agent stopped waiting) stays answerable: an approval reaches the agent
+  as a new message, and Reject becomes Dismiss.
+  """
   attr :request, :map, required: true
   attr :names, :map, required: true
+  attr :delegation_id, :string, default: nil, doc: "set when a delegate's child session asks"
 
   def permission_card(assigns) do
     ~H"""
     <section
       id={"permission-#{@request.id}"}
-      class="mx-3 my-2 overflow-hidden rounded-xl border border-warning/40 bg-warning/5 shadow-xs sm:mx-6"
+      data-detached={@request.detached_at != nil}
+      class={[
+        "mx-3 my-2 overflow-hidden rounded-xl border border-warning/40 bg-warning/5 shadow-xs sm:mx-6",
+        stale?(@request) && "opacity-70"
+      ]}
     >
       <div class="flex items-center gap-2 px-4 py-2.5">
         <.icon name="hero-shield-exclamation" class="size-5 text-warning" />
         <div class="min-w-0 flex-1 text-sm">
           <span class="font-medium">@{requester_name(@request, @names)}</span>
-          asks for <span class="font-semibold">{@request.permission}</span>
+          <span :if={@delegation_id} class="text-base-content/60">
+            (delegated {@delegation_id})
+          </span>
+          {if @request.detached_at, do: "asked for", else: "asks for"}
+          <span class="font-semibold">{@request.permission}</span>
           permission
           <span :if={@request.patterns != []} class="text-base-content/60">
             on
@@ -763,10 +776,18 @@ defmodule CanopyWeb.TimelineComponents do
             phx-value-id={@request.id}
             phx-value-reply="reject"
           >
-            Reject
+            {if @request.detached_at, do: "Dismiss", else: "Reject"}
           </button>
         </div>
       </div>
+      <p
+        :if={@request.detached_at}
+        id={"permission-#{@request.id}-detached"}
+        class="border-t border-warning/20 px-4 py-1.5 text-xs text-base-content/60"
+      >
+        @{requester_name(@request, @names)} stopped waiting. If you approve, a message tells it
+        so and it can do it again.
+      </p>
       <.diff_view
         :if={is_binary(@request.metadata["diff"]) and @request.metadata["diff"] != ""}
         id={"permission-#{@request.id}-diff"}
@@ -989,7 +1010,11 @@ defmodule CanopyWeb.TimelineComponents do
           suffix(Enum.join(List.wrap(p["patterns"]), ", "))
 
       "permission_resolved" ->
-        "#{p["permission"]} permission #{permission_status(p["status"])}"
+        "#{p["permission"]} permission #{permission_status(p["status"])}" <>
+          delivered_suffix(p)
+
+      "permission_detached" ->
+        "#{agent} stopped waiting for #{p["permission"]} permission"
 
       "question_requested" ->
         "#{agent} asked a question"
@@ -998,8 +1023,11 @@ defmodule CanopyWeb.TimelineComponents do
         verb = if p["status"] == "rejected", do: "dismissed", else: "answered"
 
         if p["by"] == "user",
-          do: "#{user} #{verb} #{agent}'s question",
+          do: "#{user} #{verb} #{agent}'s question" <> delivered_suffix(p),
           else: "question #{verb}"
+
+      "question_detached" ->
+        "#{agent} stopped waiting for an answer"
 
       other ->
         "#{agent} · #{other}"
@@ -1044,27 +1072,41 @@ defmodule CanopyWeb.TimelineComponents do
   # -- Question cards ----------------------------------------------------------
 
   @doc """
-  A pending `question` tool call. The agent's turn stays blocked until this is
-  answered or dismissed, so the card carries the whole form: one group of
-  options per question, plus a free-text box when the agent allowed one.
+  A pending question from an agent's question tool. While the agent waits,
+  its turn stays blocked until this is answered or dismissed, so the card
+  carries the whole form: one group of options per question, and a box for an
+  answer in the user's own words on every question (the only input when a
+  question has no options). A detached card (the agent stopped waiting) stays
+  answerable; the answer then reaches the agent as a new message.
   """
   attr :request, :map, required: true
   attr :names, :map, required: true
+  attr :delegation_id, :string, default: nil, doc: "set when a delegate's child session asks"
 
   def question_card(assigns) do
     ~H"""
     <section
       id={"question-#{@request.id}"}
-      class="mx-3 my-2 overflow-hidden rounded-xl border border-info/40 bg-info/5 shadow-xs sm:mx-6"
+      data-detached={@request.detached_at != nil}
+      class={[
+        "mx-3 my-2 overflow-hidden rounded-xl border border-info/40 bg-info/5 shadow-xs sm:mx-6",
+        stale?(@request) && "opacity-70"
+      ]}
     >
-      <form phx-submit="answer_question">
+      <form id={"question-#{@request.id}-form"} phx-submit="answer_question">
         <input type="hidden" name="request_id" value={@request.id} />
 
         <div class="flex items-center gap-2 border-b border-info/20 px-4 py-2.5 text-sm">
           <.icon name="hero-question-mark-circle" class="size-5 text-info" />
           <div class="min-w-0 flex-1">
             <span class="font-medium">@{requester_name(@request, @names)}</span>
-            needs a decision to carry on
+            <span :if={@delegation_id} class="text-base-content/60">
+              (delegated {@delegation_id})
+            </span>
+            <span :if={!@request.detached_at}>needs a decision to carry on</span>
+            <span :if={@request.detached_at} id={"question-#{@request.id}-detached"}>
+              stopped waiting. Your answer will be sent to it as a message.
+            </span>
           </div>
         </div>
 
@@ -1077,7 +1119,7 @@ defmodule CanopyWeb.TimelineComponents do
             {question["header"]}
           </p>
 
-          <div class="mt-2 space-y-1.5">
+          <div :if={List.wrap(question["options"]) != []} class="mt-2 space-y-1.5">
             <label
               :for={option <- List.wrap(question["options"])}
               class="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-info/10"
@@ -1100,11 +1142,23 @@ defmodule CanopyWeb.TimelineComponents do
             </label>
           </div>
 
+          <%!-- Every question takes an answer in the user's own words; with no
+               options it is the only answer, so it is required. --%>
           <input
-            :if={question["custom"]}
             type="text"
+            id={"question-#{@request.id}-custom-#{index}"}
             name={"custom[#{index}]"}
-            placeholder="Or answer in your own words…"
+            placeholder={
+              if List.wrap(question["options"]) == [],
+                do: "Your answer",
+                else: "Or answer in your own words…"
+            }
+            aria-label={
+              if List.wrap(question["options"]) == [],
+                do: "Your answer",
+                else: "Or answer in your own words"
+            }
+            required={List.wrap(question["options"]) == []}
             autocomplete="off"
             class="mt-2 input input-sm input-bordered w-full"
           />
@@ -1128,6 +1182,15 @@ defmodule CanopyWeb.TimelineComponents do
     </section>
     """
   end
+
+  # A detached card nobody has answered for a day is dimmed; it never expires.
+  defp stale?(%{detached_at: %DateTime{} = at}),
+    do: DateTime.diff(DateTime.utc_now(), at, :hour) >= 24
+
+  defp stale?(_request), do: false
+
+  defp delivered_suffix(%{"delivered" => "message"}), do: " (sent as a message)"
+  defp delivered_suffix(_payload), do: ""
 
   defp requester_name(%{agent_session: %{agent: %{name: name}}}, _names), do: name
   defp requester_name(_request, _names), do: "agent"

@@ -141,8 +141,12 @@ window the sidebar becomes a drawer behind a menu button.
 
 In the sidebar, a channel with something you have not read yet turns bold with a dot.
 When an agent mentions you by your display name, the dot becomes a badge with the number
-of mentions. Opening the channel clears both. Agent rows show a green dot while the agent
-is working and a small clock with a count when it has scheduled tasks.
+of mentions. Opening the channel clears both. A blue badge with a question mark and a
+count means question or permission cards in that channel are waiting on you, so a
+question asked in a channel you are not looking at is not missed. It stays until you
+answer or dismiss them; a card whose agent stopped waiting counts for a day, then stays
+answerable without the badge. Archived channels never show it. Agent rows show a green dot while the agent is working and a small clock
+with a count when it has scheduled tasks.
 
 ---
 
@@ -164,11 +168,14 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
 - **You**: the display name on your messages. Agents mention you with it, and the
   sidebar's mention badges count those.
 - **Conversation**: the brakes, both optional. *One agent at a time per channel* makes
-  agents woken together take turns instead of running at once. *Pause a channel after
-  agents have taken turns without me* is a check-in: when it is on, a channel holds after
-  the number of agent turns you set until you type or press Continue. Leave it off when
-  you want agents to run autonomously for as long as the work takes, and use spend limits
-  as the backstop instead.
+  agents woken together take turns instead of running at once (an agent waiting on your
+  answer to a card does not count; see [Questions](#questions)). *Minutes a Claude Code
+  question waits for you* (10 by default, up to 29, since Claude Code itself gives up on a
+  waiting tool call after 30) is how long a Claude Code agent sits on a question before it
+  ends its turn; the card stays open and your answer still reaches it. *Pause a channel after agents have taken turns without me* is a check-in:
+  when it is on, a channel holds after the number of agent turns you set until you type
+  or press Continue. Leave it off when you want agents to run autonomously for as long as
+  the work takes, and use spend limits as the backstop instead.
 
 ### Appearance
 
@@ -339,8 +346,9 @@ and the limit when there is one), **Task**, **Changes**, and **Archive**.
 
 The second row shows the owner badge, the task status pill, the task title, the git
 branch, and one pill per member. A member's dot is grey when idle, green while working,
-amber while waiting for its turn, and red after an error. A working agent's pill has an
-**Abort** button; an idle agent's pill has a small reset arrow that drops its OpenCode
+amber while waiting for its turn, blue with "waiting on you" while it is blocked on a
+question or permission card, and red after an error. A working or waiting agent's pill
+has an **Abort** button; an idle agent's pill has a small reset arrow that drops its OpenCode
 session in this channel (with a confirmation) so its next turn starts with a clean
 context.
 
@@ -594,6 +602,47 @@ terminal instead also clears the card. Which actions ask is up to each agent's c
 for Claude Code agents, the allowlist in Settings; for OpenCode agents, the configuration in
 the repository's `.opencode/opencode.json` (for example, `{ "permission": { "edit": "ask" } }`).
 
+If the agent stops waiting before you answer (its turn ended, was stopped, or a Claude
+Code prompt waited 30 minutes), the card stays and says so. Approving it then posts a
+message from you in the channel, for example `@backend Approved: Bash make test (once).
+You can do it now.`, which wakes the agent like any message; the original call is gone,
+so the agent does the action again. On such a card, **Reject** becomes **Dismiss** and
+only clears it.
+
+### Questions
+
+An agent that needs a decision asks with its engine's question tool (`question` in
+OpenCode, `AskUserQuestion` in Claude Code). A question card appears at the bottom of the
+channel with the question, its options, and a box to answer in your own words. Every
+question takes a typed answer, with or without its options; a question with no options
+has only the box. **Send** answers, **Dismiss** declines.
+
+While the agent waits, its pill shows "waiting on you", a bar above the composer says
+"@agent is waiting on your answer" with a **Show** button that scrolls to the card, and
+the sidebar badges the channel. Under *One agent at a time*, an agent waiting on you does
+not hold the channel: the next agent in line starts, and when you answer, the waiting
+agent carries on alongside it. It does hold its own sessions, so a message to the same
+agent waits until its turn ends.
+
+A message in the composer is never taken as the card's answer. If your draft mentions an
+agent that is waiting on a card, a hint above the message box says so; answer on the card.
+
+An agent does not wait forever:
+
+- A Claude Code agent waits for the time set in Settings (10 minutes by default), then is
+  told you have not answered yet and ends its turn.
+- Any agent stops waiting when its turn ends for another reason: you pressed Abort or
+  Stop, the engine failed, or the watchdog closed a turn the engine had dropped.
+
+The card then says "@agent stopped waiting. Your answer will be sent to it as a message."
+It never expires. Answering it posts your answer to the channel as a message from you,
+for example `@backend Answer to your question "Include the attempt number?": Yes`. That
+message wakes the agent exactly as one you typed would: it resets the pause count, waits
+its turn under *One agent at a time*, respects holds and spend limits, and stays in the
+channel for the agent to read later. **Dismiss** just clears the card. A card that has
+waited a day is dimmed. An archived channel takes no answers (reopen it first); Dismiss
+still works there.
+
 ### Passing
 
 An agent woken for something that needs no answer, such as "thanks, all good", calls
@@ -603,7 +652,8 @@ Acknowledgements do not bounce between agents.
 ### One at a time and the chatter budget
 
 Within a channel, agents take turns. An agent woken while another works waits in order
-(its dot shows amber) and starts when the channel is free.
+(its dot shows amber) and starts when the channel is free. An agent blocked on a question
+or permission card is waiting on you, not working, so it does not hold the line.
 
 Agents are meant to run on their own: they wake each other, delegate, hand off, and
 schedule follow-ups without you in the loop. If you want a periodic check-in, a channel
@@ -854,6 +904,9 @@ Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude
 | `updated the task · status → working` | A task change |
 | `scheduled: … ` / `scheduled task fired` | Schedules |
 | `asked for edit permission` / `permission allowed` | Permissions |
+| `asked a question` / `<you> answered @agent's question` | Questions |
+| `@agent stopped waiting for an answer` | The agent moved on; the card stays and your answer is sent as a new message |
+| `… (sent as a message)` | A late answer or approval, posted to the channel as your message |
 | `set this channel's spend limit` / `spend limit reached` | Budget |
 | `session was compacted` | Context was summarised to stay under the cap |
 | `reset @agent's session` | You dropped the agent's session in this channel |
@@ -888,6 +941,8 @@ service started by `brew services` uses the defaults.
 | `Model not found: <provider>/<model>` | The agent's model override names a provider OpenCode has no credentials for; pick one from `opencode providers` or clear the override |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
+| An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |
+| A question card says the agent stopped waiting | Answer it anyway: the answer is posted as your message and wakes the agent. Dismiss it if it no longer matters |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
 | `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |

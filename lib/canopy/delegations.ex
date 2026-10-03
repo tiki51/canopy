@@ -101,6 +101,18 @@ defmodule Canopy.Delegations do
     )
   end
 
+  @doc "Child session id => pending delegation id, for the given child session ids."
+  def ids_by_child_session([]), do: %{}
+
+  def ids_by_child_session(session_ids) do
+    from(d in Delegation,
+      where: d.child_session_id in ^session_ids and d.status in ^@pending,
+      select: {d.child_session_id, d.id}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   @doc "The pending delegation whose child session is `session_id`, if any."
   def get_by_child_session(session_id) do
     Repo.one(

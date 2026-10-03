@@ -15,6 +15,9 @@ export CANOPY_LIVE_RELOAD=0
 export PORT="${CANOPY_E2E_PORT:-4100}"
 export CANOPY_DB="${CANOPY_DB:-$PWD/canopy_e2e.db}"
 export PHX_SERVER=true
+# A Claude Code turn that prints nothing this long is killed (120 s outside the
+# suite); short enough for a spec to wait past it, longer than any fake hold.
+export CANOPY_CLAUDE_STALL_MS="${CANOPY_CLAUDE_STALL_MS:-10000}"
 FAKE_URL="http://127.0.0.1:${FAKE_OPENCODE_PORT:-4396}"
 REPO="$PWD/tmp/e2e-repo"
 

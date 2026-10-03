@@ -1,7 +1,7 @@
 defmodule Canopy.ClaudeCode.TurnTest do
   use ExUnit.Case, async: false
 
-  alias Canopy.ClaudeCode.{Command, Supervisor, Turn}
+  alias Canopy.ClaudeCode.{Command, Prompts, Supervisor, Turn}
   alias Canopy.Engine
   alias Canopy.Engine.Event
 
@@ -149,12 +149,13 @@ defmodule Canopy.ClaudeCode.TurnTest do
   end
 
   test "a second turn for the same session is refused while one runs", ctx do
-    pid = start(ctx, [{"FAKE_CLAUDE_SLEEP", "5"}])
+    pid = start(ctx, [{"FAKE_CLAUDE_SLEEP", "30"}])
 
-    assert Supervisor.start_turn(ctx.sid,
-             repository_id: "r",
-             command: fn _ -> nil end,
-             message: "x"
+    # it waits a moment for the running turn to go, then gives up
+    assert Supervisor.start_turn(
+             ctx.sid,
+             [repository_id: "r", command: fn _ -> nil end, message: "x"],
+             200
            ) == {:error, :busy}
 
     assert :ok = Turn.abort(pid)
@@ -260,5 +261,89 @@ defmodule Canopy.ClaudeCode.TurnTest do
 
     assert message =~ "no output"
     assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+  end
+
+  defp backdate_output(pid),
+    do: :sys.replace_state(pid, &%{&1 | last_line_at: &1.last_line_at - 60_000})
+
+  test "a silent process waiting on a prompt is not killed; the window restarts once it closes",
+       ctx do
+    pid = start(ctx, [{"FAKE_CLAUDE_SLEEP", "30"}], stall_ms: 600)
+    :ok = Prompts.open("q-stall", :question, ctx.sid, %{"id" => "q-stall"})
+
+    # quiet far past the stall window, but the user has not answered yet
+    backdate_output(pid)
+    send(pid, :stall_check)
+    _ = :sys.get_state(pid)
+
+    refute_received {:engine_event, %Event{type: :agent_error}}
+    assert Supervisor.whereis(ctx.sid) == pid
+
+    # the prompt closes: the next check restarts the window, however long the
+    # quiet before it, so the resumed turn gets all of it
+    :ok = Prompts.answer("q-stall", {:answered, [["Blue"]]})
+    assert {:ok, _} = Prompts.await("q-stall")
+    backdate_output(pid)
+    send(pid, :stall_check)
+    _ = :sys.get_state(pid)
+    refute_received {:engine_event, %Event{type: :agent_error}}
+    assert :sys.get_state(pid).last_line_at > System.monotonic_time(:millisecond) - 1_000
+
+    # from then on silence is a stall again
+    backdate_output(pid)
+    send(pid, :stall_check)
+
+    assert_receive {:engine_event,
+                    %Event{
+                      type: :agent_error,
+                      data: %{error: %{"data" => %{"message" => message}}}
+                    }},
+                   5_000
+
+    assert message =~ "no output"
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+  end
+
+  test "a prompt still open when the process ends is dropped", ctx do
+    pid = start(ctx, [{"FAKE_CLAUDE_SLEEP", "30"}])
+    :ok = Prompts.open("q-orphan", :permission, ctx.sid, %{"id" => "q-orphan"})
+    assert Prompts.waiting?(ctx.sid)
+
+    assert :ok = Turn.abort(pid)
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+
+    refute Prompts.waiting?(ctx.sid)
+    assert Prompts.answer("q-orphan", :once) == {:error, :gone}
+  end
+
+  test "the next turn waits for the last one's process to exit instead of failing busy", ctx do
+    script = script!(ctx.dir, [init_line("SESSION_ID")])
+    # ends a second from now: printed, slept, exited
+    first = start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}, {"FAKE_CLAUDE_SLEEP", "1"}])
+    assert Supervisor.whereis(ctx.sid) == first
+
+    command = fn flag ->
+      Command.build(
+        binary: @fake,
+        cwd: ctx.dir,
+        stderr_file: Path.join(ctx.dir, "stderr.log"),
+        session: {flag, ctx.sid},
+        extra_env: [{"FAKE_CLAUDE_SCRIPT", script}]
+      )
+    end
+
+    # the first is still registered: the second waits for it, then starts
+    assert {:ok, second} =
+             Supervisor.start_turn(ctx.sid,
+               repository_id: "repo_test",
+               command: command,
+               message: Command.user_message("next"),
+               cwd: ctx.dir
+             )
+
+    assert_receive {:DOWN, _, :process, ^first, :normal}, 5_000
+    assert second != first
+    ref = Process.monitor(second)
+    assert_receive {:DOWN, ^ref, :process, ^second, :normal}, 5_000
   end
 end

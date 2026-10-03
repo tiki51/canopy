@@ -125,6 +125,7 @@ defmodule CanopyWeb.FilesLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}
       current_path={@current_path}

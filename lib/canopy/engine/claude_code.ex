@@ -14,7 +14,8 @@ defmodule Canopy.Engine.ClaudeCode do
   login), and `claude_max_budget_usd` per turn; the agent carries the model,
   effort, permission mode, and the tools allowed without asking.
   `config :canopy, :claude_code` overrides `:binary` and `:config_dir` (tests
-  point at a fake), and adds `:mcp_tool_timeout_ms` and `:env`.
+  point at a fake), and adds `:mcp_tool_timeout_ms`, `:env`, and `:stall_ms`
+  (the turn's no-output window; the e2e suite shortens it).
 
   Identity and prompts: every session gets its own MCP bearer token, written
   into the `--mcp-config` file the process is spawned with, so
@@ -160,9 +161,22 @@ defmodule Canopy.Engine.ClaudeCode do
     end
   end
 
+  # A late Always (the tool call that asked is gone) still counts for the rest
+  # of the session, so the agent redoing the action is not asked again.
   @impl true
-  def reply_permission(_ctx, _state, request, reply),
-    do: Prompts.answer(request.opencode_permission_id, reply)
+  def reply_permission(_ctx, _state, request, reply) do
+    case Prompts.answer(request.opencode_permission_id, reply) do
+      {:error, :gone} = gone ->
+        with :always <- reply,
+             %{engine_session_id: sid} <- request.agent_session,
+             do: Prompts.allow_always(sid, request.permission)
+
+        gone
+
+      other ->
+        other
+    end
+  end
 
   @impl true
   def reply_question(_ctx, _state, request, outcome),
@@ -183,7 +197,12 @@ defmodule Canopy.Engine.ClaudeCode do
 
   defp prompt_events(pending, kind, type) do
     for %{kind: ^kind, session_id: sid, request: request} <- pending do
-      %Event{type: type, session_id: sid, data: %{request: request}, raw_type: "reconcile"}
+      %Event{
+        type: type,
+        session_id: sid,
+        data: %{request: request, replay: true},
+        raw_type: "reconcile"
+      }
     end
   end
 
@@ -243,6 +262,12 @@ defmodule Canopy.Engine.ClaudeCode do
         cwd: ctx.repository.path,
         compact?: Keyword.get(opts, :compact?, false)
       ]
+
+      turn_opts =
+        case config(:stall_ms, nil) do
+          ms when is_integer(ms) and ms > 0 -> Keyword.put(turn_opts, :stall_ms, ms)
+          _ -> turn_opts
+        end
 
       case ClaudeCode.Supervisor.start_turn(sid, turn_opts) do
         {:ok, pid} ->

@@ -37,6 +37,12 @@ defmodule Canopy.DelegationsTest do
     assert {:ok, delegation} = Delegations.start(delegation, child.id)
     assert delegation.status == "working"
     assert Delegations.get_by_child_session(child.id).id == delegation.id
+    # the batch lookup the channel's cards use: one query for every child session
+    assert Delegations.ids_by_child_session([child.id, session.id]) == %{
+             child.id => delegation.id
+           }
+
+    assert Delegations.ids_by_child_session([]) == %{}
 
     assert {:ok, delegation} = Delegations.complete(delegation, "Yes, in two places")
     assert delegation.status == "completed"
@@ -45,6 +51,8 @@ defmodule Canopy.DelegationsTest do
     assert_receive {:timeline, %Timeline.Event{event_type: "delegation_completed"} = event}
     assert event.payload["result"] == "Yes, in two places"
     assert [] = Delegations.list_pending_for(channel.id, delegate.id)
+    # a finished delegation no longer names its child session's cards
+    assert Delegations.ids_by_child_session([child.id]) == %{}
   end
 
   test "only the user's delegations run in the delegate's root session", ctx do

@@ -119,11 +119,13 @@ defmodule Canopy.MCP.Tools.PermissionTest do
     assert_receive {:telemetry, _, %Event{type: :question_required, data: %{request: request}}},
                    5_000
 
+    # AskUserQuestion always takes an answer in the user's own words
     assert [
              %{
                "question" => "Which color?",
                "header" => "Color",
                "multiple" => false,
+               "custom" => true,
                "options" => [_, _]
              }
            ] = request["questions"]
@@ -181,9 +183,14 @@ defmodule Canopy.MCP.Tools.PermissionTest do
 
     assert %{"behavior" => "deny", "message" => message} = decode(Task.await(task, 5_000))
     assert message =~ "in time"
+    assert message =~ "new message"
 
-    # answering afterwards clears the card without an error
+    # the agent moved on: the card stays, detached
+    assert_receive {:timeline, %{event_type: "permission_detached"}}, 5_000
     [pending] = PermissionRequests.pending_for_channel(ctx.channel.id)
+    assert pending.detached_at
+
+    # dismissing it afterwards clears the card without an error
 
     assert {:ok, %{status: "rejected"}} =
              Runtime.respond_permission(ctx.channel.id, pending.id, :reject)
@@ -206,11 +213,12 @@ defmodule Canopy.MCP.Tools.PermissionTest do
 
     view = Canopy.Engine.ClaudeCode.reconcile(%{}, %{})
 
+    # marked as a replay, so a card resolved locally comes back
     assert [
              %Event{
                type: :approval_required,
                session_id: sid,
-               data: %{request: %{"id" => "toolu_r"}}
+               data: %{request: %{"id" => "toolu_r"}, replay: true}
              }
            ] = view.permissions
 
@@ -220,5 +228,80 @@ defmodule Canopy.MCP.Tools.PermissionTest do
     Runtime.respond_permission(ctx.channel.id, pending.id, :once)
     Task.await(task, 5_000)
     assert Canopy.Engine.ClaudeCode.reconcile(%{}, %{}).permissions == []
+  end
+
+  test "an AskUserQuestion with no questions is denied at once, with no card", ctx do
+    assert %{"behavior" => "deny", "message" => message} =
+             decode(
+               MCPHelpers.call_as_session(
+                 Permission,
+                 %{
+                   tool_name: "AskUserQuestion",
+                   input: %{"questions" => []},
+                   tool_use_id: "toolu_e"
+                 },
+                 ctx.claude_session
+               )
+             )
+
+    assert message =~ "at least one question"
+    assert QuestionRequests.pending_for_channel(ctx.channel.id) == []
+    refute Enum.any?(Prompts.pending(), &(&1.id == "toolu_e"))
+    refute_received {:telemetry, _, %Event{type: :question_required}}
+  end
+
+  test "an answer in the user's own words goes back as that question's answer", ctx do
+    input = %{
+      "questions" => [
+        %{"question" => "Which color?", "options" => [%{"label" => "Red"}, %{"label" => "Blue"}]},
+        %{"question" => "Anything else?", "options" => []}
+      ]
+    }
+
+    task = ask(ctx, %{tool_name: "AskUserQuestion", input: input, tool_use_id: "toolu_f"})
+    assert_receive {:telemetry, _, %Event{type: :question_required}}, 5_000
+    [pending] = QuestionRequests.pending_for_channel(ctx.channel.id)
+
+    assert {:ok, _} =
+             Runtime.respond_question(
+               ctx.channel.id,
+               pending.id,
+               {:answered, [["Purple, actually"], ["Blue", "make it darker"]]}
+             )
+
+    assert %{"behavior" => "allow", "updatedInput" => updated} = decode(Task.await(task, 5_000))
+
+    assert updated["answers"] == %{
+             "Which color?" => "Purple, actually",
+             "Anything else?" => "Blue, make it darker"
+           }
+  end
+
+  test "a question nobody answers within the wait releases the agent and stays open", ctx do
+    previous = Application.get_env(:canopy, :claude_code)
+
+    Application.put_env(
+      :canopy,
+      :claude_code,
+      Keyword.put(previous || [], :question_wait_ms, 300)
+    )
+
+    on_exit(fn -> Application.put_env(:canopy, :claude_code, previous) end)
+
+    input = %{"questions" => [%{"question" => "Ship it?", "options" => [%{"label" => "Yes"}]}]}
+    task = ask(ctx, %{tool_name: "AskUserQuestion", input: input, tool_use_id: "toolu_w"})
+    assert_receive {:telemetry, _, %Event{type: :question_required}}, 5_000
+
+    assert %{"behavior" => "deny", "message" => message} = decode(Task.await(task, 5_000))
+    assert message =~ "hasn't answered yet"
+    assert message =~ "End your turn now"
+    assert message =~ "new message"
+
+    assert_receive {:timeline, %{event_type: "question_detached"}}, 5_000
+
+    assert [%{opencode_question_id: "toolu_w", status: "pending", detached_at: %DateTime{}}] =
+             QuestionRequests.pending_for_channel(ctx.channel.id)
+
+    refute Prompts.waiting?(ctx.claude_session.engine_session_id)
   end
 end

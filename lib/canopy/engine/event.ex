@@ -24,9 +24,11 @@ defmodule Canopy.Engine.Event do
     * `:diff`              data: `%{files: [map]}`
     * `:approval_required` data: `%{request: map}` (id, permission, patterns, metadata with diff, tool)
     * `:approval_resolved` data: `%{request_id, reply}`
+    * `:approval_expired`  data: `%{request_id}` (the engine stopped waiting; the agent moved on)
     * `:question_required` data: `%{request: map}` (id, questions with options, tool)
     * `:question_resolved` data: `%{request_id, answers}`
     * `:question_rejected` data: `%{request_id}`
+    * `:question_expired`  data: `%{request_id}` (the engine stopped waiting; the agent moved on)
 
   `session_id` is the engine's own session id (`agent_sessions.engine_session_id`);
   `raw_type` names the wire event it came from, for debugging only.

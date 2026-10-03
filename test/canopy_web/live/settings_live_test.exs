@@ -283,4 +283,27 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert has_element?(view, "#chatter-form", "must be greater than or equal to 1")
     assert Canopy.Settings.chatter_limit() == nil
   end
+
+  test "how long a Claude Code question waits sits next to the turn setting", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    assert has_element?(
+             view,
+             "#chatter-form input[name='setting[question_wait_minutes]'][value='10']"
+           )
+
+    view
+    |> form("#chatter-form", setting: %{question_wait_minutes: "3"})
+    |> render_submit()
+
+    assert Canopy.Settings.question_wait_ms() == :timer.minutes(3)
+
+    # at 30 Claude Code's own tool timeout would fire first
+    view
+    |> form("#chatter-form", setting: %{question_wait_minutes: "30"})
+    |> render_submit()
+
+    assert has_element?(view, "#chatter-form", "must be less than or equal to 29")
+    assert Canopy.Settings.question_wait_ms() == :timer.minutes(3)
+  end
 end

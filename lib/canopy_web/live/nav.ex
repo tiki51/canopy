@@ -3,7 +3,8 @@ defmodule CanopyWeb.Nav do
   `on_mount` hook for every LiveView: loads what the sidebar needs and tracks the
   current path so the layout can highlight the active item.
 
-  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`, `:current_path`,
+  Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`, `:attention`
+  (question and permission cards waiting on the user, per channel), `:current_path`,
   `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
@@ -12,7 +13,17 @@ defmodule CanopyWeb.Nav do
   import Phoenix.Component
   import Phoenix.LiveView
 
-  alias Canopy.{Agents, Channels, Hold, Repositories, Schedules, Timeline, Unread, Users}
+  alias Canopy.{
+    Agents,
+    Attention,
+    Channels,
+    Hold,
+    Repositories,
+    Schedules,
+    Timeline,
+    Unread,
+    Users
+  }
 
   def on_mount(:default, _params, _session, socket) do
     if connected?(socket) do
@@ -43,6 +54,7 @@ defmodule CanopyWeb.Nav do
     |> assign(:schedule_counts, Schedules.active_counts_by_agent())
     |> assign(:hold, Hold.reason())
     |> refresh_unread()
+    |> refresh_attention()
   end
 
   # The hold banner's Release button lives in the shell, so every page handles it.
@@ -60,6 +72,9 @@ defmodule CanopyWeb.Nav do
   @doc "Reloads the per-channel unread and mention counts for the sidebar."
   def refresh_unread(socket), do: assign(socket, :unread, Unread.summary(Users.local()))
 
+  @doc "Reloads the per-channel cards waiting on the user, for the sidebar."
+  def refresh_attention(socket), do: assign(socket, :attention, Attention.summary())
+
   # Channels created, archived, or reopened anywhere (including DMs agents
   # open) show up in every sidebar without a reload.
   defp handle_info({:channels, :changed}, socket), do: {:halt, refresh_nav(socket)}
@@ -69,6 +84,14 @@ defmodule CanopyWeb.Nav do
   # already reflects that.
   defp handle_info({:timeline_any, %{event_type: "message"}}, socket),
     do: {:halt, refresh_unread(socket)}
+
+  # A question or permission card raised, answered, or detached anywhere: the
+  # "needs you" badges follow, so a card in a channel nobody is looking at is seen.
+  defp handle_info({:timeline_any, %{event_type: "question_" <> _}}, socket),
+    do: {:halt, refresh_attention(socket)}
+
+  defp handle_info({:timeline_any, %{event_type: "permission_" <> _}}, socket),
+    do: {:halt, refresh_attention(socket)}
 
   # Schedule changes update the sidebar counts; the page may also want the event.
   defp handle_info({:hold, _what}, socket), do: {:halt, assign(socket, :hold, Hold.reason())}

@@ -46,8 +46,8 @@ defmodule Canopy.Engine do
   The engine's own view, for the turn watchdog: which engine sessions are busy,
   which of those are stuck retrying a failing model call (with the engine's
   message and attempt count), and the permission and question prompts still
-  open, as `:approval_required` / `:question_required` events. `:unknown` when
-  the engine could not answer.
+  open, as `:approval_required` / `:question_required` events whose data
+  carries `replay: true`. `:unknown` when the engine could not answer.
   """
   @type retrying :: %{
           session_id: String.t(),
@@ -99,20 +99,26 @@ defmodule Canopy.Engine do
   """
   @callback compact(ctx, engine_state, session, agent) :: :ok | {:ok, :turn} | {:error, term()}
 
+  @doc "Answers a permission prompt. `{:error, :gone}` when the engine no longer holds it."
   @callback reply_permission(
               ctx,
               engine_state,
               Canopy.PermissionRequests.PermissionRequest.t(),
               :once | :always | :reject
-            ) :: :ok | {:error, term()}
+            ) :: :ok | {:error, :gone} | {:error, term()}
 
-  @doc "`{:error, :gone}` when the engine no longer holds the question."
+  @doc """
+  Answers a question. `{:error, :gone}` when the engine no longer holds it.
+  `{:ok, :as_message}` when the engine could not take the answer in place (a
+  free-text answer to a question that allows none): the adapter released the
+  agent with a rejection, and the runtime delivers the answer as a new message.
+  """
   @callback reply_question(
               ctx,
               engine_state,
               Canopy.QuestionRequests.QuestionRequest.t(),
               {:answered, [[String.t()]]} | :rejected
-            ) :: :ok | {:error, :gone} | {:error, term()}
+            ) :: :ok | {:ok, :as_message} | {:error, :gone} | {:error, term()}
 
   @callback reconcile(ctx, engine_state) :: reconciliation
 

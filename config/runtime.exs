@@ -56,6 +56,12 @@ if config_env() == :dev do
       ]
 
   config :canopy, CanopyWeb.Endpoint, live_reload: [web_console_logger: true, patterns: patterns]
+
+  # How long a Claude Code turn may print nothing before it is killed (120 s by
+  # default). The e2e suite shortens it so a spec can wait past it.
+  if ms = System.get_env("CANOPY_CLAUDE_STALL_MS") do
+    config :canopy, :claude_code, stall_ms: String.to_integer(ms)
+  end
 end
 
 if config_env() == :prod do

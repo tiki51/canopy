@@ -15,6 +15,7 @@ defmodule CanopyWeb.ChannelLiveTest do
     Timeline
   }
 
+  alias Canopy.ClaudeCode.Prompts
   alias Canopy.OpenCode.ClientMock, as: OC
 
   setup :set_mox_global
@@ -791,6 +792,177 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       refute has_element?(view, "#question-#{request.id}")
       assert QuestionRequests.get!(request.id).status == "rejected"
+    end
+
+    test "every question takes an answer in the user's own words, and text alone answers it",
+         ctx do
+      coder =
+        Fixtures.agent_fixture(%{name: "coder#{Fixtures.unique_suffix()}", engine: "claude_code"})
+
+      {:ok, _} = Canopy.Channels.add_agent(ctx.channel, coder)
+
+      session =
+        Fixtures.session_fixture(%{
+          channel: ctx.channel,
+          agent_id: coder.id,
+          engine: "claude_code",
+          engine_session_id: Ecto.UUID.generate(),
+          mcp_token: Canopy.AgentSessions.generate_mcp_token()
+        })
+
+      questions = [
+        %{
+          "question" => "Which color?",
+          "options" => [%{"label" => "Red"}, %{"label" => "Blue"}],
+          "multiple" => false,
+          "custom" => true
+        },
+        %{"question" => "Anything else?", "options" => [], "multiple" => false, "custom" => true}
+      ]
+
+      # the Claude Code tool call that asked is still waiting
+      id = "toolu_live_" <> Fixtures.unique_suffix()
+      :ok = Prompts.open(id, :question, session.engine_session_id, %{"id" => id})
+      on_exit(fn -> Prompts.drop_session(session.engine_session_id) end)
+
+      {:ok, request} =
+        QuestionRequests.record(%{
+          channel_id: ctx.channel.id,
+          agent_session_id: session.id,
+          opencode_question_id: id,
+          questions: questions,
+          status: "pending"
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      assert has_element?(
+               view,
+               ~s(#question-#{request.id}-custom-0[placeholder="Or answer in your own words…"])
+             )
+
+      # a question with no options: the text box is the answer, and required
+      assert has_element?(
+               view,
+               ~s(#question-#{request.id}-custom-1[placeholder="Your answer"][required])
+             )
+
+      view
+      |> form("#question-#{request.id} form", %{
+        "custom" => %{"0" => "Green, really", "1" => "ship it on Friday"}
+      })
+      |> render_submit()
+
+      refute has_element?(view, "#question-#{request.id}")
+      assert {:ok, {:answered, [["Green, really"], ["ship it on Friday"]]}} = Prompts.await(id)
+
+      assert %{status: "answered", answers: [["Green, really"], ["ship it on Friday"]]} =
+               QuestionRequests.get!(request.id)
+    end
+
+    test "a detached card says the agent stopped waiting; answering it posts the answer", ctx do
+      {:ok, request} = ask_question(ctx)
+      {:ok, request} = QuestionRequests.detach(request)
+      test_pid = self()
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, "#question-#{request.id}-detached", "stopped waiting")
+      refute has_element?(view, "#awaiting-bar")
+
+      expect(OC, :reply_question, fn _dir, "que_live_1", _answers, _opts ->
+        {:error, {:http, 404, %{}}}
+      end)
+
+      expect(OC, :prompt_async, fn _dir, _sid, body, _opts ->
+        send(test_pid, {:woken, body})
+        {:ok, ""}
+      end)
+
+      view
+      |> form("#question-#{request.id} form", %{"answers" => %{"0" => ["Keep as is"]}})
+      |> render_submit()
+
+      assert_receive {:woken, %{parts: [%{text: text} | _]}}, 2_000
+      assert text =~ "Answer to your question"
+      assert text =~ "Keep as is"
+      refute has_element?(view, "#question-#{request.id}")
+      assert render(view) =~ "question (sent as a message)"
+      assert has_element?(view, "#timeline", "@#{ctx.agent.name} Answer to your question")
+    end
+
+    test "answering a card in an archived channel says to unarchive it and keeps the card",
+         ctx do
+      {:ok, request} = ask_question(ctx)
+      {:ok, _} = Canopy.Channels.archive(ctx.channel)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      html =
+        view
+        |> form("#question-#{request.id} form", %{"answers" => %{"0" => ["Keep as is"]}})
+        |> render_submit()
+
+      assert html =~ "Unarchive (Reopen) the channel to answer"
+      assert has_element?(view, "#question-#{request.id}")
+      assert QuestionRequests.get!(request.id).status == "pending"
+    end
+
+    test "a banner says who is waiting on an answer and the composer knows it", ctx do
+      {:ok, request} = ask_question(ctx)
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, "#awaiting-bar", "@#{ctx.agent.name} is waiting on your answer")
+      assert has_element?(view, ~s(#awaiting-bar a[href="#question-#{request.id}"]))
+      assert has_element?(view, ~s(#composer-form[data-awaiting*="#{ctx.agent.name}"]))
+      assert has_element?(view, "#composer-awaiting-hint")
+
+      # once the agent stops waiting, the card stays but nobody is blocked
+      {:ok, _} = QuestionRequests.detach(request)
+      refute has_element?(view, "#awaiting-bar")
+      assert has_element?(view, ~s(#composer-form[data-awaiting="[]"]))
+      assert has_element?(view, "#question-#{request.id}")
+    end
+
+    test "a question in another channel shows a needs-you badge in the sidebar", ctx do
+      other =
+        Fixtures.channel_fixture(%{
+          repository_id: ctx.repository.id,
+          owner_agent_id: ctx.agent.id
+        })
+
+      other_session = Fixtures.session_fixture(%{channel: other, agent_id: ctx.agent.id})
+
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      refute has_element?(view, "#attention-#{other.id}")
+
+      {:ok, request} =
+        QuestionRequests.record(%{
+          channel_id: other.id,
+          agent_session_id: other_session.id,
+          opencode_question_id: "que_other_" <> Fixtures.unique_suffix(),
+          questions: [%{"question" => "Go on?", "options" => [%{"label" => "Yes"}]}],
+          status: "pending"
+        })
+
+      assert has_element?(view, "#attention-#{other.id}[data-attention='1']")
+
+      {:ok, _} = QuestionRequests.resolve(request, :rejected)
+      refute has_element?(view, "#attention-#{other.id}")
+    end
+
+    test "a member blocked on a card shows as waiting on you, and can still be aborted", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        Timeline.topic(ctx.channel.id),
+        {:agent_status, ctx.agent.id, :awaiting_user}
+      )
+
+      assert has_element?(view, "#member-#{ctx.agent.id}-awaiting", "waiting on you")
+      assert has_element?(view, ~s(#member-#{ctx.agent.id} [data-status="awaiting_user"]))
+      assert has_element?(view, "#abort-#{ctx.agent.id}")
+      refute has_element?(view, "#reset-session-#{ctx.agent.id}")
     end
   end
 

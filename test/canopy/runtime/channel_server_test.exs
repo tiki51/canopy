@@ -1422,7 +1422,8 @@ defmodule Canopy.Runtime.ChannelServerReconcileTest do
              PermissionRequests.pending_for_channel(ctx.channel.id)
 
     refute_received {:timeline, %{event_type: "agent_turn_completed"}}
-    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
+    # the replayed prompt marks the turn as waiting on the user
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :awaiting_user}
   end
 
   test "a reconnect leaves a turn alone when OpenCode still reports it busy and tolerates a 400 on permissions",

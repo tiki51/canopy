@@ -68,6 +68,9 @@ defmodule Canopy.Settings do
   @doc "Whether a channel runs one agent turn at a time (others queue) or lets agents run in parallel."
   def serialize_turns?, do: get().serialize_turns
 
+  @doc "How long a Claude Code question blocks its turn before going async, in milliseconds."
+  def question_wait_ms, do: :timer.minutes(get().question_wait_minutes || 10)
+
   @doc """
   How many agent turns a channel allows between user messages before pausing,
   or nil when pausing is turned off.

@@ -24,6 +24,9 @@ defmodule Canopy.QuestionRequests.QuestionRequest do
     field :tool_call_id, :string
     field :status, :string, default: "pending"
     field :resolved_at, :utc_datetime_usec
+    # set when the agent stopped waiting (its turn ended, or the wait ran out);
+    # the card stays answerable and an answer then wakes the agent
+    field :detached_at, :utc_datetime_usec
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent_session, Canopy.AgentSessions.AgentSession
@@ -43,7 +46,8 @@ defmodule Canopy.QuestionRequests.QuestionRequest do
       :answers,
       :tool_call_id,
       :status,
-      :resolved_at
+      :resolved_at,
+      :detached_at
     ])
     |> validate_required([
       :channel_id,
@@ -51,10 +55,18 @@ defmodule Canopy.QuestionRequests.QuestionRequest do
       :opencode_question_id,
       :status
     ])
-    |> validate_length(:questions, min: 1)
+    |> validate_questions()
     |> validate_inclusion(:status, @statuses)
     |> foreign_key_constraint(:channel_id)
     |> foreign_key_constraint(:agent_session_id)
     |> unique_constraint(:opencode_question_id)
+  end
+
+  # An empty list is the field's default, so validate_length would never see it
+  # as a change: a question card with nothing to answer would be stored.
+  defp validate_questions(changeset) do
+    if get_field(changeset, :questions) in [nil, []],
+      do: add_error(changeset, :questions, "must hold at least one question"),
+      else: changeset
   end
 end

@@ -17,6 +17,7 @@ defmodule CanopyWeb.ChannelLive do
     Agents,
     Channels,
     Costs,
+    Delegations,
     Documents,
     Messages,
     Handoffs,
@@ -37,6 +38,7 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Tasks.Task
 
   @page_size 100
+  @archived_answer "This channel is archived. Unarchive (Reopen) the channel to answer."
   @branch_interval 15_000
 
   # -- Lifecycle ---------------------------------------------------------------
@@ -118,7 +120,8 @@ defmodule CanopyWeb.ChannelLive do
       Map.new(members, fn member -> {member.id, Map.get(statuses, member.id, :idle)} end)
 
     telemetry =
-      for {agent_id, :busy} <- agent_statuses, into: %{} do
+      for {agent_id, status} when status in [:busy, :awaiting_user] <- agent_statuses,
+          into: %{} do
         {agent_id, Activity.fold_all(Runtime.telemetry(id, agent_id))}
       end
 
@@ -141,6 +144,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
     |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
+    |> assign_cards()
     |> assign(:editing_task?, false)
     |> assign(:editing_members?, false)
     |> assign(:addable_agents, [])
@@ -297,18 +301,26 @@ defmodule CanopyWeb.ChannelLive do
     {:noreply, socket |> insert_event(event) |> react_to(event)}
   end
 
+  # Activity means the agent is working, unless it is blocked on a card: only
+  # the runtime's own status change ends that.
   def handle_info({:telemetry, agent_id, %Event{} = event}, socket) do
     card = Activity.fold(event, Map.get(socket.assigns.telemetry, agent_id, Activity.new()))
+
+    statuses =
+      Map.update(socket.assigns.agent_statuses, agent_id, :busy, fn
+        :awaiting_user -> :awaiting_user
+        _ -> :busy
+      end)
 
     {:noreply,
      socket
      |> assign(:telemetry, Map.put(socket.assigns.telemetry, agent_id, card))
-     |> assign(:agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, :busy))}
+     |> assign(:agent_statuses, statuses)}
   end
 
   def handle_info({:agent_status, agent_id, status}, socket) do
     telemetry =
-      if status == :busy,
+      if status in [:busy, :awaiting_user],
         do: socket.assigns.telemetry,
         else: Map.delete(socket.assigns.telemetry, agent_id)
 
@@ -467,23 +479,75 @@ defmodule CanopyWeb.ChannelLive do
   defp refresh_handoffs(socket),
     do: assign(socket, :pending_handoffs, Handoffs.pending_for_channel(cid(socket)))
 
-  defp refresh_permissions(socket),
-    do: assign(socket, :pending_permissions, PermissionRequests.pending_for_channel(cid(socket)))
+  defp refresh_permissions(socket) do
+    socket
+    |> assign(:pending_permissions, PermissionRequests.pending_for_channel(cid(socket)))
+    |> assign_cards()
+  end
 
-  defp refresh_questions(socket),
-    do: assign(socket, :pending_questions, QuestionRequests.pending_for_channel(cid(socket)))
+  defp refresh_questions(socket) do
+    socket
+    |> assign(:pending_questions, QuestionRequests.pending_for_channel(cid(socket)))
+    |> assign_cards()
+  end
 
-  defp drop_question(socket, id),
-    do:
-      assign(
-        socket,
-        :pending_questions,
-        Enum.reject(socket.assigns.pending_questions, &(&1.id == id))
-      )
+  defp drop_question(socket, id) do
+    socket
+    |> assign(:pending_questions, Enum.reject(socket.assigns.pending_questions, &(&1.id == id)))
+    |> assign_cards()
+  end
 
-  # One list of chosen labels per question, in the order OpenCode asked them.
-  # A free-text answer rides along with whatever was ticked; every question
-  # needs something, since OpenCode expects an answer for each.
+  defp drop_permission(socket, id) do
+    socket
+    |> assign(
+      :pending_permissions,
+      Enum.reject(socket.assigns.pending_permissions, &(&1.id == id))
+    )
+    |> assign_cards()
+  end
+
+  # What the pending cards imply, worked out once per change: the delegation a
+  # child session's card names (so it is not mistaken for the agent's main
+  # session asking), and the agents still blocked on a card (the banner above
+  # the composer and the composer's hint).
+  defp assign_cards(socket) do
+    %{pending_questions: questions, pending_permissions: permissions, names: names} =
+      socket.assigns
+
+    child_ids =
+      (questions ++ permissions)
+      |> Enum.map(& &1.agent_session)
+      |> Enum.filter(&match?(%{parent_session_id: parent} when is_binary(parent), &1))
+      |> Enum.map(& &1.id)
+      |> Enum.uniq()
+
+    socket
+    |> assign(:card_delegations, Delegations.ids_by_child_session(child_ids))
+    |> assign(:waiting_on_user, waiting_on_user(questions, permissions, names))
+  end
+
+  # The agents a pending card still blocks (not detached), for the banner
+  # above the composer and the composer's hint: `[{name, dom_id}]`, one per
+  # agent, pointing at its first card.
+  defp waiting_on_user(questions, permissions, names) do
+    (Enum.map(questions, &{&1, "question-#{&1.id}"}) ++
+       Enum.map(permissions, &{&1, "permission-#{&1.id}"}))
+    |> Enum.filter(fn {request, _} -> is_nil(request.detached_at) end)
+    |> Enum.sort_by(fn {request, _} -> request.inserted_at end, DateTime)
+    |> Enum.map(fn {request, dom_id} -> {card_agent_name(request, names), dom_id} end)
+    |> Enum.uniq_by(&elem(&1, 0))
+  end
+
+  defp card_agent_name(%{agent_session: %{agent: %{name: name}}}, _names), do: name
+
+  defp card_agent_name(%{agent_session: %{agent_id: id}}, names),
+    do: Map.get(names, id, "agent")
+
+  defp card_agent_name(_request, _names), do: "agent"
+
+  # One list of chosen labels per question, in question order. A free-text
+  # answer rides along with whatever was ticked, and is enough on its own;
+  # every question needs something, since the engine expects an answer for each.
   defp build_answers(request, params) do
     chosen = Map.get(params, "answers", %{})
     custom = Map.get(params, "custom", %{})
@@ -721,8 +785,10 @@ defmodule CanopyWeb.ChannelLive do
       when reply in ~w(once always reject) do
     case Runtime.respond_permission(cid(socket), id, String.to_existing_atom(reply)) do
       {:ok, _request} ->
-        pending = Enum.reject(socket.assigns.pending_permissions, &(&1.id == id))
-        {:noreply, assign(socket, :pending_permissions, pending)}
+        {:noreply, drop_permission(socket, id)}
+
+      {:error, :archived} ->
+        {:noreply, put_flash(socket, :error, @archived_answer)}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not answer permission: #{inspect(reason)}")}
@@ -743,6 +809,9 @@ defmodule CanopyWeb.ChannelLive do
         case Runtime.respond_question(cid(socket), id, {:answered, answers}) do
           {:ok, _request} ->
             {:noreply, drop_question(socket, id)}
+
+          {:error, :archived} ->
+            {:noreply, put_flash(socket, :error, @archived_answer)}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, "Could not answer: #{inspect(reason)}")}
@@ -993,6 +1062,7 @@ defmodule CanopyWeb.ChannelLive do
       agents={@agents}
       dms={@dms}
       unread={@unread}
+      attention={@attention}
       schedule_counts={@schedule_counts}
       hold={@hold}
       current_path={@current_path}
@@ -1100,8 +1170,18 @@ defmodule CanopyWeb.ChannelLive do
           root={repo_root(@channel)}
         />
 
-        <.permission_card :for={request <- @pending_permissions} request={request} names={@names} />
-        <.question_card :for={request <- @pending_questions} request={request} names={@names} />
+        <.permission_card
+          :for={request <- @pending_permissions}
+          request={request}
+          names={@names}
+          delegation_id={Map.get(@card_delegations, request.agent_session_id)}
+        />
+        <.question_card
+          :for={request <- @pending_questions}
+          request={request}
+          names={@names}
+          delegation_id={Map.get(@card_delegations, request.agent_session_id)}
+        />
       </div>
 
       <.limit_bar
@@ -1110,8 +1190,10 @@ defmodule CanopyWeb.ChannelLive do
         spent={@spent}
       />
       <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
+      <.awaiting_bar :if={!Channels.archived?(@channel)} waiting={@waiting_on_user} />
       <.composer
         :if={!Channels.archived?(@channel)}
+        waiting={@waiting_on_user}
         form={@composer}
         agent_names={@agent_names}
         channel_names={@channel_names}
@@ -1375,8 +1457,15 @@ defmodule CanopyWeb.ChannelLive do
           >
             <Layouts.status_dot status={Map.get(@agent_statuses, member.id, :idle)} />
             <span>@{member.name}</span>
+            <span
+              :if={Map.get(@agent_statuses, member.id) == :awaiting_user}
+              id={"member-#{member.id}-awaiting"}
+              class="text-xs text-info"
+            >
+              waiting on you
+            </span>
             <button
-              :if={Map.get(@agent_statuses, member.id) == :busy}
+              :if={Map.get(@agent_statuses, member.id) in [:busy, :awaiting_user]}
               type="button"
               id={"abort-#{member.id}"}
               class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-error"
@@ -1387,7 +1476,7 @@ defmodule CanopyWeb.ChannelLive do
               <.icon name="hero-stop-circle-mini" class="size-4" />
             </button>
             <button
-              :if={Map.get(@agent_statuses, member.id) != :busy}
+              :if={Map.get(@agent_statuses, member.id) not in [:busy, :awaiting_user]}
               type="button"
               id={"reset-session-#{member.id}"}
               class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/40 hover:text-base-content"
@@ -1582,6 +1671,28 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  attr :waiting, :list, required: true, doc: "`[{agent_name, card_dom_id}]`"
+
+  # Agents blocked on a card in this channel. Without it, an agent waiting on
+  # the user looks the same as one at work.
+  defp awaiting_bar(assigns) do
+    ~H"""
+    <div
+      :if={@waiting != []}
+      id="awaiting-bar"
+      class="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-info/40 bg-info/10 px-3 py-2 text-sm"
+    >
+      <span :for={{name, dom_id} <- @waiting} class="flex items-center gap-2">
+        <.icon name="hero-question-mark-circle-mini" class="size-4 text-info" />
+        <span>@{name} is waiting on your answer</span>
+        <a href={"#" <> dom_id} id={"awaiting-show-#{dom_id}"} class="btn btn-xs btn-info btn-soft">
+          Show
+        </a>
+      </span>
+    </div>
+    """
+  end
+
   attr :channel, :map, required: true
 
   defp archived_bar(assigns) do
@@ -1631,6 +1742,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :picked, :list, required: true
   attr :replying_to, :map, default: nil
   attr :user_name, :string, required: true
+  attr :waiting, :list, default: [], doc: "`[{agent_name, card_dom_id}]` blocked on a card"
 
   defp composer(assigns) do
     ~H"""
@@ -1671,8 +1783,17 @@ defmodule CanopyWeb.ChannelLive do
         phx-submit="send"
         data-agents={Jason.encode!(@agent_names)}
         data-channels={Jason.encode!(@channel_names)}
+        data-awaiting={Jason.encode!(Enum.map(@waiting, &elem(&1, 0)))}
         class="relative"
       >
+        <%!-- Filled by the Composer hook when the draft mentions an agent that
+             is blocked on a card: a message is never taken as the card's answer. --%>
+        <div
+          id="composer-awaiting-hint"
+          phx-update="ignore"
+          class="mb-1.5 hidden rounded-lg border border-info/30 bg-info/5 px-2.5 py-1.5 text-xs text-base-content/70"
+        >
+        </div>
         <div
           id="composer-suggestions"
           phx-update="ignore"

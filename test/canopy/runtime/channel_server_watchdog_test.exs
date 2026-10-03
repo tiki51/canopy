@@ -56,6 +56,19 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     end)
   end
 
+  # Backdates the moment a turn started waiting on the user past the slow window.
+  defp silence_awaiting(pid) do
+    :sys.replace_state(pid, fn st ->
+      %{
+        st
+        | turns:
+            Map.new(st.turns, fn {k, t} ->
+              {k, Map.update(t, :awaiting_since, 0, &(&1 - 1_800_000))}
+            end)
+      }
+    end)
+  end
+
   defp tick(pid) do
     send(pid, :watchdog)
     :sys.get_state(pid)
@@ -113,7 +126,11 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     tick(ctx.pid)
 
     refute_received {:timeline, %{event_type: "agent_turn_completed"}}
-    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
+    # the listed question is replayed into a card, and the turn waits on the user
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :awaiting_user}
+
+    assert [%{opencode_question_id: "que_1"}] =
+             QuestionRequests.pending_for_channel(ctx.channel.id)
   end
 
   test "a turn still busy is not reconciled at all while its events keep arriving", ctx do
@@ -126,7 +143,7 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :busy}
   end
 
-  test "reaping an orphaned turn clears the phantom question card left behind", ctx do
+  test "reaping an orphaned turn detaches the question card it left behind", ctx do
     sid = start_turn(ctx)
 
     emit(sid, :question_required, %{
@@ -136,14 +153,185 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
     assert_receive {:timeline, %{event_type: "question_requested"}}, 2_000
     assert [_] = QuestionRequests.pending_for_channel(ctx.channel.id)
 
+    # a turn waiting on the user is only checked after the slow window
     silence_turn(ctx.pid)
+    tick(ctx.pid)
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+
+    silence_awaiting(ctx.pid)
 
     # OpenCode has forgotten both the session and the question it was holding
     expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
     tick(ctx.pid)
 
+    assert_receive {:timeline, %{event_type: "question_detached"}}, 2_000
     assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+
+    # the card stays answerable: an answer now wakes the agent
+    assert [%{opencode_question_id: "que_gone", detached_at: %DateTime{}}] =
+             QuestionRequests.pending_for_channel(ctx.channel.id)
+  end
+
+  # -- Turns waiting on the user ------------------------------------------------
+
+  defp ask(sid, id \\ "que_1") do
+    emit(sid, :question_required, %{
+      request: %{"id" => id, "sessionID" => sid, "questions" => [question()]}
+    })
+
+    assert_receive {:timeline, %{event_type: "question_requested"}}, 2_000
+  end
+
+  test "a turn waiting on the user is not reconciled until the slow window passes", ctx do
+    sid = start_turn(ctx)
+    ask(sid)
+    silence_turn(ctx.pid)
+
+    # quiet for long past the stall window, but waiting on a card: no engine calls
+    expect(OC, :session_status, 0, fn _dir, _opts -> {:ok, %{}} end)
+    tick(ctx.pid)
+    verify!(OC)
+
+    silence_awaiting(ctx.pid)
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{sid => %{"type" => "busy"}}} end)
+    tick(ctx.pid)
+
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :awaiting_user}
+  end
+
+  test "a 404 on the question list while a card waits does not reap its turn", ctx do
+    sid = start_turn(ctx)
+    ask(sid)
+    silence_turn(ctx.pid)
+    silence_awaiting(ctx.pid)
+
+    # an OpenCode build without the endpoint reports the session idle
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+    expect(OC, :pending_questions, fn _dir, _opts -> {:error, {:http, 404, "Not Found"}} end)
+    tick(ctx.pid)
+
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :awaiting_user}
+    assert [%{detached_at: nil}] = QuestionRequests.pending_for_channel(ctx.channel.id)
+  end
+
+  test "a 404 on the question list counts only Canopy's own OpenCode cards as blocked", ctx do
+    # one prompt for the owner's turn, one for the helper's
+    sid = start_turn(ctx, 2)
+    ask(sid)
+
+    helper = Fixtures.agent_fixture(%{name: "helper" <> Fixtures.unique_suffix()})
+    {:ok, _} = Canopy.Channels.add_agent(ctx.channel, helper)
+    helper_session = Fixtures.session_fixture(%{channel: ctx.channel, agent_id: helper.id})
+
+    # the owner waits on the user, so the helper starts beside it
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{helper.name} go")
+    helper_sid = helper_session.engine_session_id
+    assert_receive {:prompted, _}, 2_000
+
+    silence_turn(ctx.pid)
+    silence_awaiting(ctx.pid)
+
+    # an OpenCode build without the endpoint reports both sessions idle
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+    expect(OC, :pending_questions, fn _dir, _opts -> {:error, {:http, 404, "Not Found"}} end)
+    tick(ctx.pid)
+
+    # the helper's turn had nothing open: it is finished; the owner's is blocked
+    assert_receive {:timeline, %{event_type: "agent_turn_completed", agent_id: agent_id}}, 2_000
+    assert agent_id == helper.id
+    refute_receive {:timeline, %{event_type: "agent_turn_completed"}}, 200
+
+    assert %{turns: turns} = :sys.get_state(ctx.pid)
+    assert Map.has_key?(turns, sid)
+    refute Map.has_key?(turns, helper_sid)
+  end
+
+  test "after a reconcile, a turn still waiting on the user waits another slow window", ctx do
+    sid = start_turn(ctx)
+    ask(sid)
+    assert_receive {:telemetry, _, %{type: :question_required}}, 2_000
+    silence_turn(ctx.pid)
+    silence_awaiting(ctx.pid)
+
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+
+    expect(OC, :pending_questions, fn _dir, _opts ->
+      {:ok, [%{"id" => "que_1", "sessionID" => sid, "questions" => [question()]}]}
+    end)
+
+    tick(ctx.pid)
+
+    # the card already showing is not announced again
+    refute_received {:telemetry, _, %{type: :question_required}}
+    refute_received {:timeline, %{event_type: "question_requested"}}
+
+    # and the next ticks leave the engine alone until the window passes again
+    expect(OC, :session_status, 0, fn _dir, _opts -> {:ok, %{}} end)
+    tick(ctx.pid)
+    tick(ctx.pid)
+    verify!(OC)
+    assert Runtime.status(ctx.channel.id) == %{ctx.agent.id => :awaiting_user}
+  end
+
+  test "only an event marked as a replay brings back a card resolved here", ctx do
+    sid = start_turn(ctx)
+    ask(sid)
+    [request] = QuestionRequests.pending_for_channel(ctx.channel.id)
+    {:ok, _} = QuestionRequests.resolve(request, :rejected)
+    assert_receive {:timeline, %{event_type: "question_resolved"}}, 2_000
+
+    # raw_type is for debugging only: it does not make an event a replay
+    broadcast(sid, %Canopy.Engine.Event{
+      type: :question_required,
+      session_id: sid,
+      raw_type: "reconcile",
+      data: %{request: %{"id" => "que_1", "sessionID" => sid, "questions" => [question()]}}
+    })
+
+    _ = :sys.get_state(ctx.pid)
+    refute_received {:timeline, %{event_type: "question_requested"}}
     assert QuestionRequests.pending_for_channel(ctx.channel.id) == []
+
+    broadcast(sid, %Canopy.Engine.Event{
+      type: :question_required,
+      session_id: sid,
+      data: %{
+        request: %{"id" => "que_1", "sessionID" => sid, "questions" => [question()]},
+        replay: true
+      }
+    })
+
+    assert_receive {:timeline, %{event_type: "question_requested"}}, 2_000
+    assert [_] = QuestionRequests.pending_for_channel(ctx.channel.id)
+  end
+
+  test "a question resolved here that the engine still lists comes back as a card", ctx do
+    sid = start_turn(ctx)
+    ask(sid)
+    [request] = QuestionRequests.pending_for_channel(ctx.channel.id)
+    {:ok, _} = QuestionRequests.resolve(request, :rejected)
+    assert_receive {:timeline, %{event_type: "question_resolved"}}, 2_000
+    assert QuestionRequests.pending_for_channel(ctx.channel.id) == []
+
+    silence_turn(ctx.pid)
+    silence_awaiting(ctx.pid)
+    expect(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+
+    expect(OC, :pending_questions, fn _dir, _opts ->
+      {:ok, [%{"id" => "que_1", "sessionID" => sid, "questions" => [question()]}]}
+    end)
+
+    tick(ctx.pid)
+
+    assert_receive {:timeline, %{event_type: "question_requested", ref_id: id}}, 2_000
+    assert id == request.id
+
+    assert [%{id: ^id, status: "pending", answers: []}] =
+             QuestionRequests.pending_for_channel(ctx.channel.id)
+
+    refute_received {:timeline, %{event_type: "agent_turn_completed"}}
   end
 
   # -- Retry loops -----------------------------------------------------------
@@ -231,6 +419,14 @@ defmodule Canopy.Runtime.ChannelServerWatchdogTest do
       "options" => [%{"label" => "Keep as is", "description" => "Accept it."}]
     }
   end
+
+  defp broadcast(sid, event),
+    do:
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        EventStream.session_topic(sid),
+        {:engine_event, event}
+      )
 
   defp emit(sid, type, data) do
     Phoenix.PubSub.broadcast(

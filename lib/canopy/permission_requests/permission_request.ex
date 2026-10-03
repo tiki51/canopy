@@ -17,6 +17,9 @@ defmodule Canopy.PermissionRequests.PermissionRequest do
     field :tool_call_id, :string
     field :status, :string, default: "pending"
     field :resolved_at, :utc_datetime_usec
+    # set when the agent stopped waiting (its turn ended, or the wait ran out);
+    # the card stays answerable and an answer then wakes the agent
+    field :detached_at, :utc_datetime_usec
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent_session, Canopy.AgentSessions.AgentSession
@@ -37,7 +40,8 @@ defmodule Canopy.PermissionRequests.PermissionRequest do
       :metadata,
       :tool_call_id,
       :status,
-      :resolved_at
+      :resolved_at,
+      :detached_at
     ])
     |> validate_required([
       :channel_id,
