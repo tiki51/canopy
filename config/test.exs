@@ -20,6 +20,9 @@ config :canopy, CanopyWeb.Endpoint,
   secret_key_base: "/MtOdacxgtug40rj9U5jDzZJdMgmDMIhQqUl60dOgK/3QdtQ5uwxw+UrYw6Ug1Vn",
   server: false
 
+# Phoenix.ConnTest addresses every request to www.example.com.
+config :canopy, extra_hosts: ["www.example.com"]
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

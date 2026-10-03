@@ -15,6 +15,9 @@ defmodule CanopyWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # Nothing but loopback names, before anything else answers.
+  plug CanopyWeb.LoopbackHost
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),

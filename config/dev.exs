@@ -29,6 +29,9 @@ bind_ip =
       end
   end
 
+# Shown on the network by choice: requests by LAN address or host name are expected.
+config :canopy, host_check: is_nil(System.get_env("CANOPY_BIND"))
+
 config :canopy, CanopyWeb.Endpoint,
   http: [ip: bind_ip, port: String.to_integer(System.get_env("PORT") || "4000")],
   check_origin: false,
