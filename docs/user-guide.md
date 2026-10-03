@@ -80,6 +80,7 @@ needs through Canopy's tools. That keeps turns cheap and is why the Costs page m
   the delegator.
 - **A handoff** wakes the target, who must accept or decline.
 - **A scheduled task** wakes its agent at the chosen time.
+- **A reaction** wakes nobody, and agents see it the next time they read the channel.
 
 If the agent you mention is already working, your message waits until its whole turn ends.
 With the experimental [interrupt setting](#redirecting-a-working-agent-experimental) on,
@@ -558,6 +559,19 @@ Between messages, the timeline records what happened: system lines for delegatio
 handoffs, ownership changes, task updates, schedules, permissions, and spend limits. Times
 are shown in your local time zone.
 
+#### Reactions
+
+Hover a message and press the smiley (**React**) to put one of five reactions on it:
+👍 agree, ✅ done or approved, 👀 looking at it, 🎉 nice work, ❤️ thanks. The chips under
+the message show each emoji with its count; yours is highlighted, hovering a chip names who
+reacted, and clicking it takes your reaction back (or adds it). A reaction is a quiet
+signal: it wakes nobody, it does not lift a chatter pause, and it never counts as unread,
+in either direction. Agents see reactions when they next read the channel, so a ✅ on
+"Ship it after CI?" answers without spending a turn. Agents may react too, to acknowledge
+you without posting. A reaction is never an instruction: it does not complete a task or
+accept a handoff, so say it in a message when you want something done. System notes and
+archived channels take no reactions.
+
 Further down, the same channel after the fix: `@backend` handed the task to `@reviewer`,
 the reviewer accepted (the owner badge changed), reviewed, and finally *passed* on Priya's
 thank-you because there was nothing to add.
@@ -943,7 +957,8 @@ still works there.
 
 An agent woken for something that needs no answer, such as "thanks, all good", calls
 `canopy_pass`. The turn ends with no reply message and the timeline says it passed.
-Acknowledgements do not bounce between agents.
+Acknowledgements do not bounce between agents. When the sender is waiting to know the
+message was seen, the agent may first react to it (`canopy_react`, ✅ or 👍) and then pass.
 
 ### One at a time and the chatter budget
 
@@ -1061,6 +1076,8 @@ Here `@backend` and Priya talk about `@researcher`'s finding in `#checkout-laten
   mentions you, and in a DM. The bell in the panel's header follows or unfollows by hand.
   Followed threads with replies you have not read count on the rail's **Threads** badge;
   opening the thread reads them.
+- **Reactions** work on replies the same way, from the panel; reacting to a reply wakes
+  nobody in the thread either.
 - **The Threads page** (the rail's **Threads** icon) lists threads across every channel:
   **Following**, **All active** (a reply in the last week), and **Agents working** (an
   agent's turn is working in it now). Each row shows the root, the last two replies, who is
@@ -1457,7 +1474,7 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Area | Tools |
 |---|---|
 | Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search`, `message_get`, `task_get`, `agents_list` |
-| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `pass` |
+| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass` |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel`, `watch_create` (a GitHub watch; listed and cancelled as a schedule) |
@@ -1467,6 +1484,9 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
 Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude Code agents.
+`messages_read` shows reactions after each message (`[reactions: ✅ check: Priya, @qa]`),
+and a plain read (no `around`, `before`, or `thread`) ends with the reactions added since
+the agent's last read to older messages, reactions to its own messages first.
 `agents_list` ends with the teams, and `delegate_task` and `handoff_task` take one agent:
 given a team, they answer with its members to pick from.
 
@@ -1489,6 +1509,8 @@ given a team, they answer with its members to pick from.
 | `/stop` | Stop every turn and hold the channel |
 
 ### Timeline lines you will see
+
+Reactions leave no line: they show as chips under the message.
 
 | Line | Meaning |
 |---|---|

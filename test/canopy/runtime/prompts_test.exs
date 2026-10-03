@@ -197,6 +197,25 @@ defmodule Canopy.Runtime.PromptsTest do
     refute with_members =~ "Teams here"
   end
 
+  test "the wake offers canopy_react before passing; the preamble explains reactions" do
+    wake =
+      Prompts.new_message(%{channel: "c", sender: "Steven", message_id: "msg_42", thread?: false})
+
+    assert wake =~
+             "call canopy_pass and stop; if the sender is waiting to know you saw it, canopy_react first (✅ done, 👍 agreed, 👀 on it). Never post an acknowledgement."
+
+    agent = %{name: "backend", display_name: nil, role: nil, system_prompt: nil}
+    system = Prompts.system(agent, %{name: "p"}, %{id: "r", path: "/r"})
+    assert system =~ "`canopy_react` to acknowledge a message without waking anyone"
+    assert system =~ "A reaction is not an instruction."
+
+    assert system =~
+             "call `canopy_pass` (after a `canopy_react` if a visible acknowledgement helps)"
+
+    # nothing about reactions varies per wake: the system text stays byte-stable
+    assert Prompts.system(agent, %{name: "p"}, %{id: "r", path: "/r"}) == system
+  end
+
   test "the wake names whole teams; the system text never mentions them" do
     agent = Canopy.Fixtures.agent_fixture(%{name: "teamless"})
     system = Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"})

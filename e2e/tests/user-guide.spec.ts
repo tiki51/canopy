@@ -100,6 +100,15 @@ test.describe("screenshots for the user guide", () => {
     await expect(timeline(page)).toContainText("Approving with two small notes");
     await shot(page, "channel");
 
+    // reactions: the approval's two chips and the open picker
+    const approval = timeline(page).locator("article", { hasText: "Approving with two small notes" }).first();
+    await approval.hover();
+    await approval.locator('[id^="react-msg_"]').click();
+    await expect(approval.locator('[id^="react-picker-"][role="menu"]')).toBeVisible();
+    const box = (await approval.boundingBox())!;
+    await shot(page, "reactions", { clip: { x: box.x, y: box.y, width: box.width, height: box.height + 40 } });
+    await page.mouse.click(5, 5);
+
     // the start of the conversation: root cause with a code block, delegation
     await openThreads(page);
     await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = 0));

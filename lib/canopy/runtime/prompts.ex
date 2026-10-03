@@ -211,7 +211,7 @@ defmodule Canopy.Runtime.Prompts do
     #{thread_lines(thread)}#{members_line}#{teams_line}
     #{inline_body(args)}#{attachments_block(Map.get(args, :attachments, []))}
     #{reply_lines(thread)}
-    If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop. Never post an acknowledgement.
+    If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop; if the sender is waiting to know you saw it, canopy_react first (✅ done, 👍 agreed, 👀 on it). Never post an acknowledgement.
     #{time_line()}
     """
   end

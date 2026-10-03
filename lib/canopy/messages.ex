@@ -17,7 +17,7 @@ defmodule Canopy.Messages do
 
   @default_limit 20
   @max_limit 200
-  @preloads [:agent, :user, :documents]
+  @preloads [:agent, :user, :documents, reactions: [:agent, :user]]
   @max_attachments 10
   @mention_regex ~r/(?<![\w@])@([a-z0-9][a-z0-9_-]*)/i
 
@@ -664,4 +664,29 @@ defmodule Canopy.Messages do
   end
 
   def mark_read(_agent_id, _channel_id, _), do: :ok
+
+  @doc "The newest reaction an agent has seen in a channel through `messages_read`, or nil."
+  def last_reaction_read(agent_id, channel_id) do
+    case Repo.get_by(Canopy.Messages.MessageRead, agent_id: agent_id, channel_id: channel_id) do
+      %{last_reaction_id: id} -> id
+      nil -> nil
+    end
+  end
+
+  @doc """
+  Records the newest reaction an agent has seen in a channel (never moves
+  backwards). It rides on the agent's message read marker, so it is a no-op
+  until the agent has read the channel once.
+  """
+  def mark_reactions_read(agent_id, channel_id, reaction_id) when is_binary(reaction_id) do
+    from(r in Canopy.Messages.MessageRead,
+      where: r.agent_id == ^agent_id and r.channel_id == ^channel_id,
+      where: is_nil(r.last_reaction_id) or r.last_reaction_id < ^reaction_id
+    )
+    |> Repo.update_all(set: [last_reaction_id: reaction_id, updated_at: DateTime.utc_now()])
+
+    :ok
+  end
+
+  def mark_reactions_read(_agent_id, _channel_id, _), do: :ok
 end

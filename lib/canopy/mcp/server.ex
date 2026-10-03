@@ -23,6 +23,7 @@ defmodule Canopy.MCP.Server do
   component(Tools.MessagesSearch, name: "messages_search")
   component(Tools.MessageSend, name: "message_send")
   component(Tools.ThreadReply, name: "thread_reply")
+  component(Tools.React, name: "react")
   component(Tools.TaskGet, name: "task_get")
   component(Tools.TaskUpdate, name: "task_update")
   component(Tools.AgentsList, name: "agents_list")
@@ -60,7 +61,7 @@ defmodule Canopy.MCP.Server do
   component(Tools.WatchCreate, name: "watch_create")
 
   @tool_names ~w(
-    channels_list channel_get messages_read message_get messages_search message_send thread_reply
+    channels_list channel_get messages_read message_get messages_search message_send thread_reply react
     task_get task_update agents_list delegate_task handoff_task handoff_get
     handoff_accept handoff_reject dm_start pass channel_create channel_add_members
     channel_remove_members schedule_create schedules_list schedule_cancel memory_read memory_write

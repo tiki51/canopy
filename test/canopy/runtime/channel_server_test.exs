@@ -997,6 +997,94 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert Map.has_key?(:sys.get_state(ctx.pid), :waiting)
   end
 
+  # A reaction is row state with no timeline event: the server hears only
+  # `{:reactions, _}` on the channel topic, and its catch-all drops it.
+  describe "reactions never wake" do
+    setup ctx do
+      test_pid = self()
+
+      stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+        send(test_pid, {:prompted, sid, body})
+        {:ok, ""}
+      end)
+
+      reviewer_session =
+        Fixtures.session_fixture(%{channel: ctx.channel, agent_id: ctx.reviewer.id})
+
+      Map.put(ctx, :reviewer_session, reviewer_session)
+    end
+
+    defp quiet!(ctx) do
+      _ = :sys.get_state(ctx.pid)
+      refute_received {:prompted, _, _}
+      assert Runtime.status(ctx.channel.id) |> Map.values() |> Enum.all?(&(&1 == :idle))
+    end
+
+    test "the user's or an agent's reaction on a post wakes nobody", ctx do
+      # the owner's own post wakes nobody
+      {:ok, post} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "Merged the fix.")
+      quiet!(ctx)
+
+      assert {:ok, :added} = Canopy.Reactions.toggle(post.id, {:user, ctx.user.id}, "check")
+      assert_receive {:reactions, _}
+      quiet!(ctx)
+
+      assert {:ok, _} =
+               Canopy.MCPHelpers.call(
+                 Canopy.MCP.Tools.React,
+                 %{message: post.id, emoji: "thumbs_up"},
+                 ctx.reviewer_session
+               )
+
+      assert_receive {:reactions, _}
+      quiet!(ctx)
+      refute_receive {:prompted, _, _}, 200
+    end
+
+    test "a reaction on a thread reply wakes neither the reply's author nor the root's", ctx do
+      {:ok, root} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "Which width?")
+      # the root's own author replying wakes nobody
+      {:ok, reply} = Messages.thread_reply(root.id, {:agent, ctx.agent.id}, "390px, I think.")
+      quiet!(ctx)
+
+      assert {:ok, :added} = Canopy.Reactions.add(reply.id, {:user, ctx.user.id}, "eyes")
+      assert {:ok, :added} = Canopy.Reactions.add(reply.id, {:agent, ctx.reviewer.id}, "check")
+      assert_receive {:reactions, %{thread_id: thread_id}}
+      assert thread_id == root.id
+      quiet!(ctx)
+      refute_receive {:prompted, _, _}, 200
+    end
+
+    test "a reaction leaves a chatter pause in place; the user's next message lifts it", ctx do
+      {:ok, _} = Canopy.Settings.update(%{chatter_pause: true, chatter_limit: 2})
+      owner_sid = ctx.session.engine_session_id
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "what do you think?")
+      assert_receive {:prompted, ^owner_sid, _}, 2_000
+      emit(owner_sid, :agent_completed, %{})
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "The index.")
+      assert_receive {:prompted, ^owner_sid, _}, 2_000
+      emit(owner_sid, :agent_completed, %{})
+
+      {:ok, held} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "And more.")
+      assert_receive {:chatter, :paused}, 2_000
+      assert Runtime.paused?(ctx.channel.id)
+
+      assert {:ok, :added} = Canopy.Reactions.add(held.id, {:user, ctx.user.id}, "thumbs_up")
+      assert_receive {:reactions, _}
+      _ = :sys.get_state(ctx.pid)
+      assert Runtime.paused?(ctx.channel.id)
+      refute_received {:chatter, :resumed}
+      refute_receive {:prompted, _, _}, 200
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "carry on")
+      assert_receive {:chatter, :resumed}, 1_000
+      assert_receive {:prompted, ^owner_sid, _}, 2_000
+      refute Runtime.paused?(ctx.channel.id)
+    end
+  end
+
   describe "thread turns" do
     test "a reply in a thread starts a turn for that thread; its lines and closing text stay there",
          ctx do

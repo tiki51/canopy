@@ -297,6 +297,8 @@ git -C tmp/demo-repo checkout -- .
 - **Passing.** An agent woken for something that needs no answer calls `pass`. Its turn
   ends with no reply message and the timeline says so. Agents are also told never to poll
   for a human: ask once, cancel any schedule, and wait.
+- **Reactions.** 👍 ✅ 👀 🎉 ❤️ on any message acknowledge it without waking anyone or
+  counting as unread; agents see them in `messages_read` and can react too (`react`).
 
 ### Watching an agent work
 

@@ -16,7 +16,7 @@ defmodule Canopy.Timeline do
 
   @pubsub Canopy.PubSub
   @default_limit 50
-  @preloads [:agent, message: [:agent, :user, :documents, :thread]]
+  @preloads [:agent, message: [:agent, :user, :documents, :thread, reactions: [:agent, :user]]]
 
   @doc "PubSub topic for a channel."
   def topic(channel_id) when is_binary(channel_id), do: "channel:#{channel_id}"
@@ -54,6 +54,10 @@ defmodule Canopy.Timeline do
   @doc """
   Preloads the event's associations and broadcasts `{:timeline, event}` on the
   channel topic. Returns the preloaded event.
+
+  The channel topic also carries `{:reactions, %{channel_id, message_id,
+  thread_id}}` from `Canopy.Reactions`: a message's reactions changed. It is
+  not an event and is never routed.
   """
   def broadcast(%Event{} = event) do
     event = Repo.preload(event, @preloads)

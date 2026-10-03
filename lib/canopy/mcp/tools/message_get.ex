@@ -6,7 +6,6 @@ defmodule Canopy.MCP.Tools.MessageGet do
 
   use Anubis.Server.Component, type: :tool
 
-  alias Canopy.{Channels, Messages}
   alias Canopy.MCP.{Format, Tool}
 
   schema do
@@ -17,27 +16,9 @@ defmodule Canopy.MCP.Tools.MessageGet do
   @impl true
   def execute(params, frame) do
     Tool.run(params, frame, fn ctx, params ->
-      with {:ok, message} <- find(Map.get(params, :id)),
-           :ok <- readable(ctx, message) do
+      with {:ok, message} <- Tool.readable_message(ctx, Map.get(params, :id)) do
         {:ok, Format.message_line(message, truncate: nil)}
       end
     end)
-  end
-
-  defp find(id) do
-    case Tool.blank_to_nil(id) && Messages.get(id) do
-      %Messages.Message{} = message -> {:ok, message}
-      _ -> {:error, "unknown message #{inspect(id)}"}
-    end
-  end
-
-  defp readable(ctx, message) do
-    channel = Channels.get!(message.channel_id)
-
-    cond do
-      channel.repository_id != ctx.repository.id -> {:error, "unknown message"}
-      not Channels.member?(channel, ctx.agent) -> {:error, "not a member of ##{channel.name}"}
-      true -> :ok
-    end
   end
 end

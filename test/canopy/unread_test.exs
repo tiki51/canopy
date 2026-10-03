@@ -5,6 +5,23 @@ defmodule Canopy.UnreadTest do
 
   alias Canopy.{Messages, Threads, Unread}
 
+  test "a reaction never counts as unread, in the channel or its thread" do
+    %{channel: channel, agent: agent, user: user} = scenario()
+    {:ok, mine} = Messages.post_user_message(channel.id, user.id, "Ship it after CI?")
+    {:ok, reply} = Messages.thread_reply(mine.id, {:user, user.id}, "and the docs")
+    :ok = Unread.mark_read(channel.id, user)
+    :ok = Threads.mark_read(mine.id, user)
+    summary = Unread.summary(user)
+    threads = Unread.thread_summary(user)
+
+    {:ok, :added} = Canopy.Reactions.add(mine.id, {:agent, agent.id}, "check")
+    {:ok, :added} = Canopy.Reactions.add(reply.id, {:agent, agent.id}, "eyes")
+
+    assert Unread.summary(user) == summary
+    refute Map.has_key?(Unread.summary(user), channel.id)
+    assert Unread.thread_summary(user) == threads
+  end
+
   test "counts agent messages since the last read, and those that mention the user by name" do
     %{channel: channel, agent: agent, user: user} = scenario()
     other = channel_fixture(%{repository_id: channel.repository_id})

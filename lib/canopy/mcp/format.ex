@@ -20,14 +20,14 @@ defmodule Canopy.MCP.Format do
 
   @doc """
   `[msg_01…] @backend (2m ago): body`, with a thread marker for replies and
-  the attached documents, if any, after the body.
+  the attached documents and the reactions, if any, after the body.
   """
   def message_line(%Message{} = message, opts \\ []) do
     body =
       if Keyword.get(opts, :bodies, true) do
         ": " <>
           shortened(body_or_placeholder(message), Keyword.get(opts, :truncate, nil)) <>
-          attachments_suffix(message)
+          attachments_suffix(message) <> reactions_suffix(message)
       else
         ""
       end
@@ -59,6 +59,32 @@ defmodule Canopy.MCP.Format do
   end
 
   def attachments_suffix(_), do: ""
+
+  @doc """
+  ` [reactions: ✅ check: Steven, @qa; 👀 eyes: @frontend]` or an empty
+  string. The glyph and the key, so a model that does not render emoji still
+  reads it; reactors are named the way senders are.
+  """
+  def reactions_suffix(%Message{reactions: reactions}) when is_list(reactions) do
+    case Canopy.Reactions.group(reactions) do
+      [] ->
+        ""
+
+      groups ->
+        " [reactions: " <>
+          Enum.map_join(groups, "; ", fn group ->
+            "#{group.glyph} #{group.key}: " <> Enum.map_join(group.reactions, ", ", &reactor/1)
+          end) <> "]"
+    end
+  end
+
+  def reactions_suffix(_), do: ""
+
+  @doc "Who made a reaction: `@name` for an agent, the display name for the user."
+  def reactor(%{agent: %{name: name}}) when is_binary(name), do: "@" <> name
+  def reactor(%{user: %{display_name: name}}) when is_binary(name), do: name
+  def reactor(%{agent_id: id}) when is_binary(id), do: id
+  def reactor(_), do: "the user"
 
   @doc "`doc_… report.md (text, 12 KB)`."
   def document_ref(document) do

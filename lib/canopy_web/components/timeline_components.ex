@@ -57,6 +57,10 @@ defmodule CanopyWeb.TimelineComponents do
   attr :activity, :map, default: %{}
   attr :receipt, :map, default: nil
 
+  attr :reactable, :boolean,
+    default: false,
+    doc: "the user may react (not in an archived channel)"
+
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
     <div id={@id} data-scroll-target={@thread[:target] && "true"}>
@@ -74,6 +78,7 @@ defmodule CanopyWeb.TimelineComponents do
         highlight={@thread[:highlight] == true}
         target={@thread[:target] == true}
         receipt={@receipt}
+        reactable={@reactable}
       />
       <div
         :if={is_integer(@thread[:divider])}
@@ -140,6 +145,8 @@ defmodule CanopyWeb.TimelineComponents do
   attr :receipt, :map,
     default: nil,
     doc: "`%{event_id, tools, duration_ms}` of the turn that posted it"
+
+  attr :reactable, :boolean, default: false, doc: "show React and make the chips toggle"
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -223,9 +230,14 @@ defmodule CanopyWeb.TimelineComponents do
             {receipt_text(@receipt)}
           </.link>
           <div
-            :if={@thread_href || @link}
+            :if={@thread_href || @link || @reactable}
             class="message-actions ml-auto flex items-center gap-0.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100"
           >
+            <.react_button
+              :if={@reactable}
+              message={@message}
+              prefix={attachment_prefix(@dom_prefix)}
+            />
             <.link
               :if={@thread_href}
               patch={@thread_href}
@@ -263,10 +275,118 @@ defmodule CanopyWeb.TimelineComponents do
           <.attachments message={@message} dom_prefix={attachment_prefix(@dom_prefix)} />
         </div>
 
+        <.reactions
+          message={@message}
+          prefix={attachment_prefix(@dom_prefix)}
+          names={@names}
+          reactable={@reactable}
+        />
+
         <.thread_summary :if={@summary} href={@thread_href} summary={@summary} user_name={@user_name} />
       </div>
     </article>
     """
+  end
+
+  attr :message, :map, required: true
+  attr :prefix, :string, required: true
+
+  # The React button and its five-emoji picker. Opening and closing are
+  # client-side only; a pick sends `toggle_reaction` and closes the picker.
+  defp react_button(assigns) do
+    assigns = assign(assigns, :picker, "#{assigns.prefix}react-picker-#{assigns.message.id}")
+
+    ~H"""
+    <div class="relative">
+      <button
+        type="button"
+        id={"#{@prefix}react-#{@message.id}"}
+        phx-click={JS.toggle(to: "##{@picker}", display: "flex")}
+        class="flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-base-content/60 transition hover:bg-base-300/60 hover:text-base-content"
+        title="React"
+        aria-label="Add a reaction"
+        aria-haspopup="true"
+      >
+        <.icon name="hero-face-smile-mini" class="size-3.5" />
+      </button>
+      <div
+        id={@picker}
+        class="absolute right-0 top-full z-20 mt-1 hidden items-center gap-0.5 rounded-lg border border-base-300 bg-base-100 p-1 shadow-lg"
+        phx-click-away={JS.hide(to: "##{@picker}")}
+        role="menu"
+      >
+        <button
+          :for={entry <- Canopy.Reactions.palette()}
+          type="button"
+          id={"#{@picker}-#{entry.key}"}
+          phx-click={
+            JS.push("toggle_reaction", value: %{id: @message.id, emoji: entry.key})
+            |> JS.hide(to: "##{@picker}")
+          }
+          class="flex size-7 items-center justify-center rounded-md text-base transition hover:scale-110 hover:bg-base-200"
+          title={entry.label}
+          aria-label={"React #{entry.glyph} #{entry.label}"}
+          role="menuitem"
+        >
+          {entry.glyph}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  attr :message, :map, required: true
+  attr :prefix, :string, required: true
+  attr :names, :map, required: true
+  attr :reactable, :boolean, default: false
+
+  # One chip per emoji, in palette order: the glyph and the count, marked
+  # when the user is among the reactors. A click toggles the user's own.
+  defp reactions(assigns) do
+    assigns =
+      assign(assigns, :groups, Canopy.Reactions.group(Map.get(assigns.message, :reactions)))
+
+    ~H"""
+    <div
+      :if={@groups != []}
+      id={"#{@prefix}reactions-#{@message.id}"}
+      class="mt-1 flex flex-wrap items-center gap-1"
+    >
+      <button
+        :for={group <- @groups}
+        type="button"
+        id={"#{@prefix}reaction-#{@message.id}-#{group.key}"}
+        phx-click={@reactable && "toggle_reaction"}
+        phx-value-id={@message.id}
+        phx-value-emoji={group.key}
+        disabled={!@reactable}
+        data-mine={group.user? && "true"}
+        class={[
+          "flex items-center gap-1 rounded-full border px-1.5 py-px text-xs transition",
+          group.user? && "border-primary/40 bg-primary/10 ring-1 ring-primary/40",
+          !group.user? && "border-base-300 bg-base-100",
+          @reactable && "hover:border-primary/50 hover:bg-primary/5",
+          !@reactable && "cursor-default"
+        ]}
+        title={reaction_title(group, @names)}
+        aria-pressed={to_string(group.user?)}
+      >
+        <span>{group.glyph}</span>
+        <span class="tabular-nums text-[11px] font-medium text-base-content/70">{group.count}</span>
+      </button>
+    </div>
+    """
+  end
+
+  # "You, @qa: done / approved"
+  defp reaction_title(group, names) do
+    who =
+      Enum.map_join(group.reactions, ", ", fn
+        %{user_id: id} when is_binary(id) -> "You"
+        %{agent_id: id} -> "@" <> Map.get(names, id, "agent")
+      end)
+
+    "#{who}: #{group.label}"
   end
 
   # The feed keeps the plain ids it always had; the thread panel's copies

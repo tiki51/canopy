@@ -67,6 +67,25 @@ defmodule Canopy.Runtime.RouterTest do
     refute text =~ "thread"
   end
 
+  test "reactions on a message change nothing about how it routes" do
+    reactions = [
+      %{emoji: "check", user_id: nil, agent_id: @reviewer, agent: %{name: "reviewer"}},
+      %{emoji: "eyes", user_id: "usr_1", agent_id: nil, user: %{display_name: "Steven"}}
+    ]
+
+    for msg <- [%{}, %{mentions: [@reviewer]}, %{agent_id: @reviewer, user: nil}] do
+      assert Router.wakeups(message_event(Map.put(msg, :reactions, reactions)), ctx()) ==
+               Router.wakeups(message_event(msg), ctx())
+    end
+  end
+
+  # A reaction is row state with no event, so nothing routes it. A future
+  # "reacted" event type would need a deliberate decision here (it must wake
+  # nobody), not a fall-through.
+  test "no timeline event type is a reaction" do
+    assert Enum.reject(Event.event_types(), &(&1 =~ ~r/react/)) == Event.event_types()
+  end
+
   test "a user's unaddressed thread reply wakes the thread's author, not the owner" do
     ctx = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @reviewer} end})
     event = message_event(%{thread_id: "msg_root", kind: "thread_reply"})

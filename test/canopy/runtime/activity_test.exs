@@ -423,6 +423,7 @@ defmodule Canopy.Runtime.ActivityTest do
     assert Activity.verb(running.("canopy_messages_read", %{})) == "catching up"
     assert Activity.verb(running.("canopy_message_send", %{})) == "writing"
     assert Activity.verb(running.("canopy_delegate_task", %{})) == "coordinating"
+    assert Activity.verb(running.("canopy_react", %{})) == "acknowledging"
     assert Activity.verb(running.("canopy_pass", %{})) == "wrapping up"
     assert Activity.verb(running.("mystery", %{})) == "working"
 

@@ -198,6 +198,39 @@ defmodule Canopy.MessagesTest do
     assert %{in_channel: false} = Timeline.for_message(closing.id)
   end
 
+  test "list/2, get/1 and the timeline preload reactions with their reactors", ctx do
+    %{channel: channel, agent: agent, user: user} = ctx
+    {:ok, message} = Messages.post_agent_message(channel.id, agent.id, "Ship it?")
+    {:ok, :added} = Canopy.Reactions.add(message.id, {:user, user.id}, "check")
+
+    assert [%{reactions: [%{emoji: "check", user: %{display_name: name}, agent: nil}]}] =
+             Messages.list(channel.id)
+
+    assert name == user.display_name
+    assert [%{emoji: "check"}] = Messages.get(message.id).reactions
+
+    assert %{message: %{reactions: [%{emoji: "check"}]}} = Timeline.for_message(message.id)
+  end
+
+  test "mark_reactions_read/3 rides on the read marker and never moves backwards", ctx do
+    %{channel: channel, agent: agent} = ctx
+    {:ok, message} = Messages.post_agent_message(channel.id, agent.id, "hello")
+
+    # no read marker yet: nothing to ride on
+    :ok = Messages.mark_reactions_read(agent.id, channel.id, "rx_2")
+    assert Messages.last_reaction_read(agent.id, channel.id) == nil
+
+    :ok = Messages.mark_read(agent.id, channel.id, message.id)
+    :ok = Messages.mark_reactions_read(agent.id, channel.id, "rx_2")
+    :ok = Messages.mark_reactions_read(agent.id, channel.id, "rx_1")
+    :ok = Messages.mark_reactions_read(agent.id, channel.id, nil)
+    assert Messages.last_reaction_read(agent.id, channel.id) == "rx_2"
+
+    :ok = Messages.mark_reactions_read(agent.id, channel.id, "rx_3")
+    assert Messages.last_reaction_read(agent.id, channel.id) == "rx_3"
+    assert Messages.last_read(agent.id, channel.id) == message.id
+  end
+
   test "list/2 supports limit, before, and around", %{channel: channel, user: user} do
     messages =
       for i <- 1..12 do

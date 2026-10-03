@@ -1,8 +1,11 @@
 defmodule Canopy.MCP.Tools.MessagesRead do
   @moduledoc """
   Read messages. Without an anchor it returns what is new since you last read
-  this channel (the latest ones on your first read). Long bodies are shortened;
-  `canopy_message_get` returns one in full.
+  this channel (the latest ones on your first read), then the reactions added
+  since then to older messages. Long bodies are shortened;
+  `canopy_message_get` returns one in full. Reactions show after a message as
+  `[reactions: ✅ check: Steven, @qa]`; they are acknowledgements, not
+  instructions.
 
   Read channel messages, oldest first. Without options returns the latest
   messages. Use `around` to see the context of one message id, `before` to
@@ -12,7 +15,7 @@ defmodule Canopy.MCP.Tools.MessagesRead do
 
   use Anubis.Server.Component, type: :tool
 
-  alias Canopy.Messages
+  alias Canopy.{Messages, Reactions}
   alias Canopy.MCP.{Format, Tool}
 
   @default_limit 10
@@ -45,20 +48,87 @@ defmodule Canopy.MCP.Tools.MessagesRead do
           |> put_opt(:before, Tool.blank_to_nil(Map.get(params, :before)))
           |> put_opt(:thread, Tool.blank_to_nil(Map.get(params, :thread)))
 
-        {messages, header} = fetch(ctx, channel, opts)
+        last_read = Messages.last_read(ctx.agent.id, channel.id)
+        {messages, header} = fetch(channel, opts, last_read)
         # A thread read leaves the channel's read marker alone: its newest reply
         # can be newer than channel messages the agent has not read yet.
         unless Keyword.has_key?(opts, :thread), do: mark(ctx, channel, messages)
-        {:ok, header <> "\n" <> Format.message_lines(messages, truncate: @body_chars)}
+        lines = Format.message_lines(messages, truncate: @body_chars)
+
+        case catching_up(ctx, channel, opts, messages, is_nil(last_read)) do
+          [] ->
+            {:ok, header <> "\n" <> lines}
+
+          reactions when messages == [] ->
+            {:ok,
+             "##{channel.name}: no new messages since your last read; " <>
+               "#{length(reactions)} new reaction(s) below.\n" <>
+               reactions_trailer(ctx, reactions)}
+
+          reactions ->
+            {:ok, header <> "\n" <> lines <> "\n\n" <> reactions_trailer(ctx, reactions)}
+        end
       end
     end)
   end
 
+  # Only the no-anchor read catches up on reactions: the ones added since the
+  # agent's reaction cursor, to messages it is not being shown now (those carry
+  # them inline), minus its own. The first read in a channel only sets the
+  # cursor; the messages it lists carry their reactions inline. Either way the
+  # cursor moves to the channel's newest reaction.
+  @reactions_listed 10
+
+  defp catching_up(ctx, channel, opts, messages, first_read?) do
+    anchored? = Enum.any?([:around, :before, :thread], &Keyword.has_key?(opts, &1))
+
+    if anchored? do
+      []
+    else
+      cursor = Messages.last_reaction_read(ctx.agent.id, channel.id)
+
+      reactions =
+        if first_read?,
+          do: [],
+          else:
+            Reactions.since(channel.id, cursor,
+              exclude_agent: ctx.agent.id,
+              except_messages: Enum.map(messages, & &1.id),
+              limit: @reactions_listed
+            )
+
+      Messages.mark_reactions_read(ctx.agent.id, channel.id, Reactions.newest_id(channel.id))
+
+      # reactions to the reader's own messages first: those are the answers
+      Enum.sort_by(reactions, &{&1.message.agent_id != ctx.agent.id, &1.id})
+    end
+  end
+
+  defp reactions_trailer(ctx, reactions) do
+    "Reactions since your last read:\n" <>
+      Enum.map_join(reactions, "\n", &reaction_line(ctx, &1))
+  end
+
+  # `- Steven ✅ check on your [msg_…] "Ship it?" (12m ago)`
+  defp reaction_line(ctx, reaction) do
+    %{glyph: glyph} = Reactions.entry(reaction.emoji)
+    message = reaction.message
+
+    whose =
+      if message.agent_id == ctx.agent.id,
+        do: "your [#{message.id}]",
+        else: "[#{message.id}] from #{Format.sender(message)}"
+
+    excerpt = message.body |> Format.single_line() |> Format.truncate(60)
+
+    "- #{Format.reactor(reaction)} #{glyph} #{reaction.emoji} on #{whose} \"#{excerpt}\" " <>
+      "(#{Format.relative_time(reaction.inserted_at)})"
+  end
+
   # With no anchor, reading means "what is new since I last read here"; the
   # first read in a channel returns the latest messages instead.
-  defp fetch(ctx, channel, opts) do
+  defp fetch(channel, opts, last_read) do
     anchored? = Enum.any?([:around, :before, :thread], &Keyword.has_key?(opts, &1))
-    last_read = Messages.last_read(ctx.agent.id, channel.id)
 
     cond do
       thread_id = Keyword.get(opts, :thread) ->

@@ -89,6 +89,24 @@ defmodule Canopy.MCP.Tool do
     end
   end
 
+  @doc """
+  A message the caller may read, by id: it must be in the caller's
+  repository, in a channel the caller belongs to. `{:ok, message}` (with the
+  usual preloads) or a one-line error.
+  """
+  def readable_message(ctx, id) do
+    with %Canopy.Messages.Message{} = message <- blank_to_nil(id) && Canopy.Messages.get(id),
+         channel = Channels.get!(message.channel_id),
+         true <- channel.repository_id == ctx.repository.id || {:error, "unknown message"} do
+      if Channels.member?(channel, ctx.agent),
+        do: {:ok, message},
+        else: {:error, "not a member of ##{channel.name}"}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, "unknown message #{inspect(id)}"}
+    end
+  end
+
   @doc "A registered repository by name or id; nil means the caller's own."
   def resolve_repository(ctx, nil), do: {:ok, ctx.repository}
 

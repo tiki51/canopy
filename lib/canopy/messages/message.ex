@@ -40,6 +40,7 @@ defmodule Canopy.Messages.Message do
 
     has_many :attachments, Canopy.Messages.Attachment, preload_order: [asc: :position]
     has_many :documents, through: [:attachments, :document]
+    has_many :reactions, Canopy.Messages.Reaction, preload_order: [asc: :id]
 
     timestamps(type: :utc_datetime_usec)
   end

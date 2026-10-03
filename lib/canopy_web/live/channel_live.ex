@@ -41,6 +41,7 @@ defmodule CanopyWeb.ChannelLive do
     Playbooks,
     PermissionRequests,
     QuestionRequests,
+    Reactions,
     Repositories,
     Runtime,
     Schedules,
@@ -751,6 +752,15 @@ defmodule CanopyWeb.ChannelLive do
      assign(socket, :agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, status))}
   end
 
+  # A message's reactions changed (here or anywhere): redraw it where it is
+  # shown, the feed or the open thread's panel, in place. A reaction is no
+  # event: nothing is marked read and the nav is left alone. A message outside
+  # what is loaded picks its reactions up when it loads.
+  def handle_info({:reactions, %{channel_id: cid, message_id: message_id}}, socket)
+      when cid == socket.assigns.channel.id do
+    {:noreply, redraw_message(socket, message_id)}
+  end
+
   # A document was deleted somewhere: redraw the messages that carried it.
   def handle_info({:document_deleted, id, message_ids}, socket) do
     socket =
@@ -763,25 +773,7 @@ defmodule CanopyWeb.ChannelLive do
           else: socket
       end)
 
-    socket =
-      Enum.reduce(message_ids, socket, fn message_id, socket ->
-        case Timeline.for_message(message_id) do
-          nil ->
-            socket
-
-          event ->
-            socket =
-              if MapSet.member?(socket.assigns.message_ids, message_id),
-                do: stream_insert(socket, :timeline, event),
-                else: socket
-
-            if loaded_in_panel?(socket, message_id),
-              do: stream_insert(socket, :thread, event),
-              else: socket
-        end
-      end)
-
-    {:noreply, socket}
+    {:noreply, Enum.reduce(message_ids, socket, &redraw_message(&2, &1))}
   end
 
   def handle_info({:schedules, :changed, cid}, socket) do
@@ -1038,6 +1030,23 @@ defmodule CanopyWeb.ChannelLive do
       | count: (summary && summary.count) || thread.count,
         following?: Threads.following?(root.id, socket.assigns.user)
     })
+  end
+
+  # Re-renders a message where it is loaded (the feed, the open panel, or
+  # both); a message in neither is left out, never appended.
+  defp redraw_message(socket, message_id) do
+    in_feed? = MapSet.member?(socket.assigns.message_ids, message_id)
+    in_panel? = loaded_in_panel?(socket, message_id)
+
+    case (in_feed? or in_panel?) && Timeline.for_message(message_id) do
+      %Timeline.Event{} = event ->
+        socket
+        |> then(&if(in_feed?, do: stream_insert(&1, :timeline, event), else: &1))
+        |> then(&if(in_panel?, do: stream_insert(&1, :thread, event), else: &1))
+
+      _ ->
+        socket
+    end
   end
 
   # The root's row, where it is shown: its summary row in the feed, the reply
@@ -1344,6 +1353,21 @@ defmodule CanopyWeb.ChannelLive do
   def handle_event("cancel_upload", %{"ref" => ref} = params, socket) do
     upload = if params["upload"] == "thread_files", do: :thread_files, else: :files
     {:noreply, cancel_upload(socket, upload, ref)}
+  end
+
+  # The user's reaction, from a chip or the picker. The broadcast redraws the
+  # message, the way a posted message arrives through the timeline.
+  def handle_event("toggle_reaction", %{"id" => id, "emoji" => key}, socket) do
+    case Messages.get(id) do
+      %{channel_id: cid} when cid == socket.assigns.channel.id ->
+        case Reactions.toggle(id, {:user, socket.assigns.user.id}, key) do
+          {:ok, _} -> {:noreply, socket}
+          {:error, reason} -> {:noreply, put_flash(socket, :error, reaction_error(reason))}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "That message is not in this channel.")}
+    end
   end
 
   # Esc in the side panel (see the SidePanel hook) closes it.
@@ -2192,6 +2216,7 @@ defmodule CanopyWeb.ChannelLive do
                 mentions={@mention_names}
                 activity={turn_ui(@act, @activity, event)}
                 receipt={receipt_of(@receipts, event)}
+                reactable={!Channels.archived?(@channel)}
               />
             </div>
 
@@ -3059,6 +3084,11 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
+  defp reaction_error(:archived), do: "This channel is archived; it takes no reactions."
+  defp reaction_error(:system_message), do: "System notes take no reactions."
+  defp reaction_error(:unknown_emoji), do: "That reaction is not one Canopy offers."
+  defp reaction_error(_reason), do: "Could not react to that message."
+
   defp limit_reached?(%{spend_limit: limit}, spent) when is_number(limit), do: spent >= limit
   defp limit_reached?(_channel, _spent), do: false
 
@@ -3324,6 +3354,7 @@ defmodule CanopyWeb.ChannelLive do
             mentions={@mention_names}
             activity={turn_ui(@act, @activity, event)}
             receipt={receipt_of(@receipts, event)}
+            reactable={!Channels.archived?(@channel)}
           />
         </div>
 

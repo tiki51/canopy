@@ -1186,7 +1186,7 @@ unless site? do
     ]
   })
 
-  {:ok, _} =
+  {:ok, approval} =
     Messages.post_agent_message(
       retries.id,
       reviewer.id,
@@ -1201,6 +1201,11 @@ unless site? do
     )
 
   stamp.(retries.id, ago.(53))
+
+  # Priya's ✅ and @backend's 🎉 on the approval: quiet acknowledgements (the
+  # user guide's reactions shot)
+  {:ok, :added} = Canopy.Reactions.add(approval.id, {:user, user.id}, "check")
+  {:ok, :added} = Canopy.Reactions.add(approval.id, {:agent, backend.id}, "tada")
 
   {:ok, _} =
     Messages.post_user_message(retries.id, user.id, "Great work all. I'll open the PR from here.")

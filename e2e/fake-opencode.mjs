@@ -482,6 +482,16 @@ async function runTurn(sessionID, text, cwd) {
     return finishTurn(sessionID, messageID, part, "Fixed it; the billing tests pass.", 0.0021);
   }
 
+  // Reactions (e2e/tests/reactions.spec.ts): "react if you saw this" is
+  // acknowledged with a ✅ on the message that woke the agent, then a pass, so
+  // nothing is posted and nobody else is woken.
+  if (/react if you saw this/i.test(text) && /new Canopy message/.test(text)) {
+    const id = text.match(/Message ID: (msg_\S+)/)?.[1];
+    await mcpCall("react", { canopy_session_id: sessionID, message: id, emoji: "check" });
+    await mcpCall("pass", { canopy_session_id: sessionID, reason: "acknowledged with a reaction" });
+    return finishTurn(sessionID, messageID, part, "Reacted instead of replying.", 0.0002);
+  }
+
   // Site story: @researcher traces every caller of enqueue_charge and reports
   // back with a Markdown file.
   if (/Delegation ID: dl_/.test(text) && /enqueue_charge/.test(text)) {

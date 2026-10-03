@@ -720,6 +720,9 @@ defmodule Canopy.Runtime.Activity do
       ) ->
         "coordinating"
 
+      String.contains?(tool, "react") ->
+        "acknowledging"
+
       String.contains?(tool, "pass") ->
         "wrapping up"
 

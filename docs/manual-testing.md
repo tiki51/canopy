@@ -390,6 +390,14 @@ to: researcher …" as in the README demo prompt.
 - [ ] Post "thanks, all good" → the owner wakes, calls `canopy_pass`, and the timeline shows
       `@backend passed` with no reply message. Acknowledgements no longer bounce between
       agents: an automatic reply (the muted **REPLY** message) wakes only who it mentions.
+- [ ] Hover an agent's post → **React** (the smiley) → ✅ → a "✅ 1" chip, highlighted;
+      nobody starts working and the sidebar shows nothing new. Click the chip → it goes. React
+      on a thread reply in the panel → the chip shows there. A reaction while the channel is
+      paused leaves it paused.
+- [ ] Ask the owner "@backend react if you saw this, nothing else" → it calls `canopy_react`
+      and `canopy_pass`: a ✅ from @backend on your message (hover for the name), no reply.
+      React ✅ on one of its older posts, then ask it to read the channel → its
+      `canopy_messages_read` ends with "Reactions since your last read".
 - [ ] Mention two agents in one message → only one starts; the other's dot turns amber
       (queued) and it starts when the first finishes. Settings → **Conversation** has the
       "one agent at a time" switch; off, both start together.

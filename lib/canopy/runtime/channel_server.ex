@@ -702,6 +702,8 @@ defmodule Canopy.Runtime.ChannelServer do
     {:noreply, state}
   end
 
+  # `{:reactions, _}` from `Canopy.Reactions` ends here on purpose: a reaction
+  # never wakes anyone, lifts a pause, or steers a turn.
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp stalled_turn?(state) do

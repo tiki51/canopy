@@ -4,7 +4,8 @@ defmodule Canopy.MCP.Tools.MessagesTest do
   import Canopy.Fixtures
   import Canopy.MCPHelpers
 
-  alias Canopy.{Messages, Timeline}
+  alias Canopy.{Messages, Reactions, Timeline}
+  alias Canopy.MCP.Format
   alias Canopy.MCP.Tools.{MessageGet, MessageSend, MessagesRead, MessagesSearch, ThreadReply}
 
   setup do
@@ -158,6 +159,120 @@ defmodule Canopy.MCP.Tools.MessagesTest do
 
       assert {:error, message} = call(MessagesRead, %{channel: ctx.outsider_channel.id}, ctx)
       assert message == "not a member of ##{ctx.outsider_channel.name}"
+    end
+  end
+
+  describe "reactions" do
+    defp react(message, reactor, key), do: {:ok, :added} = Reactions.add(message.id, reactor, key)
+
+    test "show inline after the body in messages_read and message_get", ctx do
+      m = post(ctx, "Ship the retry fix after CI?")
+      plain = post(ctx, "no reactions here")
+      react(m, {:user, ctx.user.id}, "check")
+      react(m, {:agent, ctx.other.id}, "check")
+      react(m, {:agent, ctx.other.id}, "eyes")
+
+      suffix =
+        "[reactions: ✅ check: #{ctx.user.display_name}, @#{ctx.other.name}; 👀 eyes: @#{ctx.other.name}]"
+
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "Ship the retry fix after CI? " <> suffix
+
+      assert String.ends_with?(
+               text,
+               "[#{plain.id}] @#{ctx.agent.name} (just now): no reactions here"
+             )
+
+      assert {:ok, full} = call(MessageGet, %{id: m.id}, ctx)
+      assert String.ends_with?(full, suffix)
+
+      assert Format.reactions_suffix(Messages.get!(plain.id)) == ""
+      assert Format.reactions_suffix(%Messages.Message{}) == ""
+    end
+
+    test "the no-anchor read lists reactions on older messages since the reader's cursor", ctx do
+      mine = post(ctx, "Ship the retry fix after CI?")
+
+      {:ok, theirs} =
+        Messages.post_agent_message(ctx.channel.id, ctx.other.id, "Repro steps for the 502")
+
+      react(mine, {:user, ctx.user.id}, "check")
+
+      # the first read sets the cursor; the reaction already shows inline
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "(first read here)"
+      assert text =~ "[reactions: ✅ check"
+      refute text =~ "Reactions since your last read"
+
+      react(mine, {:agent, ctx.other.id}, "eyes")
+      react(theirs, {:user, ctx.user.id}, "thumbs_up")
+      # the reader's own reaction is not news to it
+      react(theirs, {:agent, ctx.agent.id}, "heart")
+
+      {:ok, fresh} = Messages.post_agent_message(ctx.channel.id, ctx.other.id, "Fixed the 502")
+      # on a message the read lists anyway: inline only
+      react(fresh, {:user, ctx.user.id}, "tada")
+
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      [listing, trailer] = String.split(text, "\n\n", parts: 2)
+      assert listing =~ "1 new message(s) since your last read"
+      assert listing =~ "Fixed the 502 [reactions: 🎉 tada: #{ctx.user.display_name}]"
+
+      assert [
+               "Reactions since your last read:",
+               own,
+               other
+             ] = String.split(trailer, "\n")
+
+      # reactions to the reader's own messages come first
+      assert own ==
+               ~s|- @#{ctx.other.name} 👀 eyes on your [#{mine.id}] "Ship the retry fix after CI?" (just now)|
+
+      assert other ==
+               ~s|- #{ctx.user.display_name} 👍 thumbs_up on [#{theirs.id}] from @#{ctx.other.name} "Repro steps for the 502" (just now)|
+
+      # nothing new after that
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "nothing new since your last read"
+      refute text =~ "Reactions since"
+
+      # reactions only
+      react(theirs, {:user, ctx.user.id}, "heart")
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+
+      assert text =~
+               "##{ctx.channel.name}: no new messages since your last read; 1 new reaction(s) below."
+
+      assert text =~ "❤️ heart on [#{theirs.id}]"
+    end
+
+    test "anchored and thread reads neither list reactions nor move the cursor", ctx do
+      m = post(ctx, "root")
+      {:ok, _} = call(MessagesRead, %{}, ctx)
+      cursor = Messages.last_reaction_read(ctx.agent.id, ctx.channel.id)
+
+      react(m, {:user, ctx.user.id}, "check")
+
+      for params <- [%{around: m.id}, %{before: "msg_~"}, %{thread: m.id}] do
+        assert {:ok, text} = call(MessagesRead, params, ctx)
+        refute text =~ "Reactions since"
+        assert Messages.last_reaction_read(ctx.agent.id, ctx.channel.id) == cursor
+      end
+
+      # the next catch-up still has it: on a message already read, so in the trailer
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "no new messages since your last read; 1 new reaction(s) below."
+    end
+
+    test "a long excerpt is cut to 60 characters", ctx do
+      m = post(ctx, String.duplicate("long words ", 20))
+      {:ok, _} = call(MessagesRead, %{}, ctx)
+      react(m, {:user, ctx.user.id}, "check")
+
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      [_, excerpt] = Regex.run(~r/your \[msg_[^\]]+\] "([^"]+)"/, text)
+      assert String.length(excerpt) == 60
+      assert String.ends_with?(excerpt, "…")
     end
   end
 

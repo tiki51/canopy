@@ -1034,6 +1034,117 @@ defmodule CanopyWeb.ChannelLiveTest do
     end
   end
 
+  describe "reactions" do
+    test "the picker offers five emoji; a pick adds the user's chip and a click removes it",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, post} = Messages.post_agent_message(channel.id, agent.id, "Merged the fix.")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#react-#{post.id}")
+      refute has_element?(view, "#reactions-#{post.id}")
+
+      for key <- ~w(thumbs_up check eyes tada heart) do
+        assert has_element?(view, "#react-picker-#{post.id} #react-picker-#{post.id}-#{key}")
+      end
+
+      view |> element("#react-picker-#{post.id}-check") |> render_click()
+      chip = "#reaction-#{post.id}-check"
+      assert has_element?(view, "#{chip}[data-mine=true][aria-pressed=true]", "1")
+      assert has_element?(view, "#{chip}[title='You: done / approved']")
+      assert [%{emoji: "check"}] = Messages.get!(post.id).reactions
+
+      view |> element(chip) |> render_click()
+      refute has_element?(view, chip)
+      refute has_element?(view, "#reactions-#{post.id}")
+      assert Messages.get!(post.id).reactions == []
+    end
+
+    test "an agent's reaction appears live, named in the chip's title, and marks nothing", ctx do
+      %{channel: channel, reviewer: reviewer, user: user} = ctx
+      {:ok, mine} = Messages.post_user_message(channel.id, user.id, "Ship it after CI?")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      read_at = fn ->
+        Canopy.Repo.get_by!(Canopy.Unread.ChannelRead, channel_id: channel.id).last_read_at
+      end
+
+      before = read_at.()
+      {:ok, :added} = Canopy.Reactions.add(mine.id, {:agent, reviewer.id}, "eyes")
+      {:ok, :added} = Canopy.Reactions.add(mine.id, {:user, user.id}, "eyes")
+
+      chip = "#reaction-#{mine.id}-eyes"
+      assert has_element?(view, chip, "2")
+      assert has_element?(view, "#{chip}[title='@#{reviewer.name}, You: looking at it']")
+      # still once in the feed: redrawn in place, not appended
+      assert view |> render() |> String.split(~s(id="message-#{mine.id}")) |> length() == 2
+      # a reaction is no event: the channel is not marked read again
+      assert read_at.() == before
+    end
+
+    test "a reaction on a thread reply renders inside the open thread", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer, user: user} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, reply} = Messages.thread_reply(root.id, {:agent, reviewer.id}, "390px")
+
+      {:ok, view, _html} = live(conn_of(ctx), ChannelLive.thread_path(channel.id, root.id))
+      assert has_element?(view, "#thread-msg-react-#{reply.id}")
+
+      view |> element("#thread-msg-react-picker-#{reply.id}-thumbs_up") |> render_click()
+      assert has_element?(view, "#thread-replies #thread-msg-reaction-#{reply.id}-thumbs_up", "1")
+      # the reply is not in the feed, so nothing was added there
+      refute has_element?(view, "#timeline #message-#{reply.id}")
+
+      {:ok, :added} = Canopy.Reactions.add(root.id, {:user, user.id}, "tada")
+      # the root shows in both places; each copy redraws
+      assert has_element?(view, "#timeline #reaction-#{root.id}-tada")
+      assert has_element?(view, "#thread-replies #thread-msg-reaction-#{root.id}-tada")
+    end
+
+    test "no React on system notes or in archived channels; chips there do not toggle", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, post} = Messages.post_agent_message(channel.id, agent.id, "Done.")
+      {:ok, note} = Messages.post_user_note(channel.id, user.id, "handed off")
+      {:ok, :added} = Canopy.Reactions.add(post.id, {:user, user.id}, "check")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#react-#{note.id}")
+      assert has_element?(view, "#react-#{post.id}")
+
+      {:ok, _} = Canopy.Channels.archive(channel)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#react-#{post.id}")
+      assert has_element?(view, "#reaction-#{post.id}-check[disabled]")
+
+      # a stale page still asking is refused with a flash
+      html = render_hook(view, "toggle_reaction", %{"id" => post.id, "emoji" => "check"})
+      assert html =~ "archived; it takes no reactions"
+      assert [%{emoji: "check"}] = Messages.get!(post.id).reactions
+    end
+
+    test "a message from another channel is refused; one outside the loaded page is ignored",
+         ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      other = Fixtures.channel_fixture(%{repository_id: ctx.repository.id})
+      {:ok, elsewhere} = Messages.post_agent_message(other.id, agent.id, "elsewhere")
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "root")
+      {:ok, hidden} = Messages.thread_reply(root.id, {:agent, agent.id}, "only in the thread")
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      html = render_hook(view, "toggle_reaction", %{"id" => elsewhere.id, "emoji" => "check"})
+      assert html =~ "That message is not in this channel."
+      assert Messages.get!(elsewhere.id).reactions == []
+
+      # the thread is closed: its reply is loaded nowhere
+      {:ok, :added} = Canopy.Reactions.add(hidden.id, {:user, user.id}, "check")
+      refute has_element?(view, "#message-#{hidden.id}")
+      refute has_element?(view, "#thread-msg-#{hidden.id}")
+      assert has_element?(view, "#message-#{root.id}")
+    end
+  end
+
   describe "threads" do
     defp open_thread(conn, channel, root_id, extra \\ %{}) do
       live(conn, ChannelLive.thread_path(channel.id, root_id, extra[:reply]))

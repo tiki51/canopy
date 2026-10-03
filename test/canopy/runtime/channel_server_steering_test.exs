@@ -419,4 +419,20 @@ defmodule Canopy.Runtime.ChannelServerSteeringTest do
     assert text_of(body) =~ "Your previous turn ended before you read this message"
     assert text_of(body) =~ "Message ID: #{message.id}"
   end
+
+  test "a reaction while the agent works never steers or queues a turn", ctx do
+    sid = start_owner(ctx)
+    {:ok, post} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "Halfway there.")
+
+    assert {:ok, :added} = Canopy.Reactions.add(post.id, {:user, ctx.user.id}, "eyes")
+    assert_receive {:reactions, _}
+    _ = :sys.get_state(ctx.pid)
+    refute_received {:prompted, _, _}
+    assert Runtime.steers(ctx.channel.id) == %{}
+
+    # nothing was queued behind the turn either
+    emit(sid, :agent_completed, %{})
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+    refute_receive {:prompted, _, _}, 300
+  end
 end
