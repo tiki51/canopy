@@ -41,6 +41,7 @@
       "handoff",
       "i",
       "invite",
+      "playbook",
       "stop"
     ],
     "thread": false
@@ -489,6 +490,16 @@
         {
           "kind": "command",
           "text": "/stop"
+        }
+      ]
+    },
+    {
+      "name": "/playbook takes a playbook name, even one that is an agent's",
+      "text": "/playbook backend @reviewer fix the login",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/playbook"
         }
       ]
     },

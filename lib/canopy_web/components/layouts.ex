@@ -42,7 +42,8 @@ defmodule CanopyWeb.Layouts do
 
   attr :attention, :map,
     default: %{},
-    doc: "channel_id => %{questions, permissions} waiting on the user, from CanopyWeb.Nav"
+    doc:
+      "channel_id => %{questions, permissions, approvals, playbook} waiting on the user, from CanopyWeb.Nav"
 
   attr :schedule_counts, :map,
     default: %{},
@@ -110,6 +111,13 @@ defmodule CanopyWeb.Layouts do
               String.starts_with?(@current_path, "/agents") or
                 String.starts_with?(@current_path, "/teams")
             }
+          />
+          <.rail_link
+            id="rail-playbooks"
+            navigate={~p"/playbooks"}
+            icon="hero-book-open"
+            title="Playbooks"
+            active={String.starts_with?(@current_path, "/playbooks")}
           />
           <.rail_link
             id="rail-threads"
@@ -206,6 +214,14 @@ defmodule CanopyWeb.Layouts do
                   <span class="opacity-60">#</span>
                   <span class={["truncate", unread_class(@unread, channel.id, @current_channel_id)]}>
                     {channel.name}
+                  </span>
+                  <span
+                    :if={Canopy.Attention.playbook?(Map.get(@attention, channel.id))}
+                    id={"sidebar-playbook-#{channel.id}"}
+                    class="flex shrink-0 text-primary/70"
+                    title="A playbook run is in progress"
+                  >
+                    <.icon name="hero-book-open-micro" class="size-3" />
                   </span>
                   <.icon
                     :if={channel.status == "archived"}
@@ -808,7 +824,8 @@ defmodule CanopyWeb.Layouts do
     """
   end
 
-  # A channel with question or permission cards waiting on the user gets a
+  # A channel with question or permission cards, or a playbook sign-off,
+  # waiting on the user gets a
   # "needs you" badge, open or not: it is a state to act on, not unread news.
   attr :attention, :map, required: true
   attr :channel_id, :string, required: true
@@ -827,7 +844,7 @@ defmodule CanopyWeb.Layouts do
       id={"attention-#{@channel_id}"}
       data-attention={@total}
       class="flex h-4 shrink-0 items-center gap-0.5 rounded-full bg-info px-1.5 text-[10px] font-bold leading-none text-info-content"
-      title={"#{@total} #{if @total == 1, do: "card", else: "cards"} waiting on you"}
+      title={"#{@total} #{if @total == 1, do: "thing", else: "things"} waiting on you (cards or sign-offs)"}
     >
       <.icon name="hero-question-mark-circle-micro" class="size-3" />{@total}
     </span>

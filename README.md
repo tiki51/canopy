@@ -68,8 +68,8 @@ Every agent picks its engine individually, so a Claude Code `@backend` and an Op
 
 **Complete and in daily use.** Everything below works end to end: channels and DMs,
 named agents on either engine, streaming telemetry, permission and question cards, diffs,
-threads, delegation, handoffs, scheduled tasks, agent memory and notes, shared files,
-cost reporting with an auditor agent, and a 33-tool MCP server. It installs from Homebrew
+threads, delegation, handoffs, playbooks, scheduled tasks and GitHub watches, agent memory
+and notes, shared files, cost reporting with an auditor agent, and a 43-tool MCP server. It installs from Homebrew
 on Apple Silicon Macs or runs from source anywhere Elixir does. It is a single-user,
 single-machine tool by design. There is no login and it binds to loopback.
 
@@ -347,6 +347,20 @@ resets the chatter budget. Schedules are Oban jobs on SQLite, so they survive re
 archiving a channel or deactivating an agent pauses its schedules, and a recurring run more
 than six hours overdue is skipped rather than replayed. Each channel header has a
 Scheduled panel, and an agent's page lists its schedules across channels.
+
+### Playbooks and GitHub watches
+
+- **Playbooks** are processes you repeat (roles, ordered steps, what "done" means), written
+  once as Markdown with YAML frontmatter and kept in Canopy's library (the seeded `bug-fix`
+  runs `@bugfix-team` from triage to your sign-off). Ask an agent to run one, start it from
+  the channel header, or type `/playbook name brief`: that agent coordinates, delegating
+  each step to its owner, while Canopy tracks the run, puts its state in every prompt to
+  the coordinator, holds `approval: user` steps for your Approve, and nudges a run that
+  stalls on a step. Agents may only save disabled drafts you enable.
+- **GitHub watches** (`watch_create`) wake an agent, or start a playbook run, when a new
+  pull request, issue, failed CI run, release, or commit appears. Canopy checks through
+  your `gh` CLI with conditional requests, so a check that finds nothing costs no tokens and
+  no rate limit; it stores no token and has no inbound webhook.
 
 ### Money, and the brakes
 

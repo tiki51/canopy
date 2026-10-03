@@ -122,6 +122,12 @@ defmodule Canopy.Channels do
   defp notify, do: Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:channels, :changed})
 
   @doc """
+  Broadcasts `{:channels, :changed}`: for a caller that created a channel
+  inside a transaction of its own, once that transaction has committed.
+  """
+  def notify_changed, do: notify()
+
+  @doc """
   The direct-message channel between the user and one or more agents in a
   repository, created on first use and found by its exact set of agents after
   that. DMs are ordinary channels with `kind: "dm"`: the first agent given owns

@@ -21,6 +21,8 @@ defmodule Canopy.Delegations.Delegation do
     belongs_to :to_agent, Canopy.Agents.Agent
     belongs_to :parent_session, Canopy.AgentSessions.AgentSession
     belongs_to :child_session, Canopy.AgentSessions.AgentSession
+    # the playbook step this delegation was made for, if any
+    belongs_to :playbook_step, Canopy.Playbooks.Step
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -36,6 +38,7 @@ defmodule Canopy.Delegations.Delegation do
       :to_agent_id,
       :parent_session_id,
       :child_session_id,
+      :playbook_step_id,
       :description,
       :status,
       :result,

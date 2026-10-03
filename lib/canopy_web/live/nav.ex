@@ -6,7 +6,8 @@ defmodule CanopyWeb.Nav do
   Assigns: `:repositories` (each with `:channels`), `:dms`, `:agents`, `:unread`,
   `:threads_unread` (followed threads with unread replies, for the rail's Threads badge) and
   `:thread_unread_summary` (`Canopy.Unread.thread_summary/1`), `:attention`
-  (question and permission cards waiting on the user, per channel), `:current_path`,
+  (question and permission cards and playbook sign-offs waiting on the user, and runs
+  in progress, per channel), `:current_path`,
   `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
@@ -35,6 +36,7 @@ defmodule CanopyWeb.Nav do
       Threads.subscribe_reads()
       Schedules.subscribe()
       Hold.subscribe()
+      Canopy.Playbooks.Runs.subscribe()
     end
 
     socket =
@@ -115,6 +117,11 @@ defmodule CanopyWeb.Nav do
 
   # Schedule changes update the sidebar counts; the page may also want the event.
   defp handle_info({:hold, _what}, socket), do: {:halt, assign(socket, :hold, Hold.reason())}
+
+  # A run started, finished, or held for a sign-off: the glyph and the badge
+  # follow; the channel view may want it too.
+  defp handle_info({:playbook_runs, :changed, _channel_id}, socket),
+    do: {:cont, refresh_attention(socket)}
 
   defp handle_info({:schedules, :changed, _channel_id}, socket),
     do: {:cont, assign(socket, :schedule_counts, Schedules.active_counts_by_agent())}

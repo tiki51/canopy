@@ -433,4 +433,32 @@ defmodule Canopy.Runtime.RouterTest do
       assert text =~ "Teams here: @crew."
     end
   end
+
+  test "playbook and watch events wake nobody" do
+    for type <-
+          ~w(playbook_started playbook_step_started playbook_step_completed playbook_step_skipped
+                   playbook_approval_requested playbook_approval_resolved playbook_completed
+                   playbook_cancelled playbook_coordinator_changed playbook_stalled) do
+      event = %Event{event_type: type, ref_id: "pbr_1", payload: %{"run_id" => "pbr_1"}}
+      assert Router.wakeups(event, ctx()) == [], type
+    end
+  end
+
+  test "a delegation made for a playbook step tells the delegate which step" do
+    event = %Event{
+      event_type: "delegation_created",
+      ref_id: "dl_1",
+      payload: %{
+        "from_agent_id" => @backend,
+        "to_agent_id" => @reviewer,
+        "description" => "review the fix",
+        "playbook" => %{"step" => "review", "playbook" => "bug-fix", "run_id" => "pbr_1"}
+      }
+    }
+
+    assert [{{:root, @reviewer}, text}] = Router.wakeups(event, ctx())
+
+    assert text =~
+             "This is step `review` of the bug-fix playbook (run pbr_1).\nTask: review the fix"
+  end
 end

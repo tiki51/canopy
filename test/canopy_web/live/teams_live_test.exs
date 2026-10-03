@@ -123,4 +123,36 @@ defmodule CanopyWeb.TeamsLiveTest do
     refute has_element?(view, "#team-#{team.id}")
     assert Teams.get(team.id) == nil
   end
+
+  test "members can carry a role on the team, which playbooks fill roles from", ctx do
+    {:ok, view, _html} = live(ctx.conn, ~p"/teams/new")
+
+    view
+    |> form("#team-form", team: %{name: "fixers", agent_ids: [ctx.frontend.id, ctx.tester.id]})
+    |> render_change()
+
+    assert has_element?(view, "#team-role-#{ctx.frontend.id}")
+    refute has_element?(view, "#team-role-#{ctx.backend.id}")
+
+    view
+    |> form("#team-form",
+      team: %{
+        name: "fixers",
+        agent_ids: [ctx.frontend.id, ctx.tester.id],
+        lead_agent_id: ctx.frontend.id,
+        roles: %{ctx.frontend.id => "Fix", ctx.tester.id => " "}
+      }
+    )
+    |> render_submit()
+
+    assert_redirect(view, ~p"/teams")
+    team = Teams.get_by_name("fixers")
+    assert Teams.member_roles(team) == %{ctx.frontend.id => "fix"}
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/teams")
+    assert has_element?(view, "#team-#{team.id}", "· fix")
+
+    {:ok, edit, _html} = live(ctx.conn, ~p"/teams/#{team.id}/edit")
+    assert has_element?(edit, "#team-role-#{ctx.frontend.id}[value='fix']")
+  end
 end

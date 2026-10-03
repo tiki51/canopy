@@ -51,6 +51,13 @@ defmodule Canopy.MCP.Server do
   component(Tools.LockAcquire, name: "lock_acquire")
   component(Tools.LockRelease, name: "lock_release")
   component(Tools.LocksList, name: "locks_list")
+  component(Tools.PlaybooksList, name: "playbooks_list")
+  component(Tools.PlaybookGet, name: "playbook_get")
+  component(Tools.PlaybookStart, name: "playbook_start")
+  component(Tools.PlaybookAdvance, name: "playbook_advance")
+  component(Tools.PlaybookCancel, name: "playbook_cancel")
+  component(Tools.PlaybookSave, name: "playbook_save")
+  component(Tools.WatchCreate, name: "watch_create")
 
   @tool_names ~w(
     channels_list channel_get messages_read message_get messages_search message_send thread_reply
@@ -60,6 +67,8 @@ defmodule Canopy.MCP.Server do
     notes_read notes_write
     dm_switch_repository costs_report documents_list document_get document_share permission
     lock_acquire lock_release locks_list
+    playbooks_list playbook_get playbook_start playbook_advance playbook_cancel playbook_save
+    watch_create
   )
 
   @doc "The names of every tool this server exposes, in registration order."

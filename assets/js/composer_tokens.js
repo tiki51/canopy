@@ -42,7 +42,8 @@ export function tokenize(text, ctx) {
   const cmdStart = command[0].length - command[1].length - 1
   const cmdEnd = command[0].length
   marks.push([cmdStart, cmdEnd, ctx.thread ? "invalid" : "command"])
-  if (ctx.thread || name === "stop") return build(text, marks)
+  // /stop takes nothing; /playbook takes a playbook's name, never an agent
+  if (ctx.thread || name === "stop" || name === "playbook") return build(text, marks)
 
   const target = TARGET.exec(text.slice(cmdEnd))
   if (!target) return build(text, marks)

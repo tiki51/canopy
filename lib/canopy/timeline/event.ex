@@ -25,6 +25,9 @@ defmodule Canopy.Timeline.Event do
     permission_requested permission_resolved permission_detached
     question_requested question_resolved question_detached
     lock_granted lock_queued lock_released
+    playbook_started playbook_step_started playbook_step_completed playbook_step_skipped
+    playbook_approval_requested playbook_approval_resolved playbook_completed playbook_cancelled
+    playbook_coordinator_changed playbook_coordinator_kept playbook_stalled
   )
 
   schema "timeline_events" do

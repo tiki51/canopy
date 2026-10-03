@@ -31,6 +31,7 @@ defmodule Canopy.Runtime do
     * `/delegate @agent task`  → `{:ok, {:delegation, %Delegation{}}}`
     * `/i @agent`              → `{:ok, {:invite, %Agent{}}}`
     * `/i @team`               → `{:ok, {:invite_team, %Team{}, added_agents}}`
+    * `/playbook name [@coordinator] brief` → `{:ok, {:playbook, %Run{}}}`
 
   Plain text returns `{:ok, %Message{}}`. A malformed or impossible command returns
   `{:error, reason}` with a one-line reason; nothing is written in that case.
@@ -89,6 +90,9 @@ defmodule Canopy.Runtime do
       {:command, :stop, _, _} ->
         stop_all(channel_id)
 
+      {:command, :playbook, name, brief} ->
+        user_playbook(channel_id, name, brief)
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -137,6 +141,48 @@ defmodule Canopy.Runtime do
 
       {:error, reason} ->
         {:error, "could not add @#{team.name}: #{inspect(reason)}"}
+    end
+  end
+
+  # `/playbook name [@coordinator] brief`: the user starts a run. The
+  # coordinator is the one named, else the playbook's own, else the owner.
+  defp user_playbook(channel_id, name, text) do
+    channel = Channels.get!(channel_id)
+
+    {coordinator_name, brief} =
+      case Regex.run(~r/\A@([A-Za-z0-9][\w-]*)\s+(\S.*)\z/s, text) do
+        [_, who, rest] -> {String.downcase(who), String.trim(rest)}
+        nil -> {nil, text}
+      end
+
+    with {:ok, playbook} <- playbook_named(name),
+         {:ok, coordinator} <- coordinator_for(playbook, coordinator_name, channel),
+         {:ok, run, _new?} <-
+           Canopy.Playbooks.Runs.start(%{
+             playbook: playbook,
+             channel: channel,
+             coordinator: coordinator,
+             started_by_agent_id: nil,
+             brief: brief
+           }) do
+      {:ok, {:playbook, run}}
+    end
+  end
+
+  defp playbook_named(name) do
+    case Canopy.Playbooks.get_by_name(name) do
+      nil -> {:error, "no playbook named #{name}; the Playbooks page lists them"}
+      playbook -> {:ok, playbook}
+    end
+  end
+
+  defp coordinator_for(_playbook, name, _channel) when is_binary(name),
+    do: active_agent_named(name)
+
+  defp coordinator_for(playbook, nil, channel) do
+    case Canopy.Playbooks.Runs.default_coordinator(playbook, channel) do
+      nil -> {:error, "name an active coordinator: /playbook #{playbook.name} @agent brief"}
+      agent -> {:ok, agent}
     end
   end
 
@@ -375,12 +421,25 @@ defmodule Canopy.Runtime do
   end
 
   @doc """
-  Wakes an agent because one of its schedules fired. Like a user action, this
-  resets the channel's chatter budget: the user asked for it.
+  Wakes an agent because one of its schedules fired (or, with trigger
+  "watch", a GitHub watch found something). Like a user action, this resets
+  the channel's chatter budget: the user asked for it.
   """
-  def wake_scheduled(channel_id, agent_id, text) do
+  def wake_scheduled(channel_id, agent_id, text, trigger \\ "scheduled") do
     {:ok, pid} = ensure_channel(channel_id)
-    ChannelServer.wake(pid, agent_id, text)
+    ChannelServer.wake(pid, agent_id, text, trigger: trigger)
+  end
+
+  @doc """
+  Wakes a playbook run's coordinator. `reset: true` (the default) for what
+  the user did (Approve, Request changes, a run started from the UI), which
+  resets the chatter budget like a user action; `reset: false` for Canopy's
+  own wakes (a stall nudge), counted against it. `:trigger` attributes the
+  turn (default "playbook").
+  """
+  def wake_playbook(channel_id, agent_id, text, opts \\ []) do
+    {:ok, pid} = ensure_channel(channel_id)
+    ChannelServer.wake(pid, agent_id, text, Keyword.put_new(opts, :trigger, "playbook"))
   end
 
   @doc "True when the channel has hit its chatter budget and is holding wakeups."

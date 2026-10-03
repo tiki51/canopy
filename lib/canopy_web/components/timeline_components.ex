@@ -555,6 +555,8 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   def activity_class(%{event_type: "schedule_fired"}), do: "routine"
+  # the step that starts is already named on the line of the one that ended
+  def activity_class(%{event_type: "playbook_step_started"}), do: "routine"
   def activity_class(%{event_type: "session_compacted"}), do: "routine"
 
   def activity_class(%{event_type: "agent_turn_completed", payload: p}) do
@@ -825,10 +827,11 @@ defmodule CanopyWeb.TimelineComponents do
         class={["flex items-start gap-3 py-2 text-sm", s.status == "paused" && "opacity-60"]}
       >
         <.icon
-          name={if s.kind == "recurring", do: "hero-arrow-path-mini", else: "hero-clock-mini"}
+          name={schedule_icon(s.kind)}
           class="mt-0.5 size-4 shrink-0 text-base-content/50"
         />
-        <div class="min-w-0 flex-1">
+        <.watch_row :if={s.kind == "watch"} schedule={s} scope={@scope} />
+        <div :if={s.kind != "watch"} class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span class="font-medium" title={DateTime.to_iso8601(s.next_run_at)}>
               {Canopy.Schedules.local_text(s.next_run_at)}
@@ -879,6 +882,78 @@ defmodule CanopyWeb.TimelineComponents do
     </ul>
     """
   end
+
+  defp schedule_icon("recurring"), do: "hero-arrow-path-mini"
+  defp schedule_icon("watch"), do: "hero-eye-mini"
+  defp schedule_icon(_), do: "hero-clock-mini"
+
+  # `@devops · watching failed CI on main in acme/app · every 10 min · checked
+  # 3m ago · fired 2×`, with the check's error under it while it fails.
+  attr :schedule, :map, required: true
+  attr :scope, :atom, required: true
+
+  defp watch_row(assigns) do
+    state = assigns.schedule.check_state || %{}
+
+    assigns =
+      assigns
+      |> assign(:state, state)
+      |> assign(:checked, checked_at(state["last_checked_at"]))
+
+    ~H"""
+    <div class="min-w-0 flex-1" id={"watch-#{@schedule.id}"}>
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span :if={@scope == :channel} class="font-mono text-xs text-base-content/60">@{@schedule.agent.name}</span>
+        <.link
+          :if={@scope == :agent}
+          navigate={~p"/channels/#{@schedule.channel_id}"}
+          class="font-mono text-xs text-secondary hover:underline"
+        >
+          #{@schedule.channel.name}
+        </.link>
+        <span class="font-medium">watching {Canopy.GitHub.describe(@schedule.check)}</span>
+        <span class="text-xs text-base-content/60">· {Canopy.Watches.describe_every(@schedule.cron)}</span>
+        <span :if={@checked} class="text-xs text-base-content/60">· checked {@checked}</span>
+        <span :if={(@state["fired"] || 0) > 0} class="text-xs text-base-content/60">
+          · fired {@state["fired"]}×
+        </span>
+        <span :if={@schedule.playbook} class="text-xs text-base-content/60">
+          · starts <span class="font-mono">{@schedule.playbook}</span>
+        </span>
+        <span
+          :if={@schedule.status == "paused"}
+          class="badge badge-ghost badge-xs"
+          title={@schedule.status_reason}
+        >
+          paused
+        </span>
+      </div>
+      <p class="mt-0.5 break-words text-xs text-base-content/75">{@schedule.instruction}</p>
+      <p
+        :if={@state["last_error"] && @schedule.status != "paused"}
+        id={"watch-#{@schedule.id}-error"}
+        class="mt-0.5 text-[11px] text-error"
+      >
+        {@state["last_error"]}
+      </p>
+      <p
+        :if={@schedule.status == "paused" and @schedule.status_reason}
+        class="mt-0.5 text-[11px] text-base-content/60"
+      >
+        {@schedule.status_reason}
+      </p>
+    </div>
+    """
+  end
+
+  defp checked_at(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, at, _} -> Canopy.Schedules.relative(at)
+      _ -> nil
+    end
+  end
+
+  defp checked_at(_), do: nil
 
   # -- Permission cards --------------------------------------------------------
 
@@ -1171,7 +1246,9 @@ defmodule CanopyWeb.TimelineComponents do
         "#{agent} scheduled#{by}: #{schedule_timing(p)} · #{p["instruction"]}"
 
       "schedule_fired" ->
-        "scheduled task fired for #{agent}: #{p["instruction"]}"
+        if p["kind"] == "watch",
+          do: watch_fired_text(p, agent),
+          else: "scheduled task fired for #{agent}: #{p["instruction"]}"
 
       "schedule_skipped" ->
         "skipped a scheduled task for #{agent}" <> suffix(p["reason"]) <> ": #{p["instruction"]}"
@@ -1212,8 +1289,113 @@ defmodule CanopyWeb.TimelineComponents do
       "lock_" <> _ ->
         lock_text(type, p, if(p["user"], do: user, else: agent), user, names, user_name)
 
+      "playbook_" <> _ ->
+        playbook_text(type, p, agent, user, names, user_name)
+
       other ->
         "#{agent} · #{other}"
+    end
+  end
+
+  defp watch_fired_text(p, agent) do
+    found = p["keys"] |> List.wrap() |> length()
+    runs = p["runs"] || 0
+
+    started =
+      if runs > 0,
+        do: "; started #{runs} playbook #{if runs == 1, do: "run", else: "runs"}",
+        else: ""
+
+    "a watch found #{found} new #{if found == 1, do: "item", else: "items"} for #{agent} (#{p["watch"]})#{started}"
+  end
+
+  defp playbook_text(
+         "playbook_started",
+         %{"trigger" => %{} = t} = p,
+         _agent,
+         _user,
+         names,
+         user_name
+       )
+       when map_size(t) > 0 do
+    "a GitHub watch started the #{p["playbook"]} playbook for #{agent_ref(names, p["coordinator_agent_id"], user_name)} (#{t["key"]}) · #{p["steps"]} steps"
+  end
+
+  defp playbook_text("playbook_started", p, agent, _user, _names, _user_name),
+    do:
+      "#{agent} started the #{p["playbook"]} playbook · #{p["steps"]} steps" <> suffix(p["brief"])
+
+  defp playbook_text("playbook_step_started", p, _agent, _user, names, user_name) do
+    round = if (p["round"] || 1) > 1, do: " · round #{p["round"]}", else: ""
+
+    "#{p["playbook"]}: step #{p["position"]}/#{p["total"]} #{p["title"]}" <>
+      owners_text(p["owner_ids"], names, user_name) <> round
+  end
+
+  defp playbook_text("playbook_step_completed", p, _agent, _user, names, user_name) do
+    next =
+      if p["next"],
+        do: " → #{p["next_title"]}" <> owners_text(p["next_owner_ids"], names, user_name),
+        else: ""
+
+    "#{p["playbook"]}: #{p["title"]} done#{next}" <> suffix(p["result"])
+  end
+
+  defp playbook_text("playbook_step_skipped", p, _agent, _user, names, user_name) do
+    next =
+      if p["next"],
+        do: " → #{p["next_title"]}" <> owners_text(p["next_owner_ids"], names, user_name),
+        else: ""
+
+    "#{p["playbook"]}: skipped #{p["title"]}#{next}" <> suffix(p["result"])
+  end
+
+  defp playbook_text("playbook_approval_requested", p, _agent, _user, _names, _user_name),
+    do: "#{p["playbook"]} is waiting for your sign-off on #{p["title"]}"
+
+  defp playbook_text(
+         "playbook_approval_resolved",
+         %{"approved" => true} = p,
+         _agent,
+         user,
+         _n,
+         _u
+       ),
+       do: "#{user} approved #{p["title"]} of #{p["playbook"]}" <> suffix(p["note"])
+
+  defp playbook_text("playbook_approval_resolved", p, _agent, user, _names, _user_name),
+    do: "#{user} asked for changes on #{p["title"]} of #{p["playbook"]}" <> suffix(p["note"])
+
+  defp playbook_text("playbook_completed", p, _agent, _user, _names, _user_name),
+    do: "the #{p["playbook"]} playbook is complete" <> suffix(p["outcome"])
+
+  defp playbook_text("playbook_cancelled", p, agent, _user, _names, _user_name),
+    do: "#{agent} cancelled the #{p["playbook"]} playbook" <> suffix(p["reason"])
+
+  defp playbook_text("playbook_coordinator_changed", p, _agent, user, names, user_name) do
+    by =
+      case p["by"] do
+        "handoff" -> " (it followed the handoff)"
+        "user" -> " (by #{user})"
+        _ -> ""
+      end
+
+    "#{p["playbook"]}: coordinator #{agent_ref(names, p["from_agent_id"], user_name)} → #{agent_ref(names, p["to_agent_id"], user_name)}#{by}"
+  end
+
+  defp playbook_text("playbook_coordinator_kept", p, agent, _user, _names, _user_name),
+    do: "#{p["playbook"]}: the coordinator stays #{agent}" <> suffix(p["reason"])
+
+  defp playbook_text("playbook_stalled", p, agent, _user, _names, _user_name) do
+    "#{p["playbook"]} has been on #{p["title"]} for #{Canopy.Playbooks.Runs.duration_text(p["quiet_s"] || 0)} with no activity; nudged #{agent}"
+  end
+
+  defp playbook_text(type, _p, agent, _user, _names, _user_name), do: "#{agent} · #{type}"
+
+  defp owners_text(ids, names, user_name) do
+    case List.wrap(ids) do
+      [] -> ""
+      ids -> " (" <> Enum.map_join(ids, ", ", &agent_ref(names, &1, user_name)) <> ")"
     end
   end
 
@@ -1431,6 +1613,9 @@ defmodule CanopyWeb.TimelineComponents do
   defp schedule_timing(%{"kind" => "recurring", "cron" => cron}),
     do: Canopy.Schedules.describe_cron(cron)
 
+  defp schedule_timing(%{"kind" => "watch", "watch" => what, "cron" => cron}),
+    do: "watching #{what}, #{Canopy.Schedules.describe_cron(cron)}"
+
   defp schedule_timing(_), do: "once"
 
   defp count(n, _noun) when not is_integer(n) or n == 0, do: nil
@@ -1485,6 +1670,9 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("question_" <> _), do: "hero-question-mark-circle-mini"
   defp event_icon("lock_released"), do: "hero-lock-open-mini"
   defp event_icon("lock_" <> _), do: "hero-lock-closed-mini"
+  defp event_icon("playbook_approval_" <> _), do: "hero-hand-raised-mini"
+  defp event_icon("playbook_stalled"), do: "hero-bell-alert-mini"
+  defp event_icon("playbook_" <> _), do: "hero-book-open-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 
   defp event_tone(%{event_type: "agent_error"}), do: "error"
@@ -1499,8 +1687,13 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_tone(%{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}),
     do: "error"
 
-  defp event_tone(%{event_type: type}) when type in ~w(handoff_accepted delegation_completed),
-    do: "success"
+  defp event_tone(%{event_type: type})
+       when type in ~w(handoff_accepted delegation_completed playbook_completed),
+       do: "success"
+
+  defp event_tone(%{event_type: type})
+       when type in ~w(playbook_approval_requested playbook_stalled),
+       do: "warning"
 
   defp event_tone(_), do: "muted"
 

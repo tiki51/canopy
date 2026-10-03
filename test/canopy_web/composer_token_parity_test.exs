@@ -104,6 +104,10 @@ defmodule CanopyWeb.ComposerTokenParityTest do
       {{:command, :stop, _, _}, false} ->
         [{"command", command_text(text)}]
 
+      # a playbook's name and a brief: nothing in it is an agent to highlight
+      {{:command, :playbook, _, _}, false} ->
+        [{"command", command_text(text)}]
+
       {{:command, command, target, note}, false} ->
         command_tokens(text, command, target, note, ctx)
     end

@@ -3,8 +3,8 @@
 Canopy is a local-first, Slack-like workspace for AI coding agents. You give agents names
 and roles, put them in channels tied to your repositories, and talk to them the way you
 would talk to teammates. Agents read the channel, work in their own private session, post
-back, delegate to each other, hand work off, schedule follow-ups, and remember what they
-learn. Everything runs on your machine; each agent uses either Claude Code or OpenCode.
+back, delegate to each other, hand work off, follow playbooks, schedule follow-ups, watch
+GitHub, and remember what they learn. Everything runs on your machine; each agent uses either Claude Code or OpenCode.
 
 This guide walks through every feature with screenshots from a fictional company, Acme,
 whose billing team is chasing an invoice that gets charged twice. Every screen is shown in
@@ -28,11 +28,12 @@ buttons at the bottom of the left rail switch between system, light, and dark.
 9. [Working together: delegation, handoff, threads](#9-working-together-delegation-handoff-threads)
 10. [Direct messages](#10-direct-messages)
 11. [Scheduled tasks](#11-scheduled-tasks)
-12. [Agent memory](#12-agent-memory)
-13. [Costs](#13-costs)
-14. [Keeping spend under control](#14-keeping-spend-under-control)
-15. [Reference](#15-reference)
-16. [Troubleshooting](#16-troubleshooting)
+12. [Playbooks](#12-playbooks)
+13. [Agent memory](#13-agent-memory)
+14. [Costs](#14-costs)
+15. [Keeping spend under control](#15-keeping-spend-under-control)
+16. [Reference](#16-reference)
+17. [Troubleshooting](#17-troubleshooting)
 
 ---
 
@@ -228,6 +229,9 @@ filled in.
   an agent that already names a model keeps it until you press the button or pick
   *Default* for it. A changed default reaches every inheriting agent on its next turn; a
   turn already running keeps its model.
+- **GitHub**: the `gh` binary [GitHub watches](#watching-github) run (`gh` on your `PATH`,
+  or a path). *Check gh* reports its version and whether it is logged in; watches need gh
+  2.0 or later and a `gh auth login`. Canopy stores no GitHub token.
 - **You**: the display name on your messages. Agents mention you with it, and the
   sidebar's mention badges count those.
 - **Conversation**: the brakes, both optional. Three preset cards at the top set them in
@@ -409,7 +413,7 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   OpenCode's provider list; an inherited model reads `sonnet (default)`, linking to
   Settings), spend today, this week, and all time, and the system prompt.
 - **Memory**: what the agent carries across every repository and channel. See
-  [Agent memory](#12-agent-memory).
+  [Agent memory](#13-agent-memory).
 - **Scheduled**: the agent's schedules across all channels, each with a link and a cancel
   button.
 - **Channels**: every channel the agent belongs to, owned ones marked.
@@ -463,6 +467,9 @@ list) opens the Teams page, where you create, edit, and delete them.
   the other way round. **Description** is what agents see in `canopy_agents_list`.
 - Every team has a **lead**, picked among its members. The lead owns a channel created for
   the team. To take the lead off the team, choose a new lead first.
+- A ticked member gets a small **role** box: what it does on this team (`fix`, `review`).
+  [Playbooks](#12-playbooks) that name the team fill their roles from these labels first,
+  then from a member whose name is the role.
 - Adding a team copies its active members into the channel at that moment. Editing the team
   later does not change channels it was already added to; remove members one by one, as
   usual. Deactivated agents stay on their teams but are skipped whenever the team is used.
@@ -496,7 +503,7 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
   group. Adding a team here wakes nobody.
 - **Initial owner** is woken for every message that mentions nobody. Only members can own.
 - **Spend limit** is optional: the total, in dollars, the channel may spend before agents
-  in it go quiet. See [Keeping spend under control](#14-keeping-spend-under-control).
+  in it go quiet. See [Keeping spend under control](#15-keeping-spend-under-control).
 
 Agents can create channels too, through `canopy_channel_create`. Ask one to "create a
 channel called retry-backoff with @reviewer and post a plan" and it appears in the
@@ -510,8 +517,10 @@ sidebar with the agent as owner.
 
 From left to right on the top row: the channel name and topic, then the buttons
 **Members**, **Activity**, one chip per [lock](#locks) held on the repository (or a plain
-**Locks** button when there are none), **Scheduled** (with a count), the **budget** (spent
-so far, and the limit when there is one), **Task**, **Changes**, and **Archive**.
+**Locks** button when there are none), **Playbook** (or, while a run is in progress, a chip
+such as `bug-fix · 3/6 Fix · @backend @frontend`; see [Playbooks](#12-playbooks)),
+**Scheduled** (with a count), the **budget** (spent so far, and the limit when there is
+one), **Task**, **Changes**, and **Archive**.
 
 The second row shows the owner badge, the task status pill, the task title, the git
 branch, and one pill per member. A member's dot is grey when idle, green while working,
@@ -627,8 +636,10 @@ There is no "remove team" button: members leave one by one.
 
 ### Scheduled panel
 
-**Scheduled** lists the channel's scheduled tasks with their next run and a cancel button.
-See [Scheduled tasks](#11-scheduled-tasks).
+**Scheduled** lists the channel's scheduled tasks with their next run and a cancel button,
+and its [GitHub watches](#watching-github): what each one watches, how often, when it last
+checked, how many times it fired, and the error while its check fails. See
+[Scheduled tasks](#11-scheduled-tasks).
 
 ![Schedules panel, light](user-guide/images/schedules-panel-light.png)
 
@@ -1059,11 +1070,181 @@ calls `canopy_schedule_create`.
 - Schedules survive restarts of Canopy and are paused by the billing hold.
 
 Agents are told not to use schedules to poll for you. If one asks a question, it asks
-once and waits.
+once and waits. To have an agent woken when something happens on GitHub, use a
+[watch](#watching-github) rather than a schedule that polls: a watch's checks cost no
+tokens.
 
 ---
 
-## 12. Agent memory
+## 12. Playbooks
+
+A **playbook** is a process you repeat, written down once: the roles, the ordered steps,
+and what "done" means for each. When you ask an agent to run one, that agent becomes the
+run's **coordinator**: it follows the steps with the tools it already has (delegating each
+step to its owner, handing off, posting), and Canopy keeps track of where the run is. The
+state lives in Canopy, not in the agent's session, so a run survives compaction and
+restarts: every prompt to the coordinator in that channel ends with a line saying which
+step the run is on.
+
+Playbooks are global to Canopy (they live in its database, not in a repository); a run
+happens in a channel, so it works in that channel's repository. The seed step adds one,
+**bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your sign-off,
+run by `@project-manager` with `@bugfix-team` in a new channel.
+
+### The library and the editor
+
+**Playbooks** in the rail lists every playbook with its description, where it came from
+(*starter*, *yours*, or *draft by @agent*), an **enabled** toggle, how many runs are in
+progress, and **Start…**, **Edit**, **Duplicate**, and **Delete**. Enabled playbooks are
+listed in every agent's prompt, so agents know they exist; a disabled one cannot be
+started. Delete is refused while a run is in progress (disable it instead); finished runs
+keep their own copy of the text.
+
+A playbook is one Markdown text: YAML frontmatter between `---` lines, then guidance for
+the whole run and a `## <step id>` section per step. The editor checks the text as you
+type, lists what is wrong under it, and previews the steps on the right.
+
+```markdown
+---
+name: bug-fix
+description: Reproduce, fix, verify, and review a reported bug with the bug-fix team, ending in user sign-off.
+team: bugfix-team
+roles:
+  test: test
+  backend: backend
+coordinator: project-manager
+channel: new
+stall_after: 30m
+inputs: The symptom, where it happens, steps to reproduce if known.
+steps:
+  - id: reproduce
+    title: Reproduce with a failing test
+    owner: test
+  - id: fix
+    title: Fix
+    owner: [backend, frontend]
+  - id: review
+    title: Review
+    owner: reviewer
+    on_reject: fix
+  - id: sign-off
+    title: User sign-off
+    owner: coordinator
+    approval: user
+---
+
+Ground rules for the whole run …
+
+## reproduce
+
+Delegate to the test role: write the smallest automated test that fails because of this bug.
+
+Done when: a named test fails for the reported reason.
+```
+
+| Field | Meaning |
+|---|---|
+| `name`, `description` | Required. Kebab-case name; one sentence (at most 200 characters) saying *when* to use it |
+| `steps` | Required, 1 to 20: `id`, `title`, `owner` (a role, a list of roles working in parallel, or `coordinator`), and optionally `approval: user` (needs your sign-off), `optional: true`, `on_reject: <earlier step>` |
+| `roles` | Role → default agent name |
+| `team` | A team whose members fill the roles: a member whose team role label is the role, else one named like it |
+| `coordinator` | Who coordinates when *you* start a run (an agent that starts one always coordinates it) |
+| `channel` | `current` (default) or `new`: each run gets a new channel, owned by the coordinator, with the roster |
+| `inputs` | What the brief should say; the start form uses it as the placeholder |
+| `stall_after` | How long a step may go quiet before Canopy nudges the coordinator (`30m` by default, `2h`, or `off`) |
+
+### Starting a run
+
+- **Ask an agent**: "@project-manager run the bug-fix playbook: checkout button does
+  nothing on Safari". It calls `canopy_playbook_start` and coordinates the run.
+- **The start form**: **Start…** on the Playbooks page (pick a channel), or **Playbook**
+  in a channel's header. Pick the coordinator (the playbook's own by default, else the
+  channel's owner), write the brief, and optionally override roles (`fix=@fullstack`).
+- **The composer**: `/playbook bug-fix [@coordinator] the brief`.
+
+Canopy fills the roles (your overrides first, then the team, then `roles`), and refuses
+to start when a role has nobody, naming it. Anyone in the roster who is not in the
+channel joins it (the whole team, in one line). One run can be in progress per channel;
+use `channel: new` for parallel work. A run keeps the text it started with, so editing a
+playbook never moves a run in progress; the panel says when the text has changed since.
+
+When you start a run, the coordinator is woken with the brief and the first step, and
+that resets the channel's chatter budget like any message from you.
+
+### Following a run
+
+While a run is in progress the header shows its chip, and the channel's row in the
+sidebar shows a small book. Click the chip for the run panel: the brief, the roster, every
+step with its owners, status, round (a step entered again counts up), the coordinator's
+result, and the delegations made for it. You can **Reassign** the coordinator (the new one
+is woken with the current step) or **Cancel run** (with a confirmation). Changes are
+checked against what was read: an agent acting on a run that changed meanwhile (you
+reassigned or cancelled it) is told so instead of overwriting it.
+
+Only the coordinator advances a run (`canopy_playbook_advance`, with its evidence in the
+step's result); a step's owners report through their delegations. A delegation the
+coordinator makes during a run is linked to the current step, and the delegate is told
+which step it is. The timeline records the run as compact lines: "started the bug-fix
+playbook · 6 steps", "bug-fix: Reproduce done → Fix (@backend, @frontend)", "the bug-fix
+playbook is complete". When the coordinator hands the task off and the handoff is
+accepted, the coordinator role follows it.
+
+### Sign-off
+
+A step with `approval: user` waits for you. When the coordinator advances past it, the
+chip turns amber ("waiting for you"), the timeline says "bug-fix is waiting for your
+sign-off", and the channel gets a "needs you" badge in the sidebar. In the panel:
+
+- **Approve** completes the step and moves the run on (to the step the coordinator asked
+  for, else the next one, or completes it), and wakes the coordinator with your answer.
+- **Request changes** (with a note) reopens the step and wakes the coordinator with the
+  note, so it can go back to the step that fits (`next: "fix"`).
+
+An agent can never skip a sign-off step or jump past one you have not approved; if the
+run goes back before a step you approved, that step needs your approval again. Both
+buttons reset the chatter budget. The chatter budget is otherwise unchanged during a run: a
+bug fix takes a dozen agent turns or so, so expect to press Continue now and then.
+
+### Stalled runs
+
+If a step has had no activity (a step change, a delegation update, or a turn of the
+coordinator's in the channel) for the playbook's `stall_after`, Canopy wakes the
+coordinator once: "Run bug-fix has been on step fix for 30 min; check on it or pause the
+run." There is one nudge per stall until something happens again, never while a step
+waits for your sign-off, and it counts against the chatter budget like any agent wake.
+
+### Agent-written playbooks
+
+An agent can draft a playbook with `canopy_playbook_save`. It is saved **disabled** and
+marked *draft by @agent*: an enabled playbook instructs every agent, so you read it, edit
+it if you like, and enable it yourself.
+
+### Watching GitHub
+
+A **watch** wakes an agent when something new appears on GitHub: a pull request, an
+issue, a failed CI run, a release, or a commit. Ask for one ("@devops watch for failed CI
+on main and look into each failure") and the agent calls `canopy_watch_create`. A watch
+can also start a playbook for each new item (`playbook:`), with the agent as coordinator,
+at most three per check (the rest follow on the next).
+
+- Canopy checks with your `gh` CLI and its login (see Settings → GitHub); it stores no
+  token and makes no GitHub calls of its own. Checks are conditional requests: when nothing
+  changed, GitHub answers "not modified", which costs no rate limit and no tokens. A
+  watch checks every minute by default (`every: 10m`, up to `1h`).
+- What exists when the watch is created never fires; only items that appear later do.
+  An item that changes (new commits on a pull request) is not new. A commits watch with
+  no branch follows the repository's default branch as it was when the watch was made.
+- Before anyone is woken, Canopy posts a note in the channel listing the new items, so
+  nothing is lost if the agent is busy or the wake is merged with another.
+- Titles come from GitHub, so they reach the agent single-line, truncated, and marked as
+  external data it must not take instructions from.
+- A watch is listed with the channel's schedules. While its check fails (gh missing, not
+  logged in, a repository it cannot see), the error shows on the watch; after three
+  failures in a row it pauses with the reason. Cancel it like a schedule.
+
+---
+
+## 13. Agent memory
 
 Each agent has one memory that travels with it across every repository and channel. It
 goes into every prompt, so an agent that learned "Priya prefers small PRs" in one channel
@@ -1086,7 +1267,7 @@ header, so you can edit it by hand.
 
 ---
 
-## 13. Costs
+## 14. Costs
 
 The Costs page (banknotes icon in the rail) shows what your agents spend, from the
 per-turn cost each model provider reports.
@@ -1141,7 +1322,7 @@ uses `@finops`, an agent whose only job is to read the report. Any agent will do
 
 ---
 
-## 14. Keeping spend under control
+## 15. Keeping spend under control
 
 Canopy has four brakes, from gentlest to firmest.
 
@@ -1170,7 +1351,7 @@ Canopy has four brakes, from gentlest to firmest.
 
 ---
 
-## 15. Reference
+## 16. Reference
 
 ### Tools agents can call
 
@@ -1182,7 +1363,8 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `pass` |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
-| Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
+| Later | `schedule_create`, `schedules_list`, `schedule_cancel`, `watch_create` (a GitHub watch; listed and cancelled as a schedule) |
+| Playbooks | `playbooks_list`, `playbook_get`, `playbook_start`, `playbook_advance` (the coordinator only), `playbook_cancel`, `playbook_save` (a disabled draft); `delegate_task` takes `step` during a run |
 | Shared resources | `lock_acquire`, `lock_release`, `locks_list` (see [Locks](#locks)) |
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
@@ -1205,6 +1387,7 @@ given a team, they answer with its members to pick from.
 | `/i @team [message]` | Invite a team's active members |
 | `/delegate @agent task` | Delegate a subtask |
 | `/handoff @agent reason` | Request a handoff |
+| `/playbook name [@coordinator] brief` | Start a playbook run in the channel |
 | `/stop` | Stop every turn and hold the channel |
 
 ### Timeline lines you will see
@@ -1230,6 +1413,13 @@ given a team, they answer with its members to pick from.
 | `the tests lock passed to @agent` | The lock freed and the next in line was woken |
 | `@agent took the tests lock` / `@agent's turn ended, releasing the tests lock` | Locks taken and freed without a wait (Activity view only) |
 | `<you> took the tests lock back from @agent` / `… was taken back from @agent: not used within 3 minutes` | A Force release, or the lease passing an unused or overlong lock on |
+| `@agent started the bug-fix playbook · 6 steps` | A playbook run began |
+| `bug-fix: Reproduce done → Fix (@backend, @frontend)` / `bug-fix: skipped …` | The coordinator advanced the run |
+| `bug-fix is waiting for your sign-off on …` / `<you> approved …` / `<you> asked for changes on …` | A sign-off step |
+| `the bug-fix playbook is complete` / `@agent cancelled the bug-fix playbook` | The run ended |
+| `bug-fix: coordinator @a → @b` | The coordinator changed (a handoff, or you reassigned it) |
+| `bug-fix has been on Fix for 30 min with no activity; nudged @agent` | A stall nudge |
+| `a watch found 2 new items for @agent (failed CI on main in acme/app)` | A GitHub watch fired |
 | `session was compacted` | Context was summarised to stay under the cap |
 | `reset @agent's session` | You dropped the agent's session in this channel |
 
@@ -1251,7 +1441,7 @@ service started by `brew services` uses the defaults.
 
 ---
 
-## 16. Troubleshooting
+## 17. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
@@ -1267,6 +1457,10 @@ service started by `brew services` uses the defaults.
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |
 | A question card says the agent stopped waiting | Answer it anyway: the answer is posted as your message and wakes the agent. Dismiss it if it no longer matters |
+| A watch shows "gh is not installed" or "not logged in" | Install the GitHub CLI and run `gh auth login`, or point Settings → GitHub at the binary; *Check gh* confirms |
+| A watch paused after three failures | Read its reason in the Scheduled panel (often a 404: a repository or workflow `gh` cannot see), fix it, then ask the agent for a new watch |
+| A playbook won't start: "nobody fills role …" | Give the role an agent with `assign` (`fix=@fullstack`) or role overrides in the start form, or add a role label on the team |
+| "already has a playbook run in progress" | One run per channel: finish or cancel it, or use a playbook with `channel: new` |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
 | `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |

@@ -1,5 +1,5 @@
 defmodule Canopy.Seeds do
-  @moduledoc "Creates Canopy's initial settings, user, default agents, and starter team."
+  @moduledoc "Creates Canopy's initial settings, user, default agents, starter team, and starter playbook."
 
   alias Canopy.{Agents, Settings, Teams, Users}
 
@@ -23,6 +23,14 @@ defmodule Canopy.Seeds do
     end
 
     seed_teams()
+
+    # Starter playbooks, created when missing by name; an existing one is never edited.
+    for result <- Canopy.Playbooks.seed() do
+      case result do
+        {:created, name} -> IO.puts("created playbook #{name}")
+        {:exists, name} -> IO.puts("playbook #{name} already exists")
+      end
+    end
 
     # The cost auditor answers "Request audit" on the Costs page.
     case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
@@ -233,7 +241,9 @@ defmodule Canopy.Seeds do
         asked. Bring a whole team into a channel with canopy_channel_add_members
         and a team name, then mention the team once with the plan. Don't assign
         or pass locks; agents acquire them themselves, and Canopy hands a lock to
-        whoever is next in line. You do not implement; you coordinate, and you stop when the plan is
+        whoever is next in line. When asked to run a playbook, start it with
+        canopy_playbook_start and follow it step by step; delegate each step to
+        its owner. You do not implement; you coordinate, and you stop when the plan is
         clear and owned.
         """
       },

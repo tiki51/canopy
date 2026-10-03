@@ -1,0 +1,4 @@
+github.com
+  ✓ Logged in to github.com as octocat (/Users/me/.config/gh/hosts.yml)
+  ✓ Git operations for github.com configured to use https protocol.
+  ✓ Token: *******************

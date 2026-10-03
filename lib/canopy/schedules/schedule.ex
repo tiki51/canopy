@@ -7,7 +7,9 @@ defmodule Canopy.Schedules.Schedule do
   @primary_key {:id, :string, autogenerate: {Canopy.ID, :generate, ["sch"]}}
   @foreign_key_type :string
 
-  @kinds ~w(once recurring)
+  # a watch is recurring too, but Canopy runs its check (Canopy.Watches)
+  # and wakes the agent only when the check finds something new
+  @kinds ~w(once recurring watch)
   @statuses ~w(active paused done cancelled)
 
   schema "schedules" do
@@ -20,6 +22,11 @@ defmodule Canopy.Schedules.Schedule do
     field :run_count, :integer, default: 0
     field :status, :string, default: "active"
     field :status_reason, :string
+    # watches: what to check, what the checks have seen, and the playbook a
+    # new item starts (nil: wake the agent)
+    field :check, :map
+    field :check_state, :map, default: %{}
+    field :playbook, :string
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -43,6 +50,9 @@ defmodule Canopy.Schedules.Schedule do
       :run_count,
       :status,
       :status_reason,
+      :check,
+      :check_state,
+      :playbook,
       :channel_id,
       :agent_id,
       :created_by_agent_id

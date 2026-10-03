@@ -91,11 +91,16 @@ defmodule Canopy.Handoffs do
         payload: %{"from_agent_id" => channel.owner_agent_id, "to_agent_id" => to}
       }
     end)
+    # the coordinator role of the channel's playbook run follows the handoff,
+    # in the same commit (or a line says why it cannot)
+    |> Canopy.Playbooks.Runs.follow_handoff_multi(handoff)
     |> Repo.transaction()
     |> case do
-      {:ok, %{handoff: handoff, accepted_event: accepted, owner_event: owner}} ->
+      {:ok,
+       %{handoff: handoff, accepted_event: accepted, owner_event: owner, playbook_follow: follow}} ->
         Timeline.broadcast(accepted)
         Timeline.broadcast(owner)
+        Canopy.Playbooks.Runs.after_follow(follow)
         {:ok, Repo.preload(handoff, @preloads, force: true)}
 
       {:error, _step, changeset, _} ->

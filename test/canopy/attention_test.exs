@@ -35,12 +35,25 @@ defmodule Canopy.AttentionTest do
       })
 
     summary = Attention.summary()
-    assert summary[ctx.channel.id] == %{questions: 2, permissions: 0}
-    assert summary[other.id] == %{questions: 0, permissions: 1}
+
+    assert summary[ctx.channel.id] == %{
+             questions: 2,
+             permissions: 0,
+             approvals: 0,
+             playbook: false
+           }
+
+    assert summary[other.id] == %{questions: 0, permissions: 1, approvals: 0, playbook: false}
     assert Attention.total(summary[ctx.channel.id]) == 2
 
     {:ok, _} = QuestionRequests.resolve(first, :rejected)
-    assert Attention.summary()[ctx.channel.id] == %{questions: 1, permissions: 0}
+
+    assert Attention.summary()[ctx.channel.id] == %{
+             questions: 1,
+             permissions: 0,
+             approvals: 0,
+             playbook: false
+           }
   end
 
   test "detached cards stop badging after a day, and archived channels never badge" do
@@ -58,12 +71,24 @@ defmodule Canopy.AttentionTest do
     assert Attention.summary()[ctx.channel.id] == nil
 
     _fresh = question(ctx, ctx.channel, "que_fresh_" <> Fixtures.unique_suffix())
-    assert Attention.summary()[ctx.channel.id] == %{questions: 1, permissions: 0}
+
+    assert Attention.summary()[ctx.channel.id] == %{
+             questions: 1,
+             permissions: 0,
+             approvals: 0,
+             playbook: false
+           }
 
     _archived =
       question(%{ctx | session: other_session}, other, "que_arch_" <> Fixtures.unique_suffix())
 
-    assert Attention.summary()[other.id] == %{questions: 1, permissions: 0}
+    assert Attention.summary()[other.id] == %{
+             questions: 1,
+             permissions: 0,
+             approvals: 0,
+             playbook: false
+           }
+
     {:ok, _} = Canopy.Channels.archive(other)
     assert Attention.summary()[other.id] == nil
   end

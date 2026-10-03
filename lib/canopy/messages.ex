@@ -54,6 +54,45 @@ defmodule Canopy.Messages do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "system"}, mentions: [])
   end
 
+  @doc """
+  Adds a system note from the local user (`kind: "system"`, no mentions) to
+  a multi, for something Canopy records as part of a larger commit (a GitHub
+  watch's delivery). It wakes nobody, and agents read it like any message.
+  The message is `{name, :message}` and its timeline row `{name, :event}`;
+  broadcast the event with `Canopy.Timeline.broadcast/1` after the commit.
+  """
+  def system_note_multi(%Multi{} = multi, name, channel_id, body) do
+    attrs = %{
+      channel_id: channel_id,
+      user_id: Canopy.Users.local().id,
+      body: body,
+      kind: "system",
+      mentions: [],
+      team_mentions: [],
+      mentions_user: false
+    }
+
+    multi
+    |> Multi.insert({name, :message}, Message.changeset(%Message{}, attrs))
+    |> Timeline.multi_record({name, :event}, fn changes ->
+      message = Map.fetch!(changes, {name, :message})
+
+      %{
+        channel_id: message.channel_id,
+        event_type: "message",
+        ref_id: message.id,
+        payload: %{
+          "kind" => message.kind,
+          "thread_id" => nil,
+          "sent_to_channel" => false,
+          "user_id" => message.user_id,
+          "mentions" => [],
+          "attachments" => []
+        }
+      }
+    end)
+  end
+
   @doc "Stores the assistant's final text reply to a wake prompt (`kind: \"reply\"`)."
   def post_agent_reply(channel_id, agent_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, agent_id: agent_id, body: body, kind: "reply"}, opts)

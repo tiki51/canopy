@@ -31,6 +31,10 @@ defmodule Canopy.SeedsTest do
     # agents take locks themselves; the project manager never brokers them
     assert Agents.get_by_name("project-manager").system_prompt =~ "Don't assign\nor pass locks"
 
+    # the starter playbook, with the project manager told how to run one
+    assert %{source: "seed", enabled: true} = Canopy.Playbooks.get_by_name("bug-fix")
+    assert Agents.get_by_name("project-manager").system_prompt =~ "canopy_playbook_start"
+
     team = Canopy.Teams.get_by_name("bugfix-team")
     assert team.lead.name == "backend"
     assert Enum.map(team.members, & &1.name) == ~w(backend frontend reviewer test)
@@ -46,6 +50,7 @@ defmodule Canopy.SeedsTest do
     assert Agents.get_by_name("backend").role == "Customized role"
     assert Canopy.Teams.get_by_name("bugfix-team").description == "Ours now"
     assert length(Canopy.Teams.list()) == 1
+    assert length(Canopy.Playbooks.list()) == 1
     assert Settings.get().auditor_agent_id == custom_auditor.id
     assert Repo.aggregate(Setting, :count) == 1
     assert Repo.aggregate(User, :count) == 1

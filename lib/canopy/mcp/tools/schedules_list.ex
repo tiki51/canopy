@@ -1,5 +1,5 @@
 defmodule Canopy.MCP.Tools.SchedulesList do
-  @moduledoc "List scheduled tasks: this channel's by default, or one agent's across channels."
+  @moduledoc "List scheduled tasks and GitHub watches: this channel's by default, or one agent's across channels."
 
   use Anubis.Server.Component, type: :tool
 
@@ -36,6 +36,22 @@ defmodule Canopy.MCP.Tools.SchedulesList do
           {:ok, Schedules.list_for_agent(agent.id)}
         end
     end
+  end
+
+  defp line(%{kind: "watch"} = s) do
+    state = s.check_state || %{}
+    status = if s.status == "paused", do: " (paused: #{s.status_reason})", else: ""
+
+    error =
+      if state["last_error"] && s.status != "paused",
+        do: " (failing: #{state["last_error"]})",
+        else: ""
+
+    starts = if s.playbook, do: ", starts #{s.playbook}", else: ""
+
+    "[#{s.id}] @#{s.agent.name} in ##{s.channel.name}: watching #{Canopy.GitHub.describe(s.check)}, " <>
+      "#{Canopy.Watches.describe_every(s.cron)}#{starts}, fired #{state["fired"] || 0}×#{status}#{error} — " <>
+      String.slice(s.instruction, 0, 120)
   end
 
   defp line(s) do

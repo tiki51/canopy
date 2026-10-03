@@ -144,7 +144,8 @@ defmodule Canopy.Runtime.Router do
          channel: ctx.channel.name,
          from: name(ctx, p["from_agent_id"]),
          delegation_id: ev.ref_id,
-         task: p["description"]
+         task: p["description"],
+         playbook: p["playbook"]
        })}
     ]
   end

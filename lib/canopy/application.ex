@@ -38,9 +38,21 @@ defmodule Canopy.Application do
     opts = [strategy: :one_for_one, name: Canopy.Supervisor]
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
-      if Phoenix.Endpoint.server?(:canopy, CanopyWeb.Endpoint), do: release_locks()
+      if Phoenix.Endpoint.server?(:canopy, CanopyWeb.Endpoint) do
+        release_locks()
+        reconcile_stall_checks()
+      end
+
       {:ok, pid}
     end
+  end
+
+  # A playbook run whose stall check was lost (a crash between a check and
+  # its successor) gets one again.
+  defp reconcile_stall_checks do
+    Canopy.Playbooks.StallWorker.reconcile()
+  rescue
+    e -> Logger.warning("could not reconcile playbook stall checks: #{Exception.message(e)}")
   end
 
   # No turn survives a restart, so none owns a lock claim any more: those are

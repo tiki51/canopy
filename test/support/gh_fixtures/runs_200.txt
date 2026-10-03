@@ -1,0 +1,5 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+Etag: "etag-runs-1"
+
+{"total_count":1,"workflow_runs":[{"id":9001,"name":"CI","display_title":"Bump deps","html_url":"https://github.com/acme/app/actions/runs/9001","head_branch":"main","path":".github/workflows/ci.yml","actor":{"login":"carol"}}]}

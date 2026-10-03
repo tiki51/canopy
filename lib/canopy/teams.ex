@@ -38,7 +38,8 @@ defmodule Canopy.Teams do
 
   @doc """
   Updates a team; `agent_ids`, when given, replaces the member set in the
-  same transaction.
+  same transaction, and `roles` (`%{agent_id => role}`, blank clears) sets
+  the members' role labels.
   """
   def update(%Team{} = team, attrs), do: save(team, attrs)
 
@@ -66,6 +67,7 @@ defmodule Canopy.Teams do
     |> Multi.run(:members, fn repo, %{team: team} ->
       replace_members(repo, team.id, member_ids)
     end)
+    |> Multi.run(:roles, fn repo, %{team: team} -> set_roles(repo, team.id, roles(attrs)) end)
     |> Repo.transaction()
     |> case do
       {:ok, %{team: team}} ->
@@ -88,6 +90,38 @@ defmodule Canopy.Teams do
     rows = Enum.map(member_ids, &%{team_id: team_id, agent_id: &1, inserted_at: now})
     {count, _} = repo.insert_all(TeamMember, rows, on_conflict: :nothing)
     {:ok, count}
+  end
+
+  # A role label is what a member does on this team ("reviewer"); playbooks
+  # fill their roles from it. Only labels of current members are kept.
+  defp set_roles(_repo, _team_id, nil), do: {:ok, 0}
+
+  defp set_roles(repo, team_id, roles) do
+    count =
+      Enum.reduce(roles, 0, fn {agent_id, role}, acc ->
+        role =
+          case role |> to_string() |> String.trim() |> String.downcase() do
+            "" -> nil
+            text -> String.slice(text, 0, 40)
+          end
+
+        {n, _} =
+          repo.update_all(
+            from(m in TeamMember, where: m.team_id == ^team_id and m.agent_id == ^agent_id),
+            set: [role: role]
+          )
+
+        acc + n
+      end)
+
+    {:ok, count}
+  end
+
+  defp roles(attrs) do
+    case Map.get(attrs, "roles") || Map.get(attrs, :roles) do
+      %{} = roles -> roles
+      _ -> nil
+    end
   end
 
   defp has_member_ids?(attrs),
@@ -115,6 +149,19 @@ defmodule Canopy.Teams do
     do: members |> Enum.filter(& &1.active) |> Enum.sort_by(& &1.name)
 
   def active_members(%Team{} = team), do: team |> Repo.preload(@preloads) |> active_members()
+
+  @doc """
+  The members' role labels on a team: `%{agent_id => role}` for the members
+  that have one. Playbooks fill their roles from these when a run starts.
+  """
+  def member_roles(%Team{id: id}) do
+    Repo.all(
+      from m in TeamMember,
+        where: m.team_id == ^id and not is_nil(m.role) and m.role != "",
+        select: {m.agent_id, m.role}
+    )
+    |> Map.new()
+  end
 
   @doc "The teams an agent is on, alphabetical."
   def for_agent(agent_id) when is_binary(agent_id) do

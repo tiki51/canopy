@@ -1,7 +1,8 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
   Settings: the OpenCode server URL (with a connection check), the Claude Code
-  binary (with a version and login check), each engine's default model (and
+  binary (with a version and login check), the `gh` binary GitHub watches use
+  (with the same check), each engine's default model (and
   Claude Code's default effort) with how many agents use it, the local user's display name,
   appearance (light/dark mode and colour palette, kept in the browser), the
   collaboration preamble every agent is given, and the MCP section (identity
@@ -35,6 +36,8 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
      |> assign(:claude_check, nil)
+     |> assign(:gh_form, to_form(Settings.change(setting), id: "gh-form"))
+     |> assign(:gh_check, nil)
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
      |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
      |> assign(:prompt_form, prompt_form(setting))
@@ -170,6 +173,38 @@ defmodule CanopyWeb.SettingsLive do
        |> assign(:claude_check, :checking)
        |> start_async(:claude_check, fn -> Canopy.Engine.ClaudeCode.check(binary, config_dir) end)}
     end
+  end
+
+  def handle_event("validate_gh", %{"setting" => params}, socket) do
+    changeset =
+      socket.assigns.setting
+      |> Settings.change(Map.take(params, ["gh_binary"]))
+      |> Map.put(:action, :validate)
+
+    {:noreply,
+     socket |> assign(:gh_form, to_form(changeset, id: "gh-form")) |> assign(:gh_check, nil)}
+  end
+
+  def handle_event("save_gh", %{"setting" => params}, socket) do
+    case Settings.update(Map.take(params, ["gh_binary"])) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:gh_form, to_form(Settings.change(setting), id: "gh-form"))
+         |> put_flash(:info, "Saved the gh binary; watches use it from their next check.")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :gh_form, to_form(changeset, id: "gh-form"))}
+    end
+  end
+
+  # Runs the saved binary: version and login state.
+  def handle_event("check_gh", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:gh_check, :checking)
+     |> start_async(:gh_check, fn -> Canopy.GitHub.status() end)}
   end
 
   def handle_event("check_connection", _params, socket) do
@@ -347,6 +382,12 @@ defmodule CanopyWeb.SettingsLive do
 
   def handle_async(:claude_check, {:ok, result}, socket),
     do: {:noreply, assign(socket, :claude_check, result)}
+
+  def handle_async(:gh_check, {:ok, result}, socket),
+    do: {:noreply, assign(socket, :gh_check, result)}
+
+  def handle_async(:gh_check, {:exit, reason}, socket),
+    do: {:noreply, assign(socket, :gh_check, {:error, "check crashed: #{inspect(reason)}"})}
 
   def handle_async(:claude_check, {:exit, reason}, socket),
     do: {:noreply, assign(socket, :claude_check, {:error, "check crashed: #{inspect(reason)}"})}
@@ -691,6 +732,44 @@ defmodule CanopyWeb.SettingsLive do
               directory of its own to isolate agents; run <code class="font-mono">claude</code>
               once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
               set to log in there.
+            </p>
+          </.form>
+        </Layouts.panel>
+
+        <Layouts.panel id="gh-panel" title="GitHub">
+          <:subtitle>
+            GitHub watches (agents create them with <code>canopy_watch_create</code>) read GitHub
+            through your <code>gh</code> CLI and its login; Canopy stores no token.
+          </:subtitle>
+          <.form
+            for={@gh_form}
+            id="gh-form"
+            phx-change="validate_gh"
+            phx-submit="save_gh"
+            class="flex flex-col gap-3"
+          >
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@gh_form[:gh_binary]}
+                type="text"
+                label="gh binary (name on PATH or a path)"
+                placeholder="gh"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <.button type="submit" variant="primary" id="save-gh">Save</.button>
+              <button type="button" id="check-gh" class="btn btn-soft" phx-click="check_gh">
+                Check gh
+              </button>
+              <.gh_check_result check={@gh_check} />
+            </div>
+            <p class="text-xs text-base-content/60">
+              Checks use conditional requests, so a check that finds nothing new costs no GitHub
+              rate limit and no tokens. Install the GitHub CLI and run
+              <code class="font-mono">gh auth login</code>
+              once; the check uses the saved binary.
             </p>
           </.form>
         </Layouts.panel>
@@ -1070,6 +1149,42 @@ defmodule CanopyWeb.SettingsLive do
           <.icon name="hero-check-circle-mini" class="size-4 text-success" />
           <span class="text-success">
             Connected{if version, do: " · OpenCode #{version}", else: ""}
+          </span>
+        <% {:error, reason} -> %>
+          <.icon name="hero-x-circle-mini" class="size-4 text-error" />
+          <span class="text-error">{reason}</span>
+      <% end %>
+    </span>
+    """
+  end
+
+  attr :check, :any, default: nil
+
+  defp gh_check_result(assigns) do
+    ~H"""
+    <span id="gh-check-result" class="flex items-center gap-1.5 text-sm" role="status">
+      <%= case @check do %>
+        <% nil -> %>
+        <% :checking -> %>
+          <span class="text-base-content/60">Checking…</span>
+        <% {:ok, info} -> %>
+          <.icon
+            name={
+              if info.logged_in? and not info.too_old?,
+                do: "hero-check-circle-mini",
+                else: "hero-exclamation-circle-mini"
+            }
+            class={[
+              "size-4",
+              if(info.logged_in? and not info.too_old?, do: "text-success", else: "text-warning")
+            ]}
+          />
+          <span>
+            gh {info.version}{if info.too_old?, do: " (too old: watches need gh 2.0 or later)"} · {cond do
+              info.logged_in? and info.account -> "logged in as #{info.account}"
+              info.logged_in? -> "logged in"
+              true -> "not logged in: run gh auth login"
+            end}
           </span>
         <% {:error, reason} -> %>
           <.icon name="hero-x-circle-mini" class="size-4 text-error" />

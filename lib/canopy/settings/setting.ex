@@ -37,6 +37,8 @@ defmodule Canopy.Settings.Setting do
     field :claude_binary, :string, default: "claude"
     field :claude_config_dir, :string
     field :claude_max_budget_usd, :float
+    # GitHub watches run the user's `gh` CLI (a name on PATH or a path)
+    field :gh_binary, :string, default: "gh"
     # the model (and, for Claude Code, the effort) an agent with none of its own
     # runs on, per engine; nil leaves the choice to the engine
     field :claude_default_model, :string
@@ -68,12 +70,14 @@ defmodule Canopy.Settings.Setting do
       :claude_binary,
       :claude_config_dir,
       :claude_max_budget_usd,
+      :gh_binary,
       :claude_default_model,
       :claude_default_effort,
       :opencode_default_provider,
       :opencode_default_model
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
+    |> update_change(:gh_binary, &trim_or_nil/1)
     |> update_change(:claude_default_model, &trim_or_nil/1)
     |> update_change(:claude_default_effort, &trim_or_nil/1)
     |> update_change(:opencode_default_provider, &trim_or_nil/1)
@@ -86,7 +90,8 @@ defmodule Canopy.Settings.Setting do
       :chatter_limit,
       :question_wait_minutes,
       :lock_hold_minutes,
-      :claude_binary
+      :claude_binary,
+      :gh_binary
     ])
     |> validate_number(:claude_max_budget_usd, greater_than: 0)
     |> validate_number(:chatter_limit, greater_than_or_equal_to: 1, less_than_or_equal_to: 1000)

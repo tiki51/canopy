@@ -379,4 +379,82 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert html =~ ~s(class="block px-4 bg-success/10")
     assert html =~ ~s(class="block px-4 bg-error/10")
   end
+
+  describe "playbook and watch lines" do
+    @names %{"agt_pm" => "pm", "agt_be" => "backend", "agt_fe" => "frontend"}
+
+    defp line(type, payload, agent_id \\ "agt_pm") do
+      TimelineComponents.event_text(
+        %{event_type: type, agent_id: agent_id, payload: Map.put(payload, "playbook", "bug-fix")},
+        @names,
+        "Steven"
+      )
+    end
+
+    test "a run's lines" do
+      assert line("playbook_started", %{"steps" => 6, "brief" => "login broken"}) ==
+               "@pm started the bug-fix playbook · 6 steps: login broken"
+
+      assert line(
+               "playbook_started",
+               %{
+                 "steps" => 6,
+                 "brief" => "x",
+                 "trigger" => %{"key" => "pr:3"},
+                 "coordinator_agent_id" => "agt_pm"
+               },
+               nil
+             ) ==
+               "a GitHub watch started the bug-fix playbook for @pm (pr:3) · 6 steps"
+
+      assert line("playbook_step_completed", %{
+               "title" => "Reproduce",
+               "next" => "fix",
+               "next_title" => "Fix",
+               "next_owner_ids" => ["agt_be", "agt_fe"]
+             }) == "bug-fix: Reproduce done → Fix (@backend, @frontend)"
+
+      assert line("playbook_approval_requested", %{"title" => "User sign-off"}) ==
+               "bug-fix is waiting for your sign-off on User sign-off"
+
+      assert line(
+               "playbook_approval_resolved",
+               %{"title" => "User sign-off", "approved" => false, "note" => "still blue"},
+               nil
+             ) ==
+               "Steven asked for changes on User sign-off of bug-fix: still blue"
+
+      assert line("playbook_coordinator_changed", %{
+               "from_agent_id" => "agt_pm",
+               "to_agent_id" => "agt_be",
+               "by" => "handoff"
+             }) ==
+               "bug-fix: coordinator @pm → @backend (it followed the handoff)"
+
+      assert line("playbook_stalled", %{"title" => "Fix", "quiet_s" => 1900}) ==
+               "bug-fix has been on Fix for 31 min with no activity; nudged @pm"
+
+      assert line("playbook_completed", %{"outcome" => nil}) == "the bug-fix playbook is complete"
+
+      assert TimelineComponents.activity_class(%{event_type: "playbook_step_started"}) ==
+               "routine"
+    end
+
+    test "a watch firing" do
+      assert TimelineComponents.event_text(
+               %{
+                 event_type: "schedule_fired",
+                 agent_id: "agt_pm",
+                 payload: %{
+                   "kind" => "watch",
+                   "keys" => ["pr:1", "pr:2"],
+                   "watch" => "new pull requests in a/b",
+                   "runs" => 0
+                 }
+               },
+               @names,
+               "Steven"
+             ) == "a watch found 2 new items for @pm (new pull requests in a/b)"
+    end
+  end
 end

@@ -1,0 +1,8 @@
+HTTP/2.0 200 OK
+Cache-Control: private, max-age=60, s-maxage=60
+Content-Type: application/json; charset=utf-8
+Etag: W/"etag-pulls-1"
+X-Poll-Interval: 60
+X-Ratelimit-Remaining: 4999
+
+[{"number":12,"title":"Fix the login button","html_url":"https://github.com/acme/app/pull/12","user":{"login":"alice"},"base":{"ref":"main"},"labels":[{"name":"bug"}]},{"number":11,"title":"Add dark mode","html_url":"https://github.com/acme/app/pull/11","user":{"login":"bob"},"base":{"ref":"develop"},"labels":[]}]

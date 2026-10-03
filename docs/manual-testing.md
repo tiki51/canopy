@@ -404,6 +404,72 @@ to: researcher …" as in the README demo prompt.
       channels with links; the sidebar row shows a clock with the count.
 - [ ] Restart `mix phx.server` with a schedule pending → it still fires on time.
 
+## 10j. Playbooks
+
+- [ ] **Playbooks** (rail) lists **bug-fix** marked *starter*, enabled. **New playbook**
+      opens the editor with a template; break the frontmatter (`name: Bad_Name`) → the reasons
+      show under the textarea and the step preview empties. Fix it → the preview lists the
+      steps with owners, a *your sign-off* badge on an `approval: user` step, and a warning
+      for a `## section` that matches no step. Save.
+- [ ] **Teams → Edit @bugfix-team**: give `@frontend` the role `fix` → the Teams page shows
+      `@frontend · fix`.
+- [ ] In a channel, "@project-manager run the bug-fix playbook: the checkout button does
+      nothing on Safari" → it calls `canopy_playbook_start`; a new channel
+      (`#bug-fix-the-checkout-button-does…`) appears, owned by @project-manager, with
+      `@bugfix-team joined` and the task titled from the brief, and @project-manager wakes
+      there with the brief and the triage step. The header chip reads `bug-fix · 1/6 Triage
+      and scope`; the sidebar row shows a small book.
+- [ ] Watch it go: delegations made now say "requested for step `reproduce`", the delegate's
+      wake says which step it is, the timeline shows `bug-fix: Reproduce … done → Fix
+      (@backend, @frontend)`, and the chip follows. Click the chip → the panel shows every
+      step's status, round, result, and delegations.
+- [ ] Ask @test (not the coordinator) to advance the run → `canopy_playbook_advance` refuses:
+      only @project-manager can. Ask the coordinator to skip sign-off, or to jump past it
+      (`next:` a later step) → refused: it needs your approval.
+- [ ] At sign-off: the chip turns amber ("waiting for you"), the timeline says `bug-fix is
+      waiting for your sign-off`, the sidebar shows a "needs you" badge. **Request changes**
+      with a note → the coordinator wakes with the note and goes back to a step. Later,
+      **Approve** → `the bug-fix playbook is complete`, the chip goes, and the panel lists the
+      run as completed. With the chatter budget used up, Approve still wakes the coordinator.
+- [ ] Start a run yourself: **Playbook** in a channel header (or **Start…** on the Playbooks
+      page) → pick the playbook, a coordinator, a brief → the coordinator wakes with it.
+      `/playbook bug-fix @backend the login form loses its input` does the same from the
+      composer. A second start in the same channel is refused ("already has a playbook run in
+      progress").
+- [ ] Accept a handoff from the coordinator to another agent → `bug-fix: coordinator
+      @project-manager → @backend (it followed the handoff)`. **Reassign** in the panel does
+      the same by hand; **Cancel run** ends it.
+- [ ] Edit a playbook while a run of it is in progress → the run's panel says the playbook was
+      edited since it started; the run keeps its steps. **Delete** is refused while it runs.
+- [ ] Stall nudge: write a playbook with `stall_after: 1m`, start it, and let the step sit →
+      about a minute later `… has been on … for 1 min with no activity; nudged @agent`, and the
+      coordinator wakes once. Nothing more until something happens on the run.
+- [ ] Ask an agent to write a playbook → it calls `canopy_playbook_save`; the library shows
+      it disabled, *draft by @agent*, and it cannot be started until you enable it.
+
+## 10k. GitHub watches
+
+Needs the GitHub CLI (`gh auth login` done) and a repository with a GitHub remote. Use a
+repository you own; watches only read.
+
+- [ ] **Settings → GitHub → Check gh** → `gh 2.x · logged in as <you>`. Point the binary at a
+      path that does not exist → the check says gh is not installed.
+- [ ] "@devops watch for new issues labelled bug here and triage each one" → it calls
+      `canopy_watch_create`; the Scheduled panel lists `watching new issues labelled bug in
+      owner/repo · every minute · checked now`, and the timeline records it. Nothing fires for
+      issues that already exist.
+- [ ] Open an issue with that label on GitHub → within a minute or two a channel note lists it
+      ("GitHub watch … found 1 new item"), `a watch found 1 new item for @devops (…)` appears,
+      and @devops wakes with the issue's number, title, and URL (marked as external data).
+      Edit the issue → nothing fires again.
+- [ ] With nothing new, the watch's *checked* time moves each minute and nothing else
+      happens: no timeline line, no turn, no spend.
+- [ ] A watch with `playbook: bug-fix` → each new item starts a bug-fix run (in a new channel),
+      @devops coordinating; the run panel says it was started by a GitHub watch.
+- [ ] Log gh out (`gh auth logout`) → the watch shows "gh is not logged in…" in red; after
+      three failed checks it pauses with the reason. Log back in; cancel it and ask for a new
+      one.
+
 ## 10f. Agent memory
 
 - [ ] An agent's page has a **Memory** panel, empty at first. Tell the agent something

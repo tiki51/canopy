@@ -122,7 +122,7 @@ defmodule Canopy.Costs do
     |> then(&((&1 || 0) / 1))
   end
 
-  @doc "Spend per wake trigger (user, agent, delegation, handoff, scheduled) since `since`."
+  @doc "Spend per wake trigger (user, agent, delegation, handoff, scheduled, …) since `since`."
   def by_trigger(since \\ nil) do
     base(since)
     |> group_by([e], fragment("COALESCE(json_extract(?, '$.trigger'), 'unknown')", e.payload))
@@ -143,6 +143,9 @@ defmodule Canopy.Costs do
   defp trigger_label("delegation"), do: "delegations"
   defp trigger_label("handoff"), do: "handoffs"
   defp trigger_label("scheduled"), do: "scheduled tasks"
+  defp trigger_label("watch"), do: "GitHub watches"
+  defp trigger_label("playbook"), do: "playbook runs"
+  defp trigger_label("playbook_nudge"), do: "playbook stall nudges"
   defp trigger_label(_), do: "not recorded"
 
   @doc """

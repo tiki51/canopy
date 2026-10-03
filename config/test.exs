@@ -60,3 +60,9 @@ config :canopy, :opencode,
   client: Canopy.OpenCode.ClientMock,
   req_options: [plug: {Req.Test, Canopy.OpenCode.Client}],
   start_streams: false
+
+# GitHub watches talk to a Mox double; Canopy.GitHub.CLI's own tests run the
+# fake `gh` (test/support/fake_gh.sh), never the real one.
+config :canopy, :github,
+  client: Canopy.GitHub.Mock,
+  binary: Path.expand("../test/support/fake_gh.sh", __DIR__)

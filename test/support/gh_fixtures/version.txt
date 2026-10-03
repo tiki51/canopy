@@ -1,0 +1,2 @@
+gh version 2.5.2 (2022-03-01)
+https://github.com/cli/cli/releases/tag/v2.5.2

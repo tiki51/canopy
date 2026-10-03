@@ -44,6 +44,10 @@ defmodule CanopyWeb.Router do
       live "/teams", TeamsLive, :index
       live "/teams/new", TeamsLive, :new
       live "/teams/:id/edit", TeamsLive, :edit
+      live "/playbooks", PlaybooksLive, :index
+      live "/playbooks/new", PlaybooksLive, :new
+      live "/playbooks/:id/edit", PlaybooksLive, :edit
+      live "/playbooks/:id/start", PlaybooksLive, :start
       live "/channels/new", ChannelLive.New
       live "/channels/:id", ChannelLive
       live "/threads", ThreadsLive

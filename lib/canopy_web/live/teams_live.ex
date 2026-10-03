@@ -25,6 +25,7 @@ defmodule CanopyWeb.TeamsLive do
      socket
      |> assign(:team, nil)
      |> assign(:member_ids, [])
+     |> assign(:roles, %{})
      |> assign(:pickable, [])
      |> assign(:teams, Teams.list())}
   end
@@ -57,7 +58,10 @@ defmodule CanopyWeb.TeamsLive do
              |> assign(:team, team)
              |> assign(:pickable, pickable(team))
              |> assign(:page_title, "Edit @" <> team.name)
-             |> assign_form(team, %{"agent_ids" => Enum.map(team.members, & &1.id)})}
+             |> assign_form(team, %{
+               "agent_ids" => Enum.map(team.members, & &1.id),
+               "roles" => Teams.member_roles(team)
+             })}
         end
     end
   end
@@ -91,6 +95,7 @@ defmodule CanopyWeb.TeamsLive do
         {:noreply,
          socket
          |> assign(:member_ids, member_ids(params))
+         |> assign(:roles, Map.get(params, "roles", %{}))
          |> assign(:form, to_form(changeset, id: "team-form"))}
     end
   end
@@ -134,6 +139,7 @@ defmodule CanopyWeb.TeamsLive do
 
     socket
     |> assign(:member_ids, member_ids(params))
+    |> assign(:roles, Map.get(params, "roles", socket.assigns[:roles] || %{}))
     |> assign(:form, to_form(changeset, id: "team-form"))
   end
 
@@ -190,6 +196,9 @@ defmodule CanopyWeb.TeamsLive do
   end
 
   defp index_page(assigns) do
+    assigns =
+      assign(assigns, :team_roles, Map.new(assigns.teams, &{&1.id, Teams.member_roles(&1)}))
+
     ~H"""
     <Layouts.page
       title="Teams"
@@ -264,6 +273,7 @@ defmodule CanopyWeb.TeamsLive do
                 :for={member <- team.members}
                 agent={member}
                 lead?={member.id == team.lead_agent_id}
+                role={Map.get(@team_roles[team.id] || %{}, member.id)}
               />
             </div>
           </li>
@@ -275,6 +285,7 @@ defmodule CanopyWeb.TeamsLive do
 
   attr :agent, :map, required: true
   attr :lead?, :boolean, default: false
+  attr :role, :string, default: nil
 
   @doc false
   def member_pill(assigns) do
@@ -288,6 +299,13 @@ defmodule CanopyWeb.TeamsLive do
       title={if @agent.active, do: @agent.role, else: "Inactive: skipped when the team is used"}
     >
       <span class="font-mono">@{@agent.name}</span>
+      <span
+        :if={@role}
+        class="text-base-content/60"
+        title="Role on this team (playbooks fill roles from it)"
+      >
+        · {@role}
+      </span>
       <span
         :if={@lead?}
         class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
@@ -378,6 +396,17 @@ defmodule CanopyWeb.TeamsLive do
                     <span class="truncate text-base-content/60">
                       {if agent.active, do: agent.role, else: "inactive"}
                     </span>
+                    <input
+                      :if={agent.id in @member_ids}
+                      type="text"
+                      id={"team-role-#{agent.id}"}
+                      name={"team[roles][#{agent.id}]"}
+                      value={Map.get(@roles, agent.id)}
+                      placeholder="role"
+                      title="Role on this team (optional): playbooks fill a role like fix or review from it"
+                      autocomplete="off"
+                      class="input input-xs ml-auto w-24"
+                    />
                   </label>
                 </li>
               <% end %>

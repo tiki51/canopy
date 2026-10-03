@@ -27,6 +27,7 @@ defmodule CanopyWeb.ChannelLive do
     Messages,
     Handoffs,
     Locks,
+    Playbooks,
     PermissionRequests,
     QuestionRequests,
     Repositories,
@@ -41,8 +42,9 @@ defmodule CanopyWeb.ChannelLive do
   }
 
   alias Canopy.Engine.Event
+  alias Canopy.Playbooks.{Run, Runs}
   alias Canopy.Runtime.{Activity, Commands}
-  alias CanopyWeb.Nav
+  alias CanopyWeb.{Nav, PlaybookComponents, PlaybookStart}
   alias Canopy.Tasks.Task
 
   @page_size 100
@@ -58,6 +60,8 @@ defmodule CanopyWeb.ChannelLive do
       Schedules.subscribe()
       Documents.subscribe()
       Teams.subscribe()
+      Playbooks.subscribe()
+      Runs.subscribe()
     end
 
     {:ok,
@@ -263,6 +267,8 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:editing_schedules?, false)
     |> assign(:schedules, Schedules.list_for_channel(id))
     |> assign(:editing_locks?, false)
+    |> assign(:editing_playbook?, false)
+    |> assign_run()
     |> assign(:lock_form, to_form(%{"name" => Locks.default_name(), "reason" => ""}, as: :lock))
     |> watch_locks()
     |> assign(:changes, nil)
@@ -271,6 +277,24 @@ defmodule CanopyWeb.ChannelLive do
     |> assign_branch()
     |> stream(:timeline, events, reset: true)
     |> schedule_branch_refresh()
+  end
+
+  # The channel's playbook run (if one is in progress) for the header chip and
+  # the panel; without one, the start form and the last few finished runs.
+  defp assign_run(socket, params \\ %{}) do
+    channel = socket.assigns.channel
+    run = Runs.active_for_channel(channel.id)
+    playbooks = Playbooks.list(enabled: true)
+
+    socket
+    |> assign(:run, run)
+    |> assign(:run_playbooks, playbooks)
+    |> assign(:run_agents, Canopy.Agents.list_active())
+    |> assign(
+      :recent_runs,
+      if(run, do: [], else: channel.id |> Runs.list_for_channel(3) |> Enum.reject(&Run.live?/1))
+    )
+    |> assign(:start_form, PlaybookStart.form(params, playbooks, channel))
   end
 
   defp leave_channel(%{assigns: %{channel: nil}} = socket), do: socket
@@ -429,6 +453,19 @@ defmodule CanopyWeb.ChannelLive do
       socket,
       :info,
       "Invited @#{team.name}: #{Enum.map_join(added, ", ", &("@" <> &1.name))} joined. Mention @#{team.name} when you need them."
+    )
+  end
+
+  defp outsider_hint(socket, {:playbook, run}) do
+    where =
+      if run.channel_id == socket.assigns.channel.id,
+        do: "",
+        else: " in ##{run.channel.name}"
+
+    put_flash(
+      socket,
+      :info,
+      "Started #{run.playbook_name}#{where}; @#{run.coordinator.name} coordinates it."
     )
   end
 
@@ -599,6 +636,14 @@ defmodule CanopyWeb.ChannelLive do
       do: {:noreply, assign(socket, :schedules, Schedules.list_for_channel(cid))},
       else: {:noreply, socket}
   end
+
+  def handle_info({:playbook_runs, :changed, cid}, socket) do
+    if cid == socket.assigns.channel.id,
+      do: {:noreply, assign_run(socket)},
+      else: {:noreply, socket}
+  end
+
+  def handle_info({:playbooks, :changed}, socket), do: {:noreply, assign_run(socket)}
 
   def handle_info({:chatter, status}, socket),
     do:
@@ -1208,6 +1253,76 @@ defmodule CanopyWeb.ChannelLive do
     {:noreply, assign(socket, :paused?, false)}
   end
 
+  def handle_event("toggle_playbook", _params, socket),
+    do: {:noreply, assign(socket, :editing_playbook?, not socket.assigns.editing_playbook?)}
+
+  def handle_event("start_validate", %{"start" => params}, socket),
+    do: {:noreply, assign_run(socket, params)}
+
+  def handle_event("start_playbook", %{"start" => params}, socket) do
+    case PlaybookStart.start(params, socket.assigns.channel) do
+      {:ok, %{channel_id: channel_id} = run} when channel_id != socket.assigns.channel.id ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Started #{run.playbook_name} in ##{run.channel.name}.")
+         |> push_navigate(to: ~p"/channels/#{channel_id}")}
+
+      {:ok, run} ->
+        {:noreply,
+         socket
+         |> assign_run()
+         |> put_flash(
+           :info,
+           "Started #{run.playbook_name}; @#{run.coordinator.name} coordinates it."
+         )}
+
+      {:error, reason} ->
+        {:noreply, socket |> assign_run(params) |> put_flash(:error, reason)}
+    end
+  end
+
+  def handle_event("cancel_playbook_run", %{"id" => id}, socket) do
+    with %Run{} = run <- Runs.get(id),
+         {:ok, _run, :cancelled} <-
+           Runs.cancel(run, :user, "cancelled by #{socket.assigns.user.display_name}") do
+      {:noreply, assign_run(socket)}
+    else
+      {:error, reason} -> {:noreply, put_flash(socket, :error, reason)}
+      _ -> {:noreply, assign_run(socket)}
+    end
+  end
+
+  def handle_event("approve_playbook_step", %{"id" => id}, socket) do
+    with %Run{} = run <- Runs.get(id),
+         {:ok, _run, _what} <- Runs.approve(run) do
+      {:noreply, assign_run(socket)}
+    else
+      {:error, reason} -> {:noreply, put_flash(socket, :error, reason)}
+      _ -> {:noreply, assign_run(socket)}
+    end
+  end
+
+  def handle_event("request_playbook_changes", %{"run_id" => id, "note" => note}, socket) do
+    with %Run{} = run <- Runs.get(id),
+         {:ok, _run, _what} <- Runs.request_changes(run, note) do
+      {:noreply, assign_run(socket)}
+    else
+      {:error, reason} -> {:noreply, put_flash(socket, :error, String.capitalize(reason) <> ".")}
+      _ -> {:noreply, assign_run(socket)}
+    end
+  end
+
+  def handle_event("reassign_coordinator", %{"run_id" => id, "agent_id" => agent_id}, socket) do
+    with %Run{} = run <- Runs.get(id),
+         %Canopy.Agents.Agent{} = agent <- Canopy.Agents.get(agent_id),
+         {:ok, _run, _what} <- Runs.reassign(run, agent, "user") do
+      {:noreply, assign_run(socket)}
+    else
+      {:error, reason} -> {:noreply, put_flash(socket, :error, reason)}
+      _ -> {:noreply, assign_run(socket)}
+    end
+  end
+
   def handle_event("toggle_schedules", _params, socket),
     do: {:noreply, assign(socket, :editing_schedules?, not socket.assigns.editing_schedules?)}
 
@@ -1518,6 +1633,20 @@ defmodule CanopyWeb.ChannelLive do
             locks={@locks}
             editing_locks?={@editing_locks?}
             now={@now}
+            run={@run}
+            names={@names}
+            editing_playbook?={@editing_playbook?}
+          />
+
+          <PlaybookComponents.run_panel
+            :if={@editing_playbook?}
+            run={@run}
+            names={@names}
+            user_name={@user.display_name}
+            start_form={@start_form}
+            playbooks={@run_playbooks}
+            agents={@run_agents}
+            recent={@recent_runs}
           />
 
           <.locks_panel
@@ -1820,6 +1949,9 @@ defmodule CanopyWeb.ChannelLive do
   attr :locks, :list, default: []
   attr :editing_locks?, :boolean, default: false
   attr :now, :any, default: nil
+  attr :run, :any, default: nil
+  attr :names, :map, default: %{}
+  attr :editing_playbook?, :boolean, default: false
 
   defp repo_root(%{repository: %{path: path}}), do: path
   defp repo_root(_channel), do: nil
@@ -1927,6 +2059,46 @@ defmodule CanopyWeb.ChannelLive do
           >
             <.icon name="hero-lock-open-mini" class="size-4" />
             <span class="hidden @4xl/main:inline">Locks</span>
+          </button>
+          <button
+            :if={@run}
+            type="button"
+            id="playbook-chip"
+            data-status={@run.status}
+            class={[
+              "btn btn-xs btn-ghost max-w-80 gap-1 font-normal",
+              @editing_playbook? && "btn-active",
+              @run.status == "awaiting_approval" && "text-warning"
+            ]}
+            phx-click="toggle_playbook"
+            title={
+              if @run.status == "awaiting_approval",
+                do: "#{@run.playbook_name} is waiting for your sign-off",
+                else: "Playbook run in progress"
+            }
+          >
+            <.icon
+              name={
+                if @run.status == "awaiting_approval",
+                  do: "hero-hand-raised-mini",
+                  else: "hero-book-open-mini"
+              }
+              class="size-4 shrink-0"
+            />
+            <span class="hidden min-w-0 truncate @3xl/main:inline">
+              {PlaybookComponents.chip_text(@run, @names)}
+            </span>
+          </button>
+          <button
+            :if={!@run and !Channels.dm?(@channel)}
+            type="button"
+            id="edit-playbook"
+            class={["btn btn-xs btn-ghost", @editing_playbook? && "btn-active"]}
+            phx-click="toggle_playbook"
+            title="Run a playbook in this channel"
+          >
+            <.icon name="hero-book-open-mini" class="size-4" />
+            <span class="hidden @4xl/main:inline">Playbook</span>
           </button>
           <button
             type="button"

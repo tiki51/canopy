@@ -13,15 +13,18 @@ config :canopy,
   public_url: nil
 
 # OpenCode integration defaults. The runtime overrides base_url from Settings.
-# Oban runs scheduled agent tasks (see Canopy.Schedules). SQLite via the Lite engine.
+# Oban runs scheduled agent tasks (see Canopy.Schedules), playbook stall checks,
+# and the GitHub watch sweep. SQLite via the Lite engine.
 config :canopy, Oban,
   engine: Oban.Engines.Lite,
   notifier: Oban.Notifiers.PG,
   repo: Canopy.Repo,
-  queues: [schedules: 3],
+  queues: [schedules: 3, watches: 1],
   plugins: [
     {Oban.Plugins.Pruner, max_age: 7 * 24 * 60 * 60},
-    {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)}
+    {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)},
+    # GitHub watches are rows, not jobs: one sweep a minute checks those due
+    {Oban.Cron, crontab: [{"* * * * *", Canopy.Watches.SweepWorker}]}
   ]
 
 config :canopy, :opencode,
@@ -33,6 +36,10 @@ config :canopy, :engines, %{
   "opencode" => Canopy.Engine.OpenCode,
   "claude_code" => Canopy.Engine.ClaudeCode
 }
+
+# GitHub watches read GitHub through the user's `gh` CLI (Canopy.GitHub.CLI); the
+# binary comes from Settings. Tests swap the client for a Mox double.
+config :canopy, :github, []
 
 # Claude Code runs as `claude -p` per turn. The binary and config dir come from
 # Settings; this config only carries overrides (tests point `binary` at a fake).

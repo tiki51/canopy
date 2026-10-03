@@ -35,6 +35,18 @@ defmodule Canopy.Runtime.CommandsTest do
     assert Commands.help() =~ "/i @agent|@team"
   end
 
+  test "/playbook takes a playbook name and the brief, which may start with a coordinator" do
+    assert {:command, :playbook, "bug-fix", "@project-manager login is broken"} =
+             Commands.parse("/playbook bug-fix @project-manager login is broken")
+
+    assert {:command, :playbook, "bug-fix", "login is broken"} =
+             Commands.parse("/Playbook Bug-Fix login is broken")
+
+    assert {:error, "usage: /playbook" <> _} = Commands.parse("/playbook bug-fix")
+    assert {:error, "usage: /playbook" <> _} = Commands.parse("/playbook")
+    assert Commands.help() =~ "/playbook name brief"
+  end
+
   test "/stop takes no arguments and ignores any given" do
     assert {:command, :stop, "", ""} = Commands.parse("/stop")
     assert {:command, :stop, "", ""} = Commands.parse("/STOP everything now")
@@ -47,7 +59,7 @@ defmodule Canopy.Runtime.CommandsTest do
   end
 
   test "names/0 lists every command the composer highlights, aliases included" do
-    assert Commands.names() == ["delegate", "handoff", "i", "invite", "stop"]
+    assert Commands.names() == ["delegate", "handoff", "i", "invite", "playbook", "stop"]
     assert Enum.all?(Commands.names(), &(Commands.parse("/" <> &1 <> " @x y") != :text))
   end
 end

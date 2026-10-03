@@ -218,6 +218,62 @@ defmodule Canopy.Runtime.PromptsTest do
     refute system =~ "Teams here"
   end
 
+  describe "playbooks" do
+    defp system_text do
+      Prompts.system(
+        %{name: "pm", display_name: nil, role: nil, system_prompt: nil},
+        %{name: "p"},
+        %{id: "r", path: "/r"}
+      )
+    end
+
+    test "{{playbooks}} lists the enabled playbooks in the system text, or says there are none" do
+      assert "playbooks" in Prompts.preamble_variables()
+      assert system_text() =~ "No playbooks are defined yet."
+
+      assert system_text() =~
+               "`canopy_playbooks_list` / `canopy_playbook_get` / `canopy_playbook_start`"
+
+      {:ok, _} = Canopy.Playbooks.create(%{body: Canopy.Playbooks.bug_fix_text()})
+      text = system_text()
+
+      assert text =~
+               "Playbooks you can run with canopy_playbook_start:\n- bug-fix — Reproduce, fix"
+
+      # the list is part of the cacheable prefix: the same text twice
+      assert text == system_text()
+    end
+
+    test "a custom preamble without the variable lists none" do
+      {:ok, _} = Canopy.Playbooks.create(%{body: Canopy.Playbooks.bug_fix_text()})
+      {:ok, _} = Canopy.Settings.update(%{collaboration_prompt: "You are {{name}}."})
+      assert system_text() == "You are pm."
+    end
+
+    test "the in-progress note says where the run is, the owners, and the delegations" do
+      args = %{
+        playbook: "bug-fix",
+        run_id: "pbr_1",
+        status: "active",
+        step: "fix",
+        title: "Fix",
+        position: 3,
+        total: 6,
+        round: 2,
+        owners: ["@backend", "@frontend"],
+        delegations: {2, 2}
+      }
+
+      text = Prompts.playbook_in_progress(args)
+
+      assert text =~
+               "Playbook in progress here: bug-fix (run pbr_1), step 3 of 6 \"Fix\" (round 2), owners @backend, @frontend; you coordinate it. All delegations for this step are done."
+
+      assert Prompts.playbook_in_progress(%{args | status: "awaiting_approval"}) =~
+               "is waiting for the user's approval"
+    end
+  end
+
   test "the system prompt carries the agent's memory" do
     agent =
       Canopy.Fixtures.agent_fixture(%{

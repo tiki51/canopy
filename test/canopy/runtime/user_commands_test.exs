@@ -253,4 +253,40 @@ defmodule Canopy.Runtime.UserCommandsTest do
     # wait for the wake so the server is idle before the Mox stubs go away
     assert_receive :prompted, 2_000
   end
+
+  test "/playbook starts a run in the channel; the coordinator is the one named, else the playbook's, else the owner",
+       ctx do
+    {:ok, playbook} =
+      Canopy.Playbooks.create(%{
+        body:
+          Canopy.PlaybookHelpers.playbook_text(
+            "quick",
+            [{"look", "Look", "coordinator"}],
+            "coordinator: #{ctx.reviewer.name}\n"
+          )
+      })
+
+    assert {:ok, {:playbook, run}} =
+             Runtime.post_user_message(ctx.channel.id, "/playbook quick check the login")
+
+    assert run.playbook_id == playbook.id
+    assert run.coordinator_agent_id == ctx.reviewer.id
+    assert run.started_by_agent_id == nil
+    assert run.brief == "check the login"
+    assert_receive {:timeline, %{event_type: "playbook_started"}}
+
+    {:ok, _, :cancelled} = Canopy.Playbooks.Runs.cancel(run, :user, "again")
+
+    assert {:ok, {:playbook, run}} =
+             Runtime.post_user_message(ctx.channel.id, "/playbook quick @#{ctx.agent.name} again")
+
+    assert run.coordinator_agent_id == ctx.agent.id
+    assert run.brief == "again"
+
+    assert {:error, "no playbook named nope" <> _} =
+             Runtime.post_user_message(ctx.channel.id, "/playbook nope do it")
+
+    assert {:error, reason} = Runtime.post_user_message(ctx.channel.id, "/playbook quick more")
+    assert reason =~ "already has a playbook run in progress"
+  end
 end

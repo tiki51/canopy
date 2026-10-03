@@ -92,6 +92,10 @@ defmodule Canopy.Runtime.ChannelServer do
   # usage limit, an outage) before the turn is ended and the channel told.
   @retry_give_up_ms 300_000
 
+  # Wakes Canopy sends on its own account, whose text is the whole message:
+  # merged with another wake, neither text may be dropped.
+  @automation_triggers ~w(scheduled watch playbook playbook_nudge)
+
   # Appended to a wake that replaced an earlier one still waiting for the same agent.
   @merged_wake_note "\nOther messages arrived while you were busy; this wake stands for all of them, and canopy_messages_read returns everything new.\n"
 
@@ -204,6 +208,25 @@ defmodule Canopy.Runtime.ChannelServer do
 
   def wake(server, agent_id, text),
     do: GenServer.cast(server, {:wake, {:root, agent_id}, %{text: text, trigger: "scheduled"}})
+
+  @doc """
+  Wakes an agent with `text`. Options: `:trigger` (what the turn is
+  attributed to, default "scheduled"), `:reset` (default true): a wake the
+  user asked for resets the chatter budget like a user action; with `reset:
+  false` it is an agent wake, counted against the budget and held when the
+  channel is paused; and `:check` (a stall nudge's `{run_id, step_id,
+  round}`): the wake is dropped if, when its prompt would go out, the run has
+  moved on.
+  """
+  def wake(server, agent_id, text, opts) do
+    wake =
+      %{text: text, trigger: Keyword.get(opts, :trigger, "scheduled")}
+      |> then(&if check = opts[:check], do: Map.put(&1, :playbook_check, check), else: &1)
+
+    if Keyword.get(opts, :reset, true),
+      do: GenServer.cast(server, {:wake, {:root, agent_id}, wake}),
+      else: GenServer.cast(server, {:wake_counted, {:root, agent_id}, wake})
+  end
 
   # -- Callbacks --------------------------------------------------------------
 
@@ -489,6 +512,9 @@ defmodule Canopy.Runtime.ChannelServer do
     do:
       {:noreply,
        wake_within_budget(%{state | chatter: 0, charged: MapSet.new(), paused: nil}, target, text)}
+
+  def handle_cast({:wake_counted, target, wake}, state),
+    do: {:noreply, wake_within_budget(state, target, wake)}
 
   @impl true
   def handle_info(msg, %__MODULE__{} = state) when map_size(state) != @field_count,
@@ -983,6 +1009,16 @@ defmodule Canopy.Runtime.ChannelServer do
         {_, "lock"} ->
           old
 
+        # A schedule, a watch, or a playbook wake (a start, an approval, a
+        # nudge) carries what it is about in its text, like a delegation: the
+        # two texts are kept, in order, and the turn is a channel turn.
+        {a, b} when a in @automation_triggers or b in @automation_triggers ->
+          new
+          |> Map.put(:text, scoped_text(old, nil) <> "\n" <> scoped_text(new, nil))
+          |> Map.delete(:channel_text)
+          |> Map.delete(:playbook_check)
+          |> Map.put(:delegation_ids, delegation_ids(old) ++ delegation_ids(new))
+
         {"delegation", "delegation"} ->
           old
           |> Map.put(:text, old.text <> "\n" <> new.text)
@@ -1254,6 +1290,21 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  defp send_prompt(state, session, agent_id, %{playbook_check: check} = wake) do
+    if Canopy.Playbooks.Runs.nudge_current?(check) do
+      send_prompt(state, session, agent_id, Map.delete(wake, :playbook_check))
+    else
+      Logger.info(
+        "channel #{state.channel.name}: dropped a stall nudge for #{agent_name(agent_id)}: the run moved on"
+      )
+
+      unless agent_busy?(state, agent_id),
+        do: broadcast(state, {:agent_status, agent_id, :idle})
+
+      state
+    end
+  end
+
   defp send_prompt(state, session, agent_id, wake) do
     case lock_grants(session, wake) do
       :drop ->
@@ -1290,7 +1341,9 @@ defmodule Canopy.Runtime.ChannelServer do
     start_delegations(ids, session)
 
     prompt = %{
-      text: text <> locks <> pending_delegations(state, agent_id, ids),
+      text:
+        text <>
+          locks <> pending_delegations(state, agent_id, ids) <> playbook_note(state, agent_id),
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       attachments: plan
     }
@@ -1338,6 +1391,13 @@ defmodule Canopy.Runtime.ChannelServer do
     Prompts.pending_delegations(state.channel.name, pending)
   end
 
+  # The coordinator of the channel's playbook run is told where it stands on
+  # every prompt, read when the prompt goes out, so the run survives
+  # compaction; nobody else is.
+  defp playbook_note(state, agent_id) do
+    Canopy.Playbooks.Runs.prompt_note(state.channel.id, agent_id) || ""
+  end
+
   # A wake for a lock the session was granted from the line hands it over,
   # read when the prompt goes out: a claim that passed on meanwhile (the
   # lease, a Force release, used and released by an earlier turn) is left
@@ -1369,6 +1429,11 @@ defmodule Canopy.Runtime.ChannelServer do
     thread_id = Keyword.get(opts, :thread_id)
     ref = Canopy.ID.generate("turn")
     :ok = Locks.stamp_turn(session.id, lock_claim_ids, ref)
+    # a coordinator at work is playbook activity; the turn a stall nudge
+    # starts is not, or every nudge would clear itself
+    if trigger != "playbook_nudge",
+      do: Canopy.Playbooks.Runs.note_coordinator_turn(state.channel.id, agent_id)
+
     {:ok, _} = AgentSessions.set_status(session, "busy")
     broadcast(state, {:agent_status, agent_id, :busy})
     broadcast_turn_thread(state, agent_id, thread_id)

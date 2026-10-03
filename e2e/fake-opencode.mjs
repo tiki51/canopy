@@ -437,6 +437,28 @@ async function runTurn(sessionID, text, cwd) {
     return finishTurn(sessionID, messageID, part, "Reported three callers of enqueue_charge.", 0.0009);
   }
 
+  // Playbooks (e2e/tests/playbooks.spec.ts): "run the <name> playbook" starts
+  // it as the coordinator and advances through to the step held for the
+  // user's sign-off; the user's Approve wakes it again to close.
+  const playbookAsk = (text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "").match(/run the (\S+) playbook/i);
+  if (playbookAsk && /new Canopy message/.test(text)) {
+    const started = await mcpCall("playbook_start", { canopy_session_id: sessionID, name: playbookAsk[1], brief: "Make the e2e button green." });
+    if (!/^started/.test(started)) {
+      await mcpCall("message_send", { canopy_session_id: sessionID, text: `Could not start it: ${started}` });
+      return finishTurn(sessionID, messageID, part, "Could not start the playbook.", 0.0004);
+    }
+    await tool("read", { filePath: "README.md" }, "README.md");
+    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Planned: one file, README.md." });
+    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Built: README.md updated." });
+    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Summary posted for sign-off." });
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Ready for your sign-off: README.md updated." });
+    return finishTurn(sessionID, messageID, part, "Waiting for sign-off.", 0.0008);
+  }
+  if (/^The user approved "/m.test(text)) {
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Signed off; closing the run." });
+    return finishTurn(sessionID, messageID, part, "Closed.", 0.0003);
+  }
+
   // Locks (e2e/tests/locks.spec.ts): "take the tests lock [and keep it]" asks
   // Canopy for the lock; queued, the agent passes and ends its turn, the way
   // the system prompt tells it to. The grant wake runs the work and ends, which
