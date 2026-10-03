@@ -212,4 +212,28 @@ defmodule Canopy.CostsDetailTest do
     stub(OC, :providers, fn _opts -> {:error, :down} end)
     assert Report.render(:all) =~ "Model prices: unavailable"
   end
+
+  test "an inherited model and the same model chosen per agent share one By model row" do
+    %{channel: channel, agent: inheriting} = scenario()
+    chosen = agent_fixture(%{name: "chosen", model_provider: "opencode", model_id: "gpt-5-nano"})
+
+    {:ok, _} =
+      Canopy.Settings.put_default_model("opencode", %{
+        model_provider: "opencode",
+        model_id: "gpt-5-nano"
+      })
+
+    {:ok, _} = Canopy.Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+    stub(OC, :providers, fn _opts -> {:error, :down} end)
+
+    for agent <- [inheriting, chosen] do
+      turn(channel, agent, %{"model" => Canopy.Engine.OpenCode.model_label(agent)})
+    end
+
+    assert [%{label: "opencode/gpt-5-nano", turns: 2}] = Costs.by_model()
+
+    # the report names the defaults, so the auditor can recommend a cheaper one
+    assert Report.render(:week) =~
+             "Default models (Settings; agents without a model of their own use them): Claude Code sonnet; OpenCode opencode/gpt-5-nano. 1 of 2 active agents use them."
+  end
 end

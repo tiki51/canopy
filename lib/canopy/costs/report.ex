@@ -5,8 +5,8 @@ defmodule Canopy.Costs.Report do
   that shape spend and, when OpenCode answers, the prices of the models in use.
   """
 
-  alias Canopy.{Costs, Settings}
-  alias Canopy.OpenCode.Client
+  alias Canopy.{Agents, Costs, Settings}
+  alias Canopy.OpenCode.Providers
   alias Canopy.Runtime.ChannelServer
   alias Canopy.Schedules.When
 
@@ -122,8 +122,30 @@ defmodule Canopy.Costs.Report do
 
     [
       "Settings that shape spend: #{pause}; one turn at a time per channel #{if s.serialize_turns, do: "on", else: "off"}; sessions compact above #{tokens(ChannelServer.context_cap())} tokens of context.",
+      default_models(s),
       ""
     ]
+  end
+
+  # The defaults are the one place to change the model of every agent without
+  # one of its own, so the auditor can recommend a cheaper default.
+  defp default_models(setting) do
+    {models, inheriting, total} =
+      Enum.reduce(Canopy.Engine.names(), {[], 0, 0}, fn engine, {models, inheriting, total} ->
+        model =
+          case Settings.default_model(engine, setting) do
+            %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) -> p <> "/" <> m
+            %{model_id: m} when is_binary(m) -> m
+            _ -> "its own default"
+          end
+
+        usage = Agents.model_usage(engine)
+
+        {models ++ ["#{Canopy.Engine.label(engine)} #{model}"], inheriting + usage.default,
+         total + usage.default + usage.own}
+      end)
+
+    "Default models (Settings; agents without a model of their own use them): #{Enum.join(models, "; ")}. #{inheriting} of #{total} active agents use them."
   end
 
   # Prices for the models that appear in the period, when OpenCode answers.
@@ -153,32 +175,21 @@ defmodule Canopy.Costs.Report do
     end
   end
 
+  # "provider/model" => pricing; a model OpenCode lists without a price counts
+  # as unpriced.
   defp providers do
-    case Client.impl().providers([]) do
-      {:ok, %{"providers" => list}} when is_list(list) ->
-        for %{"id" => pid, "models" => models} <- list,
-            is_binary(pid) and is_map(models),
-            {mid, m} <- models,
-            into: %{} do
-          cost = Map.get(m, "cost") || %{}
-
-          {pid <> "/" <> mid,
-           %{
-             input: num(cost["input"]),
-             output: num(cost["output"]),
-             cache_read: num(get_in(cost, ["cache", "read"]))
-           }}
+    case Providers.list() do
+      {:ok, %{providers: providers}} ->
+        for %{id: pid, pricing: pricing} <- providers, {mid, price} <- pricing, into: %{} do
+          {pid <> "/" <> mid, price || %{input: 0.0, output: 0.0, cache_read: 0.0}}
         end
 
-      _ ->
+      {:error, _} ->
         nil
     end
   rescue
     _ -> nil
   end
-
-  defp num(n) when is_number(n), do: n / 1
-  defp num(_), do: 0.0
 
   defp fmt(n) when n < 0.1, do: :erlang.float_to_binary(n / 1, decimals: 3)
   defp fmt(n), do: :erlang.float_to_binary(n / 1, decimals: 2)

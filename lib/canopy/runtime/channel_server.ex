@@ -507,6 +507,10 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_info({:settings, :mcp_token_rotated}, state),
     do: {:noreply, invalidate_engines(state, :mcp_token_rotated)}
 
+  # A default model changed: nothing to do, every turn re-reads its agent and
+  # the adapter resolves the default then.
+  def handle_info({:settings, :default_models_changed}, state), do: {:noreply, state}
+
   # A turn ends when the engine reports the session idle. If that never arrives —
   # the stream dropped it, or the session died still holding an open tool call —
   # the turn stays in flight forever and every later wake for that agent queues
@@ -1564,6 +1568,8 @@ defmodule Canopy.Runtime.ChannelServer do
           |> Activity.drop_trailing_text()
           |> Activity.to_payload()
 
+        {model, model_source} = turn_model(who.agent_id)
+
         {:ok, _} =
           Timeline.record(%{
             channel_id: state.channel.id,
@@ -1576,7 +1582,8 @@ defmodule Canopy.Runtime.ChannelServer do
               "cost" => turn.cost,
               "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
               "outcome" => outcome_label(outcome),
-              "model" => turn_model(who.agent_id),
+              "model" => model,
+              "model_source" => model_source,
               # the delegations the turn was woken for: the first, and all
               "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
               "delegation_ids" => Map.get(turn, :delegation_ids, []),
@@ -1707,11 +1714,16 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp maybe_post_reply(_state, _turn, _who), do: nil
 
-  # The engine's label for the model the agent runs on.
+  # The engine's label for the model the agent runs on, and whether that is the
+  # agent's own choice, its engine's default from Settings, or the engine's pick.
   defp turn_model(agent_id) do
     case Agents.get(agent_id) do
-      nil -> "unknown"
-      agent -> Engine.for(agent).model_label(agent)
+      nil ->
+        {"unknown", nil}
+
+      agent ->
+        {Engine.for(agent).model_label(agent),
+         Atom.to_string(Agents.effective_model(agent).source)}
     end
   end
 
@@ -2051,7 +2063,9 @@ defmodule Canopy.Runtime.ChannelServer do
   defp error_message(other), do: other |> inspect() |> String.slice(0, @error_max)
 
   defp add_hint(message, %{"name" => "ProviderModelNotFoundError"}),
-    do: message <> " (check the agent's model provider and id on the Agents page)"
+    do:
+      message <>
+        " (check the agent's model on the Agents page, or the default model in Settings)"
 
   defp add_hint(message, _), do: message
 end

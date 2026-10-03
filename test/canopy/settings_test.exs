@@ -43,4 +43,94 @@ defmodule Canopy.SettingsTest do
     assert {:error, changeset} = Settings.update(%{claude_config_dir: "relative/path"})
     assert %{claude_config_dir: ["must be an absolute path"]} = errors_on(changeset)
   end
+
+  describe "default models" do
+    test "put_default_model/2 round-trips per engine, and nils clear it" do
+      assert Settings.default_model("claude_code") == %{model_provider: nil, model_id: nil}
+
+      assert {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+
+      assert {:ok, _} =
+               Settings.put_default_model("opencode", %{
+                 model_provider: "opencode",
+                 model_id: "gpt-5-nano"
+               })
+
+      assert Settings.default_model("claude_code") == %{model_provider: nil, model_id: "sonnet"}
+
+      assert Settings.default_models() == %{
+               "claude_code" => %{model_provider: nil, model_id: "sonnet"},
+               "opencode" => %{model_provider: "opencode", model_id: "gpt-5-nano"}
+             }
+
+      assert {:ok, _} =
+               Settings.put_default_model("opencode", %{model_provider: nil, model_id: nil})
+
+      assert Settings.default_model("opencode") == %{model_provider: nil, model_id: nil}
+      # Claude Code has no provider: one passed is ignored
+      assert {:ok, _} =
+               Settings.put_default_model("claude_code", %{
+                 "model_provider" => "x",
+                 "model_id" => "opus"
+               })
+
+      assert Settings.default_model("claude_code") == %{model_provider: nil, model_id: "opus"}
+    end
+
+    test "put_default_model/2 validates like an agent's own model" do
+      assert {:error, changeset} =
+               Settings.put_default_model("claude_code", %{model_id: "gpt-5-nano"})
+
+      assert %{claude_default_model: [message]} = errors_on(changeset)
+      assert message =~ "fable, opus, sonnet, haiku"
+
+      assert {:error, changeset} =
+               Settings.put_default_model("opencode", %{model_provider: "opencode", model_id: nil})
+
+      assert %{opencode_default_model: ["pick a model from opencode"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Settings.put_default_model("opencode", %{model_provider: nil, model_id: "x"})
+
+      assert %{opencode_default_provider: ["pick a provider for this model"]} =
+               errors_on(changeset)
+
+      assert {:error, changeset} = Settings.put_default_model("nope", %{model_id: "x"})
+      assert %{model_id: ["nope has no default model"]} = errors_on(changeset)
+      assert Settings.default_model("nope") == %{model_provider: nil, model_id: nil}
+    end
+
+    test "the Claude Code default effort round-trips; OpenCode has none" do
+      assert Settings.default_effort("claude_code") == nil
+      assert {:ok, _} = Settings.put_default_effort("claude_code", "high")
+      assert Settings.default_effort("claude_code") == "high"
+      assert Settings.default_efforts() == %{"claude_code" => "high", "opencode" => nil}
+
+      assert {:error, changeset} = Settings.put_default_effort("claude_code", "ultra")
+      assert %{claude_default_effort: ["is invalid"]} = errors_on(changeset)
+
+      assert {:error, changeset} = Settings.put_default_effort("opencode", "high")
+      assert %{effort: ["opencode has no effort setting"]} = errors_on(changeset)
+
+      assert {:ok, _} = Settings.put_default_effort("claude_code", nil)
+      assert Settings.default_effort("claude_code") == nil
+    end
+
+    test "a changed default is broadcast; an unrelated change is not" do
+      Settings.subscribe()
+
+      {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "haiku"})
+      assert_receive {:settings, :default_models_changed}
+
+      {:ok, _} = Settings.put_default_effort("claude_code", "low")
+      assert_receive {:settings, :default_models_changed}
+
+      {:ok, _} = Settings.update(%{user_display_name: "Someone"})
+      refute_receive {:settings, :default_models_changed}, 50
+
+      # saving the same default again changes nothing
+      {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "haiku"})
+      refute_receive {:settings, :default_models_changed}, 50
+    end
+  end
 end

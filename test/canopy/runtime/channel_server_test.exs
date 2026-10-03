@@ -1358,6 +1358,107 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:prompted, "ses_rev_2", _}, 2_000
     refute_receive {:prompted, _, _}, 200
   end
+
+  describe "default models" do
+    # a turn whose context passes the 40k cap, so the session compacts after it
+    defp big_turn(sid) do
+      emit(sid, :step_completed, %{
+        part_id: "big-" <> Fixtures.unique_suffix(),
+        reason: "stop",
+        cost: 0.02,
+        tokens: %{"input" => 5_000, "output" => 80, "cache" => %{"read" => 40_000}}
+      })
+
+      emit(sid, :agent_completed, %{})
+    end
+
+    test "an agent without a model is prompted with the OpenCode default, read every turn", ctx do
+      expect_prompt(self(), 3)
+      sid = ctx.session.engine_session_id
+
+      # no default: no model, OpenCode picks
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "one")
+      assert_receive {:prompted, ^sid, body}, 2_000
+      refute Map.has_key?(body, :model)
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "agent_turn_completed",
+                        payload: %{"model" => "opencode default"}
+                      }},
+                     2_000
+
+      {:ok, _} =
+        Canopy.Settings.put_default_model("opencode", %{
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        })
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "two")
+      assert_receive {:prompted, ^sid, body}, 2_000
+      assert body.model == %{providerID: "opencode", modelID: "gpt-5-nano"}
+      emit(sid, :agent_completed, %{})
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
+      assert payload["model"] == "opencode/gpt-5-nano"
+      assert payload["model_source"] == "default"
+
+      # changing the default between turns changes the next prompt, no reset
+      {:ok, _} =
+        Canopy.Settings.put_default_model("opencode", %{
+          model_provider: "opencode",
+          model_id: "big-pickle"
+        })
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "three")
+      assert_receive {:prompted, ^sid, body}, 2_000
+      assert body.model == %{providerID: "opencode", modelID: "big-pickle"}
+    end
+
+    test "compaction summarizes with the Canopy default when the agent has no model", ctx do
+      test_pid = self()
+      sid = ctx.session.engine_session_id
+
+      {:ok, _} =
+        Canopy.Settings.put_default_model("opencode", %{
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        })
+
+      stub(OC, :prompt_async, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
+
+      expect(OC, :summarize, fn _dir, ^sid, model, _opts ->
+        send(test_pid, {:compacted, model})
+        {:ok, true}
+      end)
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+      big_turn(sid)
+
+      assert_receive {:compacted, %{providerID: "opencode", modelID: "gpt-5-nano"}}, 2_000
+    end
+
+    test "with no model, no default, and no server default, compaction is skipped", ctx do
+      test_pid = self()
+      sid = ctx.session.engine_session_id
+
+      stub(OC, :prompt_async, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
+      stub(OC, :providers, fn _opts -> {:ok, %{"providers" => [], "default" => %{}}} end)
+
+      stub(OC, :summarize, fn _dir, _sid, _model, _opts ->
+        send(test_pid, :compacted)
+        {:ok, true}
+      end)
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+      big_turn(sid)
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
+      refute_receive :compacted, 300
+      refute_receive {:timeline, %{event_type: "session_compacted"}}, 100
+    end
+  end
 end
 
 defmodule Canopy.Runtime.ChannelServerReconcileTest do
@@ -1649,7 +1750,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
                    2_000
 
     assert reason ==
-             "Model not found: anthropic/claude-sonnet-4-5. Did you mean: claude-sonnet-4-5? (check the agent's model provider and id on the Agents page)"
+             "Model not found: anthropic/claude-sonnet-4-5. Did you mean: claude-sonnet-4-5? (check the agent's model on the Agents page, or the default model in Settings)"
 
     refute reason =~ "at SessionPrompt"
 

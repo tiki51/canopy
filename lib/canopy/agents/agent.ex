@@ -73,6 +73,7 @@ defmodule Canopy.Agents.Agent do
     |> validate_inclusion(:effort, @efforts)
     |> update_change(:allowed_tools, &blank_to_nil/1)
     |> validate_claude_code()
+    |> validate_model()
     |> validate_format(:name, @name_regex,
       message: "must be lowercase letters, digits, dashes or underscores"
     )
@@ -118,18 +119,55 @@ defmodule Canopy.Agents.Agent do
 
   defp blank_to_nil(value), do: value
 
-  # A Claude Code agent always names its model alias, effort, and permissions.
+  # A Claude Code agent names its permissions; a blank model or effort
+  # inherits the default from Settings. Claude Code has no providers.
   defp validate_claude_code(changeset) do
     if get_field(changeset, :engine) == "claude_code" do
       changeset
-      |> validate_required([:model_id, :effort, :permission_mode])
-      |> validate_inclusion(:model_id, @claude_models,
-        message: "must be one of #{Enum.join(@claude_models, ", ")}"
-      )
+      |> put_change(:model_provider, nil)
+      |> validate_required([:permission_mode])
     else
       changeset
     end
   end
+
+  # Checked only when the model or the engine changes, so an older row that
+  # breaks today's rules still saves its other fields.
+  defp validate_model(changeset) do
+    changeset =
+      changeset
+      |> update_change(:model_provider, &blank_to_nil/1)
+      |> update_change(:model_id, &blank_to_nil/1)
+
+    if Enum.any?([:engine, :model_provider, :model_id], &changed?(changeset, &1)) do
+      changeset
+      |> get_field(:engine)
+      |> model_errors(get_field(changeset, :model_provider), get_field(changeset, :model_id))
+      |> Enum.reduce(changeset, fn {field, message}, acc -> add_error(acc, field, message) end)
+    else
+      changeset
+    end
+  end
+
+  @doc """
+  What is wrong with a model choice for an engine, as `[{field, message}]`
+  keyed `:model_provider` / `:model_id`; nil for both means "inherit". A
+  Claude Code model is one of `claude_models/0`; an OpenCode model names both
+  its provider and its id, or neither. Whether OpenCode actually offers the
+  pair is checked against its live list by the UI.
+  """
+  def model_errors("claude_code", _provider, nil), do: []
+
+  def model_errors("claude_code", _provider, model) do
+    if model in @claude_models,
+      do: [],
+      else: [model_id: "must be one of #{Enum.join(@claude_models, ", ")}"]
+  end
+
+  def model_errors(_engine, nil, nil), do: []
+  def model_errors(_engine, nil, _model), do: [model_provider: "pick a provider for this model"]
+  def model_errors(_engine, provider, nil), do: [model_id: "pick a model from #{provider}"]
+  def model_errors(_engine, _provider, _model), do: []
 
   defp normalize_name(name) when is_binary(name) do
     name |> String.trim() |> String.trim_leading("@") |> String.downcase()

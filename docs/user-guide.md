@@ -123,8 +123,10 @@ Then, in the browser:
    confirm the URL, press *Check connection*, and **install the identity plugin** once
    (Settings explains where); it stamps the OpenCode session id into every Canopy tool
    call so Canopy knows which agent is speaking. Restart `opencode serve` afterwards.
-2. **Agents**: pick each agent's engine. Claude Code agents also take a model, an effort,
-   and a permission mode.
+   Then pick a **default model** per engine in the same panels (and Claude Code's default
+   effort): every agent without a model of its own runs on it.
+2. **Agents**: pick each agent's engine, and override the model per agent only where it
+   needs a different one. Claude Code agents also take a permission mode.
 3. **Repositories**: add a project folder.
 4. **New channel**: pick the repository, the members, and an owner. Post a message. The
    owner wakes up, works, and posts back.
@@ -160,12 +162,27 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail.
 ![Settings, dark](user-guide/images/settings-dark.png)
 
 - **OpenCode server**: the URL of your `opencode serve`. *Check connection* shows the
-  version it answered with, in green when it worked.
+  version it answered with, in green when it worked. **Default provider** and **Default
+  model** are what OpenCode agents without a model of their own run on, with the price per
+  million tokens underneath. They are chosen from OpenCode's own list, so they stay
+  disabled ("Start OpenCode to choose a model") until OpenCode answers; start
+  `opencode serve` and press *Check connection*. Leave them on *OpenCode's own default*
+  to let the OpenCode agent (or the server) decide. A default OpenCode no longer offers
+  shows as *(not configured)*.
 - **Claude Code**: for agents on the Claude Code engine. The binary (`claude` on your
   `PATH`, or a path), an optional config directory (leave it empty to use your own Claude
   Code login; point it somewhere else to give agents a login of their own), and an
   optional spend cap per turn. *Check Claude Code* runs the binary and reports its version
-  and whether it is logged in.
+  and whether it is logged in. **Default model** (`fable`, `opus`, `sonnet`, or `haiku`)
+  and **Default effort** apply to Claude Code agents without their own; *Claude Code's own
+  default* leaves the choice to Claude Code (your `/model` setting, or your plan's
+  default).
+- Under each default, a line counts the active agents that use it and those with their
+  own. **Use the default for all** (after a confirmation) clears the agents' own model, or
+  effort, so they all follow the default. Nothing moves agents onto a default by itself:
+  an agent that already names a model keeps it until you press the button or pick
+  *Default* for it. A changed default reaches every inheriting agent on its next turn; a
+  turn already running keeps its model.
 - **You**: the display name on your messages. Agents mention you with it, and the
   sidebar's mention badges count those.
 - **Conversation**: the brakes, both optional. *One agent at a time per channel* makes
@@ -257,7 +274,11 @@ plus `@finops` for spending and a retired `@docs`.
 ![Agents, dark](user-guide/images/agents-dark.png)
 
 The list shows each agent's role, the OpenCode agent it runs as (or `claude` for agents
-on Claude Code), its model, and how many scheduled tasks it has. Agents with a **group** (Engineering, Product, and so on; set it on
+on Claude Code), its model, and how many scheduled tasks it has. A model the agent chose
+is a badge (`opus`); one it inherits is muted, `default · sonnet`, and the line above the
+list names each engine's default with a link to Settings. Click either to open the model
+picker: its first option is *Default (…)*, which puts the agent back on its engine's
+default, followed by the Claude Code aliases or OpenCode's models with their prices. Agents with a **group** (Engineering, Product, and so on; set it on
 the agent's edit form) are listed under that heading here, in the sidebar, and in the
 members list when you create a channel; agents without one come last. The *deactivated* toggle at the bottom reveals retired agents with
 a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its page.
@@ -269,7 +290,8 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 ![Agent page, dark](user-guide/images/agent-page-dark.png)
 
 - **About**: status, role, OpenCode agent, model with its price per million tokens (from
-  OpenCode's provider list), spend today, this week, and all time, and the system prompt.
+  OpenCode's provider list; an inherited model reads `sonnet (default)`, linking to
+  Settings), spend today, this week, and all time, and the system prompt.
 - **Memory**: what the agent carries across every repository and channel. See
   [Agent memory](#12-agent-memory).
 - **Scheduled**: the agent's schedules across all channels, each with a link and a cancel
@@ -291,22 +313,26 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **Engine**: OpenCode or Claude Code. The fields below change with it.
 - On OpenCode: **OpenCode agent** (`build`, `plan`, or any agent your OpenCode server
   offers; the suggestions come from the server), and **Model provider** and **Model** as
-  optional overrides; leave them blank to use the OpenCode agent's default. The line under
-  them shows the price of the chosen model.
-- On Claude Code, all three are required: **Model** (`fable`, `opus`, `sonnet`, or `haiku`,
-  the latest of each family), **Effort**, and **Permissions** (ask before any tool not on the
-  list; also approve file edits without asking; or read-only planning), and the **tools
+  optional overrides; leave the provider on *Default (…)* to use the default model from
+  Settings (or, with none set, the OpenCode agent's own). The line under them shows the
+  price of the chosen model, or of the default.
+- On Claude Code: **Model** (`fable`, `opus`, `sonnet`, or `haiku`, the latest of each
+  family) and **Effort** are optional; *Default (…)* follows Settings. **Permissions** is
+  required (ask before any tool not on the list; also approve file edits without asking;
+  or read-only planning), and the **tools
   that run without asking**, one pattern per line, such as `Bash(git *)`. Anything else the
   agent wants to run appears as a permission card in the channel; the Canopy tools are
   always allowed. Each turn runs `claude -p` on this machine in the repository, resuming
   the agent's own session, and the agent's questions arrive as question cards.
 
-Changing the model or the prompt takes effect on the agent's next turn; no reset needed.
+Changing the model or the prompt takes effect on the agent's next turn; no reset needed,
+and the same goes for a new default in Settings. Switching an agent's engine clears its
+model, so it lands on the new engine's default.
 If an existing session has talked itself into a corner, reset it from the channel header
 (the arrow on the agent's pill), and the next turn starts fresh with the new settings.
 
-Pick a cheap model for agents that mostly acknowledge and report, and keep the expensive
-one for the agent that edits code. The Costs page will tell you whether that split holds.
+Set a cheap default model, and give the expensive one only to the agent that edits code.
+The Costs page will tell you whether that split holds.
 
 ---
 
@@ -846,8 +872,11 @@ uses `@finops`, an agent whose only job is to read the report. Any agent will do
 
 Canopy has four brakes, from gentlest to firmest.
 
-1. **Model choice per agent** (Agents page). The cheapest lever: most agents spend their
-   turns reading and acknowledging.
+1. **Model choice** (Settings, then the Agents page). The cheapest lever: most agents
+   spend their turns reading and acknowledging. Change the default model first, since it
+   moves every agent without its own at once; then override the few agents that need a
+   stronger (or cheaper) model. *By model* on the Costs page groups an inherited model with
+   the same model chosen per agent.
 2. **One agent at a time** and the **optional pause** (Settings → Conversation). Agents
    take turns, and a channel can optionally be paused after a set number of agent turns
    without you. Off by choice, agents keep working on their own for as long as the task
@@ -946,7 +975,7 @@ service started by `brew services` uses the defaults.
 | A message wakes nobody and the timeline says "on hold" | The billing hold is engaged; release it from the banner |
 | A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
 | `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
-| `Model not found: <provider>/<model>` | The agent's model override names a provider OpenCode has no credentials for; pick one from `opencode providers` or clear the override |
+| `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |

@@ -14,7 +14,7 @@ defmodule Canopy.Engine.OpenCode do
 
   @behaviour Canopy.Engine
 
-  alias Canopy.{Documents, PermissionRequests, QuestionRequests, Settings}
+  alias Canopy.{Agents, Documents, PermissionRequests, QuestionRequests, Settings}
   alias Canopy.Engine.Event
   alias Canopy.OpenCode
   alias Canopy.OpenCode.Client
@@ -73,9 +73,11 @@ defmodule Canopy.Engine.OpenCode do
       tools: %{"canopy_*" => true}
     }
 
+    # The agent's own model, else Canopy's OpenCode default; with neither the
+    # OpenCode agent's (or the server's) own default applies.
     body =
-      case {agent.model_provider, agent.model_id} do
-        {p, m} when is_binary(p) and is_binary(m) ->
+      case Agents.effective_model(agent) do
+        %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
           Map.put(body, :model, %{providerID: p, modelID: m})
 
         _ ->
@@ -97,11 +99,11 @@ defmodule Canopy.Engine.OpenCode do
   def abort(ctx, state, session),
     do: client().abort(ctx.repository.path, session.engine_session_id, state.client_opts)
 
-  # OpenCode summarizes the session with a model: the agent's own, else the
-  # server's default for the first provider.
+  # OpenCode summarizes the session with a model: the agent's own, else
+  # Canopy's OpenCode default, else the server's default for the first provider.
   @impl true
   def compact(ctx, state, session, agent) do
-    case compaction_model(agent) do
+    case compaction_model(agent, state) do
       {provider, model} ->
         case client().summarize(
                ctx.repository.path,
@@ -267,12 +269,15 @@ defmodule Canopy.Engine.OpenCode do
     end
   end
 
-  # "provider/model" as configured on the agent; OpenCode's default otherwise.
+  # "provider/model" the agent runs on, its own or Canopy's default; OpenCode's
+  # own default otherwise.
   @impl true
-  def model_label(%{model_provider: p, model_id: m}) when is_binary(p) and is_binary(m),
-    do: p <> "/" <> m
-
-  def model_label(_agent), do: "opencode default"
+  def model_label(agent) do
+    case Agents.effective_model(agent) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) -> p <> "/" <> m
+      _ -> "opencode default"
+    end
+  end
 
   @impl true
   def context_cap, do: Canopy.Runtime.ChannelServer.context_cap()
@@ -319,16 +324,16 @@ defmodule Canopy.Engine.OpenCode do
     %{state | mcp_registered?: registered?}
   end
 
-  defp compaction_model(%{model_provider: p, model_id: m}) when is_binary(p) and is_binary(m),
-    do: {p, m}
-
-  defp compaction_model(_agent) do
-    case client().providers([]) do
-      {:ok, %{"default" => defaults}} when map_size(defaults) > 0 ->
-        defaults |> Enum.min_by(fn {p, _} -> p end)
+  defp compaction_model(agent, state) do
+    case Agents.effective_model(agent) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
+        {p, m}
 
       _ ->
-        nil
+        case OpenCode.Providers.list(state.client_opts) do
+          {:ok, %{defaults: defaults}} -> OpenCode.Providers.server_default(defaults)
+          {:error, _} -> nil
+        end
     end
   end
 

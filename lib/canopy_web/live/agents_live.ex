@@ -10,13 +10,17 @@ defmodule CanopyWeb.AgentsLive do
   The OpenCode agent picker is a select filled from `GET /agent` for the
   first repository (always offering the built-in `build` and `plan`), and the provider/model selects come from
   `GET /config/providers`; both degrade to plain inputs when OpenCode is away.
+
+  An agent with no model (or, on Claude Code, no effort) of its own inherits
+  its engine's default from Settings; the list, the picker, and the form show
+  which default that is.
   """
 
   use CanopyWeb, :live_view
 
-  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules}
+  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules, Settings}
   alias Canopy.Agents.Agent
-  alias Canopy.OpenCode.Client
+  alias Canopy.OpenCode.{Client, Providers}
   alias CanopyWeb.Nav
 
   import CanopyWeb.TimelineComponents, only: [schedule_list: 1, message_text: 1]
@@ -31,7 +35,8 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:opencode_agents, @builtin_opencode_agents)
       |> assign(:providers, [])
       |> assign(:model_picker, nil)
-      |> assign(:default_models, %{})
+      |> assign(:server_defaults, %{})
+      |> assign_defaults()
       |> assign(:show_inactive, false)
       |> assign(:agent, nil)
       |> assign(:agent_channels, [])
@@ -42,13 +47,16 @@ defmodule CanopyWeb.AgentsLive do
       |> assign_form(Agents.change(%Agent{}))
       |> load_agents()
 
-    if connected?(socket), do: Memory.subscribe()
+    if connected?(socket) do
+      Memory.subscribe()
+      Settings.subscribe()
+    end
 
     socket =
       if connected?(socket) do
         socket
         |> fetch_opencode_agents()
-        |> start_async(:providers, fn -> Client.impl().providers([]) end)
+        |> start_async(:providers, fn -> Providers.list() end)
       else
         socket
       end
@@ -100,12 +108,30 @@ defmodule CanopyWeb.AgentsLive do
       ),
       do: {:noreply, load_memory(socket)}
 
+  # A default changed in Settings, or agents were moved onto it there.
+  def handle_info({:settings, :default_models_changed}, socket) do
+    socket = socket |> assign_defaults() |> load_agents()
+
+    {:noreply,
+     case socket.assigns.agent do
+       %Agent{id: id} -> assign(socket, :agent, Agents.get!(id))
+       nil -> socket
+     end}
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
 
   # -- Events -------------------------------------------------------------------
 
   @impl true
   def handle_event("validate", %{"agent" => params}, socket) do
+    # A model belongs to one engine: switching lands the agent on the new
+    # engine's default rather than on a model that engine cannot run.
+    params =
+      if params["engine"] && params["engine"] != socket.assigns.form[:engine].value,
+        do: Map.merge(params, %{"model_provider" => nil, "model_id" => nil}),
+        else: params
+
     changeset =
       (socket.assigns.agent || %Agent{})
       |> Agents.change(blank_to_nil(params))
@@ -219,8 +245,8 @@ defmodule CanopyWeb.AgentsLive do
   def handle_event("close_model_picker", _params, socket),
     do: {:noreply, assign(socket, :model_picker, nil)}
 
-  # "" for both fields clears the override, putting the agent back on whatever
-  # model its OpenCode agent defaults to.
+  # "" for both fields clears the agent's own model, putting it back on its
+  # engine's default.
   def handle_event("pick_model", %{"provider" => provider, "model" => model}, socket) do
     agent = socket.assigns.model_picker
     attrs = blank_to_nil(%{"model_provider" => provider, "model_id" => model})
@@ -231,7 +257,7 @@ defmodule CanopyWeb.AgentsLive do
          socket
          |> assign(:model_picker, nil)
          |> load_agents()
-         |> put_flash(:info, model_saved(updated))}
+         |> put_flash(:info, model_saved(updated, socket.assigns.defaults))}
 
       {:error, _changeset} ->
         {:noreply,
@@ -281,210 +307,80 @@ defmodule CanopyWeb.AgentsLive do
     {:noreply, assign(socket, :opencode_agents, @builtin_opencode_agents)}
   end
 
-  def handle_async(:providers, {:ok, {:ok, %{"providers" => list} = body}}, socket)
-      when is_list(list) do
-    providers =
-      list
-      |> Enum.flat_map(fn
-        %{"id" => id} = p when is_binary(id) ->
-          model_map = Map.get(p, "models", %{})
-          models = model_map |> Map.keys() |> Enum.sort()
-          pricing = Map.new(model_map, fn {mid, m} -> {mid, pricing_of(m)} end)
-          [%{id: id, name: Map.get(p, "name") || id, models: models, pricing: pricing}]
-
-        _ ->
-          []
-      end)
-      |> Enum.sort_by(& &1.id)
-
-    {:noreply,
-     socket
-     |> assign(:providers, providers)
-     |> assign(:default_models, Map.get(body, "default", %{}))}
+  def handle_async(:providers, {:ok, {:ok, %{providers: providers, defaults: defaults}}}, socket) do
+    {:noreply, socket |> assign(:providers, providers) |> assign(:server_defaults, defaults)}
   end
 
   def handle_async(:providers, _other, socket), do: {:noreply, assign(socket, :providers, [])}
 
-  # models.dev pricing, in dollars per million tokens; nil when OpenCode has none
-  defp pricing_of(%{"cost" => %{} = cost}) do
-    %{
-      input: number(cost["input"]),
-      output: number(cost["output"]),
-      cache_read: number(get_in(cost, ["cache", "read"]))
-    }
-  end
+  # The OpenCode model to price: the agent's (or form's) own, else Canopy's
+  # default, else OpenCode's own as far as Canopy can tell. With the source.
+  defp priced_model({p, m}, _defaults, _server_defaults) when is_binary(p) and is_binary(m),
+    do: {p, m, :agent}
 
-  defp pricing_of(_), do: nil
-
-  defp number(n) when is_number(n), do: n / 1
-  defp number(_), do: 0.0
-
-  @doc false
-  def pricing(providers, provider, model) when is_binary(provider) and is_binary(model) do
-    case Enum.find(providers, &(&1.id == provider)) do
-      %{pricing: pricing} -> Map.get(pricing, model)
-      _ -> nil
-    end
-  end
-
-  def pricing(_providers, _provider, _model), do: nil
-
-  @doc false
-  def price_text(nil, _providers, _provider), do: nil
-
-  # A provider whose every model costs $0 is not free: OpenCode has no per-token
-  # price for it, typically a subscription login (ChatGPT, Claude) that bills
-  # by plan. A $0 model among priced ones really is free.
-  def price_text(%{input: i, output: o, cache_read: c}, providers, provider) do
-    cond do
-      i == 0 and o == 0 and provider_unpriced?(providers, provider) ->
-        "no per-token price reported by OpenCode; usually a subscription login billed by plan"
-
-      i == 0 and o == 0 ->
-        "free"
-
-      true ->
-        cache = if c > 0, do: " · cached input #{dollars(c)}", else: ""
-        "#{dollars(i)} in / #{dollars(o)} out per million tokens#{cache}"
-    end
-  end
-
-  defp provider_unpriced?(providers, provider) do
-    case Enum.find(providers, &(&1.id == provider)) do
-      %{pricing: pricing} when map_size(pricing) > 0 ->
-        Enum.all?(pricing, fn {_, p} -> is_nil(p) or (p.input == 0 and p.output == 0) end)
+  defp priced_model(_own, defaults, server_defaults) do
+    case Map.get(defaults, "opencode") do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
+        {p, m, :default}
 
       _ ->
-        true
+        case Providers.server_default(server_defaults) do
+          {p, m} -> {p, m, :server}
+          nil -> nil
+        end
     end
   end
 
-  defp dollars(n) when n >= 1, do: "$" <> :erlang.float_to_binary(n / 1, decimals: 2)
+  defp agent_price_line(%Agent{engine: "claude_code"}, _providers, _defaults, _server), do: nil
 
-  defp dollars(n),
-    do:
-      "$" <>
-        (:erlang.float_to_binary(n / 1, decimals: 3)
-         |> String.trim_trailing("0")
-         |> String.trim_trailing("."))
-
-  @doc false
-  def agent_price_line(%Agent{engine: "claude_code"}, _providers, _defaults), do: nil
-
-  def agent_price_line(agent, providers, defaults) do
-    case effective_model(agent, defaults) do
+  defp agent_price_line(agent, providers, defaults, server_defaults) do
+    case priced_model({agent.model_provider, agent.model_id}, defaults, server_defaults) do
       nil ->
         nil
 
-      {p, m} ->
-        prefix = if is_nil(model_label(agent)), do: "(#{p}/#{m}) ", else: ""
-        prefix <> (price_text(pricing(providers, p, m), providers, p) || "price unknown")
+      {p, m, source} ->
+        # the model is named beside the price only when the label above does not say it
+        prefix = if source == :server, do: "(#{p}/#{m}) ", else: ""
+        prefix <> (price_of(providers, p, m) || "price unknown")
     end
   end
 
-  @doc false
-  def form_price_line(form, providers, defaults) do
-    provider = form[:model_provider].value
-    model = form[:model_id].value
-    picked? = is_binary(provider) and provider != "" and is_binary(model) and model != ""
+  defp form_price_line(form, providers, defaults, server_defaults) do
+    own = {blank_to_nil(form[:model_provider].value), blank_to_nil(form[:model_id].value)}
 
-    case if(picked?, do: {provider, model}, else: effective_model(%Agent{}, defaults)) do
+    case priced_model(own, defaults, server_defaults) do
       nil ->
         "Pick a model to see its price."
 
-      {p, m} ->
-        note = if picked?, do: "", else: " (OpenCode's default)"
+      {p, m, source} ->
+        note =
+          case source do
+            :agent -> ""
+            :default -> " (default)"
+            :server -> " (OpenCode's default)"
+          end
 
-        "#{p}/#{m}#{note} — #{price_text(pricing(providers, p, m), providers, p) || "price unknown"}"
+        "#{p}/#{m}#{note} — #{price_of(providers, p, m) || "price unknown"}"
     end
   end
 
-  # The model an agent actually runs on: its override, else OpenCode's default
-  # for the first provider that has one.
-  defp effective_model(%Agent{model_provider: p, model_id: m}, _defaults)
-       when is_binary(p) and is_binary(m),
-       do: {p, m}
-
-  defp effective_model(_agent, defaults) when map_size(defaults) > 0 do
-    {p, m} = Enum.min_by(defaults, fn {p, _} -> p end)
-    {p, m}
-  end
-
-  defp effective_model(_agent, _defaults), do: nil
+  defp price_of(providers, p, m),
+    do: Providers.price_text(Providers.pricing(providers, p, m), providers, p)
 
   # The provider check only makes sense for agents OpenCode runs; Claude Code
-  # takes any model id or alias.
+  # models are checked against the alias list by the schema.
   defp maybe_validate_model(changeset, providers) do
     if Ecto.Changeset.get_field(changeset, :engine) == "opencode",
-      do: validate_model(changeset, providers),
+      do: Providers.validate(changeset, providers),
       else: changeset
   end
 
-  # With the provider list known, a model override must name a configured provider
-  # and one of its models; otherwise OpenCode rejects every prompt at run time.
-  defp validate_model(changeset, []), do: changeset
-
-  defp validate_model(changeset, providers) do
-    provider = Ecto.Changeset.get_field(changeset, :model_provider)
-    model = Ecto.Changeset.get_field(changeset, :model_id)
-
-    case {provider, model, Enum.find(providers, &(&1.id == provider))} do
-      {nil, nil, _} ->
-        changeset
-
-      {nil, _model, _} ->
-        Ecto.Changeset.add_error(changeset, :model_provider, "pick a provider for this model")
-
-      {_provider, _model, nil} ->
-        Ecto.Changeset.add_error(changeset, :model_provider, "is not configured in OpenCode")
-
-      {_provider, nil, _} ->
-        Ecto.Changeset.add_error(changeset, :model_id, "pick a model from #{provider}")
-
-      {_provider, model, %{models: models}} ->
-        if model in models,
-          do: changeset,
-          else:
-            Ecto.Changeset.add_error(changeset, :model_id, "is not available from #{provider}")
+  defp model_saved(agent, defaults) do
+    case {model_label(agent), default_label(defaults, agent.engine)} do
+      {nil, nil} -> "@#{agent.name} is back on its #{engine_label(agent)} default model."
+      {nil, default} -> "@#{agent.name} now uses the default model (#{default})."
+      {label, _} -> "@#{agent.name} now runs on #{label}."
     end
-  end
-
-  defp model_saved(agent) do
-    case model_label(agent) do
-      nil -> "@#{agent.name} is back on its OpenCode default model."
-      label -> "@#{agent.name} now runs on #{label}."
-    end
-  end
-
-  defp provider_options(providers, current) do
-    known = Enum.map(providers, &{provider_label(&1), &1.id})
-
-    if current && not Enum.any?(providers, &(&1.id == current)),
-      do: known ++ [{"#{current} (not configured)", current}],
-      else: known
-  end
-
-  # "OpenAI" reads better than "OpenAI (openai)"; the id is shown only when it
-  # is not obvious from the name.
-  defp provider_label(%{id: id, name: name}) do
-    if String.downcase(name) |> String.replace(~r/[^a-z0-9]/, "") ==
-         String.replace(id, ~r/[^a-z0-9]/, ""),
-       do: name,
-       else: "#{name} (#{id})"
-  end
-
-  defp model_options(providers, provider, current) do
-    models =
-      case Enum.find(providers, &(&1.id == provider)) do
-        %{models: models} -> models
-        nil -> []
-      end
-
-    options = Enum.map(models, &{&1, &1})
-
-    if current && current not in models,
-      do: options ++ [{"#{current} (not available)", current}],
-      else: options
   end
 
   # The known agents, plus the agent's current value when it is something
@@ -508,6 +404,13 @@ defmodule CanopyWeb.AgentsLive do
 
   defp assign_form(socket, changeset) do
     assign(socket, :form, to_form(changeset, id: "agent-form"))
+  end
+
+  # Each engine's default model from Settings, and Claude Code's default effort.
+  defp assign_defaults(socket) do
+    socket
+    |> assign(:defaults, Settings.default_models())
+    |> assign(:default_effort, Settings.default_effort("claude_code"))
   end
 
   defp load_agents(socket) do
@@ -556,7 +459,11 @@ defmodule CanopyWeb.AgentsLive do
   defp load_memory(socket), do: socket
 
   # Empty optional strings should clear a field rather than fail validation.
-  defp blank_to_nil(params) do
+  defp blank_to_nil(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
+  end
+
+  defp blank_to_nil(params) when is_map(params) do
     Map.new(params, fn
       {key, value} when is_binary(value) ->
         case String.trim(value) do
@@ -569,15 +476,53 @@ defmodule CanopyWeb.AgentsLive do
     end)
   end
 
-  @engine_labels %{"opencode" => "OpenCode", "claude_code" => "Claude Code"}
+  defp blank_to_nil(value), do: value
 
   defp engine_options, do: Enum.map(Canopy.Engine.names(), &{engine_label(&1), &1})
 
   defp engine_label(%Agent{engine: engine}), do: engine_label(engine)
-  defp engine_label(engine), do: Map.get(@engine_labels, engine, engine)
+  defp engine_label(engine), do: Canopy.Engine.label(engine)
 
   defp default_model_label(%Agent{engine: "claude_code"}), do: "Claude Code default"
   defp default_model_label(_agent), do: "OpenCode default"
+
+  # The engine's default model from Settings as a label, or nil when the
+  # engine picks.
+  defp default_label(defaults, engine) do
+    case Map.get(defaults, engine) do
+      %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) -> "#{p}/#{m}"
+      %{model_id: m} when is_binary(m) -> m
+      _ -> nil
+    end
+  end
+
+  # The "Default (…)" option of a model select.
+  defp default_option(defaults, engine) do
+    case default_label(defaults, engine) do
+      nil -> if engine == "claude_code", do: "Claude Code's own default", else: "OpenCode default"
+      label -> "Default (#{label})"
+    end
+  end
+
+  defp default_effort_option(nil), do: "Claude Code's own default"
+  defp default_effort_option(effort), do: "Default (#{effort})"
+
+  # A list row's label for an agent on its engine's default.
+  defp inherited_label(defaults, engine) do
+    case default_label(defaults, engine) do
+      nil -> "default"
+      label -> "default · #{label}"
+    end
+  end
+
+  defp effort_text(%Agent{effort: effort}, _default) when is_binary(effort),
+    do: " · effort #{effort}"
+
+  defp effort_text(_agent, nil), do: ""
+  defp effort_text(_agent, default), do: " · effort #{default} (default)"
+
+  defp settings_anchor("claude_code"), do: ~p"/settings" <> "#claude-panel"
+  defp settings_anchor(_engine), do: ~p"/settings" <> "#opencode-panel"
 
   defp permission_mode_options do
     [
@@ -650,6 +595,26 @@ defmodule CanopyWeb.AgentsLive do
         first pair is a builder and a reviewer.
       </Layouts.empty_state>
 
+      <p
+        id="default-models-hint"
+        class="flex flex-wrap items-center gap-x-1.5 text-xs text-base-content/60"
+      >
+        <span>Default models:</span>
+        <%= for {engine, index} <- Enum.with_index(Canopy.Engine.names()) do %>
+          <span :if={index > 0} aria-hidden="true">·</span>
+          <span id={"default-model-#{engine}"}>
+            {engine_label(engine)}
+            <span class={["font-mono", default_label(@defaults, engine) && "text-base-content/80"]}>
+              {default_label(@defaults, engine) || "its own default"}
+            </span>
+          </span>
+        <% end %>
+        <span aria-hidden="true">·</span>
+        <.link navigate={~p"/settings"} id="default-models-settings" class="link link-primary">
+          change in Settings
+        </.link>
+      </p>
+
       <Layouts.panel
         :if={@active_agents != []}
         id="agents-panel"
@@ -710,12 +675,15 @@ defmodule CanopyWeb.AgentsLive do
                 > · {agent.opencode_agent}</span>
               </span>
               <button
-                :if={agent.engine == "opencode"}
                 type="button"
                 id={"model-#{agent.id}"}
                 phx-click="open_model_picker"
                 phx-value-id={agent.id}
-                title="Change this agent's model"
+                title={
+                  if model_label(agent),
+                    do: "Change this agent's model",
+                    else: "Uses the default model; click to choose its own"
+                }
                 class={[
                   "relative max-w-full justify-self-start truncate rounded-md font-mono text-xs transition hover:ring-2 hover:ring-primary/40",
                   model_label(agent) && "badge badge-soft badge-primary badge-sm",
@@ -723,19 +691,8 @@ defmodule CanopyWeb.AgentsLive do
                     "px-1.5 py-0.5 text-base-content/60 hover:text-base-content"
                 ]}
               >
-                {model_label(agent) || "default"}
+                {model_label(agent) || inherited_label(@defaults, agent.engine)}
               </button>
-              <span
-                :if={agent.engine != "opencode"}
-                id={"model-#{agent.id}"}
-                class={[
-                  "max-w-full justify-self-start truncate rounded-md font-mono text-xs",
-                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
-                  !model_label(agent) && "px-1.5 py-0.5 text-base-content/60"
-                ]}
-              >
-                {model_label(agent) || "default"}
-              </span>
               <span
                 class="flex items-center gap-0.5 text-xs text-base-content/60"
                 title="Active schedules"
@@ -802,7 +759,7 @@ defmodule CanopyWeb.AgentsLive do
         :if={@model_picker}
         agent={@model_picker}
         providers={@providers}
-        defaults={@default_models}
+        defaults={@defaults}
       />
     </Layouts.page>
     """
@@ -845,7 +802,7 @@ defmodule CanopyWeb.AgentsLive do
 
         <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           <p
-            :if={@providers == []}
+            :if={@agent.engine == "opencode" and @providers == []}
             id="model-picker-empty"
             class="px-3 py-6 text-center text-xs text-base-content/60"
           >
@@ -870,14 +827,50 @@ defmodule CanopyWeb.AgentsLive do
               class={["size-4 shrink-0", model_label(@agent) && "invisible"]}
             />
             <span class="min-w-0 flex-1">
-              <span class="block text-sm font-medium">OpenCode default</span>
+              <span class="block text-sm font-medium">
+                {if default_label(@defaults, @agent.engine),
+                  do: default_option(@defaults, @agent.engine),
+                  else: default_model_label(@agent)}
+              </span>
               <span class="block text-xs text-base-content/60">
-                Whatever <code class="font-mono">{@agent.opencode_agent}</code> is configured to use.
+                <%= cond do %>
+                  <% default_label(@defaults, @agent.engine) -> %>
+                    Canopy's {engine_label(@agent)} default · change in Settings
+                  <% @agent.engine == "claude_code" -> %>
+                    Whatever Claude Code is set to use; pick a default in Settings.
+                  <% true -> %>
+                    Whatever <code class="font-mono">{@agent.opencode_agent}</code>
+                    is configured to use.
+                <% end %>
               </span>
             </span>
           </button>
 
-          <div :for={provider <- @providers} class="mt-1">
+          <div :if={@agent.engine == "claude_code"} class="mt-1">
+            <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
+              Claude Code
+            </p>
+            <button
+              :for={model <- Agent.claude_models()}
+              type="button"
+              id={model_dom_id("claude", model)}
+              phx-click="pick_model"
+              phx-value-provider=""
+              phx-value-model={model}
+              class={[
+                "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition hover:bg-base-300/60",
+                current_model?(@agent, nil, model) && "bg-primary/10"
+              ]}
+            >
+              <.icon
+                name="hero-check-mini"
+                class={["size-4 shrink-0", !current_model?(@agent, nil, model) && "invisible"]}
+              />
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
+            </button>
+          </div>
+
+          <div :for={provider <- @providers} :if={@agent.engine == "opencode"} class="mt-1">
             <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               {provider.name}
             </p>
@@ -902,7 +895,7 @@ defmodule CanopyWeb.AgentsLive do
               />
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
               <span class="shrink-0 text-[11px] text-base-content/60">
-                {price_text(pricing(@providers, provider.id, model), @providers, provider.id)}
+                {price_of(@providers, provider.id, model)}
               </span>
             </button>
           </div>
@@ -998,22 +991,37 @@ defmodule CanopyWeb.AgentsLive do
                 <dd id="agent-engine">{engine_label(@agent)}</dd>
                 <%= if @agent.engine == "claude_code" do %>
                   <dt class="text-base-content/60">Permissions</dt>
-                  <dd class="font-mono text-xs">
-                    {@agent.permission_mode}{if @agent.effort, do: " · effort #{@agent.effort}"}
+                  <dd id="agent-permissions" class="font-mono text-xs">
+                    {@agent.permission_mode}{effort_text(@agent, @default_effort)}
                   </dd>
                 <% else %>
                   <dt class="text-base-content/60">OpenCode agent</dt>
                   <dd class="font-mono text-xs">{@agent.opencode_agent}</dd>
                 <% end %>
                 <dt class="text-base-content/60">Model</dt>
-                <dd class="font-mono text-xs">
-                  {model_label(@agent) || default_model_label(@agent)}
+                <dd id="agent-model" class="font-mono text-xs">
+                  <%= cond do %>
+                    <% model_label(@agent) -> %>
+                      {model_label(@agent)}
+                    <% default_label(@defaults, @agent.engine) -> %>
+                      {default_label(@defaults, @agent.engine)}
+                      <span class="font-sans text-base-content/60">
+                        (<.link
+                          navigate={settings_anchor(@agent.engine)}
+                          id="agent-model-default"
+                          class="link"
+                          title="The default model, set in Settings"
+                        >default</.link>)
+                      </span>
+                    <% true -> %>
+                      {default_model_label(@agent)}
+                  <% end %>
                   <span
-                    :if={agent_price_line(@agent, @providers, @default_models)}
+                    :if={agent_price_line(@agent, @providers, @defaults, @server_defaults)}
                     id="agent-model-price"
                     class="ml-1 font-sans text-base-content/60"
                   >
-                    {agent_price_line(@agent, @providers, @default_models)}
+                    {agent_price_line(@agent, @providers, @defaults, @server_defaults)}
                   </span>
                 </dd>
                 <dt class="text-base-content/60">Spend</dt>
@@ -1236,7 +1244,7 @@ defmodule CanopyWeb.AgentsLive do
                 type="select"
                 id="claude-model"
                 label="Model"
-                prompt="Choose a model"
+                prompt={default_option(@defaults, "claude_code")}
                 options={Agent.claude_models()}
               />
               <.input
@@ -1244,7 +1252,7 @@ defmodule CanopyWeb.AgentsLive do
                 type="select"
                 id="claude-effort"
                 label="Effort"
-                prompt="Choose an effort"
+                prompt={default_effort_option(@default_effort)}
                 options={Agent.efforts()}
               />
               <.input
@@ -1271,7 +1279,11 @@ defmodule CanopyWeb.AgentsLive do
               also lets file edits through; <em>read-only</em>
               is plan mode. The Canopy tools are always allowed. Model aliases <code class="font-mono">fable</code>, <code class="font-mono">opus</code>, <code class="font-mono">sonnet</code>, and
               <code class="font-mono">haiku</code>
-              name the latest of each family; Claude Code picks the exact version.
+              name the latest of each family; Claude Code picks the exact version. <em>Default</em>
+              follows the model and effort set in <.link
+                navigate={settings_anchor("claude_code")}
+                class="link"
+              >Settings</.link>.
             </p>
           <% else %>
             <div class="grid gap-3 sm:grid-cols-3">
@@ -1287,8 +1299,8 @@ defmodule CanopyWeb.AgentsLive do
                   field={@form[:model_provider]}
                   type="select"
                   label="Model provider (optional)"
-                  prompt="OpenCode default"
-                  options={provider_options(@providers, @form[:model_provider].value)}
+                  prompt={default_option(@defaults, "opencode")}
+                  options={Providers.provider_options(@providers, @form[:model_provider].value)}
                 />
                 <.input
                   field={@form[:model_id]}
@@ -1298,7 +1310,11 @@ defmodule CanopyWeb.AgentsLive do
                     if @form[:model_provider].value, do: "Pick a model", else: "Pick a provider first"
                   }
                   options={
-                    model_options(@providers, @form[:model_provider].value, @form[:model_id].value)
+                    Providers.model_options(
+                      @providers,
+                      @form[:model_provider].value,
+                      @form[:model_id].value
+                    )
                   }
                   disabled={
                     is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
@@ -1324,7 +1340,7 @@ defmodule CanopyWeb.AgentsLive do
               <% end %>
             </div>
             <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
-              {form_price_line(@form, @providers, @default_models)}
+              {form_price_line(@form, @providers, @defaults, @server_defaults)}
             </p>
             <p class="text-xs text-base-content/60">
               <code class="font-mono">build</code>
@@ -1332,10 +1348,16 @@ defmodule CanopyWeb.AgentsLive do
               is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
               once a repository is registered and <code class="font-mono">opencode serve</code>
               is up.
-              <%= if @providers != [] do %>
-                Leave the model blank to use that agent's default.
-              <% else %>
-                Leave the model blank to use OpenCode's default.
+              <%= cond do %>
+                <% default_label(@defaults, "opencode") -> %>
+                  Leave the model blank to use the default, {default_label(@defaults, "opencode")} (<.link
+                    navigate={settings_anchor("opencode")}
+                    class="link"
+                  >Settings</.link>).
+                <% @providers != [] -> %>
+                  Leave the model blank to use that agent's default.
+                <% true -> %>
+                  Leave the model blank to use OpenCode's default.
               <% end %>
             </p>
           <% end %>

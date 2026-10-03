@@ -53,6 +53,45 @@ test.describe("settings", () => {
     await expect(html).toHaveAttribute("data-theme-source", "system");
   });
 
+  test("sets the default models", async ({ page }) => {
+    await page.goto("/settings");
+
+    // OpenCode's default comes from the fake server's provider list
+    const provider = page.locator("#opencode-default-provider");
+    await expect(provider).toBeEnabled();
+    await provider.selectOption("opencode");
+    const model = page.locator("#opencode-default-model");
+    await expect(model).toBeEnabled();
+    await model.selectOption("gpt-5-nano");
+    await page.locator("#save-opencode").click();
+    await expect(page.locator("#flash-info")).toContainText("use the default model");
+    await expect(page.locator("#opencode-default-price")).toContainText("$0.05 in / $0.4 out");
+
+    await page.locator("#claude-default-model").selectOption("sonnet");
+    await page.locator("#claude-default-effort").selectOption("high");
+    await page.locator("#save-claude").click();
+    await expect(page.locator("#flash-info")).toContainText("default model");
+
+    // the seeded agents have no model of their own: they inherit
+    await page.goto("/agents");
+    await expect(page.locator("#default-model-claude_code")).toContainText("sonnet");
+    await expect(page.locator("#default-model-opencode")).toContainText("opencode/gpt-5-nano");
+    await expect(page.locator("#active-agents").getByText("default · opencode/gpt-5-nano").first()).toBeVisible();
+
+    // put the engines back on their own defaults for the specs that follow
+    await page.goto("/settings");
+    await expect(provider).toBeEnabled();
+    await provider.selectOption("");
+    await page.locator("#save-opencode").click();
+    await expect(page.locator("#opencode-default-price")).toBeHidden();
+    await page.locator("#claude-default-model").selectOption("");
+    await page.locator("#claude-default-effort").selectOption("");
+    await page.locator("#save-claude").click();
+    await page.goto("/agents");
+    await expect(page.locator("#default-model-opencode")).toContainText("its own default");
+    await expect(page.locator("#default-model-claude_code")).toContainText("its own default");
+  });
+
   test("saves the display name", async ({ page }) => {
     await page.goto("/settings");
     await page.getByLabel("Display name").fill("Steven");

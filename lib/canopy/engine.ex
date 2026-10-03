@@ -122,7 +122,12 @@ defmodule Canopy.Engine do
 
   @callback reconcile(ctx, engine_state) :: reconciliation
 
-  @doc "How the Costs page names the model an agent runs on."
+  @doc """
+  How the Costs page names the model an agent runs on: the effective model
+  (`Canopy.Agents.effective_model/1`, the agent's own or its engine's default
+  from Settings), so an inherited model and the same model chosen per agent
+  share one label. The engine's own wording when neither is set.
+  """
   @callback model_label(agent) :: String.t()
 
   @doc "Context (tokens per model call) above which a session is compacted after its turn."
@@ -138,6 +143,11 @@ defmodule Canopy.Engine do
   def names, do: engines() |> Map.keys() |> Enum.sort()
 
   def module!(name) when is_binary(name), do: Map.fetch!(engines(), name)
+
+  @labels %{"opencode" => "OpenCode", "claude_code" => "Claude Code"}
+
+  @doc "The engine's name as people read it (`\"Claude Code\"`)."
+  def label(name) when is_binary(name), do: Map.get(@labels, name, name)
 
   @doc "The adapter for an agent or session (anything with an `engine` name)."
   def for(%{engine: name}), do: module!(name)

@@ -138,7 +138,11 @@ defmodule Mix.Tasks.Canopy.Demo do
     researcher = Canopy.Agents.get_by_name("researcher")
 
     # On Claude Code the demo agents run `claude -p`; haiku keeps the run cheap
-    # unless a model was already chosen.
+    # unless a model was already chosen, on the agent or as the Claude Code
+    # default in Settings (then the agent inherits it). The effort likewise.
+    claude_default = Canopy.Settings.default_model("claude_code").model_id
+    claude_effort = Canopy.Settings.default_effort("claude_code")
+
     [backend, researcher] =
       Enum.map([backend, researcher], fn agent ->
         attrs =
@@ -146,11 +150,12 @@ defmodule Mix.Tasks.Canopy.Demo do
             do: %{
               engine: engine,
               model_id:
-                if(agent.model_id in Canopy.Agents.Agent.claude_models(),
-                  do: agent.model_id,
-                  else: "haiku"
-                ),
-              effort: agent.effort || "high",
+                cond do
+                  agent.model_id in Canopy.Agents.Agent.claude_models() -> agent.model_id
+                  claude_default -> nil
+                  true -> "haiku"
+                end,
+              effort: agent.effort || if(claude_effort, do: nil, else: "high"),
               permission_mode: "acceptEdits"
             },
             else: %{engine: engine}
@@ -183,7 +188,7 @@ defmodule Mix.Tasks.Canopy.Demo do
     Demo ready.
       repository  #{repository.name} at #{path}
       channel     ##{channel.name} (owner @backend, members @backend @researcher)
-      engine      #{engine}#{if engine == "claude_code", do: " (model #{backend.model_id}, acceptEdits)", else: ""}
+      engine      #{engine}#{if engine == "claude_code", do: " (model #{Canopy.Engine.ClaudeCode.model_label(backend)}, acceptEdits)", else: ""}
       plugin      #{path}/.opencode/plugins/canopy.js (project-level; copy to
                   ~/.config/opencode/plugins/canopy.js to cover every repository)
 

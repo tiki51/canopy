@@ -1,25 +1,34 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
   Settings: the OpenCode server URL (with a connection check), the Claude Code
-  binary (with a version and login check), the local user's display name,
+  binary (with a version and login check), each engine's default model (and
+  Claude Code's default effort) with how many agents use it, the local user's display name,
   appearance (light/dark mode and colour palette, kept in the browser), the
   collaboration preamble every agent is given, and the MCP section (identity
   plugin source, endpoint URL, token).
   """
   use CanopyWeb, :live_view
 
-  alias Canopy.MCP
-  alias Canopy.OpenCode.Client
+  alias Canopy.{Agents, MCP}
+  alias Canopy.Agents.Agent
+  alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
+
+  @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
 
   @impl true
   def mount(_params, _session, socket) do
     setting = Settings.get()
+    if connected?(socket), do: Settings.subscribe()
 
     {:ok,
      socket
      |> assign(:page_title, "Settings")
+     |> assign(:providers, [])
+     |> assign(:providers_state, :loading)
+     |> then(&if(connected?(&1), do: load_providers(&1), else: &1))
+     |> assign_usage()
      |> assign(:setting, setting)
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
@@ -44,32 +53,77 @@ defmodule CanopyWeb.SettingsLive do
   def handle_event("validate_opencode", %{"setting" => params}, socket) do
     changeset =
       socket.assigns.setting
-      |> Settings.change(Map.take(params, ["opencode_url"]))
+      |> Settings.change(opencode_attrs(params))
+      |> validate_default(socket.assigns.providers)
       |> Map.put(:action, :validate)
+
+    url = String.trim(params["opencode_url"] || "")
 
     {:noreply,
      socket
      |> assign(:opencode_form, to_form(changeset, id: "opencode-form"))
-     |> assign(:draft_url, String.trim(params["opencode_url"] || ""))
-     |> assign(:health, nil)}
+     |> assign(:draft_url, url)
+     |> assign(:health, if(url == socket.assigns.draft_url, do: socket.assigns.health))}
   end
 
+  # The default model is checked against the provider list; while OpenCode is
+  # away its selects are disabled, so they are not submitted and keep their value.
   def handle_event("save_opencode", %{"setting" => params}, socket) do
-    case Settings.update(Map.take(params, ["opencode_url"])) do
+    attrs = opencode_attrs(params)
+
+    checked =
+      socket.assigns.setting
+      |> Settings.change(attrs)
+      |> validate_default(socket.assigns.providers)
+
+    result =
+      if checked.errors == [],
+        do: Settings.update(attrs),
+        else: {:error, Map.put(checked, :action, :update)}
+
+    case result do
       {:ok, setting} ->
-        {:noreply,
-         socket
-         |> assign(:setting, setting)
-         |> assign(:draft_url, setting.opencode_url)
-         |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
-         |> put_flash(:info, "OpenCode server URL saved.")}
+        url_changed? = setting.opencode_url != socket.assigns.setting.opencode_url
+
+        socket =
+          socket
+          |> assign(:setting, setting)
+          |> assign(:draft_url, setting.opencode_url)
+          |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
+          |> assign_usage()
+          |> put_flash(:info, opencode_saved(checked))
+
+        {:noreply, if(url_changed?, do: load_providers(socket), else: socket)}
 
       {:error, changeset} ->
         {:noreply, assign(socket, :opencode_form, to_form(changeset, id: "opencode-form"))}
     end
   end
 
-  @claude_fields ["claude_binary", "claude_config_dir", "claude_max_budget_usd"]
+  # Clears every active agent's own model (or effort) on that engine, after
+  # the confirmation on the button.
+  def handle_event("inherit_default", %{"engine" => engine, "kind" => kind}, socket)
+      when engine in ["claude_code", "opencode"] and kind in ["model", "effort"] do
+    {:ok, count} =
+      if kind == "model",
+        do: Agents.inherit_default_model(engine),
+        else: Agents.inherit_default_effort(engine)
+
+    message =
+      if count == 1,
+        do: "1 #{Canopy.Engine.label(engine)} agent now uses the default #{kind}.",
+        else: "#{count} #{Canopy.Engine.label(engine)} agents now use the default #{kind}."
+
+    {:noreply, socket |> assign_usage() |> put_flash(:info, message)}
+  end
+
+  @claude_fields [
+    "claude_binary",
+    "claude_config_dir",
+    "claude_max_budget_usd",
+    "claude_default_model",
+    "claude_default_effort"
+  ]
 
   def handle_event("validate_claude", %{"setting" => params}, socket) do
     changeset =
@@ -84,13 +138,17 @@ defmodule CanopyWeb.SettingsLive do
   end
 
   def handle_event("save_claude", %{"setting" => params}, socket) do
-    case Settings.update(Map.take(params, @claude_fields)) do
+    attrs = Map.take(params, @claude_fields)
+    changeset = Settings.change(socket.assigns.setting, attrs)
+
+    case Settings.update(attrs) do
       {:ok, setting} ->
         {:noreply,
          socket
          |> assign(:setting, setting)
          |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
-         |> put_flash(:info, "Claude Code settings saved.")}
+         |> assign_usage()
+         |> put_flash(:info, claude_saved(changeset))}
 
       {:error, changeset} ->
         {:noreply, assign(socket, :claude_form, to_form(changeset, id: "claude-form"))}
@@ -231,9 +289,32 @@ defmodule CanopyWeb.SettingsLive do
   end
 
   @impl true
-  def handle_async(:health, {:ok, result}, socket) do
-    {:noreply, assign(socket, :health, normalize_health(result))}
+  def handle_info({:settings, :default_models_changed}, socket) do
+    {:noreply, socket |> assign(:setting, Settings.get()) |> assign_usage()}
   end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # A server that just answered may have been started since the page loaded:
+  # its models make the default selects usable.
+  @impl true
+  def handle_async(:health, {:ok, result}, socket) do
+    health = normalize_health(result)
+
+    socket =
+      if match?({:ok, _}, health) and socket.assigns.providers_state != :ok and
+           socket.assigns.draft_url == socket.assigns.setting.opencode_url,
+         do: load_providers(socket),
+         else: socket
+
+    {:noreply, assign(socket, :health, health)}
+  end
+
+  def handle_async(:providers, {:ok, {:ok, %{providers: [_ | _] = providers}}}, socket),
+    do: {:noreply, socket |> assign(:providers, providers) |> assign(:providers_state, :ok)}
+
+  def handle_async(:providers, _other, socket),
+    do: {:noreply, socket |> assign(:providers, []) |> assign(:providers_state, :error)}
 
   def handle_async(:claude_check, {:ok, result}, socket),
     do: {:noreply, assign(socket, :claude_check, result)}
@@ -271,6 +352,78 @@ defmodule CanopyWeb.SettingsLive do
   defp describe_error(reason) when is_binary(reason), do: reason
   defp describe_error(reason), do: inspect(reason)
 
+  # The URL, plus the default model when its selects were submitted. No
+  # provider means OpenCode's own default, whatever the (disabled, so maybe
+  # unsubmitted) model select still holds.
+  defp opencode_attrs(params) do
+    attrs =
+      Map.take(params, ["opencode_url", "opencode_default_provider", "opencode_default_model"])
+
+    case Map.fetch(attrs, "opencode_default_provider") do
+      {:ok, provider} when provider in [nil, ""] -> Map.put(attrs, "opencode_default_model", nil)
+      {:ok, _provider} -> Map.put_new(attrs, "opencode_default_model", nil)
+      :error -> attrs
+    end
+  end
+
+  # Only a default being changed is checked against OpenCode's list: one that
+  # stopped working shows "(not configured)" but must not block saving the URL.
+  defp validate_default(changeset, providers) do
+    if Ecto.Changeset.changed?(changeset, :opencode_default_provider) or
+         Ecto.Changeset.changed?(changeset, :opencode_default_model),
+       do: Providers.validate(changeset, providers, @opencode_default_fields),
+       else: changeset
+  end
+
+  # From the saved server URL.
+  defp load_providers(socket) do
+    socket
+    |> assign(:providers_state, :loading)
+    |> start_async(:providers, fn -> Providers.list() end)
+  end
+
+  defp assign_usage(socket) do
+    assign(socket, :usage, %{
+      "claude_code" => %{
+        model: Agents.model_usage("claude_code"),
+        effort: Agents.effort_usage("claude_code")
+      },
+      "opencode" => %{model: Agents.model_usage("opencode")}
+    })
+  end
+
+  defp opencode_saved(changeset) do
+    if Ecto.Changeset.changed?(changeset, :opencode_default_provider) or
+         Ecto.Changeset.changed?(changeset, :opencode_default_model),
+       do: default_saved("opencode", "model"),
+       else: "OpenCode settings saved."
+  end
+
+  defp claude_saved(changeset) do
+    cond do
+      Ecto.Changeset.changed?(changeset, :claude_default_model) ->
+        default_saved("claude_code", "model")
+
+      Ecto.Changeset.changed?(changeset, :claude_default_effort) ->
+        default_saved("claude_code", "effort")
+
+      true ->
+        "Claude Code settings saved."
+    end
+  end
+
+  defp default_saved(engine, kind) do
+    usage = if kind == "model", do: Agents.model_usage(engine), else: Agents.effort_usage(engine)
+    n = usage.default
+
+    if n == 1,
+      do: "Saved. 1 agent uses the default #{kind} from its next turn.",
+      else: "Saved. #{n} agents use the default #{kind} from their next turn."
+  end
+
+  defp agents_word(1), do: "agent"
+  defp agents_word(_), do: "agents"
+
   defp mask_token(token) when is_binary(token) do
     String.slice(token, 0, 4) <> String.duplicate("•", 20) <> String.slice(token, -4, 4)
   end
@@ -298,7 +451,7 @@ defmodule CanopyWeb.SettingsLive do
         <Layouts.panel
           id="opencode-panel"
           title="OpenCode server"
-          description="Canopy talks to one `opencode serve` instance and passes each repository as the directory."
+          description="Canopy talks to one `opencode serve` instance and passes each repository as the directory. Agents without a model of their own run on the default model, from their next turn."
         >
           <.form
             for={@opencode_form}
@@ -313,6 +466,84 @@ defmodule CanopyWeb.SettingsLive do
               label="Server URL"
               placeholder="http://127.0.0.1:4096"
               autocomplete="off"
+            />
+            <div id="opencode-default" class="grid gap-3 sm:grid-cols-2">
+              <%= if @providers != [] do %>
+                <.input
+                  field={@opencode_form[:opencode_default_provider]}
+                  type="select"
+                  id="opencode-default-provider"
+                  label="Default provider"
+                  prompt="OpenCode's own default"
+                  options={
+                    Providers.provider_options(
+                      @providers,
+                      @opencode_form[:opencode_default_provider].value
+                    )
+                  }
+                />
+                <.input
+                  field={@opencode_form[:opencode_default_model]}
+                  type="select"
+                  id="opencode-default-model"
+                  label="Default model"
+                  prompt={
+                    if blank?(@opencode_form[:opencode_default_provider].value),
+                      do: "Pick a provider first",
+                      else: "Pick a model"
+                  }
+                  options={
+                    Providers.model_options(
+                      @providers,
+                      @opencode_form[:opencode_default_provider].value,
+                      @opencode_form[:opencode_default_model].value
+                    )
+                  }
+                  disabled={blank?(@opencode_form[:opencode_default_provider].value)}
+                />
+              <% else %>
+                <%!-- No free text: a default OpenCode cannot run would fail every
+                     inheriting agent, so it is chosen from the server's list. --%>
+                <.input
+                  field={@opencode_form[:opencode_default_provider]}
+                  type="select"
+                  id="opencode-default-provider"
+                  label="Default provider"
+                  prompt={unavailable_prompt(@providers_state)}
+                  options={List.wrap(@setting.opencode_default_provider)}
+                  disabled
+                />
+                <.input
+                  field={@opencode_form[:opencode_default_model]}
+                  type="select"
+                  id="opencode-default-model"
+                  label="Default model"
+                  prompt={unavailable_prompt(@providers_state)}
+                  options={List.wrap(@setting.opencode_default_model)}
+                  disabled
+                />
+              <% end %>
+            </div>
+            <p
+              :if={@providers == [] and @providers_state == :error}
+              id="opencode-default-unavailable"
+              class="-mt-1 text-xs text-warning"
+            >
+              Start OpenCode to choose a model: run <code class="font-mono">opencode serve</code>, then
+              press <em>Check connection</em>.
+            </p>
+            <p
+              :if={opencode_default_price(@setting, @providers)}
+              id="opencode-default-price"
+              class="-mt-1 text-xs text-base-content/60"
+            >
+              {opencode_default_price(@setting, @providers)}
+            </p>
+            <.default_usage
+              id="opencode-model-usage"
+              engine="opencode"
+              kind="model"
+              usage={@usage["opencode"].model}
             />
             <div class="flex items-center gap-2">
               <.button type="submit" variant="primary" id="save-opencode">Save</.button>
@@ -377,6 +608,38 @@ defmodule CanopyWeb.SettingsLive do
                 placeholder="none"
               />
             </div>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_default_model]}
+                type="select"
+                id="claude-default-model"
+                label="Default model"
+                prompt="Claude Code's own default"
+                options={Agent.claude_models()}
+              />
+              <.input
+                field={@claude_form[:claude_default_effort]}
+                type="select"
+                id="claude-default-effort"
+                label="Default effort"
+                prompt="Claude Code's own default"
+                options={Agent.efforts()}
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <.default_usage
+                id="claude-model-usage"
+                engine="claude_code"
+                kind="model"
+                usage={@usage["claude_code"].model}
+              />
+              <.default_usage
+                id="claude-effort-usage"
+                engine="claude_code"
+                kind="effort"
+                usage={@usage["claude_code"].effort}
+              />
+            </div>
             <div class="flex items-center gap-2">
               <.button type="submit" variant="primary" id="save-claude">Save</.button>
               <button type="button" id="check-claude" class="btn btn-soft" phx-click="check_claude">
@@ -385,6 +648,8 @@ defmodule CanopyWeb.SettingsLive do
               <.claude_check_result check={@claude_check} />
             </div>
             <p class="text-xs text-base-content/60">
+              Agents without a model or effort of their own use the defaults, from their next
+              turn; set one per agent on its edit form to override.
               Leave the config directory empty to use your own Claude Code login and settings
               (your personal MCP servers are still kept out of agent sessions). Point it at a
               directory of its own to isolate agents; run <code class="font-mono">claude</code>
@@ -667,6 +932,58 @@ defmodule CanopyWeb.SettingsLive do
     </Layouts.app>
     """
   end
+
+  attr :id, :string, required: true
+  attr :engine, :string, required: true
+  attr :kind, :string, required: true, doc: "\"model\" or \"effort\""
+  attr :usage, :map, required: true, doc: "`%{default: n, own: n}` from `Canopy.Agents`"
+
+  # How many active agents inherit the default, and the bulk switch for the rest.
+  defp default_usage(assigns) do
+    ~H"""
+    <div id={@id} class="flex flex-wrap items-center gap-x-2 text-xs text-base-content/60">
+      <span>
+        {@usage.default} {agents_word(@usage.default)} {if @usage.default == 1,
+          do: "uses",
+          else: "use"} the default {@kind} · {@usage.own} {if @usage.own == 1,
+          do: "has its",
+          else: "have their"} own
+      </span>
+      <button
+        :if={@usage.own > 0}
+        type="button"
+        id={"#{@id}-inherit"}
+        class="btn btn-ghost btn-xs text-primary"
+        phx-click="inherit_default"
+        phx-value-engine={@engine}
+        phx-value-kind={@kind}
+        data-canopy-confirm={"Clear the #{@kind} set on #{@usage.own} #{Canopy.Engine.label(@engine)} #{agents_word(@usage.own)}, so they use the default from their next turn? You can set one per agent again on the Agents page."}
+        data-canopy-confirm-title={"Use the default #{@kind} for all?"}
+        data-canopy-confirm-label="Use the default"
+      >
+        Use the default for all
+      </button>
+    </div>
+    """
+  end
+
+  defp unavailable_prompt(:loading), do: "Loading OpenCode's models…"
+  defp unavailable_prompt(_state), do: "Start OpenCode to choose a model"
+
+  defp opencode_default_price(
+         %{opencode_default_provider: p, opencode_default_model: m},
+         providers
+       )
+       when is_binary(p) and is_binary(m) and providers != [] do
+    case Providers.pricing(providers, p, m) do
+      nil -> nil
+      pricing -> "#{p}/#{m}: #{Providers.price_text(pricing, providers, p)}"
+    end
+  end
+
+  defp opencode_default_price(_setting, _providers), do: nil
+
+  defp blank?(value), do: value in [nil, ""]
 
   attr :health, :any, required: true
 

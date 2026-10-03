@@ -29,12 +29,29 @@ test.describe("repositories and agents", () => {
     await page.getByLabel("Role (one line)").fill("Checks things");
     await page.locator("#save-agent").click();
 
-    // lands on the new agent's page; the list has it too
+    // lands on the new agent's page; the list has it too. The model was left on
+    // its default, so the agent inherits.
     await expect(page).toHaveURL(/\/agents\/agt_/);
+    const id = new URL(page.url()).pathname.split("/").pop();
     await expect(page.locator("#agent-about")).toContainText("Checks things");
+    await expect(page.locator("#agent-model")).toContainText("OpenCode default");
     await page.locator("#flash-info").click();
     await expect(page.locator("#flash-info")).toBeHidden();
     await page.locator("#back-to-agents").click();
     await expect(page.locator("#active-agents")).toContainText(`@${name}`);
+
+    // override the model from the row's picker: a badge; Default brings it back
+    const model = page.locator(`#model-${id}`);
+    await expect(model).toHaveText("default");
+    await model.click();
+    await page.locator("#model-option-opencode-gpt-5-nano").click();
+    await expect(page.locator("#model-picker")).toBeHidden();
+    await expect(model).toHaveText("opencode/gpt-5-nano");
+    await expect(model).toHaveClass(/badge/);
+
+    await model.click();
+    await page.locator("#model-option-default").click();
+    await expect(model).toHaveText("default");
+    await expect(model).not.toHaveClass(/badge/);
   });
 });

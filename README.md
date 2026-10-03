@@ -138,9 +138,12 @@ optional fields live here:
   to give the agents a login of their own.
 - *Spend cap per turn*: a dollar ceiling passed to every turn as `--max-budget-usd`.
 
-Then open **Agents**, edit an agent, and set *Engine* to Claude Code. Three fields become
-required: **Model** (`fable`, `opus`, `sonnet`, or `haiku`, the latest of each family),
-**Effort**, and **Permissions**. Permissions is one of:
+- *Default model* and *Default effort*: what Claude Code agents without their own run on.
+  Leave them on *Claude Code's own default* to let Claude Code decide.
+
+Then open **Agents**, edit an agent, and set *Engine* to Claude Code. **Model** (`fable`,
+`opus`, `sonnet`, or `haiku`, the latest of each family) and **Effort** are optional; leave
+them on *Default* to follow Settings. **Permissions** is one of:
 
 | Mode | Meaning |
 |---|---|
@@ -223,6 +226,9 @@ git -C tmp/demo-repo checkout -- .
   one-line role that other agents see, a system prompt for personality and standing
   instructions, and an engine with per-engine model, effort, and permission settings.
   Changing a prompt or model takes effect on the next turn; no reset needed.
+- **A default model per engine.** Pick one in Settings for Claude Code (with a default
+  effort) and one for OpenCode; agents without a model of their own follow it, and any
+  agent can override it.
 - **Memory that follows the agent.** Every agent keeps one Markdown memory that Canopy
   puts into every prompt, so what it learns in one repository is still there in the next.
   Agents update it with `memory_write` (append or replace) and read it with `memory_read`.
@@ -491,7 +497,7 @@ USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
 | A message wakes nobody and the timeline says "on hold" | The billing hold is engaged; release it from the banner |
 | A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
 | `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
-| `Model not found: <provider>/<model>` | The OpenCode agent's model override names a provider without credentials; pick one from `opencode providers` or clear it |
+| `Model not found: <provider>/<model>` | The OpenCode agent's model, or the OpenCode default model in Settings, names a provider without credentials; pick one from `opencode providers` |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears (OpenCode) | OpenCode's rules allow the action; set it to `ask` in the repository's OpenCode config |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |

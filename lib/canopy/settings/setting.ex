@@ -4,6 +4,8 @@ defmodule Canopy.Settings.Setting do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Canopy.Agents.Agent
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -32,6 +34,12 @@ defmodule Canopy.Settings.Setting do
     field :claude_binary, :string, default: "claude"
     field :claude_config_dir, :string
     field :claude_max_budget_usd, :float
+    # the model (and, for Claude Code, the effort) an agent with none of its own
+    # runs on, per engine; nil leaves the choice to the engine
+    field :claude_default_model, :string
+    field :claude_default_effort, :string
+    field :opencode_default_provider, :string
+    field :opencode_default_model, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -52,9 +60,17 @@ defmodule Canopy.Settings.Setting do
       :collaboration_prompt,
       :claude_binary,
       :claude_config_dir,
-      :claude_max_budget_usd
+      :claude_max_budget_usd,
+      :claude_default_model,
+      :claude_default_effort,
+      :opencode_default_provider,
+      :opencode_default_model
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
+    |> update_change(:claude_default_model, &trim_or_nil/1)
+    |> update_change(:claude_default_effort, &trim_or_nil/1)
+    |> update_change(:opencode_default_provider, &trim_or_nil/1)
+    |> update_change(:opencode_default_model, &trim_or_nil/1)
     |> update_change(:claude_config_dir, &normalize_claude_config_dir/1)
     |> validate_required([
       :opencode_url,
@@ -80,6 +96,41 @@ defmodule Canopy.Settings.Setting do
         else: [claude_config_dir: "must be an absolute path"]
     end)
     |> validate_url(:opencode_url)
+    |> validate_inclusion(:claude_default_effort, Agent.efforts())
+    |> validate_default_models()
+  end
+
+  # The same rules as an agent's own model: the alias list for Claude Code,
+  # provider and model together for OpenCode. Checked only when a default
+  # changes, so a stale one never blocks saving another setting.
+  defp validate_default_models(changeset) do
+    claude =
+      if changed?(changeset, :claude_default_model) do
+        Agent.model_errors("claude_code", nil, get_field(changeset, :claude_default_model))
+        |> Enum.map(fn {_field, message} -> {:claude_default_model, message} end)
+      else
+        []
+      end
+
+    opencode =
+      if changed?(changeset, :opencode_default_provider) or
+           changed?(changeset, :opencode_default_model) do
+        Agent.model_errors(
+          "opencode",
+          get_field(changeset, :opencode_default_provider),
+          get_field(changeset, :opencode_default_model)
+        )
+        |> Enum.map(fn
+          {:model_provider, message} -> {:opencode_default_provider, message}
+          {:model_id, message} -> {:opencode_default_model, message}
+        end)
+      else
+        []
+      end
+
+    Enum.reduce(claude ++ opencode, changeset, fn {field, message}, acc ->
+      add_error(acc, field, message)
+    end)
   end
 
   @doc "The longest a Claude Code question may wait: a minute under the MCP tool timeout."

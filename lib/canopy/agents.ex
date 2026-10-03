@@ -4,7 +4,7 @@ defmodule Canopy.Agents do
   import Ecto.Query, warn: false
 
   alias Canopy.Agents.Agent
-  alias Canopy.Repo
+  alias Canopy.{Repo, Settings}
 
   def list do
     Repo.all(from a in Agent, order_by: [asc: a.name])
@@ -77,4 +77,89 @@ defmodule Canopy.Agents do
   end
 
   def change(%Agent{} = agent, attrs \\ %{}), do: Agent.changeset(agent, attrs)
+
+  # -- Models and defaults ------------------------------------------------------
+
+  @doc """
+  The model the agent runs on, and where the choice came from: its own model
+  (`:agent`), else its engine's default from Settings (`:default`), else nils
+  (`:engine`: no model is sent and the engine picks). The agent's own fields
+  are never rewritten; nil keeps meaning "inherit".
+  """
+  def effective_model(%{engine: engine} = agent, setting \\ nil) do
+    case agent do
+      %{model_id: model} when is_binary(model) and model != "" ->
+        %{model_provider: agent.model_provider, model_id: model, source: :agent}
+
+      _ ->
+        case Settings.default_model(engine, setting) do
+          %{model_id: model} = default when is_binary(model) ->
+            Map.put(default, :source, :default)
+
+          _ ->
+            %{model_provider: nil, model_id: nil, source: :engine}
+        end
+    end
+  end
+
+  @doc """
+  The effort the agent runs at, as `%{effort: e, source: s}`, resolved like
+  `effective_model/1`: its own, else the engine's default, else nil (the
+  engine picks; OpenCode has no effort setting).
+  """
+  def effective_effort(%{engine: engine} = agent, setting \\ nil) do
+    case Map.get(agent, :effort) do
+      effort when is_binary(effort) and effort != "" ->
+        %{effort: effort, source: :agent}
+
+      _ ->
+        case Settings.default_effort(engine, setting) do
+          effort when is_binary(effort) -> %{effort: effort, source: :default}
+          _ -> %{effort: nil, source: :engine}
+        end
+    end
+  end
+
+  @doc "Active agents of an engine that inherit its default model (`:default`) or name their own (`:own`)."
+  def model_usage(engine), do: usage(engine, :model_id)
+
+  @doc "Active agents of an engine that inherit its default effort (`:default`) or set their own (`:own`)."
+  def effort_usage(engine), do: usage(engine, :effort)
+
+  defp usage(engine, field) do
+    counts =
+      Repo.all(
+        from a in Agent,
+          where: a.engine == ^engine and a.active == true,
+          group_by: is_nil(field(a, ^field)),
+          select: {is_nil(field(a, ^field)), count(a.id)}
+      )
+      |> Map.new()
+
+    %{default: Map.get(counts, true, 0), own: Map.get(counts, false, 0)}
+  end
+
+  @doc """
+  Puts every active agent of the engine on its default model by clearing
+  their own. Returns how many changed. Only ever runs when the user asks.
+  """
+  def inherit_default_model(engine),
+    do: inherit(engine, :model_id, model_provider: nil, model_id: nil)
+
+  @doc "Puts every active agent of the engine on its default effort. Returns how many changed."
+  def inherit_default_effort(engine), do: inherit(engine, :effort, effort: nil)
+
+  defp inherit(engine, field, set) do
+    {count, _} =
+      Repo.update_all(
+        from(a in Agent,
+          where: a.engine == ^engine and a.active == true and not is_nil(field(a, ^field))
+        ),
+        set: set ++ [updated_at: DateTime.utc_now()]
+      )
+
+    if count > 0, do: Settings.broadcast_defaults_changed()
+
+    {:ok, count}
+  end
 end

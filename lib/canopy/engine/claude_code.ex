@@ -11,8 +11,10 @@ defmodule Canopy.Engine.ClaudeCode do
 
   Settings carry the binary (`claude_binary`, a name on `PATH` or a path), the
   optional `claude_config_dir` (`CLAUDE_CONFIG_DIR`; nil keeps the user's own
-  login), and `claude_max_budget_usd` per turn; the agent carries the model,
-  effort, permission mode, and the tools allowed without asking.
+  login), `claude_max_budget_usd` per turn, and the default model and effort
+  (`claude_default_model`, `claude_default_effort`); the agent carries its own
+  model and effort (blank inherits the defaults), the permission mode, and the
+  tools allowed without asking.
   `config :canopy, :claude_code` overrides `:binary` and `:config_dir` (tests
   point at a fake), and adds `:mcp_tool_timeout_ms`, `:env`, and `:stall_ms`
   (the turn's no-output window; the e2e suite shortens it).
@@ -28,7 +30,7 @@ defmodule Canopy.Engine.ClaudeCode do
 
   @behaviour Canopy.Engine
 
-  alias Canopy.{AgentSessions, ClaudeCode, Documents, Settings}
+  alias Canopy.{Agents, AgentSessions, ClaudeCode, Documents, Settings}
   alias Canopy.Agents.Agent
   alias Canopy.ClaudeCode.{Command, Prompts}
   alias Canopy.Engine.Event
@@ -206,9 +208,15 @@ defmodule Canopy.Engine.ClaudeCode do
     end
   end
 
+  # The alias the agent runs on, its own or Canopy's default; Claude Code's own
+  # default otherwise.
   @impl true
-  def model_label(%{model_id: model}) when is_binary(model) and model != "", do: model
-  def model_label(_agent), do: "claude default"
+  def model_label(agent) do
+    case Agents.effective_model(agent) do
+      %{model_id: model} when is_binary(model) -> model
+      _ -> "claude default"
+    end
+  end
 
   @impl true
   def context_cap, do: @context_cap
@@ -232,6 +240,10 @@ defmodule Canopy.Engine.ClaudeCode do
       system_file = write_system(dir, opts[:system])
       mcp_file = write_mcp_config(dir, fresh.mcp_token)
       seen? = fresh.last_seen_at != nil
+      # the agent's own model and effort, else the defaults from Settings; nil
+      # leaves the flag off and Claude Code picks
+      %{model_id: model} = Agents.effective_model(agent, settings)
+      %{effort: effort} = Agents.effective_effort(agent, settings)
 
       command = fn flag ->
         Command.build(
@@ -239,8 +251,8 @@ defmodule Canopy.Engine.ClaudeCode do
           cwd: ctx.repository.path,
           stderr_file: stderr_file,
           session: {flag, sid},
-          model: blank_to_nil(agent.model_id),
-          effort: blank_to_nil(Map.get(agent, :effort)),
+          model: model,
+          effort: effort,
           system_file: system_file,
           mcp_config_file: mcp_file,
           permission_prompt_tool: @permission_tool,
@@ -372,15 +384,6 @@ defmodule Canopy.Engine.ClaudeCode do
   end
 
   defp attachment_block(_document), do: nil
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_), do: nil
 
   defp configured_config_dir(settings \\ Settings.get()) do
     (config(:config_dir, nil) || settings.claude_config_dir)

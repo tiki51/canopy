@@ -213,4 +213,63 @@ defmodule Canopy.Engine.ClaudeCodeTest do
     assert reason =~ "Claude config directory must be an absolute path"
     refute File.exists?(ctx.log)
   end
+
+  describe "default model and effort" do
+    defp argv(log) do
+      log |> File.read!() |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "ARGV "))
+    end
+
+    test "an agent without its own runs on the defaults from Settings", ctx do
+      {:ok, _} = Canopy.Agents.update(ctx.coder, %{model_id: nil, effort: nil})
+      {:ok, _} = Canopy.Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+      {:ok, _} = Canopy.Settings.put_default_effort("claude_code", "high")
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "sonnet"
+      assert payload["model_source"] == "default"
+      assert [line] = argv(ctx.log)
+      assert line =~ "--model sonnet"
+      assert line =~ "--effort high"
+
+      # a new default reaches the next turn, with no reset
+      {:ok, _} = Canopy.Settings.put_default_model("claude_code", %{model_id: "opus"})
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} again")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "opus"
+      assert [_, second] = argv(ctx.log)
+      assert second =~ "--resume"
+      assert second =~ "--model opus"
+    end
+
+    test "with no default either, no --model is passed and Claude Code picks", ctx do
+      {:ok, _} = Canopy.Agents.update(ctx.coder, %{model_id: nil, effort: nil})
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "claude default"
+      assert payload["model_source"] == "engine"
+      assert [line] = argv(ctx.log)
+      refute line =~ "--model"
+      refute line =~ "--effort"
+    end
+
+    test "the agent's own model and effort win over the defaults", ctx do
+      {:ok, _} = Canopy.Agents.update(ctx.coder, %{effort: "low"})
+      {:ok, _} = Canopy.Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+      {:ok, _} = Canopy.Settings.put_default_effort("claude_code", "high")
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 10_000
+
+      assert payload["model"] == "haiku"
+      assert payload["model_source"] == "agent"
+      assert [line] = argv(ctx.log)
+      assert line =~ "--model haiku"
+      assert line =~ "--effort low"
+    end
+  end
 end

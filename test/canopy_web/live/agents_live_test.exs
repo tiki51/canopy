@@ -562,4 +562,152 @@ defmodule CanopyWeb.AgentsLiveTest do
       assert has_element?(view, "#agent-form input[name='agent[model_id]']")
     end
   end
+
+  describe "default models" do
+    alias Canopy.Settings
+
+    defp set_defaults do
+      {:ok, _} =
+        Settings.put_default_model("opencode", %{
+          model_provider: "opencode",
+          model_id: "claude-haiku-4-5"
+        })
+
+      {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+      {:ok, _} = Settings.put_default_effort("claude_code", "high")
+    end
+
+    test "the list labels inherited models and names the defaults", %{conn: conn} do
+      oc = Fixtures.agent_fixture(%{name: "oc"})
+      cc = Fixtures.agent_fixture(%{name: "cc", engine: "claude_code", model_id: nil})
+      own = Fixtures.agent_fixture(%{name: "own", engine: "claude_code", model_id: "opus"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#model-#{oc.id}", "default")
+      assert has_element?(view, "#default-model-claude_code", "its own default")
+
+      set_defaults()
+      # the page follows Settings without a reload
+      assert has_element?(view, "#model-#{oc.id}", "default · opencode/claude-haiku-4-5")
+      assert has_element?(view, "#model-#{cc.id}", "default · sonnet")
+      refute has_element?(view, "#model-#{cc.id}.badge")
+      assert has_element?(view, "#model-#{own.id}.badge", "opus")
+      assert has_element?(view, "#default-model-claude_code", "sonnet")
+      assert has_element?(view, "#default-model-opencode", "opencode/claude-haiku-4-5")
+      assert has_element?(view, "#default-models-settings[href='/settings']")
+    end
+
+    test "the picker's default option names the default and clears the agent's own", %{
+      conn: conn
+    } do
+      set_defaults()
+
+      agent =
+        Fixtures.agent_fixture(%{name: "chosen", model_provider: "openai", model_id: "gpt-5.4"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      render_async(view)
+      view |> element("#model-#{agent.id}") |> render_click()
+
+      assert has_element?(view, "#model-option-default", "Default (opencode/claude-haiku-4-5)")
+      assert has_element?(view, "#model-option-default", "Canopy's OpenCode default")
+
+      view |> element("#model-option-default") |> render_click()
+
+      assert %{model_provider: nil, model_id: nil} = Agents.get!(agent.id)
+      assert render(view) =~ "@chosen now uses the default model (opencode/claude-haiku-4-5)."
+    end
+
+    test "Claude Code rows get a picker with the default and the aliases", %{conn: conn} do
+      set_defaults()
+      agent = Fixtures.agent_fixture(%{name: "claudy", engine: "claude_code", model_id: nil})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      view |> element("#model-#{agent.id}") |> render_click()
+
+      assert has_element?(view, "#model-option-default.bg-primary\\/10", "Default (sonnet)")
+      assert has_element?(view, "#model-option-claude-opus")
+      refute has_element?(view, "#model-picker-empty")
+      refute has_element?(view, "#model-option-opencode-gpt-5-nano")
+
+      view |> element("#model-option-claude-opus") |> render_click()
+      assert Agents.get!(agent.id).model_id == "opus"
+      assert has_element?(view, "#model-#{agent.id}.badge", "opus")
+
+      view |> element("#model-#{agent.id}") |> render_click()
+      view |> element("#model-option-default") |> render_click()
+      assert Agents.get!(agent.id).model_id == nil
+      assert has_element?(view, "#model-#{agent.id}", "default · sonnet")
+    end
+
+    test "the form's Default option saves nil, and the page links the default", %{conn: conn} do
+      set_defaults()
+
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "formed",
+          engine: "claude_code",
+          model_id: "haiku",
+          effort: "low"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      assert has_element?(view, "select#claude-model option[value='']", "Default (sonnet)")
+      assert has_element?(view, "select#claude-effort option[value='']", "Default (high)")
+
+      view
+      |> form("#agent-form", agent: %{model_id: "", effort: ""})
+      |> render_submit()
+
+      assert %{model_id: nil, effort: nil} = Agents.get!(agent.id)
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#agent-model", "sonnet")
+      assert has_element?(view, "#agent-model-default[href='/settings#claude-panel']", "default")
+      assert has_element?(view, "#agent-permissions", "effort high (default)")
+    end
+
+    test "switching the engine drops the old engine's model", %{conn: conn} do
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "switcher",
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      render_async(view)
+
+      view |> form("#agent-form", agent: %{engine: "claude_code"}) |> render_change()
+      assert has_element?(view, "select#claude-model")
+      refute has_element?(view, "select#claude-model option[selected]")
+
+      view |> form("#agent-form", agent: %{engine: "claude_code"}) |> render_submit()
+
+      assert %{engine: "claude_code", model_provider: nil, model_id: nil} = Agents.get!(agent.id)
+    end
+
+    test "the price lines price the default model", %{conn: conn} do
+      set_defaults()
+
+      {:ok, view, _html} = live(conn, ~p"/agents/new")
+      render_async(view)
+      assert has_element?(view, "#model-price", "opencode/claude-haiku-4-5 (default)")
+      assert has_element?(view, "#model-price", "$1.00 in / $5.00 out")
+
+      assert has_element?(
+               view,
+               "#agent-form select[name='agent[model_provider]'] option[value='']",
+               "Default (opencode/claude-haiku-4-5)"
+             )
+
+      plain = Fixtures.agent_fixture(%{name: "plain"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{plain.id}")
+      render_async(view)
+      assert has_element?(view, "#agent-model", "opencode/claude-haiku-4-5")
+      assert has_element?(view, "#agent-model-default[href='/settings#opencode-panel']")
+      assert has_element?(view, "#agent-model-price", "$1.00 in / $5.00 out")
+      refute has_element?(view, "#agent-model-price", "(opencode/")
+    end
+  end
 end

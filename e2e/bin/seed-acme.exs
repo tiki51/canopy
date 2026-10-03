@@ -184,6 +184,13 @@ end
 
 # -- Agents -----------------------------------------------------------------------
 
+# Default models per engine: agents without a model of their own run on these,
+# so the screenshots show inherited models beside chosen ones.
+{:ok, _} =
+  Settings.put_default_model("opencode", %{model_provider: "opencode", model_id: "gpt-5-nano"})
+
+{:ok, _} = Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+
 set_model = fn name, model_id ->
   agent = Agents.get_by_name(name)
   {:ok, agent} = Agents.update(agent, %{model_provider: "opencode", model_id: model_id})
@@ -223,8 +230,16 @@ end
      })}
   end
 
-researcher = set_model.("researcher", "gpt-5-nano")
-test_agent = set_model.("test", "gpt-5-nano")
+# @researcher and @test inherit the OpenCode default
+inherit = fn name ->
+  {:ok, agent} =
+    Agents.update(Agents.get_by_name(name), %{model_provider: nil, model_id: nil})
+
+  agent
+end
+
+researcher = inherit.("researcher")
+test_agent = inherit.("test")
 
 # The base seeds already created @finops; Acme gives it a cheap model and its
 # own prompt.
@@ -270,10 +285,8 @@ learned = fn days -> now |> DateTime.to_date() |> Date.add(-days) |> Date.to_iso
 
 # -- Helpers -----------------------------------------------------------------------
 
-model_of = fn
-  %{engine: "claude_code"} = agent -> agent.model_id
-  agent -> "opencode/#{agent.model_id}"
-end
+# the label a real turn records: the agent's own model or its engine's default
+model_of = fn agent -> Canopy.Engine.for(agent).model_label(agent) end
 
 price = fn
   model when model in ["opus", "claude-opus-5-5"] -> {5.0, 25.0, 0.5}

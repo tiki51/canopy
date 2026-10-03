@@ -40,18 +40,22 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
       {:ok, view, _html} = live(conn, ~p"/agents/new")
       view |> form("#agent-form", agent: %{engine: "claude_code"}) |> render_change()
 
-      # the model and effort are selects, and nothing is saved until all three are chosen
+      # the model and effort are selects whose blank option is the default
       assert has_element?(view, "select#claude-model option[value='fable']")
+
+      assert has_element?(
+               view,
+               "select#claude-model option[value='']",
+               "Claude Code's own default"
+             )
+
       assert has_element?(view, "select#claude-effort option[value='xhigh']")
 
-      view
-      |> form("#agent-form",
-        agent: %{name: "coder", display_name: "Coder", engine: "claude_code"}
-      )
-      |> render_submit()
-
-      assert has_element?(view, "#agent-form", "can't be blank")
-      refute Agents.get_by_name("coder")
+      assert has_element?(
+               view,
+               "select#claude-effort option[value='']",
+               "Claude Code's own default"
+             )
 
       view
       |> form("#agent-form",
@@ -82,7 +86,7 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
       refute has_element?(view, "#agent-model-price")
     end
 
-    test "the list shows the engine badge and no model picker for Claude Code agents", %{
+    test "the list shows the engine badge and the model picker for Claude Code agents", %{
       conn: conn
     } do
       agent =
@@ -94,8 +98,7 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
 
       {:ok, view, _html} = live(conn, ~p"/agents")
 
-      assert has_element?(view, "span#model-#{agent.id}", "sonnet")
-      refute has_element?(view, "button#model-#{agent.id}")
+      assert has_element?(view, "button#model-#{agent.id}.badge", "sonnet")
 
       assert has_element?(
                view,
@@ -119,16 +122,17 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
 
       assert %{effort: ["is invalid"]} = errors_on(changeset)
 
-      # all three Claude Code settings are required, and the model must be an alias
-      assert {:error, changeset} =
+      # a blank model or effort inherits the default; a model must be an alias
+      assert {:ok, blank} =
                Agents.create(%{
                  name: "blank",
                  engine: "claude_code",
+                 model_id: "",
                  effort: "",
                  allowed_tools: " "
                })
 
-      assert %{model_id: ["can't be blank"], effort: ["can't be blank"]} = errors_on(changeset)
+      assert %{model_id: nil, model_provider: nil, effort: nil} = blank
 
       assert {:error, changeset} =
                Agents.create(%{
@@ -218,6 +222,61 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
 
       assert has_element?(view, "#claude-check-result", "9.9.9")
       assert has_element?(view, "#claude-check-result", "logged in (max) as fake@example.com")
+    end
+
+    test "saves the default model and effort, and counts the agents on them", %{conn: conn} do
+      own =
+        Fixtures.agent_fixture(%{name: "own", engine: "claude_code", model_id: "opus"})
+
+      Fixtures.agent_fixture(%{name: "inherits", engine: "claude_code", model_id: nil})
+
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      assert has_element?(
+               view,
+               "select#claude-default-model option[value='']",
+               "Claude Code's own default"
+             )
+
+      assert has_element?(view, "select#claude-default-effort option[value='max']")
+
+      view
+      |> form("#claude-form", setting: %{claude_default_model: "sonnet"})
+      |> render_submit()
+
+      assert Settings.default_model("claude_code").model_id == "sonnet"
+      assert render(view) =~ "Saved. 1 agent uses the default model from its next turn."
+
+      view
+      |> form("#claude-form", setting: %{claude_default_effort: "high"})
+      |> render_submit()
+
+      assert Settings.default_effort("claude_code") == "high"
+
+      assert has_element?(
+               view,
+               "#claude-model-usage",
+               "1 agent uses the default model · 1 has its own"
+             )
+
+      # both fixtures set their own effort
+      assert has_element?(view, "#claude-effort-usage", "0 agents use the default effort")
+
+      view |> element("#claude-model-usage-inherit") |> render_click()
+      assert Agents.get!(own.id).model_id == nil
+      assert Agents.get!(own.id).effort == "low"
+      assert has_element?(view, "#claude-model-usage", "2 agents use the default model")
+
+      view |> element("#claude-effort-usage-inherit") |> render_click()
+      assert Agents.get!(own.id).effort == nil
+
+      # blank goes back to Claude Code's own default
+      view
+      |> form("#claude-form", setting: %{claude_default_model: "", claude_default_effort: ""})
+      |> render_submit()
+
+      assert Settings.default_model("claude_code").model_id == nil
+      assert Settings.default_effort("claude_code") == nil
     end
 
     test "the check reports a missing binary", %{conn: conn} do

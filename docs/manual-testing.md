@@ -12,8 +12,9 @@ mix setup && mix canopy.demo      # once: database, seeds, demo repo + #payment-
 mix phx.server                    # terminal 2, http://localhost:4000
 ```
 
-Pick a cheap model for the test agents so a wrong turn costs nothing: on **Agents**, set
-`Model provider = opencode` and `Model id = gpt-5-nano` on @backend and @researcher.
+Pick a cheap model for the test agents so a wrong turn costs nothing: on **Settings**, set
+the OpenCode *Default provider* to `opencode` and *Default model* to `gpt-5-nano`; the
+seeded agents have no model of their own, so they all follow it.
 The end-to-end run in Phase 9 cost about $0.02 with that model.
 
 ## 1. Settings: connection and plugin
@@ -46,6 +47,14 @@ Open **Settings** (gear icon in the left rail).
       does its row in the sidebar's **Agents** list.
 - [ ] *New agent* opens the create form; the OpenCode agent field offers `build`, `plan`, …
       from the server (datalist). Creating lands on the new agent's page.
+- [ ] Default models: with `opencode serve` stopped, the OpenCode default selects on
+      **Settings** are disabled ("Start OpenCode to choose a model"); start it and press
+      *Check connection*, and they fill. Pick a default, save: the flash counts the agents
+      that use it, and on **Agents** those rows read `default · opencode/gpt-5-nano`. Give
+      one agent its own model from the row's picker (badge), then *Default (…)* in the same
+      picker returns it. On **Settings**, *Use the default for all* clears every own model
+      after a confirmation. A turn after changing the default carries the new model on its
+      card, with no session reset.
 - [ ] An agent's page shows status, role, model, system prompt, its channels (owned ones
       marked) and its schedules, with **Message**, **Edit**, and deactivate. Edit opens the
       form and returns to the page; deactivate marks it, the list's deactivated toggle shows
@@ -353,6 +362,6 @@ to: researcher …" as in the README demo prompt.
 | Agent replies but never posts via Canopy tools; tool errors mention "unknown Canopy session" | Plugin not installed for that repository, or OpenCode not restarted after installing it |
 | No agent wakes | Channel has no owner and the message mentions nobody, or the mentioned agent is not a member |
 | "no expectation" / 401 in the OpenCode log for `/mcp` | Token rotated: prompt once more so Canopy re-registers |
-| `hit an error: Model not found: <provider>/<model>` | The agent's model override names a provider OpenCode has no credentials for. Use a provider from `opencode providers` (or the OpenCode TUI's model list), or clear the override on the Agents page |
+| `hit an error: Model not found: <provider>/<model>` | The agent's model, or the OpenCode default in Settings it inherits, names a provider OpenCode has no credentials for. Use a provider from `opencode providers` (or the OpenCode TUI's model list), on the Agents page or in Settings |
 | Permission card never appears | The agent's OpenCode rules allow the action; see section 6 |
 | `GET /permission` 400 in logs | Known OpenCode 1.18 bug for patch permissions; the card still works from the event |

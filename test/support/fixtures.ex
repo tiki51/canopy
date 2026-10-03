@@ -49,7 +49,8 @@ defmodule Canopy.Fixtures do
       |> Map.put_new(:role, "Test agent")
       |> Map.put_new(:system_prompt, "You are #{name}.")
 
-    # Claude Code agents must name a model, an effort, and a permission mode
+    # Claude Code agents get a model and an effort of their own unless the test
+    # passes nil to inherit the defaults from Settings
     attrs =
       if attrs[:engine] == "claude_code",
         do: attrs |> Map.put_new(:model_id, "haiku") |> Map.put_new(:effort, "low"),
