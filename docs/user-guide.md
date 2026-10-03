@@ -260,10 +260,13 @@ Scroll down for the MCP bridge.
 ![Settings, MCP bridge, dark](user-guide/images/settings-mcp-dark.png)
 
 - **MCP** shows the endpoint Canopy registers with OpenCode, the bearer token that
-  protects it (show, copy, or rotate it; rotating needs nothing else, Canopy re-registers
-  on the next prompt), and the source of the identity plugin with a copy button and the
-  path to put it at. Canopy also drops the plugin into every registered repository under
-  `.opencode/plugins/`, excluded from git, so the global copy is a convenience.
+  protects it (masked to its last 4 characters until you reveal it; rotate it here,
+  rotating needs nothing else, Canopy re-registers on the next prompt), and the source of
+  the identity plugin with a copy button and the path to put it at. Canopy also drops the
+  plugin into every registered repository under `.opencode/plugins/`, excluded from git, so
+  the global copy is a convenience. Which MCP servers agents get in a particular
+  repository, and whether they work, is on that repository's page (see
+  [MCP servers](#mcp-servers) in §4).
 
 ### The billing hold
 
@@ -296,6 +299,68 @@ tick *Allow a path outside my home directory*.
 Registering a repository also creates a small `.canopy/` workspace inside it (a README
 and the team's shared `NOTES.md`), listed in `.git/info/exclude` so it never shows up in
 your diffs.
+
+### MCP servers
+
+*MCP* on a repository's row opens its page, which lists the MCP servers agents get there,
+one section per engine. An engine no agent in the repository's channels uses starts
+collapsed; click its name to open it. Each row shows the server's name, its status, how it
+connects (`local`/`stdio` runs a command, `remote`/`http`/`sse` calls a URL), the command
+or URL, the file it came from, and, for Claude Code, how many tools it gave the last turn.
+Secrets never reach the page: header and environment values, passwords and keys in URLs
+and command lines are masked (`••••`), the masked keys are listed by name, and values
+that only point at a secret (`{env:API_KEY}`, `${GITHUB_TOKEN}`) are shown as written.
+Canopy's own token shows only its last 4 characters, with a link to Settings to reveal
+or rotate it. The page asks the engines when it opens and when you press *Refresh*
+(and again after a token rotation); it does not poll.
+
+**What each engine loads.**
+
+- **OpenCode** loads every server in its config: your global
+  `~/.config/opencode/opencode.json[c]`, the repository's `opencode.json[c]` (and those
+  above it up to the git root), `.opencode/opencode.json[c]`, plus Canopy's own server,
+  which Canopy registers at runtime. The list and the status come from OpenCode itself; the
+  files are read only to show where each server is defined (*OpenCode server* means
+  OpenCode reports it but no file Canopy reads defines it, for example through
+  `OPENCODE_CONFIG`). Every enabled server's tools go to the model on every turn, so a
+  repository server costs context for every OpenCode agent there. The section also shows
+  whether this Canopy run registered itself, and whether the repository's identity plugin
+  is current, outdated, or missing.
+- **Claude Code** agents load Canopy's server and the servers in the repository's
+  `.mcp.json`, re-read at the start of every turn, so an edit applies on the next turn.
+  Nothing else: Canopy runs Claude Code with `--strict-mcp-config`, so your personal
+  servers (user and local scope in `~/.claude.json`, or the `.claude.json` in the
+  configured Claude config directory) stay out. The page lists those under *Configured but
+  not loaded by Canopy agents*. A `.mcp.json` server named `canopy` is replaced by
+  Canopy's own. If `.mcp.json` is not valid JSON, turns run with Canopy's server only and
+  the page shows where the JSON broke. Claude Code's `enabledMcpjsonServers` and
+  `disabledMcpjsonServers` settings do not apply to Canopy agents. The status shown is what
+  the newest turn in the repository reported when it started.
+
+> **Security note.** The servers in a repository's `.mcp.json` start on every Claude Code
+> turn, running whatever command the file names from the repository, **without** Claude
+> Code's usual one-time approval prompt. Treat `.mcp.json` like code you run: only register
+> repositories whose `.mcp.json` you trust, and review changes to it. The servers' own
+> tools still go through the permission prompt like any other tool outside the agent's
+> allowance.
+
+**Statuses.** *connected* works. *failed* could not start or connect; the error is shown
+under the badge. *needs auth* is a server that wants an OAuth login: run
+`opencode mcp auth <name>` in a terminal (Canopy does not run OAuth flows). *disabled* is
+turned off in the config (`"enabled": false`). *unknown* means nothing has reported yet:
+OpenCode is not running, or no Claude Code turn has run in the repository since the server
+was added.
+
+**Actions** (OpenCode section):
+
+- *Re-register Canopy* posts Canopy's registration for this repository again, as the next
+  prompt would. Use it when `canopy` shows failed or missing.
+- *Reconnect* on a failed server asks OpenCode to connect it again.
+- *Reinstall plugin* rewrites the repository's identity plugin and reloads OpenCode for
+  the repository, which interrupts any OpenCode session running there; it is disabled
+  while an agent in the repository is working, and asks first.
+
+Rotating Canopy's token is global, so it stays in Settings.
 
 ---
 
@@ -1150,6 +1215,8 @@ service started by `brew services` uses the defaults.
 | A message wakes nobody and the timeline says "on hold" | The billing hold is engaged; release it from the banner |
 | A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
 | `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
+| An agent lacks a tool from my repository's MCP server | Open the repository's page (Repositories → *MCP*): the server may be failed, need OAuth, or be disabled. Claude Code agents load only the repository's `.mcp.json`, never your personal `~/.claude.json` servers |
+| OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
 | An agent insists its tools are missing | Reset its session from the pill in the channel header |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |

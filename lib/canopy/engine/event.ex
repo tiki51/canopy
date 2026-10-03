@@ -11,6 +11,7 @@ defmodule Canopy.Engine.Event do
     * `:agent_error`       data: `%{error: map}`
     * `:session_updated`   data: `%{session: map}`
     * `:session_deleted`   data: `%{session: map}`
+    * `:mcp_servers`       data: `%{servers: [%{name, status, tool_count}]}` (what the session loaded this turn)
     * `:message_updated`   data: `%{message: map}`
     * `:turn_usage`        data: `%{message_id, cost, tokens, finish}` (assistant message completed)
     * `:tool_started`      data: `%{call_id, tool, status, input, title, message_id, part_id}`

@@ -133,6 +133,18 @@ defmodule Canopy.Engine do
   @doc "Context (tokens per model call) above which a session is compacted after its turn."
   @callback context_cap() :: pos_integer()
 
+  @doc """
+  The MCP servers this engine gives agents in a repository, for the
+  repository page (`Canopy.MCP.Inventory`): what it loads, what is configured
+  but not loaded, and live status where the engine reports one. Needs no
+  channel: client options come from Settings. Everything returned is
+  redacted through `Canopy.MCP.Redact`.
+  """
+  @callback mcp_inventory(Canopy.Repositories.Repository.t(), opts :: keyword()) ::
+              {:ok, Canopy.MCP.Inventory.Engine.t()} | {:error, term()}
+
+  @optional_callbacks mcp_inventory: 2
+
   # -- Dispatch ---------------------------------------------------------------
 
   @default_engines %{"opencode" => Canopy.Engine.OpenCode}

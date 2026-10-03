@@ -1,4 +1,4 @@
-{"type":"system","subtype":"init","model":"claude-test","mcp_servers":[],"claude_code_version":"1.0.0","permissionMode":"default"}
+{"type":"system","subtype":"init","model":"claude-test","mcp_servers":[{"name":"canopy","status":"connected"},{"name":"spike","status":"connected"},{"name":"broken","status":"failed"}],"tools":["Bash","Read","mcp__canopy__message_send","mcp__canopy__pass","mcp__canopy__task_get","mcp__spike__echo"],"claude_code_version":"1.0.0","permissionMode":"default"}
 {"type":"system","subtype":"status"}
 {"type":"system","subtype":"status"}
 {"type":"system","subtype":"status"}

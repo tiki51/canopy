@@ -29,7 +29,11 @@ defmodule Canopy.Engine.ClaudeCodeTest do
             subtype: "init",
             session_id: "SESSION_ID",
             model: "claude-haiku-4-5",
-            mcp_servers: []
+            mcp_servers: [
+              %{name: "canopy", status: "connected"},
+              %{name: "github", status: "failed"}
+            ],
+            tools: ["Read", "Edit", "mcp__canopy__message_send", "mcp__canopy__pass"]
           },
           %{
             type: "stream_event",
@@ -270,6 +274,143 @@ defmodule Canopy.Engine.ClaudeCodeTest do
       assert [line] = argv(ctx.log)
       assert line =~ "--model haiku"
       assert line =~ "--effort low"
+    end
+  end
+
+  describe "MCP servers" do
+    @fixtures Path.expand("../../support/mcp_fixtures/claude", __DIR__)
+
+    defp mcp_file(log) do
+      [_, path] = Regex.run(~r/--mcp-config (\S+)/, File.read!(log))
+      path |> File.read!() |> JSON.decode!()
+    end
+
+    test "every turn loads the repository's .mcp.json, Canopy's own server winning a clash",
+         ctx do
+      File.cp!(
+        Path.join([@fixtures, "repo", ".mcp.json"]),
+        Path.join(ctx.repository.path, ".mcp.json")
+      )
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 10_000
+
+      log = File.read!(ctx.log)
+      assert log =~ "--strict-mcp-config"
+
+      %{"mcpServers" => servers} = mcp_file(ctx.log)
+      assert Map.keys(servers) |> Enum.sort() == ["canopy", "docs", "github"]
+      assert servers["github"]["env"]["GITHUB_TOKEN"] =~ "ghp_"
+      assert servers["canopy"]["url"] == Canopy.MCP.url()
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+      assert servers["canopy"]["headers"]["Authorization"] == "Bearer " <> session.mcp_token
+
+      # edits apply on the next turn
+      File.rm!(Path.join(ctx.repository.path, ".mcp.json"))
+      File.rm!(ctx.log)
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} again")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 10_000
+      assert %{"mcpServers" => %{"canopy" => _} = only} = mcp_file(ctx.log)
+      assert map_size(only) == 1
+    end
+
+    test "a malformed .mcp.json is logged and skipped; the turn still runs", ctx do
+      File.write!(Path.join(ctx.repository.path, ".mcp.json"), "{ not json")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+
+          assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}},
+                         10_000
+
+          assert payload["outcome"] == "ok"
+        end)
+
+      assert log =~ "skipping"
+      assert log =~ ".mcp.json: invalid JSON"
+      assert %{"mcpServers" => servers} = mcp_file(ctx.log)
+      assert Map.keys(servers) == ["canopy"]
+    end
+
+    test "the turn's init is recorded on the session, with tool counts", ctx do
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 10_000
+
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+      assert session.mcp_servers_seen_at
+
+      assert %{
+               "servers" => [
+                 %{"name" => "canopy", "status" => "connected", "tool_count" => 2},
+                 %{"name" => "github", "status" => "failed", "tool_count" => 0}
+               ]
+             } = session.mcp_servers
+
+      assert %{servers: [%{"name" => "canopy"} | _]} =
+               AgentSessions.latest_mcp_servers(ctx.repository.id, "claude_code")
+    end
+
+    test "the inventory: Canopy and the repository's servers loaded, personal ones not, no secrets",
+         ctx do
+      File.cp!(
+        Path.join([@fixtures, "repo", ".mcp.json"]),
+        Path.join(ctx.repository.path, ".mcp.json")
+      )
+
+      home = Path.join(Path.dirname(ctx.log), "home")
+      File.mkdir_p!(home)
+
+      File.write!(
+        Path.join(home, ".claude.json"),
+        @fixtures
+        |> Path.join("home/.claude.json")
+        |> File.read!()
+        |> String.replace("REPO_PATH", ctx.repository.path)
+      )
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} hello")
+      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 10_000
+
+      assert {:ok, engine} =
+               Canopy.Engine.ClaudeCode.mcp_inventory(ctx.repository,
+                 home: home,
+                 config_dir: nil,
+                 managed_path: "/nonexistent/managed-mcp.json"
+               )
+
+      assert Enum.map(engine.servers, & &1.name) == ["canopy", "docs", "github"]
+      assert [canopy, docs, github] = engine.servers
+      assert %{source: %{kind: :canopy}, status: :connected, tool_count: 2} = canopy
+      assert canopy.observed_at
+      assert %{source: %{kind: :project}, status: :unknown} = docs
+      assert %{source: %{kind: :project}, status: :failed} = github
+
+      ignored = Enum.map(engine.ignored, &{&1.name, &1.source.kind})
+      assert ignored == [{"canopy", :project}, {"local-db", :local}, {"personal", :user}]
+
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+      text = inspect(engine)
+      refute text =~ session.mcp_token
+      refute text =~ Canopy.Settings.mcp_token()
+
+      for secret <- ~w(ghp_fixture sk_fixture docs-pass pk_fixture lk_fixture oat_fixture),
+          do: refute(text =~ secret)
+    end
+
+    test "a malformed .mcp.json shows as a note on the inventory", ctx do
+      File.write!(Path.join(ctx.repository.path, ".mcp.json"), "{ not json")
+
+      {:ok, engine} =
+        Canopy.Engine.ClaudeCode.mcp_inventory(ctx.repository,
+          home: "/nonexistent-home",
+          config_dir: nil,
+          managed_path: "/nonexistent"
+        )
+
+      assert Enum.map(engine.servers, & &1.name) == ["canopy"]
+      assert [note] = engine.notes
+      assert note =~ ".mcp.json could not be used (invalid JSON at byte"
     end
   end
 end

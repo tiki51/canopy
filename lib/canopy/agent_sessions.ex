@@ -82,6 +82,45 @@ defmodule Canopy.AgentSessions do
   end
 
   @doc """
+  Records the MCP servers the engine reported for the session at the start of
+  a turn (`[%{name, status, tool_count}]`), for the repository page.
+  """
+  def record_mcp_servers(%AgentSession{id: id}, servers) when is_list(servers) do
+    servers =
+      Enum.map(servers, fn s ->
+        %{"name" => s.name, "status" => s.status, "tool_count" => s[:tool_count]}
+      end)
+
+    Repo.update_all(from(s in AgentSession, where: s.id == ^id),
+      set: [mcp_servers: %{"servers" => servers}, mcp_servers_seen_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
+
+  @doc """
+  The newest MCP report from any session of the engine in the repository's
+  channels: `%{servers: [%{"name", "status", "tool_count"}], seen_at}`, or nil.
+  """
+  def latest_mcp_servers(repository_id, engine) do
+    Repo.one(
+      from s in AgentSession,
+        join: c in assoc(s, :channel),
+        where:
+          c.repository_id == ^repository_id and s.engine == ^engine and
+            not is_nil(s.mcp_servers_seen_at),
+        order_by: [desc: s.mcp_servers_seen_at],
+        limit: 1,
+        select: %{servers: s.mcp_servers, seen_at: s.mcp_servers_seen_at}
+    )
+    |> case do
+      nil -> nil
+      %{servers: %{"servers" => list}} = row -> %{row | servers: list}
+      row -> %{row | servers: []}
+    end
+  end
+
+  @doc """
   Deletes the session. Its lock claims go first, through `Canopy.Locks`, so a
   lock it held passes to the next in line rather than vanishing with the row.
   """

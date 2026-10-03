@@ -1757,6 +1757,17 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # What the session loaded this turn (Claude Code's init), kept for the
+  # repository page.
+  defp handle_execution(%{type: :mcp_servers, data: %{servers: servers}} = event, _who, state) do
+    case session_for(state, event.session_id) do
+      nil -> :ok
+      session -> AgentSessions.record_mcp_servers(session, servers)
+    end
+
+    state
+  end
+
   defp handle_execution(_event, _who, state), do: state
 
   defp record_agent_error(state, event, who, reason) do

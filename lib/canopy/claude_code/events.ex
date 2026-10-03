@@ -39,7 +39,7 @@ defmodule Canopy.ClaudeCode.Events do
     {[
        event(:agent_status, %{status: :busy, raw: line}),
        event(:session_updated, %{session: session})
-     ], acc}
+     ] ++ mcp_servers(line), acc}
   end
 
   def normalize(%{"type" => "system", "subtype" => "status"} = line, acc),
@@ -288,6 +288,27 @@ defmodule Canopy.ClaudeCode.Events do
 
   defp result_text(nil), do: nil
   defp result_text(other), do: inspect(other)
+
+  # The servers this turn loaded, with how many of `init.tools` each one gave
+  # (`mcp__<server>__<tool>`).
+  defp mcp_servers(%{"mcp_servers" => servers} = line) when is_list(servers) do
+    tools = for t <- List.wrap(line["tools"]), is_binary(t), do: t
+
+    list =
+      for %{"name" => name} = server <- servers, is_binary(name) do
+        prefix = "mcp__" <> name <> "__"
+
+        %{
+          name: name,
+          status: server["status"],
+          tool_count: Enum.count(tools, &String.starts_with?(&1, prefix))
+        }
+      end
+
+    [event(:mcp_servers, %{servers: list})]
+  end
+
+  defp mcp_servers(_line), do: []
 
   defp relative(path, cwd) when is_binary(cwd) and cwd != "" do
     case Path.relative_to(path, cwd) do

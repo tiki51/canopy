@@ -27,6 +27,10 @@ defmodule Canopy.AgentSessions.AgentSession do
     field :status, :string, default: "idle"
     field :last_error, :string
     field :last_seen_at, :utc_datetime_usec
+    # the MCP servers the engine last reported for the session, as
+    # `%{"servers" => [%{"name", "status", "tool_count"}]}`, and when
+    field :mcp_servers, :map
+    field :mcp_servers_seen_at, :utc_datetime_usec
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent

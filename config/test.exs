@@ -43,6 +43,14 @@ config :canopy, Oban, testing: :manual
 # Claude Code turns spawn a script that prints canned stream-json (see test/support/fake_claude.sh).
 config :canopy, :claude_code, binary: Path.expand("../test/support/fake_claude.sh", __DIR__)
 
+# The repository page's MCP inventory reads config files from fixtures, never
+# the real home (see Canopy.MCP.Inventory).
+config :canopy, :mcp_inventory,
+  home: Path.expand("../test/support/mcp_fixtures/claude/home", __DIR__),
+  managed_path: Path.expand("../test/support/mcp_fixtures/none/managed-mcp.json", __DIR__),
+  config_home: Path.expand("../test/support/mcp_fixtures/opencode/global", __DIR__),
+  opencode_config: nil
+
 # First-run setup prefills the display name from `git config --global user.name`;
 # tests answer for git instead of shelling out (see CanopyWeb.OnboardingLive).
 config :canopy, :git_user_name, ""

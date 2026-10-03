@@ -1,0 +1,16 @@
+// Global OpenCode config, with comments and trailing commas.
+{
+  "$schema": "https://opencode.ai/config.json",
+  /* a remote server with a referenced secret */
+  "mcp": {
+    "search": {
+      "type": "remote",
+      "url": "https://search.example.com/mcp", // trailing comment
+      "headers": { "Authorization": "Bearer {env:API_KEY}", },
+    },
+    "shared": {
+      "type": "local",
+      "command": ["shared-mcp", "--verbose"],
+    },
+  },
+}

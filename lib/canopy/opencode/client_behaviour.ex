@@ -36,5 +36,7 @@ defmodule Canopy.OpenCode.ClientBehaviour do
   @callback reject_question(directory, String.t(), opts) :: result
   @callback add_mcp(directory, String.t(), map(), opts) :: result
   @callback mcp_status(directory, opts) :: result
+  @callback mcp_connect(directory, String.t(), opts) :: result
+  @callback config(directory, opts) :: result
   @callback dispose_instance(directory, opts) :: result
 end

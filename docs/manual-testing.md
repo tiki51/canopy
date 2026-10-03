@@ -69,6 +69,16 @@ Open **Settings** (gear icon in the left rail).
 - [ ] Add a path that does not exist → inline error, nothing created. Add a plain folder that
       is not a git repository → it is added and `git init` has run in it (the flash says so).
 - [ ] Add a repository outside your home directory without the checkbox → rejected; with it → accepted.
+- [ ] MCP page, against a real `opencode serve`: add to the repository's `opencode.json` a
+      server that cannot start (`"broken": {"type": "local", "command": ["no-such-mcp"]}`)
+      and one with a secret (`"environment": {"API_KEY": "sk-test-123"}`). *MCP* on the row:
+      `canopy` (after an agent's first prompt, or *Re-register Canopy*) is connected,
+      `broken` is failed with its error, and `sk-test-123` appears nowhere on the page.
+      Fix the command, *Reconnect* → connected.
+- [ ] Same page, Claude Code: add a `.mcp.json` server to the repository and run one turn of a
+      Claude Code agent there. The server is listed as loaded with the turn's status and
+      tool count; your `~/.claude.json` servers are under *Configured but not loaded*. Break
+      the JSON → the next turn still runs, and the page shows the parse error.
 
 ## 3. Agents
 

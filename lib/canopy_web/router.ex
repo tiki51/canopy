@@ -35,7 +35,8 @@ defmodule CanopyWeb.Router do
       live "/settings", SettingsLive
       live "/costs", CostsLive
       live "/files", FilesLive
-      live "/repositories", RepositoriesLive
+      live "/repositories", RepositoriesLive, :index
+      live "/repositories/:id", RepositoriesLive, :show
       live "/agents", AgentsLive, :index
       live "/agents/new", AgentsLive, :new
       live "/agents/:id", AgentsLive, :show

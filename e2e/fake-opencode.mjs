@@ -19,7 +19,32 @@ const pendingPermissions = new Map(); // per_id -> resume fn
 const aborted = new Set(); // session ids aborted mid-turn (long turns stop early)
 let dialogue = 0; // lines spoken in the load-test back-and-forth (site screenshots)
 const pendingQuestions = new Map(); // que_id -> {request, resume}
-let mcp = null; // {url, headers} learned from POST /mcp
+let mcp = null; // {url, headers} of the latest POST /mcp; the tool calls below use it
+// Per repository directory: whether Canopy registered there (OpenCode's
+// registrations are per instance) and the status of each configured server.
+const registered = new Set();
+const serverStatus = new Map(); // directory -> Map(name -> {status, error?})
+// The repository's own MCP servers, as `GET /config` returns them: from
+// FAKE_OPENCODE_MCP (JSON), else one local server carrying a fake secret and a
+// remote one that fails until reconnected.
+const CONFIGURED_MCP = process.env.FAKE_OPENCODE_MCP
+  ? JSON.parse(process.env.FAKE_OPENCODE_MCP)
+  : {
+      "fake-local": { type: "local", command: ["fake-mcp", "--verbose"], environment: { FAKE_SECRET: "fake-secret-value-123" } },
+      "fake-remote": { type: "remote", url: "http://user:pw@127.0.0.1:9/mcp" },
+    };
+function statusFor(directory) {
+  if (!serverStatus.has(directory)) {
+    const m = new Map();
+    for (const [name, cfg] of Object.entries(CONFIGURED_MCP)) {
+      if (cfg.enabled === false) m.set(name, { status: "disabled" });
+      else if (cfg.type === "remote") m.set(name, { status: "failed", error: `connect ECONNREFUSED ${cfg.url}` });
+      else m.set(name, { status: "connected" });
+    }
+    serverStatus.set(directory, m);
+  }
+  return serverStatus.get(directory);
+}
 let counter = 0;
 const nextId = (p) => `${p}_fake${String(++counter).padStart(4, "0")}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -576,13 +601,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
     // Test-only: every session Canopy created, for specs that check how many it made.
     if (req.method === "GET" && p === "/__fake/sessions") return json(res, 200, [...sessions].map(([id, s]) => ({ id, ...s })));
-    if (req.method === "GET" && p === "/mcp") return json(res, 200, mcp ? { canopy: { status: "connected" } } : {});
-    if (req.method === "POST" && p === "/instance/dispose") { mcp = null; mcpSession = null; return json(res, 200, true); }
+    const directory = url.searchParams.get("directory") || "";
+    if (req.method === "GET" && p === "/mcp") {
+      const out = Object.fromEntries(statusFor(directory));
+      if (mcp && registered.has(directory)) out.canopy = { status: "connected" };
+      return json(res, 200, out);
+    }
+    if (req.method === "GET" && p === "/config") return json(res, 200, { mcp: CONFIGURED_MCP });
+    if (req.method === "POST" && p === "/instance/dispose") {
+      registered.delete(directory);
+      if (registered.size === 0) mcp = null;
+      mcpSession = null;
+      return json(res, 200, true);
+    }
     if (req.method === "POST" && p === "/mcp") {
       const body = await readBody(req);
       mcp = { url: body.config.url, headers: body.config.headers || {} };
       mcpSession = null;
-      console.log(`[fake-opencode] MCP registered -> ${mcp.url}`);
+      registered.add(directory);
+      console.log(`[fake-opencode] MCP registered for ${directory} -> ${mcp.url}`);
       return json(res, 200, { [body.name]: { status: "connected" } });
     }
     if (req.method === "GET" && p === "/event") {
@@ -605,6 +642,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/question") return json(res, 200, [...pendingQuestions.values()].map((q) => q.request));
     if (req.method === "GET" && p === "/vcs/status") return json(res, 200, []);
     let m;
+    if (req.method === "POST" && (m = p.match(/^\/mcp\/([^/]+)\/connect$/))) {
+      const name = decodeURIComponent(m[1]);
+      const statuses = statusFor(directory);
+      if (name === "canopy" && registered.has(directory)) return json(res, 200, true);
+      if (!statuses.has(name)) return json(res, 404, { name: "McpServerNotFoundError", data: { name } });
+      statuses.set(name, { status: "connected" });
+      return json(res, 200, true);
+    }
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/prompt_async$/))) {
       const body = await readBody(req);
       const text = (body.parts || []).map((x) => x.text || "").join("\n");

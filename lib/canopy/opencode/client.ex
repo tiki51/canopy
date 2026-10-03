@@ -132,6 +132,20 @@ defmodule Canopy.OpenCode.Client do
   @impl true
   def mcp_status(directory, opts \\ []), do: request(:get, "/mcp", dir(directory, opts))
 
+  @doc "Asks OpenCode to (re)connect one MCP server for a directory; `true` when it connected."
+  @impl true
+  def mcp_connect(directory, name, opts \\ []) when is_binary(name),
+    do:
+      request(
+        :post,
+        "/mcp/#{URI.encode(name, &URI.char_unreserved?/1)}/connect",
+        dir(directory, opts)
+      )
+
+  @doc "The merged config OpenCode runs a directory with (`mcp` among it), `{env:}` values resolved."
+  @impl true
+  def config(directory, opts \\ []), do: request(:get, "/config", dir(directory, opts))
+
   @doc "Disposes OpenCode's instance for a directory; the next request recreates it (and reloads plugins)."
   @impl true
   def dispose_instance(directory, opts \\ []),

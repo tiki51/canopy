@@ -14,10 +14,11 @@ defmodule Canopy.Engine.OpenCode do
 
   @behaviour Canopy.Engine
 
-  alias Canopy.{Agents, Documents, PermissionRequests, QuestionRequests, Settings}
+  alias Canopy.{Agents, Documents, MCP, PermissionRequests, QuestionRequests, Settings}
   alias Canopy.Engine.Event
+  alias Canopy.MCP.{Inventory, Redact}
   alias Canopy.OpenCode
-  alias Canopy.OpenCode.Client
+  alias Canopy.OpenCode.{Client, MCPConfig}
 
   @impl true
   def name, do: "opencode"
@@ -297,15 +298,8 @@ defmodule Canopy.Engine.OpenCode do
   # Canopy last restarted. Otherwise it is (re)posted, which is idempotent.
   defp ensure_mcp(ctx, state) do
     dir = ctx.repository.path
-    name = Canopy.MCP.registration_name()
-    repository_id = ctx.repository.id
-
-    # The identity plugin must be in this repository; a fresh install only
-    # takes effect once OpenCode recreates its instance for the directory.
-    case Canopy.MCP.ensure_project_plugin(dir) do
-      {:ok, :installed} -> client().dispose_instance(dir, state.client_opts)
-      _ -> :ok
-    end
+    name = MCP.registration_name()
+    install_plugin(dir, state.client_opts)
 
     connected? =
       match?(
@@ -314,14 +308,263 @@ defmodule Canopy.Engine.OpenCode do
       )
 
     registered? =
-      (connected? and Canopy.MCP.registered_this_boot?(repository_id)) or
-        match?(
-          {:ok, _},
-          client().add_mcp(dir, name, Canopy.MCP.registration_config(:current), state.client_opts)
+      (connected? and MCP.registered_this_boot?(ctx.repository.id)) or
+        register(ctx.repository, state.client_opts) == :ok
+
+    %{state | mcp_registered?: registered?}
+  end
+
+  # The identity plugin must be in this repository; a fresh install only
+  # takes effect once OpenCode recreates its instance for the directory.
+  defp install_plugin(dir, client_opts) do
+    case MCP.ensure_project_plugin(dir) do
+      {:ok, :installed} -> client().dispose_instance(dir, client_opts)
+      _ -> :ok
+    end
+  end
+
+  defp register(repository, client_opts) do
+    config = MCP.registration_config(:current)
+
+    case client().add_mcp(repository.path, MCP.registration_name(), config, client_opts) do
+      {:ok, _} ->
+        MCP.mark_registered(repository.id)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # -- Repository page actions --------------------------------------------------
+
+  @doc """
+  Posts Canopy's registration for the repository again (with the plugin
+  check first), as the next prompt would. Channels that already registered
+  keep their memo: it stays true.
+  """
+  def reregister(repository, opts \\ []) do
+    client_opts = client_opts(opts)
+    install_plugin(repository.path, client_opts)
+    register(repository, client_opts)
+  end
+
+  @doc "Asks OpenCode to reconnect one of the repository's MCP servers."
+  def reconnect(repository, name, opts \\ []) when is_binary(name) do
+    case client().mcp_connect(repository.path, name, client_opts(opts)) do
+      {:ok, false} -> {:error, :not_connected}
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Rewrites the repository's identity plugin and restarts OpenCode's instance
+  for the directory so it loads, then registers Canopy again (a disposed
+  instance forgets runtime registrations). Interrupts any OpenCode session
+  running there, so the page offers it only while no agent is busy.
+  """
+  def reinstall_plugin(repository, opts \\ []) do
+    client_opts = client_opts(opts)
+
+    with {:ok, _} <- MCP.ensure_project_plugin(repository.path),
+         {:ok, _} <- client().dispose_instance(repository.path, client_opts) do
+      register(repository, client_opts)
+    end
+  end
+
+  defp client_opts(opts),
+    do: [base_url: Keyword.get(opts, :base_url) || Settings.get().opencode_url]
+
+  # -- MCP inventory --------------------------------------------------------------
+
+  @doc """
+  What OpenCode gives agents in the repository. What is loaded and enabled
+  comes from OpenCode (`GET /config`, `GET /mcp`); the config files are read
+  only to say where each server came from and to show values as written.
+  With OpenCode away, the files stand in, with unknown status. Options:
+  `:base_url` (default Settings), `:config_home`, `:opencode_config`.
+  """
+  @impl true
+  def mcp_inventory(repository, opts) do
+    client_opts = client_opts(opts)
+    dir = repository.path
+    canopy = MCP.registration_name()
+    files = MCPConfig.sources(dir, opts)
+
+    {status, config, error} =
+      case {client().mcp_status(dir, client_opts), client().config(dir, client_opts)} do
+        {{:ok, status}, {:ok, config}} when is_map(status) and is_map(config) ->
+          {status, config["mcp"] || %{}, nil}
+
+        {{:ok, status}, other} when is_map(status) ->
+          {status, nil, failure(other)}
+
+        {other, _} ->
+          {nil, nil, failure(other)}
+      end
+
+    reachable? = is_map(status)
+
+    # The API says what is loaded; with it away, the files are the best guess.
+    loaded =
+      cond do
+        is_map(config) -> Map.keys(config)
+        reachable? -> []
+        true -> Map.keys(files.servers)
+      end
+
+    names =
+      (loaded ++ if(reachable?, do: Map.keys(status), else: []))
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == canopy))
+      |> Enum.sort()
+
+    servers =
+      [canopy_row(status, files) | Enum.map(names, &server_row(&1, files, config, status))]
+
+    ignored =
+      if is_map(config),
+        do:
+          for(
+            {name, file} <- Enum.sort_by(files.servers, &elem(&1, 0)),
+            name != canopy and not Map.has_key?(config, name),
+            do: %{
+              file_row(name, file)
+              | note:
+                  "In this file, but the OpenCode server does not load it (its config differs from what Canopy reads)."
+            }
+          ),
+        else: []
+
+    notes =
+      Enum.map(files.errors, &"Could not read #{&1}") ++
+        if(Map.has_key?(files.servers, canopy),
+          do: [
+            "A config file defines its own \"#{canopy}\" server; Canopy's runtime registration replaces it."
+          ],
+          else: []
         )
 
-    if registered?, do: Canopy.MCP.mark_registered(repository_id)
-    %{state | mcp_registered?: registered?}
+    {:ok,
+     %Inventory.Engine{
+       engine: name(),
+       reachable?: reachable?,
+       error: error,
+       servers: servers,
+       ignored: ignored,
+       notes: notes,
+       canopy: %{
+         registered_this_boot?: MCP.registered_this_boot?(repository.id),
+         plugin: MCP.project_plugin_state(dir),
+         global_plugin?: File.exists?(MCP.global_plugin_path())
+       }
+     }}
+  end
+
+  defp failure({:error, {:transport, reason}}),
+    do: Redact.text("OpenCode did not answer: #{transport_reason(reason)}")
+
+  defp failure({:error, {:http, status, _body}}), do: "OpenCode answered HTTP #{status}"
+
+  defp failure({:ok, other}),
+    do: Redact.text("unexpected answer from OpenCode: #{inspect(other)}")
+
+  defp failure(other), do: Redact.text(inspect(other))
+
+  defp transport_reason(%{reason: reason}), do: inspect(reason)
+  defp transport_reason(reason), do: inspect(reason)
+
+  defp canopy_row(status, files) do
+    name = MCP.registration_name()
+
+    {row_status, error, note} =
+      case status do
+        %{^name => s} ->
+          {Inventory.Server.status(s["status"]), Redact.text(s["error"]),
+           "Registered by Canopy at runtime."}
+
+        %{} ->
+          {:unknown, nil,
+           "Not registered yet: Canopy registers before an agent's next prompt here."}
+
+        nil ->
+          {:unknown, nil, "Registered by Canopy at runtime."}
+      end
+
+    %Inventory.Server{
+      name: name,
+      transport: :remote,
+      target: Redact.url(MCP.url()),
+      secrets: ["Authorization"],
+      source: %{kind: :canopy, path: nil},
+      status: row_status,
+      error: error,
+      note:
+        if(Map.has_key?(files.servers, name),
+          do: note <> " Replaces the entry in a config file.",
+          else: note
+        )
+    }
+  end
+
+  # Values as written in the file when one defines the server, else as the
+  # API resolved them; enabled and status as OpenCode reports.
+  defp server_row(name, files, config, status) do
+    api = if is_map(config), do: config[name], else: nil
+
+    row =
+      case files.servers[name] do
+        nil -> server(name, api || %{}, %{kind: :server, path: nil})
+        file -> file_row(name, file)
+      end
+
+    enabled? =
+      Map.get(api || get_in(files.servers, [name, :config]) || %{}, "enabled", true) != false
+
+    {row_status, error} =
+      case status && status[name] do
+        %{"status" => s} = st -> {Inventory.Server.status(s), Redact.text(st["error"])}
+        _ when not enabled? -> {:disabled, nil}
+        _ -> {:unknown, nil}
+      end
+
+    note =
+      case row_status do
+        :needs_auth ->
+          "Needs OAuth: run `opencode mcp auth #{name}` in a terminal."
+
+        _ ->
+          if row.source.kind == :server,
+            do: "OpenCode server: remote config, environment, or added at runtime."
+      end
+
+    %{row | enabled?: enabled?, status: row_status, error: error, note: note}
+  end
+
+  defp file_row(name, %{config: config, kind: kind, path: path}),
+    do: server(name, config, %{kind: kind, path: path})
+
+  defp server(name, config, source) do
+    {_env, env_keys} = Redact.map(config["environment"] || %{})
+    {_headers, header_keys} = Redact.map(config["headers"] || %{})
+
+    {transport, target} =
+      case config do
+        %{"type" => "remote", "url" => url} -> {:remote, Redact.url(url)}
+        %{"url" => url} when is_binary(url) -> {:remote, Redact.url(url)}
+        %{"command" => command} -> {:local, Redact.command(List.wrap(command))}
+        _ -> {nil, nil}
+      end
+
+    %Inventory.Server{
+      name: name,
+      transport: transport,
+      target: target,
+      secrets: Enum.uniq(env_keys ++ header_keys),
+      source: source,
+      enabled?: Map.get(config, "enabled", true) != false
+    }
   end
 
   defp compaction_model(agent, state) do

@@ -134,18 +134,30 @@ defmodule CanopyWeb.SettingsLiveTest do
 
     after_token = Settings.mcp_token()
     assert after_token != before
-    assert has_element?(view, "#mcp-token[data-token='#{after_token}']")
+    assert has_element?(view, "#mcp-token", String.slice(after_token, -4, 4))
+    refute has_element?(view, "#mcp-token", String.slice(before, -4, 4))
   end
 
-  test "the token is masked until revealed", %{conn: conn} do
+  test "the token is masked until revealed, showing its last 4 characters only", %{conn: conn} do
     token = Settings.mcp_token()
     {:ok, view, _html} = live(conn, ~p"/settings")
 
     refute has_element?(view, "#mcp-token", token)
+    refute has_element?(view, "#mcp-token", String.slice(token, 0, 4))
+    assert has_element?(view, "#mcp-token", String.slice(token, -4, 4))
+    # nothing on the element carries the full token while it is masked
+    refute has_element?(view, "#mcp-token[data-token]")
+    refute render(view) =~ token
 
     view |> element("#toggle-token") |> render_click()
 
     assert has_element?(view, "#mcp-token", token)
+  end
+
+  test "points to the per-repository MCP page", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    assert has_element?(view, "#mcp-per-repository a[href='/repositories']")
   end
 
   test "shows the MCP endpoint URL and the identity plugin source", %{conn: conn} do

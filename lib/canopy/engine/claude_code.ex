@@ -21,7 +21,10 @@ defmodule Canopy.Engine.ClaudeCode do
 
   Identity and prompts: every session gets its own MCP bearer token, written
   into the `--mcp-config` file the process is spawned with, so
-  `Canopy.MCP.AuthPlug` knows the agent without any tool argument. Permission
+  `Canopy.MCP.AuthPlug` knows the agent without any tool argument. That file
+  also carries the repository's `.mcp.json` servers, re-read every turn
+  (`Canopy.ClaudeCode.MCPConfig`); `--strict-mcp-config` keeps every other
+  MCP config out, and Canopy's own `canopy` entry wins a name clash. Permission
   prompts (and `AskUserQuestion`) go through `--permission-prompt-tool
   mcp__canopy__permission`, a Canopy tool that blocks until the user answers
   from the channel (`Canopy.ClaudeCode.Prompts`). Agents run under
@@ -30,10 +33,14 @@ defmodule Canopy.Engine.ClaudeCode do
 
   @behaviour Canopy.Engine
 
+  require Logger
+
   alias Canopy.{Agents, AgentSessions, ClaudeCode, Documents, Settings}
   alias Canopy.Agents.Agent
-  alias Canopy.ClaudeCode.{Command, Prompts}
+  alias Canopy.ClaudeCode.{Command, MCPConfig, Prompts}
   alias Canopy.Engine.Event
+  alias Canopy.MCP.Inventory
+  alias Canopy.MCP.Redact
   alias Canopy.Settings.Setting
 
   @context_cap 120_000
@@ -221,6 +228,116 @@ defmodule Canopy.Engine.ClaudeCode do
   @impl true
   def context_cap, do: @context_cap
 
+  # -- MCP inventory --------------------------------------------------------------
+
+  @doc """
+  What a turn in the repository loads: Canopy's server and the repository's
+  `.mcp.json` servers, with the status the newest turn's `system/init`
+  reported; and what `--strict-mcp-config` keeps out (`~/.claude.json` user
+  and local scope, managed config). Options: `:home`, `:config_dir` (default
+  the one in Settings), `:managed_path`.
+  """
+  @impl true
+  def mcp_inventory(repository, opts) do
+    canopy_name = Canopy.MCP.registration_name()
+    project_path = MCPConfig.project_path(repository.path)
+    config_dir = Keyword.get_lazy(opts, :config_dir, fn -> configured_config_dir() end)
+
+    {project, project_notes} =
+      case MCPConfig.project_servers(repository.path) do
+        {:ok, servers} ->
+          {servers, []}
+
+        {:error, reason} ->
+          {%{},
+           [
+             "#{project_path} could not be used (#{reason}), so agents run with Canopy's server only until it is fixed."
+           ]}
+      end
+
+    canopy = %Inventory.Server{
+      name: canopy_name,
+      transport: :http,
+      target: Redact.url(Canopy.MCP.url()),
+      secrets: ["Authorization"],
+      source: %{kind: :canopy, path: nil},
+      note: "Per-session token, written into each turn's generated mcp.json."
+    }
+
+    {shadowed, project} = Map.split(project, [canopy_name])
+
+    loaded =
+      [
+        canopy
+        | for({n, c} <- Enum.sort_by(project, &elem(&1, 0)), do: project_row(n, c, project_path))
+      ]
+      |> observe(AgentSessions.latest_mcp_servers(repository.id, name()))
+
+    clash =
+      for {n, c} <- shadowed do
+        %{
+          project_row(n, c, project_path)
+          | note: "Replaced by Canopy's own server of the same name."
+        }
+      end
+
+    {others, other_errors} =
+      MCPConfig.other_sources(repository.path,
+        home: opts[:home],
+        config_dir: config_dir,
+        managed_path: opts[:managed_path]
+      )
+
+    ignored =
+      clash ++
+        for %{name: n, config: c, kind: kind, path: path} <- others do
+          %{MCPConfig.to_server(n, c, %{kind: kind, path: path}) | note: ignored_note(kind)}
+        end
+
+    {:ok,
+     %Inventory.Engine{
+       engine: name(),
+       servers: loaded,
+       ignored: ignored,
+       notes: project_notes ++ Enum.map(other_errors, &"Could not read #{&1}")
+     }}
+  end
+
+  defp project_row(name, config, path) do
+    %{
+      MCPConfig.to_server(name, config, %{kind: :project, path: path})
+      | note: "Loaded on every turn from the repository's .mcp.json."
+    }
+  end
+
+  defp ignored_note(:managed),
+    do:
+      "Managed by your organisation. Not in Canopy's per-turn config; Claude Code may still enforce its policy."
+
+  defp ignored_note(_kind), do: "Not loaded: --strict-mcp-config keeps personal servers out."
+
+  # The status the newest turn reported for each loaded server.
+  defp observe(rows, nil), do: rows
+
+  defp observe(rows, %{servers: seen, seen_at: at}) do
+    by_name = Map.new(seen, &{&1["name"], &1})
+
+    Enum.map(rows, fn row ->
+      case by_name[row.name] do
+        nil ->
+          row
+
+        s ->
+          %{
+            row
+            | status: Inventory.Server.status(s["status"]),
+              tool_count: s["tool_count"],
+              observed_at: at
+          }
+      end
+    end)
+  end
+
   # -- Turns --------------------------------------------------------------------
 
   defp start_turn(ctx, state, session, agent, content, opts) do
@@ -238,7 +355,7 @@ defmodule Canopy.Engine.ClaudeCode do
       File.chmod!(dir, 0o700)
       stderr_file = Path.join(dir, "stderr.log")
       system_file = write_system(dir, opts[:system])
-      mcp_file = write_mcp_config(dir, fresh.mcp_token)
+      mcp_file = write_mcp_config(dir, fresh.mcp_token, ctx.repository.path)
       seen? = fresh.last_seen_at != nil
       # the agent's own model and effort, else the defaults from Settings; nil
       # leaves the flag off and Claude Code picks
@@ -304,20 +421,33 @@ defmodule Canopy.Engine.ClaudeCode do
   defp binary(%{binary_path: path}) when is_binary(path), do: {:ok, path}
   defp binary(%{binary: name}), do: {:error, {:claude_not_found, name}}
 
-  # The MCP config names Canopy's server with this session's bearer token. A
-  # file rather than inline JSON, so the token never shows in `ps`.
-  defp write_mcp_config(dir, token) do
+  # The MCP config names Canopy's server with this session's bearer token,
+  # plus the repository's own `.mcp.json` servers as they are on disk now. A
+  # file rather than inline JSON, so the token never shows in `ps`. A broken
+  # `.mcp.json` is skipped: the turn still runs, with Canopy's server only.
+  defp write_mcp_config(dir, token, repository_path) do
     path = Path.join(dir, "mcp.json")
 
-    config = %{
-      mcpServers: %{
-        Canopy.MCP.registration_name() => %{
-          type: "http",
-          url: Canopy.MCP.url(),
-          headers: %{"Authorization" => "Bearer " <> token}
-        }
-      }
+    project =
+      case MCPConfig.project_servers(repository_path) do
+        {:ok, servers} ->
+          servers
+
+        {:error, reason} ->
+          Logger.warning(
+            "Claude Code: skipping #{MCPConfig.project_path(repository_path)}: #{reason}"
+          )
+
+          %{}
+      end
+
+    canopy = %{
+      "type" => "http",
+      "url" => Canopy.MCP.url(),
+      "headers" => %{"Authorization" => "Bearer " <> token}
     }
+
+    config = %{mcpServers: Map.put(project, Canopy.MCP.registration_name(), canopy)}
 
     File.write!(path, JSON.encode!(config))
     File.chmod!(path, 0o600)

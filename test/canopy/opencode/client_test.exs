@@ -73,6 +73,28 @@ defmodule Canopy.OpenCode.ClientTest do
              Client.add_mcp(@dir, "canopy", config)
   end
 
+  test "config reads the merged config for the directory" do
+    Req.Test.stub(Client, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/config"
+      assert conn.query_params == %{"directory" => @dir}
+      Req.Test.json(conn, %{"mcp" => %{"db" => %{"type" => "local", "command" => ["db"]}}})
+    end)
+
+    assert {:ok, %{"mcp" => %{"db" => _}}} = Client.config(@dir)
+  end
+
+  test "mcp_connect posts to the server's connect path" do
+    Req.Test.stub(Client, fn conn ->
+      assert conn.method == "POST"
+      assert conn.request_path == "/mcp/my%20server/connect"
+      assert conn.query_params == %{"directory" => @dir}
+      Req.Test.json(conn, true)
+    end)
+
+    assert {:ok, true} = Client.mcp_connect(@dir, "my server")
+  end
+
   test "messages passes limit and before as query params" do
     Req.Test.stub(Client, fn conn ->
       assert conn.query_params == %{"directory" => @dir, "limit" => "5", "before" => "msg_x"}

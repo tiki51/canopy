@@ -93,6 +93,17 @@ defmodule Canopy.ClaudeCode.EventsTest do
     refute Enum.any?(events, &(&1.type == :agent_status and &1.data.status == :retry))
   end
 
+  test "init lists the MCP servers the turn loaded, with tool counts" do
+    assert [%Event{data: %{servers: servers}}] =
+             for(%Event{type: :mcp_servers} = e <- replay(), do: e)
+
+    assert servers == [
+             %{name: "canopy", status: "connected", tool_count: 3},
+             %{name: "spike", status: "connected", tool_count: 1},
+             %{name: "broken", status: "failed", tool_count: 0}
+           ]
+  end
+
   test "an error result becomes agent_error with a readable message" do
     {events, _} =
       Events.normalize(

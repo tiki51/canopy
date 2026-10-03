@@ -1,0 +1,18 @@
+{
+  "numStartups": 42,
+  "oauthAccount": { "emailAddress": "someone@example.com", "accessToken": "oat_fixtureNeverShown" },
+  "mcpServers": {
+    "personal": { "command": "personal-mcp", "env": { "PERSONAL_API_KEY": "pk_fixturePersonalSecret" } }
+  },
+  "projects": {
+    "REPO_PATH": {
+      "allowedTools": [],
+      "mcpServers": {
+        "local-db": { "type": "sse", "url": "http://localhost:7000/sse", "headers": { "X-Api-Key": "lk_fixtureLocalSecret" } }
+      }
+    },
+    "/some/other/repo": {
+      "mcpServers": { "elsewhere": { "command": "nope" } }
+    }
+  }
+}

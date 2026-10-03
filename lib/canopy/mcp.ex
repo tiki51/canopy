@@ -94,6 +94,18 @@ defmodule Canopy.MCP do
     end
   end
 
+  @doc """
+  The repository's identity plugin file: `:current`, `:outdated` (another
+  Canopy version wrote it), or `:missing`.
+  """
+  def project_plugin_state(repository_path) when is_binary(repository_path) do
+    case File.read(project_plugin_path(repository_path)) do
+      {:ok, current} when current == @plugin_source -> :current
+      {:ok, _} -> :outdated
+      {:error, _} -> :missing
+    end
+  end
+
   defp exclude_from_git(repository_path, line) do
     git_dir = Path.join(repository_path, ".git")
 

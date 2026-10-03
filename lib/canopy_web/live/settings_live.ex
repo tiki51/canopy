@@ -453,9 +453,8 @@ defmodule CanopyWeb.SettingsLive do
   defp agents_word(1), do: "agent"
   defp agents_word(_), do: "agents"
 
-  defp mask_token(token) when is_binary(token) do
-    String.slice(token, 0, 4) <> String.duplicate("•", 20) <> String.slice(token, -4, 4)
-  end
+  # The last 4 characters only, as everywhere a masked token shows.
+  defp mask_token(token), do: Canopy.MCP.Redact.token(token)
 
   @impl true
   def render(assigns) do
@@ -685,7 +684,9 @@ defmodule CanopyWeb.SettingsLive do
               Agents without a model or effort of their own use the defaults, from their next
               turn; set one per agent on its edit form to override.
               Leave the config directory empty to use your own Claude Code login and settings
-              (your personal MCP servers are still kept out of agent sessions). Point it at a
+              (your personal MCP servers are still kept out of agent sessions; the repository's
+              <code class="font-mono">.mcp.json</code>
+              servers are loaded). Point it at a
               directory of its own to isolate agents; run <code class="font-mono">claude</code>
               once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
               set to log in there.
@@ -906,6 +907,11 @@ defmodule CanopyWeb.SettingsLive do
               <p class="mt-1 text-xs text-base-content/60">
                 Registered with OpenCode under the name <code class="font-mono">{@mcp_name}</code>, so tools appear as <code class="font-mono">{@mcp_name}_*</code>.
               </p>
+              <p id="mcp-per-repository" class="mt-1 text-xs text-base-content/60">
+                Per-repository MCP servers: open a repository from
+                <.link navigate={~p"/repositories"} class="link">Repositories</.link>
+                and choose MCP.
+              </p>
             </div>
 
             <div>
@@ -916,7 +922,6 @@ defmodule CanopyWeb.SettingsLive do
                 <code
                   id="mcp-token"
                   class="flex-1 truncate rounded-md border border-base-300 bg-base-200 px-3 py-1.5 font-mono text-sm"
-                  data-token={@setting.mcp_token}
                 >
                   {if @token_visible, do: @setting.mcp_token, else: mask_token(@setting.mcp_token)}
                 </code>
@@ -1148,7 +1153,7 @@ defmodule CanopyWeb.SettingsLive do
           this.el.addEventListener("click", () => {
             const target = document.querySelector(this.el.dataset.copyTarget)
             if (!target) return
-            const text = target.dataset.token || target.textContent.trim()
+            const text = target.textContent.trim()
             const label = this.el.querySelector("[data-copy-label]")
             const original = label ? label.textContent : null
             navigator.clipboard.writeText(text).then(() => {

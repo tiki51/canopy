@@ -78,7 +78,8 @@ const saveState = (s) => {
 const mcp = (() => {
   try {
     const config = JSON.parse(fs.readFileSync(opts.mcpConfig, "utf8"));
-    return Object.values(config.mcpServers || {})[0] || null;
+    // Canopy's own entry; the repository's .mcp.json servers ride along beside it
+    return config.mcpServers?.canopy || null;
   } catch {
     return null;
   }
@@ -541,7 +542,17 @@ try {
   prompt = line;
 }
 
-out({ type: "system", subtype: "init", session_id: sid, cwd, model, permissionMode: opts.mode || "default", claude_code_version: process.env.FAKE_CLAUDE_VERSION || "2.1.4", mcp_servers: [{ name: "canopy", status: mcp ? "connected" : "failed" }], tools: [] });
+// The repository's servers are never started here: they report "pending".
+const configured = (() => {
+  try {
+    return Object.keys(JSON.parse(fs.readFileSync(opts.mcpConfig, "utf8")).mcpServers || {}).filter((n) => n !== "canopy");
+  } catch {
+    return [];
+  }
+})();
+const mcpServers = [{ name: "canopy", status: mcp ? "connected" : "failed" }, ...configured.map((name) => ({ name, status: "pending" }))];
+const tools = ["Read", "Edit", "Bash", ...(mcp ? ["mcp__canopy__message_send", "mcp__canopy__messages_read", "mcp__canopy__pass", "mcp__canopy__permission"] : [])];
+out({ type: "system", subtype: "init", session_id: sid, cwd, model, permissionMode: opts.mode || "default", claude_code_version: process.env.FAKE_CLAUDE_VERSION || "2.1.4", mcp_servers: mcpServers, tools });
 
 try {
   if (prompt.trim() === "/compact") {

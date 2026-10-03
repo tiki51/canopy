@@ -1,0 +1,15 @@
+{
+  "mcp": {
+    "db": {
+      "type": "local",
+      "command": ["db-mcp", "--password", "pw_fixtureDbSecret"],
+      "environment": { "DB_URL": "postgres://admin:pw_fixtureUrlSecret@localhost/app" }
+    },
+    "tracker": {
+      "type": "remote",
+      "url": "https://tracker.example.com/mcp",
+      "enabled": false
+    },
+    "canopy": { "type": "remote", "url": "http://elsewhere.example.com/mcp" }
+  }
+}
