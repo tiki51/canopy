@@ -258,5 +258,15 @@ test.describe("screenshots for the user guide", () => {
     await send(page, "/handoff @reviewer needs a second pair of eyes on the plan");
     await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 60_000 });
     await shot(page, "handoff");
+
+    // -- Locks: @test holds the suite, @researcher waits its turn ------------------------
+    // (last: from here on every acme-billing channel shows the lock in its header)
+    await send(page, "@test take the tests lock and keep it");
+    await expect(page.locator("#lock-chip-tests")).toContainText("@test", { timeout: 30_000 });
+    await send(page, "@researcher take the tests lock");
+    await expect(page.locator("#lock-chip-tests")).toContainText("next: @researcher", { timeout: 30_000 });
+    await page.locator("#lock-chip-tests").click();
+    await expect(page.locator("#lock-tests-queue")).toContainText("@researcher");
+    await shot(page, "locks-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
   });
 });

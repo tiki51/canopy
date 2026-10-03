@@ -28,6 +28,9 @@ defmodule Canopy.SeedsTest do
 
     assert Enum.sort(Seeds.agent_names()) == Enum.map(Agents.list(), & &1.name)
 
+    # agents take locks themselves; the project manager never brokers them
+    assert Agents.get_by_name("project-manager").system_prompt =~ "Don't assign\nor pass locks"
+
     team = Canopy.Teams.get_by_name("bugfix-team")
     assert team.lead.name == "backend"
     assert Enum.map(team.members, & &1.name) == ~w(backend frontend reviewer test)

@@ -1,6 +1,7 @@
 defmodule Canopy.Runtime do
   @moduledoc """
-  Facade over the per-channel runtime. LiveViews call this; MCP tools do not.
+  Facade over the per-channel runtime. LiveViews call this; MCP tools only
+  for the turn in flight (`pass/3`, `turn_ref/2`).
   """
 
   alias Canopy.{
@@ -313,6 +314,21 @@ defmodule Canopy.Runtime do
       nil -> {:error, :no_turn}
       pid -> ChannelServer.pass(pid, engine_session_id, reason)
     end
+  end
+
+  @doc """
+  The turn in flight for a session (by `AgentSession.id`) in its channel, as
+  the `ref` that owns the lock claims the turn takes; nil when none is. A
+  channel server too busy to answer also gives nil: the claim then belongs to
+  no turn, and the lock lease frees it once the session goes idle.
+  """
+  def turn_ref(channel_id, session_id) do
+    case Supervisor.whereis(channel_id) do
+      nil -> nil
+      pid -> ChannelServer.turn_ref(pid, session_id)
+    end
+  catch
+    :exit, _ -> nil
   end
 
   @doc """

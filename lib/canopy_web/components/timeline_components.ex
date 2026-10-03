@@ -379,10 +379,21 @@ defmodule CanopyWeb.TimelineComponents do
 
   @doc """
   "routine" for lines the compact timeline hides: a turn starting, a turn that
-  finished cleanly (including a pass with nothing to say), a schedule firing.
-  Errors, passes with a note, and everything a person might act on stay visible.
+  finished cleanly (including a pass with nothing to say), a schedule firing,
+  a lock taken while free or freed by its holder with nobody waiting. Errors,
+  passes with a note, and everything a person might act on stay visible.
   """
   def activity_class(%{event_type: "agent_started"}), do: "routine"
+
+  def activity_class(%{event_type: "lock_granted", payload: %{"promoted" => false}}),
+    do: "routine"
+
+  def activity_class(%{event_type: "lock_released", payload: p}) do
+    if p["released_by"] in ["agent", "turn_end"] and is_nil(p["next_agent_id"]) and
+         is_nil(p["note"]),
+       do: "routine"
+  end
+
   def activity_class(%{event_type: "schedule_fired"}), do: "routine"
   def activity_class(%{event_type: "session_compacted"}), do: "routine"
 
@@ -1037,10 +1048,57 @@ defmodule CanopyWeb.TimelineComponents do
       "question_detached" ->
         "#{agent} stopped waiting for an answer"
 
+      "lock_" <> _ ->
+        lock_text(type, p, if(p["user"], do: user, else: agent), user, names, user_name)
+
       other ->
         "#{agent} · #{other}"
     end
   end
+
+  defp lock_text("lock_granted", p, holder, _user, _names, _user_name) do
+    if p["promoted"],
+      do: "the `#{p["name"]}` lock passed to #{holder}" <> suffix(p["reason"]),
+      else: "#{holder} took the `#{p["name"]}` lock" <> suffix(p["reason"])
+  end
+
+  defp lock_text("lock_queued", p, holder, user, names, user_name) do
+    held_by =
+      cond do
+        p["holder_user"] -> " held by #{user}"
+        p["holder_agent_id"] -> " held by #{agent_ref(names, p["holder_agent_id"], user_name)}"
+        true -> ""
+      end
+
+    "#{holder} is waiting for the `#{p["name"]}` lock#{held_by} (#{ordinal(p["position"])} in line)" <>
+      suffix(p["reason"])
+  end
+
+  defp lock_text("lock_released", %{"was" => "waiting"} = p, holder, _user, _names, _user_name),
+    do: "#{holder} left the line for the `#{p["name"]}` lock" <> suffix(p["note"])
+
+  defp lock_text("lock_released", p, holder, user, names, user_name) do
+    lock = "the `#{p["name"]}` lock"
+
+    released =
+      case {p["released_by"], p["user"]} do
+        {"agent", _} -> "#{holder} released #{lock}" <> suffix(p["note"])
+        {"turn_end", _} -> "#{holder}'s turn ended, releasing #{lock}"
+        {"user", true} -> "#{user} released #{lock}"
+        {"user", _} -> "#{user} took #{lock} back from #{holder}" <> suffix(p["note"])
+        _ -> "#{lock} was taken back from #{holder}" <> suffix(p["note"])
+      end
+
+    case p["next_agent_id"] do
+      nil -> released
+      next -> released <> "; next: " <> agent_ref(names, next, user_name)
+    end
+  end
+
+  defp ordinal(1), do: "1st"
+  defp ordinal(2), do: "2nd"
+  defp ordinal(3), do: "3rd"
+  defp ordinal(n), do: "#{n}th"
 
   @doc "The `@name` of an agent id, or the user's name when the id is nil."
   def agent_ref(_names, nil, user_name), do: user_name
@@ -1264,12 +1322,18 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("schedule_" <> _), do: "hero-clock-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"
   defp event_icon("question_" <> _), do: "hero-question-mark-circle-mini"
+  defp event_icon("lock_released"), do: "hero-lock-open-mini"
+  defp event_icon("lock_" <> _), do: "hero-lock-closed-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 
   defp event_tone(%{event_type: "agent_error"}), do: "error"
   defp event_tone(%{event_type: "spend_limit_reached"}), do: "error"
   defp event_tone(%{event_type: "delegation_failed"}), do: "error"
   defp event_tone(%{event_type: "handoff_rejected"}), do: "warning"
+
+  defp event_tone(%{event_type: "lock_released", payload: %{"released_by" => by}})
+       when by in ~w(lease user restart),
+       do: "warning"
 
   defp event_tone(%{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}),
     do: "error"

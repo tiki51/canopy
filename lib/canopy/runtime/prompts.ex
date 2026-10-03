@@ -324,6 +324,44 @@ defmodule Canopy.Runtime.Prompts do
     """
   end
 
+  @doc """
+  What a session is told when locks it waited for are its now. `claims` are
+  `Canopy.Locks.Claim`s with the repository preloaded. `standalone?: true`
+  for a wake that is only the grant (it ends with the time line); otherwise
+  it is a paragraph added to another wake.
+  """
+  def lock_granted(claims, opts \\ []) do
+    repository = claims |> List.first() |> Map.get(:repository)
+    where = if match?(%{name: _}, repository), do: " in #{repository.name}", else: ""
+
+    asked = fn claim ->
+      if claim.reason, do: " (you asked for it: \"#{claim.reason}\")", else: ""
+    end
+
+    {held, it, them} =
+      case claims do
+        [claim] ->
+          {"the `#{claim.name}` lock#{where}#{asked.(claim)}", "It is", "it"}
+
+        _ ->
+          {"these locks#{where}: " <> Enum.map_join(claims, ", ", &"`#{&1.name}`#{asked.(&1)}"),
+           "They are", "them"}
+      end
+
+    release =
+      if Enum.any?(claims, & &1.hold_across_turns),
+        do:
+          "A lock you asked to hold across turns stays yours until you call canopy_lock_release; Canopy frees it after #{div(Canopy.Settings.lock_hold_ms(), 60_000)} minutes regardless. Anything else is released automatically when this turn ends.",
+        else:
+          "#{it} released automatically when this turn ends; call canopy_lock_release sooner if you finish early."
+
+    text = "You now hold #{held}. Do the work that needs #{them} now. #{release}"
+
+    if opts[:standalone?],
+      do: text <> "\n" <> time_line() <> "\n",
+      else: "\n" <> text <> "\n"
+  end
+
   def delegation_completed(%{
         channel: channel,
         to: to,

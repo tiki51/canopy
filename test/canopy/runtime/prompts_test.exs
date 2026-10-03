@@ -3,6 +3,49 @@ defmodule Canopy.Runtime.PromptsTest do
 
   alias Canopy.Runtime.Prompts
 
+  test "the system prompt tells agents to take a lock before the test suite and never broker one" do
+    text =
+      Prompts.system(
+        %{name: "backend", display_name: nil, role: nil, system_prompt: nil},
+        %{name: "p"},
+        %{
+          id: "r",
+          path: "/r"
+        }
+      )
+
+    assert text =~ "call `canopy_lock_acquire` (name `tests`"
+    assert text =~ "If you are queued, end your turn"
+    assert text =~ "Never announce, pass, or broker locks in messages."
+  end
+
+  test "a lock grant names the lock, the repository, the reason, and when it frees itself" do
+    repository = %{name: "acme-billing"}
+
+    tests = %{
+      name: "tests",
+      reason: "precommit",
+      hold_across_turns: false,
+      repository: repository
+    }
+
+    text = Prompts.lock_granted([tests], standalone?: true)
+
+    assert text =~
+             "You now hold the `tests` lock in acme-billing (you asked for it: \"precommit\"). Do the work that needs it now. It is released automatically when this turn ends; call canopy_lock_release sooner if you finish early."
+
+    assert text =~ "The time now is"
+
+    e2e = %{name: "e2e", reason: nil, hold_across_turns: true, repository: repository}
+    both = Prompts.lock_granted([tests, e2e])
+
+    assert both =~
+             "You now hold these locks in acme-billing: `tests` (you asked for it: \"precommit\"), `e2e`."
+
+    assert both =~ "stays yours until you call canopy_lock_release"
+    refute both =~ "The time now is"
+  end
+
   test "system prompt substitutes identity and appends the role prompt" do
     agent = %{
       name: "backend",

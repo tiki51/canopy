@@ -227,7 +227,9 @@ filled in.
   answer to a card does not count; see [Questions](#questions)). *Minutes a Claude Code
   question waits for you* (10 by default, up to 29, since Claude Code itself gives up on a
   waiting tool call after 30) is how long a Claude Code agent sits on a question before it
-  ends its turn; the card stays open and your answer still reaches it. *Pause a channel after agents have taken turns without me* is a check-in:
+  ends its turn; the card stays open and your answer still reaches it. *Minutes an agent
+  may keep a lock across turns* (30 by default) is how long a [lock](#locks) an agent asked
+  to keep survives its turns before Canopy frees it anyway. *Pause a channel after agents have taken turns without me* is a check-in:
   when it is on, a channel holds after the number of agent turns you set until you type
   or press Continue. Leave it off when you want agents to run autonomously for as long as
   the work takes, and use spend limits as the backstop instead.
@@ -430,13 +432,15 @@ sidebar with the agent as owner.
 ### Anatomy of the channel header
 
 From left to right on the top row: the channel name and topic, then the buttons
-**Members**, **Activity**, **Scheduled** (with a count), the **budget** (spent so far,
-and the limit when there is one), **Task**, **Changes**, and **Archive**.
+**Members**, **Activity**, one chip per [lock](#locks) held on the repository (or a plain
+**Locks** button when there are none), **Scheduled** (with a count), the **budget** (spent
+so far, and the limit when there is one), **Task**, **Changes**, and **Archive**.
 
 The second row shows the owner badge, the task status pill, the task title, the git
 branch, and one pill per member. A member's dot is grey when idle, green while working,
 amber while waiting for its turn, blue with "waiting on you" while it is blocked on a
-question or permission card, and red after an error. A working or waiting agent's pill
+question or permission card, and red after an error. A small padlock on a pill means the
+agent holds a lock; a clock means it is waiting for one. A working or waiting agent's pill
 has an **Abort** button; an idle agent's pill has a small reset arrow that drops its OpenCode
 session in this channel (with a confirmation) so its next turn starts with a clean
 context.
@@ -767,8 +771,10 @@ Conversation:
 | **Autonomous** | off | never: agents keep going until the work is done or you step in |
 
 Autonomous is the fastest and spends the most tokens, so keep an eye on the Costs page.
-Agents running side by side also share the repository's working tree, so their edits and
-test runs can collide. Anything else is *Custom*: set the controls yourself.
+Agents running side by side also share the repository's working tree, so their edits can
+collide; their test runs, e2e servers and screenshot runs take turns through
+[locks](#locks) whichever preset you pick. Anything else is *Custom*: set the controls
+yourself.
 
 A team mention counts as **one** turn against the pause, however many members it wakes:
 `@bugfix-team` waking four agents uses one of the default six. An agent you also mention by
@@ -827,6 +833,59 @@ under the parent behind an "N replies" toggle. Here `@backend` replied in a thre
 ![Thread, light](user-guide/images/channel-thread-light.png)
 
 ![Thread, dark](user-guide/images/channel-thread-dark.png)
+
+### Locks
+
+Some things in a repository can only be used by one agent at a time: the test suite and
+its database, the ports an e2e server listens on, a screenshot or video run. Two agents
+running `mix test` at once clobber each other's database; two Playwright runs fight over
+the port. A **lock** is how agents take turns on those, and Canopy keeps it, not the chat.
+
+- **Agents take locks themselves.** Before running the test suite, a pre-commit check,
+  browser tests, or anything that starts a server or writes shared output, an agent calls
+  `canopy_lock_acquire`, usually for the lock named `tests`. If nobody holds it, it is the
+  agent's at once.
+- **Waiting costs nothing.** If someone holds it, the agent is put in line, told who holds
+  it and why, and ends its turn. When the lock passes to it, Canopy wakes that agent, in
+  that channel, with "You now hold the `tests` lock". Nobody posts "lock released" or
+  brokers who goes next; the timeline shows `@frontend is waiting for the tests lock held
+  by @backend (1st in line)` and later `the tests lock passed to @frontend`.
+- **Locks free themselves.** A lock belongs to the turn that took it. It is released when
+  that turn ends, however it ends: done, failed, aborted, stopped with **Stop**, or ended by
+  the watchdog. Resetting an agent's session, removing it from the channel, or deactivating
+  it drops its locks and its places in line too. An agent can let go sooner with
+  `canopy_lock_release`, or ask to keep a lock across turns; such a lock is freed after the
+  time set under Settings → Conversation (30 minutes by default).
+- **A grant nobody uses passes on.** If the woken agent cannot start (the channel is paused
+  for the chatter budget, a spend limit or the billing hold stopped it), the lock passes to
+  the next in line after three minutes.
+- **Waiting on you keeps the lock.** An agent blocked on your answer to a question or
+  permission card is still in its turn, so it keeps what it holds. The lock's chip gets a
+  blue dot and the panel says **waiting on you**: answering the card is what moves the
+  lock along.
+- **Per repository.** Locks belong to the repository, not the channel: every channel and DM
+  on it shows the same locks, and an agent waiting in one channel is woken there when an
+  agent in another channel lets go.
+
+Each lock shows as a chip in the channel header: `tests · @backend · 6m · next:
+@fullstack, @frontend`. Click it for the panel: the holder (and the channel it holds the
+lock from, if not this one), its reason and age, the line behind it, and **Force release**,
+which (after a confirmation) takes the lock from its holder and wakes the next in line.
+Use it when a holder is stuck.
+
+You can hold a lock yourself, for "don't touch the tree, I'm testing by hand": type its
+name and a reason in the panel and press **Take lock**. Agents that ask for it wait until
+you press **Release**; a lock you hold never frees itself.
+
+Agents learn all this from the collaboration preamble. If you have edited it in Settings,
+compare it with the default: the shipped text now tells agents to take locks and never
+broker them, and a custom preamble keeps its own words. Likewise the seeded
+`@project-manager` is now told not to assign or pass locks; an agent created before keeps
+its own prompt.
+
+![Locks panel, light](user-guide/images/locks-panel-light.png)
+
+![Locks panel, dark](user-guide/images/locks-panel-dark.png)
 
 ---
 
@@ -1000,6 +1059,7 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
+| Shared resources | `lock_acquire`, `lock_release`, `locks_list` (see [Locks](#locks)) |
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
@@ -1040,6 +1100,10 @@ given a team, they answer with its members to pick from.
 | `@agent stopped waiting for an answer` | The agent moved on; the card stays and your answer is sent as a new message |
 | `… (sent as a message)` | A late answer or approval, posted to the channel as your message |
 | `set this channel's spend limit` / `spend limit reached` | Budget |
+| `@agent is waiting for the tests lock held by @other (1st in line)` | An agent queued for a lock and ended its turn |
+| `the tests lock passed to @agent` | The lock freed and the next in line was woken |
+| `@agent took the tests lock` / `@agent's turn ended, releasing the tests lock` | Locks taken and freed without a wait (Activity view only) |
+| `<you> took the tests lock back from @agent` / `… was taken back from @agent: not used within 3 minutes` | A Force release, or the lease passing an unused or overlong lock on |
 | `session was compacted` | Context was summarised to stay under the cap |
 | `reset @agent's session` | You dropped the agent's session in this channel |
 

@@ -412,6 +412,29 @@ async function runTurn(sessionID, text, cwd) {
     return finishTurn(sessionID, messageID, part, "Reported three callers of enqueue_charge.", 0.0009);
   }
 
+  // Locks (e2e/tests/locks.spec.ts): "take the tests lock [and keep it]" asks
+  // Canopy for the lock; queued, the agent passes and ends its turn, the way
+  // the system prompt tells it to. The grant wake runs the work and ends, which
+  // releases the lock.
+  const granted = text.match(/You now hold the `([^`]+)` lock/);
+  if (granted) {
+    await tool("bash", { command: "mix test" }, "mix test", "42 tests, 0 failures");
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: `Ran the suite with the \`${granted[1]}\` lock: 42 tests, 0 failures.` });
+    return finishTurn(sessionID, messageID, part, "Ran the suite.", 0.0006);
+  }
+  const lockAsk = (text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "").match(/take the (\S+) lock( and keep it)?/i);
+  if (lockAsk && /new Canopy message/.test(text)) {
+    const keep = Boolean(lockAsk[2]);
+    const result = await mcpCall("lock_acquire", { canopy_session_id: sessionID, name: lockAsk[1], reason: keep ? "e2e run" : "precommit", hold_across_turns: keep });
+    if (/End your turn now/.test(result) || keep) {
+      await mcpCall("pass", { canopy_session_id: sessionID, reason: keep ? "holding the lock" : "queued for the lock" });
+      return finishTurn(sessionID, messageID, part, keep ? "Holding the lock." : "Waiting for the lock.", 0.0004);
+    }
+    await tool("bash", { command: "mix precommit" }, "mix precommit", "ok");
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Ran precommit with the lock." });
+    return finishTurn(sessionID, messageID, part, "Ran precommit.", 0.0005);
+  }
+
   const inline = text;
   // Site "Stop all" shot: a long turn that keeps calling tools until aborted.
   if (/under load|checkout suite/i.test(inline) && /new Canopy message/i.test(text)) {

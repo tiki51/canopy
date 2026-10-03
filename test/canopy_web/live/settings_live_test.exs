@@ -344,6 +344,28 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert Canopy.Settings.question_wait_ms() == :timer.minutes(3)
   end
 
+  test "how long a lock may be kept across turns is a Conversation setting", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    assert has_element?(
+             view,
+             "#chatter-form input[name='setting[lock_hold_minutes]'][value='30']"
+           )
+
+    view
+    |> form("#chatter-form", setting: %{lock_hold_minutes: "45"})
+    |> render_submit()
+
+    assert Canopy.Settings.lock_hold_ms() == :timer.minutes(45)
+
+    view
+    |> form("#chatter-form", setting: %{lock_hold_minutes: "0"})
+    |> render_submit()
+
+    assert has_element?(view, "#chatter-form", "must be greater than or equal to 1")
+    assert Canopy.Settings.lock_hold_ms() == :timer.minutes(45)
+  end
+
   describe "the OpenCode default model" do
     @providers %{
       "providers" => [

@@ -242,7 +242,7 @@ defmodule Canopy.Runtime.Activity do
 
       String.contains?(
         tool,
-        ~w(messages_read messages_search channel_get channels_list agents_list schedules_list handoff_get task_get)
+        ~w(messages_read messages_search channel_get channels_list agents_list schedules_list locks_list handoff_get task_get)
       ) ->
         "catching up"
 
@@ -257,7 +257,7 @@ defmodule Canopy.Runtime.Activity do
 
       String.contains?(
         tool,
-        ~w(delegate handoff channel_create channel_add dm_start schedule_create)
+        ~w(delegate handoff channel_create channel_add dm_start schedule_create lock_acquire lock_release)
       ) ->
         "coordinating"
 

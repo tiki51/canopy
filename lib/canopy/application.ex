@@ -5,6 +5,8 @@ defmodule Canopy.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     children = [
@@ -34,7 +36,22 @@ defmodule Canopy.Application do
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Canopy.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      if Phoenix.Endpoint.server?(:canopy, CanopyWeb.Endpoint), do: release_locks()
+      {:ok, pid}
+    end
+  end
+
+  # No turn survives a restart, so none owns a lock claim any more: those are
+  # released and their waiters promoted. The channels that still have claims
+  # get their channel servers, which wake the new holders and run the lease.
+  # Only for the serving app: a `mix run` beside a running server must not
+  # release the locks its turns hold.
+  defp release_locks do
+    Canopy.Locks.release_on_boot() |> Enum.each(&Canopy.Runtime.ensure_channel/1)
+  rescue
+    e -> Logger.warning("could not release locks at boot: #{Exception.message(e)}")
   end
 
   # Tell Phoenix to update the endpoint configuration

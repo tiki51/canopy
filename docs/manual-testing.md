@@ -324,6 +324,28 @@ to: researcher …" as in the README demo prompt.
       composer, and nothing else starts. **Continue** runs what was held; typing anything
       also resets the budget.
 
+## 10i. Locks
+
+- [ ] Ask @backend to run the test suite → it calls `canopy_lock_acquire` before `mix test`;
+      the header shows a `tests · @backend · <1m` chip while it runs, and the chip is gone
+      when its turn ends (Activity view: `@backend's turn ended, releasing the tests lock`).
+- [ ] While @backend holds it, ask @frontend to run the suite too (Settings → Conversation:
+      one agent at a time off, or a second channel on the same repository) → the timeline
+      shows `@frontend is waiting for the tests lock held by @backend (1st in line)`, the
+      chip reads `next: @frontend`, and @frontend ends its turn without running anything.
+      When @backend's turn ends, `the tests lock passed to @frontend` appears and @frontend
+      wakes on its own and runs the suite. Nobody posts "lock released".
+- [ ] A holder that asks you a question keeps its lock; the chip gets a blue dot and the
+      panel says "waiting on you". Answer the card; when its turn ends, the lock passes on.
+- [ ] Click the chip → the panel lists holder, reason, age and the line. **Force release**
+      (with a confirmation) passes the lock to the next in line, who is woken.
+- [ ] Take a lock yourself from the panel ("testing by hand") → agents that ask for it
+      queue behind you; **Release** wakes the first of them.
+- [ ] Reset the holder's session, remove it from the channel, or press **Stop** → its locks
+      and places in line go, and the next waiter is woken.
+- [ ] Restart `mix phx.server` while an agent waits for a lock → the turn holding it is gone,
+      so the waiter is woken with the lock shortly after boot.
+
 ## 10e. Scheduled tasks
 
 - [ ] Tell an agent "remind me in 2 minutes to check the deploy" → it calls

@@ -206,6 +206,9 @@ defmodule Canopy.Settings do
   @doc "How long a Claude Code question blocks its turn before going async, in milliseconds."
   def question_wait_ms, do: :timer.minutes(get().question_wait_minutes || 10)
 
+  @doc "How long an agent may keep a lock held across turns before Canopy frees it, in milliseconds."
+  def lock_hold_ms, do: :timer.minutes(get().lock_hold_minutes || 30)
+
   @doc """
   How many agent turns a channel allows between user messages before pausing,
   or nil when pausing is turned off.

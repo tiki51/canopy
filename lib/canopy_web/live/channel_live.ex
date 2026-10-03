@@ -1,7 +1,7 @@
 defmodule CanopyWeb.ChannelLive do
   @moduledoc """
   The main screen: one channel's header, feed, live agent telemetry, permission
-  cards, pending handoffs, task form, and the composer.
+  cards, pending handoffs, task form, the repository's locks, and the composer.
 
   The process subscribes to the channel topic *before* loading the feed so no
   event can slip between the query and the subscription. Live navigation between
@@ -20,6 +20,7 @@ defmodule CanopyWeb.ChannelLive do
     Documents,
     Messages,
     Handoffs,
+    Locks,
     PermissionRequests,
     QuestionRequests,
     Repositories,
@@ -154,6 +155,9 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:spent, Costs.channel_total(id))
     |> assign(:editing_schedules?, false)
     |> assign(:schedules, Schedules.list_for_channel(id))
+    |> assign(:editing_locks?, false)
+    |> assign(:lock_form, to_form(%{"name" => Locks.default_name(), "reason" => ""}, as: :lock))
+    |> watch_locks()
     |> assign(:changes, nil)
     |> assign_task(Tasks.for_channel(id))
     |> assign_composer("")
@@ -167,7 +171,37 @@ defmodule CanopyWeb.ChannelLive do
   defp leave_channel(%{assigns: %{channel: channel, branch_timer: timer}} = socket) do
     if connected?(socket), do: Timeline.unsubscribe(channel.id)
     if timer, do: Process.cancel_timer(timer)
-    assign(socket, :branch_timer, nil)
+    socket |> unwatch_locks() |> assign(:branch_timer, nil)
+  end
+
+  # Locks belong to the repository, so every channel on it shows the same
+  # ones; the view follows the repository's lock topic (a DM can move).
+  defp watch_locks(%{assigns: %{channel: channel}} = socket) do
+    repository_id = channel.repository_id
+
+    socket =
+      if Map.get(socket.assigns, :locks_repository_id) == repository_id do
+        socket
+      else
+        socket = unwatch_locks(socket)
+        if connected?(socket), do: Locks.subscribe(repository_id)
+        assign(socket, :locks_repository_id, repository_id)
+      end
+
+    socket
+    |> assign(:locks, Locks.list(repository_id))
+    |> assign(:now, DateTime.utc_now())
+  end
+
+  defp unwatch_locks(socket) do
+    case Map.get(socket.assigns, :locks_repository_id) do
+      nil ->
+        socket
+
+      repository_id ->
+        if connected?(socket), do: Locks.unsubscribe(repository_id)
+        assign(socket, :locks_repository_id, nil)
+    end
   end
 
   # Thread replies are nested under their root instead of listed inline. Replies
@@ -396,8 +430,19 @@ defmodule CanopyWeb.ChannelLive do
        |> assign(:paused?, status in [:paused, :stopped])
        |> assign(:stopped?, status == :stopped)}
 
+  # the same tick keeps the lock ages current
   def handle_info(:refresh_branch, socket) do
-    {:noreply, socket |> assign_branch() |> schedule_branch_refresh()}
+    {:noreply,
+     socket
+     |> assign_branch()
+     |> assign(:now, DateTime.utc_now())
+     |> schedule_branch_refresh()}
+  end
+
+  def handle_info({:locks_changed, repository_id}, socket) do
+    if repository_id == socket.assigns.channel.repository_id,
+      do: {:noreply, watch_locks(socket)},
+      else: {:noreply, socket}
   end
 
   # a team created, edited, or deleted: the composer and the Members panel follow
@@ -453,7 +498,7 @@ defmodule CanopyWeb.ChannelLive do
     do: socket |> refresh_channel() |> Nav.refresh_nav()
 
   defp react_to(socket, %{event_type: "repository_switched"}),
-    do: socket |> refresh_channel() |> assign_branch() |> Nav.refresh_nav()
+    do: socket |> refresh_channel() |> assign_branch() |> watch_locks() |> Nav.refresh_nav()
 
   defp react_to(socket, %{event_type: "agent_turn_completed"}),
     do: assign(socket, :spent, Costs.channel_total(cid(socket)))
@@ -924,6 +969,70 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
+  def handle_event("toggle_locks", _params, socket),
+    do: {:noreply, assign(socket, :editing_locks?, not socket.assigns.editing_locks?)}
+
+  # The user's way out of a stuck lock: whoever holds it lets go now, and the
+  # next in line is woken. Also how the user releases a lock they took.
+  def handle_event("force_release", %{"name" => name}, socket) do
+    %{channel: channel, user: user} = socket.assigns
+
+    socket =
+      case Locks.force_release(channel.repository_id, name, user) do
+        {:ok, nil} ->
+          put_flash(socket, :info, "Released `#{name}`; nobody was waiting.")
+
+        {:ok, next} ->
+          put_flash(socket, :info, "Released `#{name}`; #{Locks.holder_name(next)} has it now.")
+
+        {:error, :not_found} ->
+          put_flash(socket, :error, "Nobody holds `#{name}` any more.")
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, watch_locks(socket)}
+  end
+
+  # A lock the user holds by hand ("don't touch the tree, I'm testing"):
+  # agents that ask for it wait until the user releases it.
+  def handle_event("take_lock", %{"lock" => %{"name" => name} = params}, socket) do
+    %{channel: channel, user: user} = socket.assigns
+
+    socket =
+      case Locks.acquire_for_user(user, channel, name, params["reason"]) do
+        {:granted, claim} ->
+          socket
+          |> assign(
+            :lock_form,
+            to_form(%{"name" => Locks.default_name(), "reason" => ""}, as: :lock)
+          )
+          |> put_flash(
+            :info,
+            "You hold `#{claim.name}`. Agents that ask for it wait until you release it."
+          )
+
+        {:already_held, claim} ->
+          put_flash(socket, :info, "You already hold `#{claim.name}`.")
+
+        {:error, {:held, holder}} ->
+          put_flash(
+            socket,
+            :error,
+            "`#{holder.name}` is held by #{Locks.holder_name(holder)}. Force release it first, or wait."
+          )
+
+        {:error, %Ecto.Changeset{}} ->
+          put_flash(socket, :error, "Could not take that lock.")
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, watch_locks(socket)}
+  end
+
   def handle_event("toggle_members", _params, socket) do
     socket = assign(socket, :editing_members?, not socket.assigns.editing_members?)
     {:noreply, if(socket.assigns.editing_members?, do: refresh_members(socket), else: socket)}
@@ -1141,6 +1250,18 @@ defmodule CanopyWeb.ChannelLive do
         repositories={@repositories}
         editing_budget?={@editing_budget?}
         spent={@spent}
+        locks={@locks}
+        editing_locks?={@editing_locks?}
+        now={@now}
+      />
+
+      <.locks_panel
+        :if={@editing_locks?}
+        locks={@locks}
+        channel={@channel}
+        now={@now}
+        form={@lock_form}
+        user_name={@user.display_name}
       />
 
       <.budget_panel :if={@editing_budget?} channel={@channel} spent={@spent} />
@@ -1293,6 +1414,9 @@ defmodule CanopyWeb.ChannelLive do
   attr :repositories, :list, default: []
   attr :editing_budget?, :boolean, default: false
   attr :spent, :float, default: 0.0
+  attr :locks, :list, default: []
+  attr :editing_locks?, :boolean, default: false
+  attr :now, :any, default: nil
 
   defp repo_root(%{repository: %{path: path}}), do: path
   defp repo_root(_channel), do: nil
@@ -1366,6 +1490,40 @@ defmodule CanopyWeb.ChannelLive do
               class="size-4"
             />
             <span class="hidden sm:inline">Activity</span>
+          </button>
+          <button
+            :for={lock <- @locks}
+            type="button"
+            id={"lock-chip-#{lock_dom_id(lock.name)}"}
+            class={[
+              "btn btn-xs btn-ghost max-w-72 gap-1 font-normal",
+              @editing_locks? && "btn-active"
+            ]}
+            phx-click="toggle_locks"
+            title={lock_title(lock, @now)}
+          >
+            <.icon name="hero-lock-closed-mini" class="size-4 shrink-0 text-warning" />
+            <span class="font-mono font-medium">{lock.name}</span>
+            <span class="hidden min-w-0 truncate text-base-content/70 sm:inline">
+              {lock_summary(lock, @now)}
+            </span>
+            <span
+              :if={lock.awaiting_user?}
+              id={"lock-chip-#{lock_dom_id(lock.name)}-awaiting"}
+              class="size-2 shrink-0 rounded-full bg-info"
+              title="The holder is waiting on your answer to a card"
+            />
+          </button>
+          <button
+            :if={@locks == []}
+            type="button"
+            id="edit-locks"
+            class={["btn btn-xs btn-ghost", @editing_locks? && "btn-active"]}
+            phx-click="toggle_locks"
+            title="Locks on this repository's shared resources"
+          >
+            <.icon name="hero-lock-open-mini" class="size-4" />
+            <span class="hidden sm:inline">Locks</span>
           </button>
           <button
             type="button"
@@ -1515,6 +1673,22 @@ defmodule CanopyWeb.ChannelLive do
             <Layouts.status_dot status={Map.get(@agent_statuses, member.id, :idle)} />
             <span>@{member.name}</span>
             <span
+              :if={locks_held(@locks, member.id) != []}
+              id={"member-#{member.id}-lock"}
+              class="flex items-center text-warning"
+              title={"Holds " <> lock_names(locks_held(@locks, member.id))}
+            >
+              <.icon name="hero-lock-closed-micro" class="size-3.5" />
+            </span>
+            <span
+              :if={locks_queued(@locks, member.id) != []}
+              id={"member-#{member.id}-lock-queued"}
+              class="flex items-center text-base-content/50"
+              title={"Waiting for " <> lock_names(locks_queued(@locks, member.id))}
+            >
+              <.icon name="hero-clock-micro" class="size-3.5" />
+            </span>
+            <span
               :if={Map.get(@agent_statuses, member.id) == :awaiting_user}
               id={"member-#{member.id}-awaiting"}
               class="text-xs text-info"
@@ -1549,6 +1723,181 @@ defmodule CanopyWeb.ChannelLive do
       </div>
     </header>
     """
+  end
+
+  attr :locks, :list, required: true
+  attr :channel, :map, required: true
+  attr :now, :any, required: true
+  attr :form, :any, required: true
+  attr :user_name, :string, required: true
+
+  # Every lock on the repository: holder, how long, why, the line behind it,
+  # and Force release. A holder whose turn is blocked on a card is marked:
+  # its lock frees itself only when that turn ends, so the card is the way on.
+  defp locks_panel(assigns) do
+    ~H"""
+    <section
+      id="locks-panel"
+      class="flex flex-col gap-3 border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
+          Locks
+        </span>
+        <span class="text-xs text-base-content/60">
+          Shared by every channel on {@channel.repository.name}. Agents take them before running
+          tests or anything that writes shared output; each frees itself when its holder's turn ends.
+        </span>
+      </div>
+      <p :if={@locks == []} id="locks-empty" class="text-sm text-base-content/60">
+        No locks are held.
+      </p>
+      <ul :if={@locks != []} id="locks-list" class="flex flex-col gap-2">
+        <li
+          :for={lock <- @locks}
+          id={"lock-#{lock_dom_id(lock.name)}"}
+          class="flex flex-col gap-1.5 rounded-box border border-base-300 bg-base-100 px-3 py-2"
+        >
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <.icon name="hero-lock-closed-mini" class="size-4 text-warning" />
+            <span class="font-mono font-semibold">{lock.name}</span>
+            <%= if lock.holder do %>
+              <span id={"lock-#{lock_dom_id(lock.name)}-holder"}>
+                {holder_label(lock.holder, @user_name)}{lock_where(lock.holder, @channel)} · {Locks.age(
+                  lock.holder,
+                  @now || DateTime.utc_now()
+                )}
+              </span>
+              <span :if={lock.holder.reason} class="text-base-content/60">
+                “{lock.holder.reason}”
+              </span>
+              <span
+                :if={lock.awaiting_user?}
+                id={"lock-#{lock_dom_id(lock.name)}-awaiting"}
+                class="badge badge-sm badge-info badge-soft"
+                title="Its turn is blocked on a question or permission card; the lock frees itself when that turn ends. Answer the card to move it along."
+              >
+                waiting on you
+              </span>
+              <span
+                :if={lock.holder.hold_across_turns}
+                class="badge badge-sm badge-ghost"
+                title="Kept after its turns end, until released or the hold runs out"
+              >
+                across turns
+              </span>
+              <button
+                type="button"
+                id={"force-release-#{lock_dom_id(lock.name)}"}
+                class={[
+                  "btn btn-xs ml-auto",
+                  if(lock.holder.user_id, do: "btn-primary btn-soft", else: "btn-ghost text-error")
+                ]}
+                phx-click="force_release"
+                phx-value-name={lock.name}
+                data-canopy-confirm={
+                  !lock.holder.user_id &&
+                    "#{holder_label(lock.holder, @user_name)} may still be using it. The next in line is woken."
+                }
+                data-canopy-confirm-title={!lock.holder.user_id && "Force release `#{lock.name}`?"}
+                data-canopy-confirm-label={!lock.holder.user_id && "Force release"}
+              >
+                {if lock.holder.user_id, do: "Release", else: "Force release"}
+              </button>
+            <% else %>
+              <span class="text-base-content/60">passing to the next in line…</span>
+            <% end %>
+          </div>
+          <ol
+            :if={lock.queue != []}
+            id={"lock-#{lock_dom_id(lock.name)}-queue"}
+            class="ml-6 flex list-decimal flex-col gap-0.5 pl-4 text-xs text-base-content/70"
+          >
+            <li :for={waiter <- lock.queue}>
+              {holder_label(waiter, @user_name)}{lock_where(waiter, @channel)}
+              <span :if={waiter.reason} class="text-base-content/50">· “{waiter.reason}”</span>
+              <span class="text-base-content/40">
+                · waiting {Locks.age(waiter, @now || DateTime.utc_now())}
+              </span>
+            </li>
+          </ol>
+        </li>
+      </ul>
+      <.form
+        for={@form}
+        id="take-lock-form"
+        phx-submit="take_lock"
+        class="flex flex-wrap items-center gap-2"
+      >
+        <input
+          type="text"
+          id="take-lock-name"
+          name={@form[:name].name}
+          value={@form[:name].value}
+          class="input input-sm w-36 font-mono"
+          aria-label="Lock name"
+        />
+        <input
+          type="text"
+          id="take-lock-reason"
+          name={@form[:reason].name}
+          value={@form[:reason].value}
+          placeholder="Why (testing by hand…)"
+          class="input input-sm w-56 min-w-0"
+          aria-label="Reason"
+        />
+        <button type="submit" id="take-lock" class="btn btn-sm">Take lock</button>
+        <span class="text-xs text-base-content/60">
+          Hold one yourself; agents that ask for it wait until you release it.
+        </span>
+      </.form>
+    </section>
+    """
+  end
+
+  # lock names may carry `:` `/` `.`; DOM ids keep letters, digits and dashes
+  defp lock_dom_id(name), do: String.replace(name, ~r/[^a-z0-9-]/, "-")
+
+  defp holder_label(%{user_id: id}, user_name) when is_binary(id), do: user_name
+  defp holder_label(claim, _user_name), do: Locks.holder_name(claim)
+
+  # the holder's channel, when it is another one on the repository
+  defp lock_where(%{channel: %{id: id, name: name}}, %{id: current}) when id != current,
+    do: " in #" <> name
+
+  defp lock_where(_claim, _channel), do: ""
+
+  # `@backend · 6m · next: @fullstack, @frontend`
+  defp lock_summary(lock, now) do
+    holder =
+      case lock.holder do
+        nil -> ["passing on"]
+        claim -> [Locks.holder_name(claim), Locks.age(claim, now || DateTime.utc_now())]
+      end
+
+    next =
+      case lock.queue do
+        [] -> []
+        waiters -> ["next: " <> Enum.map_join(waiters, ", ", &Locks.holder_name/1)]
+      end
+
+    Enum.join(holder ++ next, " · ")
+  end
+
+  defp lock_title(lock, now) do
+    waiting =
+      if lock.awaiting_user?, do: ". The holder is waiting on your answer to a card", else: ""
+
+    "Lock `#{lock.name}`: #{lock_summary(lock, now)}#{waiting}. Click for details and Force release."
+  end
+
+  defp locks_held(locks, agent_id),
+    do: for(%{holder: %{agent_id: ^agent_id}, name: name} <- locks, do: name)
+
+  defp lock_names(names), do: Enum.map_join(names, ", ", &"`#{&1}`")
+
+  defp locks_queued(locks, agent_id) do
+    for lock <- locks, Enum.any?(lock.queue, &(&1.agent_id == agent_id)), do: lock.name
   end
 
   defp task_badge("open"), do: "badge-ghost"

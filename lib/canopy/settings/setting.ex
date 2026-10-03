@@ -22,6 +22,9 @@ defmodule Canopy.Settings.Setting do
     # how long a Claude Code agent's question blocks its turn before the agent
     # moves on and the answer arrives later as a new message
     field :question_wait_minutes, :integer, default: 10
+    # the longest an agent may keep a lock it asked to hold across turns
+    # before Canopy frees it (Canopy.Locks)
+    field :lock_hold_minutes, :integer, default: 30
     # a global stop on agent activity (Canopy.Hold): why, and since when
     field :hold_reason, :string
     field :hold_at, :utc_datetime_usec
@@ -57,6 +60,7 @@ defmodule Canopy.Settings.Setting do
       :chatter_limit,
       :serialize_turns,
       :question_wait_minutes,
+      :lock_hold_minutes,
       :hold_reason,
       :hold_at,
       :auditor_agent_id,
@@ -81,6 +85,7 @@ defmodule Canopy.Settings.Setting do
       :chatter_pause,
       :chatter_limit,
       :question_wait_minutes,
+      :lock_hold_minutes,
       :claude_binary
     ])
     |> validate_number(:claude_max_budget_usd, greater_than: 0)
@@ -90,6 +95,10 @@ defmodule Canopy.Settings.Setting do
     |> validate_number(:question_wait_minutes,
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: max_question_wait_minutes()
+    )
+    |> validate_number(:lock_hold_minutes,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: max_lock_hold_minutes()
     )
     |> validate_length(:user_display_name, max: 80)
     |> validate_length(:collaboration_prompt, max: 20_000)
@@ -138,6 +147,9 @@ defmodule Canopy.Settings.Setting do
 
   @doc "The longest a Claude Code question may wait: a minute under the MCP tool timeout."
   def max_question_wait_minutes, do: 29
+
+  @doc "The longest a lock held across turns may be kept: a working day."
+  def max_lock_hold_minutes, do: 480
 
   @doc "Trims a Claude config directory and expands a leading `~` using HOME."
   def normalize_claude_config_dir(value) when is_binary(value) do

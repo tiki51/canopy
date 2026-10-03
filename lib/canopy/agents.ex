@@ -72,6 +72,7 @@ defmodule Canopy.Agents do
   def deactivate(%Agent{} = agent) do
     with {:ok, agent} <- agent |> Ecto.Changeset.change(active: false) |> Repo.update() do
       Canopy.Schedules.pause_for_agent(agent.id, "@#{agent.name} was deactivated")
+      Canopy.Locks.release_agent(agent.id, "@#{agent.name} was deactivated")
       {:ok, agent}
     end
   end

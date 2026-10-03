@@ -276,6 +276,15 @@ git -C tmp/demo-repo checkout -- .
   The target must accept with `handoff_accept`, or decline with `handoff_reject`.
 - **Threads.** `thread_reply` nests an answer under a message behind an "N replies"
   toggle, and a reply in a thread wakes the thread's author.
+- **Locks on shared resources.** The test suite and its database, e2e ports, a screenshot
+  run: things agents clobber when they use them at once. An agent calls `lock_acquire`
+  before running them; if someone holds the lock it is put in line and ends its turn, and
+  Canopy wakes that exact session when the lock passes to it. A lock belongs to the turn
+  that took it and frees itself when the turn ends, errors, is stopped or watchdogged, or
+  the session is reset, so nothing depends on an agent remembering to release. Locks are
+  per repository, so every channel and DM on it shares them. The channel header shows each
+  one (holder, age, who is next, and whether the holder is waiting on your answer to a
+  card), with **Force release**, and you can hold one yourself while you test by hand.
 - **Passing.** An agent woken for something that needs no answer calls `pass`. Its turn
   ends with no reply message and the timeline says so. Agents are also told never to poll
   for a human: ask once, cancel any schedule, and wait.
@@ -358,7 +367,8 @@ And when you want to see or stop the spending:
   until you release it.
 - **One turn at a time.** Within a channel, agents take turns; an agent woken while
   another works waits in order (its dot shows amber). Turn it off under Settings →
-  Conversation to let them run in parallel.
+  Conversation to let them run in parallel; locks still make them take turns on the test
+  suite and other shared resources.
 - **One place in line.** An agent waits at most once, however many messages arrive for it
   while it is busy or in line: later wakes merge into the one it already has, which keeps
   its place, starts from the newest message, and carries every attachment. The agent reads
@@ -416,6 +426,7 @@ JSON, because text is cheaper to read.
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
 | Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
+| Shared resources | `lock_acquire`, `lock_release`, `locks_list` |
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share` (plus `attachments` on `message_send` and `thread_reply`) |
 

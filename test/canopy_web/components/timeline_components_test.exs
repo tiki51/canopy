@@ -132,6 +132,82 @@ defmodule CanopyWeb.TimelineComponentsTest do
              "Priya dismissed @backend's question"
   end
 
+  test "lock events read as sentences, and the uneventful ones are routine" do
+    names = %{"agt_1" => "backend", "agt_2" => "fullstack"}
+
+    text = fn type, payload ->
+      TimelineComponents.event_text(
+        %{event_type: type, agent_id: "agt_1", payload: payload},
+        names,
+        "Priya"
+      )
+    end
+
+    assert text.("lock_granted", %{
+             "name" => "tests",
+             "promoted" => false,
+             "reason" => "full suite"
+           }) ==
+             "@backend took the `tests` lock: full suite"
+
+    assert text.("lock_granted", %{"name" => "tests", "promoted" => true}) ==
+             "the `tests` lock passed to @backend"
+
+    assert text.("lock_queued", %{
+             "name" => "tests",
+             "position" => 2,
+             "holder_agent_id" => "agt_2"
+           }) ==
+             "@backend is waiting for the `tests` lock held by @fullstack (2nd in line)"
+
+    assert text.("lock_released", %{
+             "name" => "tests",
+             "released_by" => "turn_end",
+             "was" => "held",
+             "next_agent_id" => "agt_2"
+           }) == "@backend's turn ended, releasing the `tests` lock; next: @fullstack"
+
+    assert text.("lock_released", %{
+             "name" => "tests",
+             "released_by" => "user",
+             "was" => "held",
+             "note" => "force-released by Priya"
+           }) == "Priya took the `tests` lock back from @backend: force-released by Priya"
+
+    assert text.("lock_released", %{
+             "name" => "tests",
+             "released_by" => "user",
+             "user" => true,
+             "was" => "held"
+           }) ==
+             "Priya released the `tests` lock"
+
+    assert text.("lock_released", %{
+             "name" => "tests",
+             "released_by" => "lease",
+             "was" => "held",
+             "note" => "not used within 3 minutes"
+           }) == "the `tests` lock was taken back from @backend: not used within 3 minutes"
+
+    assert text.("lock_released", %{
+             "name" => "tests",
+             "released_by" => "agent",
+             "was" => "waiting"
+           }) ==
+             "@backend left the line for the `tests` lock"
+
+    routine = &TimelineComponents.activity_class(%{event_type: &1, payload: &2})
+    assert routine.("lock_granted", %{"promoted" => false}) == "routine"
+    assert routine.("lock_granted", %{"promoted" => true}) == nil
+    assert routine.("lock_released", %{"released_by" => "turn_end"}) == "routine"
+
+    assert routine.("lock_released", %{"released_by" => "turn_end", "next_agent_id" => "agt_2"}) ==
+             nil
+
+    assert routine.("lock_released", %{"released_by" => "lease", "note" => "x"}) == nil
+    assert routine.("lock_queued", %{}) == nil
+  end
+
   test "paths inside the repository read relative to its root" do
     root = "/Users/me/tmp/acme-billing"
 

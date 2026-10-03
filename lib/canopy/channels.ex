@@ -360,7 +360,11 @@ defmodule Canopy.Channels do
           from m in ChannelAgent, where: m.channel_id == ^channel_id and m.agent_id == ^agent_id
         )
 
-      if count > 0, do: record_membership(channel_id, agent_id, "member_removed")
+      if count > 0 do
+        record_membership(channel_id, agent_id, "member_removed")
+        Canopy.Locks.release_agent_in_channel(channel_id, agent_id, "removed from the channel")
+      end
+
       {:ok, count}
     end
   end

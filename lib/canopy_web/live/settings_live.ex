@@ -208,7 +208,13 @@ defmodule CanopyWeb.SettingsLive do
     end
   end
 
-  @chatter_fields ["chatter_pause", "chatter_limit", "serialize_turns", "question_wait_minutes"]
+  @chatter_fields [
+    "chatter_pause",
+    "chatter_limit",
+    "serialize_turns",
+    "question_wait_minutes",
+    "lock_hold_minutes"
+  ]
 
   def handle_event("validate_chatter", %{"setting" => params}, socket) do
     changeset =
@@ -752,6 +758,8 @@ defmodule CanopyWeb.SettingsLive do
               every one of them spends tokens; keep this on unless you want the swarm. An agent
               waiting on your answer to a question or permission card does not hold the channel:
               the next one starts, and when you answer, the waiting agent carries on alongside it.
+              What agents really contend for (the test suite, e2e ports, screenshot runs) is
+              guarded by locks either way: they take turns on those, whatever this says.
             </p>
             <div class="max-w-xs">
               <.input
@@ -766,6 +774,19 @@ defmodule CanopyWeb.SettingsLive do
               After that the agent ends its turn instead of sitting on the question. The card stays
               open, and your answer reaches the agent as a message whenever you give it. At most {Canopy.Settings.Setting.max_question_wait_minutes()} minutes: Claude Code gives up
               on a waiting tool call after 30.
+            </p>
+            <div class="max-w-xs">
+              <.input
+                field={@chatter_form[:lock_hold_minutes]}
+                type="number"
+                min="1"
+                max={Canopy.Settings.Setting.max_lock_hold_minutes()}
+                label="Minutes an agent may keep a lock across turns"
+              />
+            </div>
+            <p class="-mt-1 text-xs text-base-content/60">
+              A lock is released when its holder's turn ends. An agent can ask to keep one across
+              turns; after this long Canopy frees it anyway, and the next in line is woken.
             </p>
             <.input
               field={@chatter_form[:chatter_pause]}

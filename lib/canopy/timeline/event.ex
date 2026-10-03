@@ -22,6 +22,7 @@ defmodule Canopy.Timeline.Event do
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
     permission_requested permission_resolved permission_detached
     question_requested question_resolved question_detached
+    lock_granted lock_queued lock_released
   )
 
   schema "timeline_events" do

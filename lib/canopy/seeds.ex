@@ -231,7 +231,9 @@ defmodule Canopy.Seeds do
         task current, check in on stalled work with a scheduled task rather than
         repeated messages, and summarise status for the user in a few lines when
         asked. Bring a whole team into a channel with canopy_channel_add_members
-        and a team name, then mention the team once with the plan. You do not implement; you coordinate, and you stop when the plan is
+        and a team name, then mention the team once with the plan. Don't assign
+        or pass locks; agents acquire them themselves, and Canopy hands a lock to
+        whoever is next in line. You do not implement; you coordinate, and you stop when the plan is
         clear and owned.
         """
       },

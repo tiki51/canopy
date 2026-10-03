@@ -48,6 +48,9 @@ defmodule Canopy.MCP.Server do
   component(Tools.DocumentsList, name: "documents_list")
   component(Tools.DocumentGet, name: "document_get")
   component(Tools.DocumentShare, name: "document_share")
+  component(Tools.LockAcquire, name: "lock_acquire")
+  component(Tools.LockRelease, name: "lock_release")
+  component(Tools.LocksList, name: "locks_list")
 
   @tool_names ~w(
     channels_list channel_get messages_read message_get messages_search message_send thread_reply
@@ -56,6 +59,7 @@ defmodule Canopy.MCP.Server do
     channel_remove_members schedule_create schedules_list schedule_cancel memory_read memory_write
     notes_read notes_write
     dm_switch_repository costs_report documents_list document_get document_share permission
+    lock_acquire lock_release locks_list
   )
 
   @doc "The names of every tool this server exposes, in registration order."

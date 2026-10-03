@@ -81,5 +81,12 @@ defmodule Canopy.AgentSessions do
     |> Repo.update()
   end
 
-  def delete(%AgentSession{} = session), do: Repo.delete(session)
+  @doc """
+  Deletes the session. Its lock claims go first, through `Canopy.Locks`, so a
+  lock it held passes to the next in line rather than vanishing with the row.
+  """
+  def delete(%AgentSession{} = session) do
+    Canopy.Locks.release_session(session.id, "reset", "session reset")
+    Repo.delete(session)
+  end
 end

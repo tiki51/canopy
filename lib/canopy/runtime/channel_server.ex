@@ -26,8 +26,19 @@ defmodule Canopy.Runtime.ChannelServer do
   answerable, and a late answer is posted to the channel as a message from
   the user mentioning the agent, which wakes it like any other message.
 
-  The MCP tools never call this process; they write through contexts and the
-  resulting timeline events arrive here like any other.
+  Locks (`Canopy.Locks`). A lock claim belongs to the turn that holds it:
+  every turn carries a `ref`, and however the turn ends (done, error, stopped,
+  watchdog) its claims are released. A turn blocked on a card is still in
+  flight, so it keeps its locks until it ends. When a lock passes to a waiting
+  session of this channel, `{:lock_granted, claim}` arrives on the
+  repository's locks topic and that session is woken through the normal wake
+  path (holds, spend limit, chatter budget, serialize_turns); the turn the
+  wake starts takes ownership of the claim. The watchdog also runs the lock
+  lease for this channel's claims.
+
+  The MCP tools rarely call this process (`canopy_pass`, and lock tools asking
+  for the turn in flight); they write through contexts and the resulting
+  timeline events arrive here like any other.
   """
 
   use GenServer
@@ -39,6 +50,7 @@ defmodule Canopy.Runtime.ChannelServer do
     Channels,
     Costs,
     Delegations,
+    Locks,
     Messages,
     PermissionRequests,
     QuestionRequests,
@@ -174,6 +186,9 @@ defmodule Canopy.Runtime.ChannelServer do
 
   def continue(server), do: GenServer.call(server, :continue)
 
+  @doc "The `ref` of the session's turn in flight (by `AgentSession.id`), or nil."
+  def turn_ref(server, session_id), do: GenServer.call(server, {:turn_ref, session_id}, 15_000)
+
   def wake(server, agent_id, text),
     do: GenServer.cast(server, {:wake, {:root, agent_id}, %{text: text, trigger: "scheduled"}})
 
@@ -208,6 +223,10 @@ defmodule Canopy.Runtime.ChannelServer do
     :ok = Timeline.subscribe(state.channel.id)
     :ok = Engine.subscribe_repository(state.repository.id)
     :ok = Settings.subscribe()
+    :ok = Locks.subscribe(state.repository.id)
+    # a lock granted to a session here while no server ran (a restart) still
+    # waits for its wake; sent to self so init does not prompt an engine
+    send(self(), :wake_pending_grants)
     state = attach_engines(state)
 
     # Turns in flight are not restored: a server restarted mid-turn does not
@@ -372,6 +391,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
     aborted = map_size(turns)
 
+    # what the channel's sessions hold or wait for goes too: a waiter left in
+    # line would be granted the lock and woken into a stopped channel
+    Enum.each(state.sessions, fn {_agent_id, session} ->
+      Locks.release_session(session.id, "user", "Stop all")
+    end)
+
     {:ok, _} =
       Messages.post_user_note(
         state.channel.id,
@@ -406,6 +431,15 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
+
+  def handle_call({:turn_ref, session_id}, _from, state) do
+    ref =
+      Enum.find_value(state.turns, fn {_sid, turn} ->
+        if turn.session.id == session_id, do: Map.get(turn, :ref)
+      end)
+
+    {:reply, ref, state}
+  end
 
   # The agent chose not to respond: the turn ends without a reply message.
   def handle_call({:pass, sid, reason}, _from, state) do
@@ -522,12 +556,31 @@ defmodule Canopy.Runtime.ChannelServer do
   # the turn stays in flight forever and every later wake for that agent queues
   # behind it, which looks like a channel that has stopped responding. Any turn
   # that has gone quiet, or has been stuck retrying a failing model call, gets
-  # reconciled against the engine's own view.
+  # reconciled against the engine's own view. The same tick then runs the lock
+  # lease for this channel's claims, once any turn that was gone is finished.
   def handle_info(:watchdog, state) do
     schedule_watchdog()
 
-    {:noreply,
-     if(stalled_turn?(state) or retrying_turn?(state), do: reconcile(state), else: state)}
+    state =
+      if stalled_turn?(state) or retrying_turn?(state), do: reconcile(state), else: state
+
+    {:noreply, expire_locks(state)}
+  end
+
+  # A lock passed to a waiting session of this channel: wake that session.
+  def handle_info(
+        {:lock_granted, %Locks.Claim{channel_id: id} = claim},
+        %{channel: %{id: id}} = state
+      ),
+      do: {:noreply, wake_grant(state, claim)}
+
+  def handle_info(:wake_pending_grants, state) do
+    state =
+      state.channel.id
+      |> Locks.pending_grants_in_channel()
+      |> Enum.reduce(state, &wake_grant(&2, &1))
+
+    {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -686,8 +739,12 @@ defmodule Canopy.Runtime.ChannelServer do
     end
 
     case Map.get(state.index, sid) do
-      nil -> %{state | turns: Map.delete(state.turns, sid)}
-      who -> finish_turn(state, sid, who, outcome)
+      nil ->
+        Locks.release_turn(turn.session.id, Map.get(turn, :ref))
+        %{state | turns: Map.delete(state.turns, sid)}
+
+      who ->
+        finish_turn(state, sid, who, outcome)
     end
   end
 
@@ -750,6 +807,11 @@ defmodule Canopy.Runtime.ChannelServer do
     limit = chatter_limit()
 
     cond do
+      # A lock grant that passed on while its wake waited (the lease, a Force
+      # release) has nothing left to hand over, and costs no turn.
+      stale_grant?(state, target, text) ->
+        state
+
       # A global hold (billing): drop the wake and say so once per channel.
       # The user's next message, after releasing the hold, wakes agents again.
       Canopy.Hold.active?() ->
@@ -877,7 +939,9 @@ defmodule Canopy.Runtime.ChannelServer do
   # is the newer wake's plus a line saying it stands for more. A delegation
   # carries its task, so a delegation wake keeps its text and the message
   # follows it; two delegation wakes keep both texts, in order, so no task is
-  # lost. Attachments from both ride along.
+  # lost. A lock grant has no text of its own (it is written when the prompt
+  # goes out): it rides along on the other wake, and the lock claims of both
+  # are handed over. Attachments from both ride along.
   defp merge_wake(old, new) do
     attachments =
       (Map.get(old, :attachments, []) ++ Map.get(new, :attachments, []))
@@ -885,6 +949,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
     merged =
       case {Map.get(old, :trigger), Map.get(new, :trigger)} do
+        {"lock", _} ->
+          new
+
+        {_, "lock"} ->
+          old
+
         {"delegation", "delegation"} ->
           old
           |> Map.put(:text, old.text <> "\n" <> new.text)
@@ -900,8 +970,12 @@ defmodule Canopy.Runtime.ChannelServer do
           Map.put(new, :text, new.text <> @merged_wake_note)
       end
 
-    Map.put(merged, :attachments, attachments)
+    merged
+    |> Map.put(:attachments, attachments)
+    |> Map.put(:lock_claim_ids, Enum.uniq(lock_claim_ids(old) ++ lock_claim_ids(new)))
   end
+
+  defp lock_claim_ids(wake), do: Map.get(wake, :lock_claim_ids, [])
 
   defp start_next_waiting(%{waiting: []} = state), do: state
 
@@ -1095,7 +1169,31 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp send_prompt(state, session, agent_id, %{text: text, trigger: trigger} = wake) do
+  defp send_prompt(state, session, agent_id, wake) do
+    case lock_grants(session, wake) do
+      :drop ->
+        Logger.info(
+          "channel #{state.channel.name}: dropped a lock wake for #{agent_name(agent_id)}: the lock passed on before it could start"
+        )
+
+        unless agent_busy?(state, agent_id),
+          do: broadcast(state, {:agent_status, agent_id, :idle})
+
+        state
+
+      {lock_text, claim_ids} ->
+        send_prompt(state, session, agent_id, wake, lock_text, claim_ids)
+    end
+  end
+
+  defp send_prompt(
+         state,
+         session,
+         agent_id,
+         %{text: text, trigger: trigger} = wake,
+         locks,
+         claims
+       ) do
     agent = Agents.get!(agent_id)
     Canopy.Notes.ensure_workspace(state.repository.path)
     {mod, es, state} = engine_of(state, session)
@@ -1107,14 +1205,14 @@ defmodule Canopy.Runtime.ChannelServer do
     start_delegations(ids, session)
 
     prompt = %{
-      text: text <> pending_delegations(state, agent_id, ids),
+      text: text <> locks <> pending_delegations(state, agent_id, ids),
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       attachments: plan
     }
 
     case mod.send_prompt(ctx(state), es, session, agent, prompt) do
       {:ok, %{attachments: attachments}} ->
-        begin_turn(state, session, agent_id, trigger, attachments, ids)
+        begin_turn(state, session, agent_id, trigger, attachments, ids, claims)
 
       {:error, reason} ->
         record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
@@ -1151,9 +1249,41 @@ defmodule Canopy.Runtime.ChannelServer do
     Prompts.pending_delegations(state.channel.name, pending)
   end
 
+  # A wake for a lock the session was granted from the line hands it over,
+  # read when the prompt goes out: a claim that passed on meanwhile (the
+  # lease, a Force release, used and released by an earlier turn) is left
+  # out, and a wake that was only the grant is dropped when nothing is left.
+  # Returns the text to add and the claims the turn takes over.
+  defp lock_grants(session, wake) do
+    case lock_claim_ids(wake) do
+      [] ->
+        {"", []}
+
+      ids ->
+        lock? = Map.get(wake, :trigger) == "lock"
+
+        case Locks.pending_grants(session.id, ids) do
+          [] when lock? -> :drop
+          [] -> {"", []}
+          claims -> {Prompts.lock_granted(claims, standalone?: lock?), Enum.map(claims, & &1.id)}
+        end
+    end
+  end
+
   # The engine accepted a prompt: the session is busy until it reports done.
-  # `delegation_ids` are the delegations the wake handed over, if any.
-  defp begin_turn(state, session, agent_id, trigger, attachments, delegation_ids \\ []) do
+  # `delegation_ids` are the delegations the wake handed over, if any, and
+  # `lock_claim_ids` the granted locks the turn now owns.
+  defp begin_turn(
+         state,
+         session,
+         agent_id,
+         trigger,
+         attachments,
+         delegation_ids \\ [],
+         lock_claim_ids \\ []
+       ) do
+    ref = Canopy.ID.generate("turn")
+    :ok = Locks.stamp_turn(session.id, lock_claim_ids, ref)
     {:ok, _} = AgentSessions.set_status(session, "busy")
     broadcast(state, {:agent_status, agent_id, :busy})
 
@@ -1167,6 +1297,8 @@ defmodule Canopy.Runtime.ChannelServer do
       })
 
     turn = %{
+      # owns the lock claims taken or handed over during the turn
+      ref: ref,
       agent_id: agent_id,
       session: session,
       started_at: System.monotonic_time(:millisecond),
@@ -1211,6 +1343,77 @@ defmodule Canopy.Runtime.ChannelServer do
     end)
 
     plan
+  end
+
+  # -- Locks ------------------------------------------------------------------
+
+  # The lease is a backstop: a pass that fails is tried again on the next tick.
+  defp expire_locks(state) do
+    Locks.expire(channel_id: state.channel.id, active_session_ids: active_session_ids(state))
+    state
+  rescue
+    e ->
+      Logger.warning("channel #{state.channel.name}: lock lease failed: #{Exception.message(e)}")
+      state
+  end
+
+  # A lock passed to a session of this channel: that session is woken like any
+  # other wake (holds, spend limit, chatter budget, serialize_turns; queued
+  # behind its own turn when busy). The wake carries only the claim; its text
+  # is written when the prompt goes out. A user's claim wakes nobody.
+  defp wake_grant(state, %Locks.Claim{session_id: session_id, id: claim_id})
+       when is_binary(session_id) do
+    session =
+      session_for_id(state, session_id) ||
+        Enum.find(
+          AgentSessions.list_for_channel(state.channel.id),
+          &(&1.id == session_id and is_nil(&1.parent_session_id))
+        )
+
+    case session do
+      nil ->
+        state
+
+      session ->
+        state
+        |> put_root(session)
+        |> wake_within_budget(
+          {:root, session.agent_id},
+          %{text: "", trigger: "lock", lock_claim_ids: [claim_id]}
+        )
+    end
+  end
+
+  defp wake_grant(state, _claim), do: state
+
+  defp stale_grant?(state, target, %{trigger: "lock"} = wake) do
+    case Map.get(state.sessions, target_agent_id(target)) do
+      nil -> false
+      session -> Locks.pending_grants(session.id, lock_claim_ids(wake)) == []
+    end
+  end
+
+  defp stale_grant?(_state, _target, _wake), do: false
+
+  # Sessions that are working, or have a wake on its way (queued behind their
+  # turn, or in the channel's line): a lock granted to one of them is about to
+  # be used. A wake held by the chatter budget is not on its way; the user is
+  # away, and the lease passes such a lock on.
+  defp active_session_ids(state) do
+    working = Enum.map(state.turns, fn {_sid, turn} -> turn.session.id end)
+
+    queued =
+      for {sid, [_ | _]} <- state.queues,
+          %{agent_id: agent_id} <- [Map.get(state.index, sid)],
+          %{} = session <- [Map.get(state.sessions, agent_id)],
+          do: session.id
+
+    waiting =
+      for {target, _wake} <- state.waiting,
+          %{} = session <- [Map.get(state.sessions, target_agent_id(target))],
+          do: session.id
+
+    Enum.uniq(working ++ queued ++ waiting)
   end
 
   # -- Sessions ---------------------------------------------------------------
@@ -1636,6 +1839,11 @@ defmodule Canopy.Runtime.ChannelServer do
         # the tools; after a message_send it is a recap, kept on the card.
         if is_nil(turn.passed) and not turn.posted?, do: maybe_post_reply(state, turn, who)
 
+        # Whatever the turn held is free now, however it ended; a waiter that
+        # gets a lock is woken through {:lock_granted, _}, after this.
+        Locks.release_turn(session.id, Map.get(turn, :ref))
+        if awaiting?(turn), do: Locks.touch(state.repository.id, session.id)
+
         broadcast(state, {:agent_status, who.agent_id, status_after_turn(state, who, outcome)})
 
         state = %{state | telemetry: Map.delete(state.telemetry, who.agent_id)}
@@ -1692,6 +1900,8 @@ defmodule Canopy.Runtime.ChannelServer do
     channel = Channels.get!(state.channel.id)
     repository = Repositories.get!(channel.repository_id)
     :ok = Engine.subscribe_repository(repository.id)
+    :ok = Locks.unsubscribe(state.repository.id)
+    :ok = Locks.subscribe(repository.id)
 
     attach_engines(%{
       state
@@ -1979,6 +2189,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
         if first? do
           broadcast(state, {:agent_status, turn.agent_id, :awaiting_user})
+          # a lock it holds now waits on the user too; the lock views say so
+          Locks.touch(state.repository.id, turn.session.id)
           start_next_waiting(state)
         else
           state
@@ -2003,6 +2215,7 @@ defmodule Canopy.Runtime.ChannelServer do
 
           state = %{state | turns: Map.put(state.turns, sid, turn)}
           broadcast(state, {:agent_status, turn.agent_id, turn_status(state, turn.agent_id)})
+          if MapSet.size(ids) == 0, do: Locks.touch(state.repository.id, turn.session.id)
           state
         else
           state
