@@ -1,6 +1,7 @@
 // The channel composer: Enter sends, Shift+Enter inserts a newline, typing
-// `@` opens an autocomplete of agents and `#` one of channels. The textarea keeps
-// its text on a failed send; the server pushes "composer:clear" on success.
+// `@` opens an autocomplete of agents and teams and `#` one of channels. The
+// textarea keeps its text on a failed send; the server pushes "composer:clear"
+// on success.
 //
 // When the draft mentions an agent that is blocked on a question or permission
 // card (the form's data-awaiting), a hint says the message will not answer the
@@ -86,10 +87,15 @@ const Composer = {
     this.upload("files", renamed)
   },
 
-  // The agent and channel lists live on the form, which LiveView keeps
-  // current; the textarea itself is never patched.
+  // The agent, team, and channel lists live on the form, which LiveView keeps
+  // current; the textarea itself is never patched. `@` offers agents first,
+  // then teams (data-teams), which share the @ namespace.
   candidates(trigger) {
-    const key = trigger === "#" ? "channels" : "agents"
+    if (trigger === "#") return this.list("channels")
+    return this.list("agents").concat(this.list("teams"))
+  },
+
+  list(key) {
     try {
       const source = (this.el.form && this.el.form.dataset[key]) || this.el.dataset[key] || "[]"
       return JSON.parse(source)

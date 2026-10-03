@@ -107,4 +107,20 @@ defmodule Canopy.MCP.Tools.DmTest do
     assert reason =~ "deactivated"
     assert Channels.list_dms() == []
   end
+
+  test "a team opens the same DM as its members named one by one", ctx do
+    other = agent_fixture(name: "other-" <> unique_suffix())
+    team = team_fixture([ctx.reviewer, other, ctx.inactive], name: "crew-" <> unique_suffix())
+
+    assert {:ok, by_team} = call(DmStart, %{agents: "@#{team.name}"}, ctx)
+
+    assert {:ok, by_name} =
+             call(DmStart, %{agents: "@#{other.name}, @#{ctx.reviewer.name}"}, ctx)
+
+    [_, id] = Regex.run(~r/dm \[(ch_[^\]]+)\]/, by_team)
+    assert by_name =~ "dm [#{id}]"
+
+    assert Channels.get!(id).agents |> Enum.map(& &1.id) |> Enum.sort() ==
+             Enum.sort([ctx.agent.id, ctx.reviewer.id, other.id])
+  end
 end

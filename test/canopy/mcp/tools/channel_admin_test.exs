@@ -171,4 +171,81 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
       assert reason =~ "is a DM"
     end
   end
+
+  describe "teams" do
+    setup ctx do
+      helper = agent_fixture(name: "helper-" <> unique_suffix())
+      team = team_fixture([ctx.reviewer, ctx.tester, helper], name: "crew-" <> unique_suffix())
+      %{helper: helper, team: team}
+    end
+
+    test "add_members brings a team in with one team_added credited to the caller", ctx do
+      Timeline.subscribe(ctx.channel.id)
+
+      assert {:ok, text} = call(ChannelAddMembers, %{agents: "@#{ctx.team.name}"}, ctx)
+
+      newcomers = [ctx.helper, ctx.tester] |> Enum.sort_by(& &1.name)
+
+      assert text =~
+               "added @#{ctx.team.name} (#{Enum.map_join(newcomers, ", ", &("@" <> &1.name))}) to ##{ctx.channel.name}"
+
+      assert text =~ "@#{ctx.reviewer.name} already there"
+      assert text =~ "Mention @#{ctx.team.name} when you need them."
+
+      caller = ctx.agent.id
+
+      assert_receive {:timeline,
+                      %{event_type: "team_added", agent_id: ^caller, payload: %{"by" => ^caller}}}
+
+      refute_received {:timeline, %{event_type: "member_added"}}
+      assert Channels.member?(ctx.channel, ctx.helper)
+      # adding wakes nobody: no message was posted
+      refute_received {:timeline, %{event_type: "message"}}
+    end
+
+    test "add_members takes a mix of a team and agents", ctx do
+      loose = agent_fixture(name: "loose-" <> unique_suffix())
+
+      assert {:ok, text} =
+               call(
+                 ChannelAddMembers,
+                 %{agents: "@#{ctx.team.name}, @#{loose.name}, @#{ctx.helper.name}"},
+                 ctx.reviewer_session
+               )
+
+      assert text =~ "added @#{ctx.team.name} ("
+      assert text =~ ", @#{loose.name} to ##{ctx.channel.name}"
+      assert text =~ "@#{ctx.helper.name} already there"
+      assert Channels.member?(ctx.channel, loose)
+
+      assert {:ok, text} = call(ChannelAddMembers, %{agents: "@#{ctx.team.name}"}, ctx)
+      assert text =~ "nobody new from @#{ctx.team.name}"
+
+      assert {:error, "unknown agent or team @nobody"} =
+               call(ChannelAddMembers, %{agents: "@nobody"}, ctx)
+    end
+
+    test "channel_create with a team adds its active members; the caller owns it", ctx do
+      {:ok, _} = Canopy.Agents.deactivate(ctx.helper)
+
+      assert {:ok, _} =
+               call(ChannelCreate, %{name: "crew-room", agents: "@#{ctx.team.name}"}, ctx)
+
+      channel = Channels.get_by_name(ctx.repository.id, "crew-room")
+      assert channel.owner_agent_id == ctx.agent.id
+
+      assert Enum.map(channel.agents, & &1.id) |> Enum.sort() ==
+               Enum.sort([ctx.agent.id, ctx.reviewer.id, ctx.tester.id])
+    end
+
+    test "remove_members with a team skips the owner", ctx do
+      team = team_fixture([ctx.agent, ctx.reviewer], name: "pair-" <> unique_suffix())
+
+      assert {:ok, text} = call(ChannelRemoveMembers, %{agents: "@#{team.name}"}, ctx)
+      assert text =~ "removed @#{ctx.reviewer.name}"
+      assert text =~ "@#{ctx.agent.name} is the owner"
+      assert Channels.member?(ctx.channel, ctx.agent)
+      refute Channels.member?(ctx.channel, ctx.reviewer)
+    end
+  end
 end

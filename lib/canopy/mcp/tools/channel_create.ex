@@ -26,7 +26,7 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
 
     field :agents, :string,
       description:
-        "Other agents to add as members, comma separated (@name or name). You are always a member."
+        "Other agents or teams to add as members, comma separated (@name). A team adds its active members. You are always a member and the owner."
 
     field :repository, :string,
       description:

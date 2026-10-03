@@ -389,6 +389,32 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert_push_event(view, "composer:clear", %{})
     end
 
+    test "a team mention of outsiders hints at /i @team; the composer offers team names", ctx do
+      %{channel: channel} = ctx
+      one = Fixtures.agent_fixture(%{name: "one#{Fixtures.unique_suffix()}"})
+      two = Fixtures.agent_fixture(%{name: "two#{Fixtures.unique_suffix()}"})
+      team = Fixtures.team_fixture([one, two], name: "crew#{Fixtures.unique_suffix()}")
+      Timeline.subscribe(channel.id)
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#composer-form[data-teams*='#{team.name}']")
+
+      view
+      |> form("#composer-form", message: %{body: "@#{team.name} can you look?"})
+      |> render_submit()
+
+      assert_receive {:timeline, %{event_type: "message"}}, 2_000
+      assert has_element?(view, "#flash-info", "not in this channel")
+      assert has_element?(view, "#flash-info", "Invite with /i @#{team.name}.")
+
+      view |> form("#composer-form", message: %{body: "/i @#{team.name}"}) |> render_submit()
+      assert_receive {:timeline, %{event_type: "team_added"}}, 2_000
+      assert has_element?(view, "#flash-info", "Invited @#{team.name}")
+      assert has_element?(view, "#member-#{one.id}")
+      assert has_element?(view, "#member-#{two.id}")
+      assert render(view) =~ "@#{team.name} joined: @#{one.name}, @#{two.name}"
+    end
+
     test "#channel in a message links to the channel, and the composer offers channel names",
          ctx do
       %{channel: channel, user: user} = ctx
@@ -1251,6 +1277,33 @@ defmodule CanopyWeb.ChannelLiveTest do
       # the composer suggests every active agent, member or not
       assert has_element?(view, "#composer-form[data-agents*='#{newcomer.name}']")
       assert has_element?(view, "#composer-form[data-agents*='#{reviewer.name}']")
+    end
+
+    test "a team is invited from the members panel, quietly, with one timeline line", ctx do
+      %{channel: channel, reviewer: reviewer} = ctx
+      newcomer = Fixtures.agent_fixture(%{name: "newcomer#{Fixtures.unique_suffix()}"})
+      team = Fixtures.team_fixture([newcomer, reviewer], name: "crew#{Fixtures.unique_suffix()}")
+      Timeline.subscribe(channel.id)
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#edit-members") |> render_click()
+      assert has_element?(view, "#invite-team-select option[value='#{team.id}']", "2 members")
+
+      view |> form("#invite-team-form", team_id: team.id) |> render_submit()
+
+      assert has_element?(
+               view,
+               "#flash-info",
+               "Added @#{newcomer.name} (@#{reviewer.name} was already here)."
+             )
+
+      assert has_element?(view, "#member-row-#{newcomer.id}")
+      assert_receive {:timeline, %{event_type: "team_added"}}, 2_000
+      assert render(view) =~ "@#{team.name} joined: @#{newcomer.name}"
+      # nobody was woken, and the team is no longer offered
+      refute_receive {:timeline, %{event_type: "message"}}, 200
+      refute has_element?(view, "#invite-team-form")
+      assert Canopy.Channels.get!(channel.id).owner_agent_id == ctx.agent.id
     end
 
     test "the budget panel sets and clears the spend limit; reaching it shows a bar", ctx do

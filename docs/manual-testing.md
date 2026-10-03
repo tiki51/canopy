@@ -245,6 +245,25 @@ to: researcher …" as in the README demo prompt.
       notice with a **Reopen** button, the sidebar entry is dimmed with a box icon, and
       agents' `channels_list` shows it as archived. **Reopen** brings the composer back.
 
+## 9c. Teams
+
+- [ ] **Agents → Teams → New team**: name `qa-team`, tick two agents → the lead select offers
+      only them and picks the first. Try the name of an existing agent → "is already an
+      agent's name". Save → the team is listed with its members and the lead marked.
+- [ ] **Edit** the team and untick the lead → "choose a new lead before removing the current
+      one"; pick the other member as lead and save.
+- [ ] **New channel** on the team's row → only its members are ticked and the lead is the
+      owner. On the plain new-channel form, a team chip and a group heading each tick (and,
+      pressed again, clear) their agents.
+- [ ] In a channel without the team, **Members → Invite a team…** → one `@qa-team joined: …`
+      line, new pills, nobody wakes, the owner is unchanged.
+- [ ] In another channel, `/i @qa-team check the login page` → the team joins, the message
+      mentions it, and both members wake. `/i @qa-team` again → "everyone on @qa-team is
+      already in #…". Typing `@qa` in the composer suggests the team.
+- [ ] Mention the team in a channel where its members are not → the hint says `/i @qa-team`.
+- [ ] Deactivate one member → it shows greyed on the Teams page and is skipped the next
+      time the team is added or mentioned.
+
 ## 10. Threads and mentions
 
 ![Composer autocomplete](screenshots/12-composer-autocomplete.png)

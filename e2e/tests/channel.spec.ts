@@ -104,7 +104,7 @@ test.describe("channel collaboration", () => {
     await expect(page.locator("#channel-schedules")).toContainText("Nothing scheduled.");
   });
 
-  test("typing # suggests channels and @ suggests every agent", async ({ page }) => {
+  test("typing # suggests channels and @ suggests every agent and team", async ({ page }) => {
     const id = await createChannel(page, "mention-target");
     await createChannel(page, "mention-source");
     const input = page.locator("#composer-input");
@@ -115,6 +115,11 @@ test.describe("channel collaboration", () => {
     await input.fill("hi @rev");
     await expect(page.locator("#composer-suggestions")).toContainText("@reviewer");
     await input.press("Escape");
+    // teams share the @ namespace and follow the agents (the seeded @bugfix-team)
+    await input.fill("hi @bug");
+    await expect(page.locator("#composer-suggestions")).toContainText("@bugfix-team");
+    await input.press("Enter");
+    await expect(input).toHaveValue("hi @bugfix-team ");
     await input.fill("");
     void id;
   });

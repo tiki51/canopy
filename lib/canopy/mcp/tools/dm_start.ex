@@ -15,7 +15,7 @@ defmodule Canopy.MCP.Tools.DmStart do
 
     field :agents, :string,
       description:
-        "Other agents to include, comma separated (@name or name). You and the user are always in. Leave empty for a one-to-one DM."
+        "Other agents or teams to include, comma separated (@name). A team includes its active members. You and the user are always in. Leave empty for a one-to-one DM."
 
     field :repository, :string,
       description: "Repository name or id for the DM. Defaults to your current one."

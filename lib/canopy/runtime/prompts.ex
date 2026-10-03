@@ -201,10 +201,17 @@ defmodule Canopy.Runtime.Prompts do
         names -> "Members of ##{channel}: " <> Enum.map_join(names, ", ", &("@" <> &1)) <> "\n"
       end
 
+    # in the wake prompt, not the system text, so the cached prefix is unchanged
+    teams_line =
+      case Map.get(args, :teams, []) do
+        [] -> ""
+        names -> "Teams here: " <> Enum.map_join(names, ", ", &("@" <> &1)) <> ".\n"
+      end
+
     """
     You have a new Canopy message in ##{channel} from #{sender}.
     Message ID: #{message_id}
-    #{members_line}
+    #{members_line}#{teams_line}
     #{inline_body(args)}#{attachments_block(Map.get(args, :attachments, []))}
     canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older ones. Do the work, then post your findings with canopy_message_send.#{thread_hint}
     Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.

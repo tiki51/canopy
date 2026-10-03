@@ -5,6 +5,7 @@ defmodule Canopy.Runtime.Commands do
       /handoff @agent reason for the handoff
       /delegate @agent what the agent should do
       /i @agent [message]            (also /invite) adds the agent to the channel
+      /i @team [message]             adds the team's active members
       /stop                          aborts every turn and holds the channel
 
   `parse/1` returns `{:command, name, target, text}`, `{:error, reason}` for a
@@ -45,7 +46,7 @@ defmodule Canopy.Runtime.Commands do
   @doc "Short help shown in the composer."
   def help,
     do:
-      "/i @agent invites · /handoff @agent reason · /delegate @agent task · /stop stops everything"
+      "/i @agent|@team invites · /handoff @agent reason · /delegate @agent task · /stop stops everything"
 
   # /stop takes nothing: whatever follows it is ignored.
   defp parse_args(:stop, _args), do: {:command, :stop, "", ""}
@@ -66,5 +67,5 @@ defmodule Canopy.Runtime.Commands do
 
   defp usage(:handoff), do: "usage: /handoff @agent reason for the handoff"
   defp usage(:delegate), do: "usage: /delegate @agent what the agent should do"
-  defp usage(:invite), do: "usage: /i @agent [message for them]"
+  defp usage(:invite), do: "usage: /i @agent-or-team [message for them]"
 end

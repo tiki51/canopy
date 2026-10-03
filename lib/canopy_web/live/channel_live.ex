@@ -26,6 +26,7 @@ defmodule CanopyWeb.ChannelLive do
     Runtime,
     Schedules,
     Tasks,
+    Teams,
     Timeline,
     Unread,
     Users
@@ -47,6 +48,7 @@ defmodule CanopyWeb.ChannelLive do
     if connected?(socket) do
       Schedules.subscribe()
       Documents.subscribe()
+      Teams.subscribe()
     end
 
     {:ok,
@@ -147,6 +149,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:editing_task?, false)
     |> assign(:editing_members?, false)
     |> assign(:addable_agents, [])
+    |> assign(:addable_teams, [])
     |> assign(:editing_budget?, false)
     |> assign(:spent, Costs.channel_total(id))
     |> assign(:editing_schedules?, false)
@@ -223,13 +226,14 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   # A mention of an agent that is not in the channel wakes nobody; say so and
-  # point at /i, instead of leaving the user waiting.
-  defp outsider_hint(socket, %Messages.Message{mentions: ids}) when ids != [] do
+  # point at /i, instead of leaving the user waiting. When the outsiders all
+  # came in through one team mention, one `/i @team` brings them all.
+  defp outsider_hint(socket, %Messages.Message{mentions: ids} = message) when ids != [] do
     members = MapSet.new(socket.assigns.members, & &1.id)
+    outsider_ids = Enum.reject(ids, &MapSet.member?(members, &1))
 
     outsiders =
-      ids
-      |> Enum.reject(&MapSet.member?(members, &1))
+      outsider_ids
       |> Enum.map(&Map.get(socket.assigns.names, &1))
       |> Enum.reject(&is_nil/1)
 
@@ -239,7 +243,12 @@ defmodule CanopyWeb.ChannelLive do
 
       names ->
         mentions = Enum.map_join(names, ", ", &("@" <> &1))
-        invites = Enum.map_join(names, " ", &("/i @" <> &1))
+
+        invites =
+          case outsider_team(message, outsider_ids) do
+            nil -> Enum.map_join(names, " ", &("/i @" <> &1))
+            team -> "/i @" <> team
+          end
 
         put_flash(
           socket,
@@ -249,7 +258,26 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
+  # `/i @team` with no message joins the team quietly: say who came in.
+  defp outsider_hint(socket, {:invite_team, team, added}) do
+    put_flash(
+      socket,
+      :info,
+      "Invited @#{team.name}: #{Enum.map_join(added, ", ", &("@" <> &1.name))} joined. Mention @#{team.name} when you need them."
+    )
+  end
+
   defp outsider_hint(socket, _result), do: socket
+
+  # The one team mention every outsider came in through, if there is one.
+  defp outsider_team(%Messages.Message{team_mentions: teams}, outsider_ids)
+       when outsider_ids != [] do
+    Enum.find_value(teams || [], fn %{"name" => name, "agent_ids" => ids} ->
+      if Enum.all?(outsider_ids, &(&1 in ids)), do: name
+    end)
+  end
+
+  defp outsider_team(_message, _ids), do: nil
 
   # Turns every finished upload into a document and returns the ids, in the
   # order the files were added. Entries that fail to store are skipped and
@@ -372,6 +400,13 @@ defmodule CanopyWeb.ChannelLive do
     {:noreply, socket |> assign_branch() |> schedule_branch_refresh()}
   end
 
+  # a team created, edited, or deleted: the composer and the Members panel follow
+  def handle_info({:teams, :changed}, socket) do
+    socket = assign_mention_sources(socket, socket.assigns.channel)
+
+    {:noreply, if(socket.assigns.editing_members?, do: refresh_members(socket), else: socket)}
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
 
   defp insert_event(
@@ -410,8 +445,9 @@ defmodule CanopyWeb.ChannelLive do
   defp react_to(socket, %{event_type: type}) when type in ~w(handoff_requested handoff_rejected),
     do: refresh_handoffs(socket)
 
-  defp react_to(socket, %{event_type: type}) when type in ~w(member_added member_removed),
-    do: refresh_members(socket)
+  defp react_to(socket, %{event_type: type})
+       when type in ~w(member_added member_removed team_added),
+       do: refresh_members(socket)
 
   defp react_to(socket, %{event_type: type}) when type in ~w(channel_archived channel_reopened),
     do: socket |> refresh_channel() |> Nav.refresh_nav()
@@ -444,6 +480,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:members, members)
     |> assign(:member_names, Enum.map(members, & &1.name))
     |> assign(:addable_agents, Channels.addable_agents(cid(socket)))
+    |> assign(:addable_teams, Teams.addable(cid(socket)))
   end
 
   # What the composer suggests after `@` and `#`, and the map that turns
@@ -469,8 +506,12 @@ defmodule CanopyWeb.ChannelLive do
       |> Enum.map(& &1.name)
       |> Enum.uniq()
 
+    # teams are offered after agents, outside DMs (a DM keeps its own set)
+    team_names = if channel.kind == "dm", do: [], else: Teams.names()
+
     socket
     |> assign(:agent_names, agent_names)
+    |> assign(:team_names, team_names)
     |> assign(:channel_names, channel_names)
     |> assign(:channel_links, links)
   end
@@ -931,6 +972,34 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
+  def handle_event("invite_team", %{"team_id" => ""}, socket), do: {:noreply, socket}
+
+  # Inviting a team into the channel is quiet, like adding an agent: nobody
+  # wakes until someone mentions them.
+  def handle_event("invite_team", %{"team_id" => team_id}, socket) do
+    names = fn agents -> Enum.map_join(agents, ", ", &("@" <> &1.name)) end
+
+    with %Teams.Team{} = team <- Teams.get(team_id),
+         {:ok, %{added: added, already: already}} <-
+           Channels.add_team(socket.assigns.channel, team, "user") do
+      note =
+        cond do
+          added == [] ->
+            "Everyone on @#{team.name} is already here."
+
+          already == [] ->
+            "Added #{names.(added)}."
+
+          true ->
+            "Added #{names.(added)} (#{names.(already)} #{if length(already) == 1, do: "was", else: "were"} already here)."
+        end
+
+      {:noreply, socket |> refresh_members() |> put_flash(:info, note)}
+    else
+      _ -> {:noreply, put_flash(socket, :error, "Could not add that team.")}
+    end
+  end
+
   def handle_event("remove_member", %{"agent-id" => agent_id}, socket) do
     case Channels.remove_agent(socket.assigns.channel, agent_id) do
       {:ok, _} ->
@@ -1106,6 +1175,7 @@ defmodule CanopyWeb.ChannelLive do
         channel={@channel}
         members={@members}
         addable={@addable_agents}
+        addable_teams={@addable_teams}
         agent_statuses={@agent_statuses}
       />
 
@@ -1182,6 +1252,7 @@ defmodule CanopyWeb.ChannelLive do
         waiting={@waiting_on_user}
         form={@composer}
         agent_names={@agent_names}
+        team_names={@team_names}
         channel_names={@channel_names}
         uploads={@uploads}
         picked={@picked}
@@ -1489,6 +1560,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :channel, :map, required: true
   attr :members, :list, required: true
   attr :addable, :list, required: true
+  attr :addable_teams, :list, default: []
   attr :agent_statuses, :map, required: true
 
   defp members_panel(assigns) do
@@ -1544,11 +1616,35 @@ defmodule CanopyWeb.ChannelLive do
         </select>
         <button type="submit" id="add-member" class="btn btn-sm btn-primary">Add</button>
       </form>
+      <form
+        :if={@addable_teams != []}
+        id="invite-team-form"
+        phx-submit="invite_team"
+        class="flex flex-wrap items-center gap-2"
+      >
+        <select id="invite-team-select" name="team_id" class="select select-sm w-56 min-w-0">
+          <option value="">Invite a team…</option>
+          <option :for={team <- @addable_teams} value={team.id}>
+            @{team.name} · {team_size(team)}
+          </option>
+        </select>
+        <button type="submit" id="invite-team" class="btn btn-sm btn-primary">Invite</button>
+        <span class="text-xs text-base-content/60">
+          Adds its active members; nobody wakes until mentioned.
+        </span>
+      </form>
       <p :if={@addable == []} class="text-xs text-base-content/60">
         Every active agent is already here. Create more on the Agents page.
       </p>
     </section>
     """
+  end
+
+  defp team_size(team) do
+    case length(Teams.active_members(team)) do
+      1 -> "1 member"
+      n -> "#{n} members"
+    end
   end
 
   defp limit_reached?(%{spend_limit: limit}, spent) when is_number(limit), do: spent >= limit
@@ -1723,6 +1819,7 @@ defmodule CanopyWeb.ChannelLive do
 
   attr :form, :map, required: true
   attr :agent_names, :list, required: true
+  attr :team_names, :list, default: []
   attr :channel_names, :list, required: true
   attr :uploads, :map, required: true
   attr :picked, :list, required: true
@@ -1768,6 +1865,7 @@ defmodule CanopyWeb.ChannelLive do
         id="composer-form"
         phx-submit="send"
         data-agents={Jason.encode!(@agent_names)}
+        data-teams={Jason.encode!(@team_names)}
         data-channels={Jason.encode!(@channel_names)}
         data-awaiting={Jason.encode!(Enum.map(@waiting, &elem(&1, 0)))}
         class="relative"

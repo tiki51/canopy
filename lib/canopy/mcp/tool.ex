@@ -9,7 +9,7 @@ defmodule Canopy.MCP.Tool do
 
   alias Anubis.Server.Response
   alias Canopy.Repositories
-  alias Canopy.{Agents, Channels, Documents}
+  alias Canopy.{Agents, Channels, Documents, Teams}
   alias Canopy.MCP.Identity
 
   @identity_description "Set automatically by Canopy; never fill this in."
@@ -112,55 +112,101 @@ defmodule Canopy.MCP.Tool do
     end
   end
 
-  @doc "Resolves an agent reference: `@name`, `name`, or an agent id."
-  def resolve_agent(nil), do: {:error, "missing agent name"}
+  @doc """
+  Resolves an agent reference: `@name`, `name`, or an agent id. A team's name
+  is an error that names its members, so the caller can pick one; `verb`
+  words it ("delegate" gives "delegate to one member").
+  """
+  def resolve_agent(value, verb \\ nil)
 
-  def resolve_agent(value) when is_binary(value) do
+  def resolve_agent(nil, _verb), do: {:error, "missing agent name"}
+
+  def resolve_agent(value, verb) when is_binary(value) do
     ref = String.trim(value)
 
-    agent =
-      cond do
-        ref == "" -> nil
-        String.starts_with?(ref, "agt_") -> Agents.get(ref) || Agents.get_by_name(ref)
-        true -> Agents.get_by_name(ref)
-      end
+    case find_agent(ref) do
+      nil ->
+        case ref != "" && Teams.get_by_name(ref) do
+          %Teams.Team{} = team -> {:error, team_not_agent(team, verb)}
+          _ -> {:error, "unknown agent #{ref}"}
+        end
 
-    case agent do
-      nil -> {:error, "unknown agent #{ref}"}
-      agent -> {:ok, agent}
+      agent ->
+        {:ok, agent}
     end
   end
 
-  @doc """
-  Resolves a comma or space separated list of agent references. `except:` drops
-  one id (the caller). Unknown or deactivated agents are errors; duplicates collapse.
-  """
-  def resolve_agents(nil, _opts), do: {:ok, []}
+  defp find_agent(""), do: nil
+  defp find_agent("agt_" <> _ = ref), do: Agents.get(ref) || Agents.get_by_name(ref)
+  defp find_agent(ref), do: Agents.get_by_name(ref)
 
-  def resolve_agents(value, opts) when is_binary(value) do
+  defp team_not_agent(team, verb) do
+    action = if verb, do: "#{verb} to", else: "name"
+
+    "@#{team.name} is a team; #{action} one member: " <>
+      Enum.map_join(Teams.active_members(team), ", ", &("@" <> &1.name))
+  end
+
+  @doc """
+  Resolves a comma or space separated list of agent and team references to
+  `{:ok, agents, teams}`: the agents named directly and the teams named (an
+  agent wins a name collision). `except:` drops one agent id (the caller)
+  from the direct list. Unknown names and deactivated agents are errors;
+  duplicates collapse.
+  """
+  def resolve_members(nil, _opts), do: {:ok, [], []}
+
+  def resolve_members(value, opts) when is_binary(value) do
     except = Keyword.get(opts, :except)
 
     value
     |> String.split([",", " "], trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
-    |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
-      case resolve_agent(ref) do
-        {:ok, %{id: ^except}} -> {:cont, {:ok, acc}}
-        {:ok, %{active: false}} -> {:halt, {:error, "#{ref} is deactivated"}}
-        {:ok, agent} -> {:cont, {:ok, acc ++ [agent]}}
-        {:error, reason} -> {:halt, {:error, reason}}
+    |> Enum.reduce_while({:ok, [], []}, fn ref, {:ok, agents, teams} ->
+      case find_agent(ref) do
+        %{id: ^except} ->
+          {:cont, {:ok, agents, teams}}
+
+        %{active: false} ->
+          {:halt, {:error, "#{ref} is deactivated"}}
+
+        %Agents.Agent{} = agent ->
+          {:cont, {:ok, agents ++ [agent], teams}}
+
+        nil ->
+          case Teams.get_by_name(ref) do
+            nil -> {:halt, {:error, "unknown agent or team #{ref}"}}
+            team -> {:cont, {:ok, agents, teams ++ [team]}}
+          end
       end
     end)
     |> case do
-      {:ok, agents} -> {:ok, Enum.uniq_by(agents, & &1.id)}
+      {:ok, agents, teams} -> {:ok, Enum.uniq_by(agents, & &1.id), Enum.uniq_by(teams, & &1.id)}
       error -> error
+    end
+  end
+
+  @doc """
+  Like `resolve_members/2`, flattened to agents: each team stands for its
+  active members (the `except:` id dropped).
+  """
+  def resolve_agents(value, opts) do
+    except = Keyword.get(opts, :except)
+
+    with {:ok, agents, teams} <- resolve_members(value, opts) do
+      members =
+        teams
+        |> Enum.flat_map(&Teams.active_members/1)
+        |> Enum.reject(&(&1.id == except))
+
+      {:ok, Enum.uniq_by(agents ++ members, & &1.id)}
     end
   end
 
   @doc "Resolves an agent that must be a member of the channel and not the caller."
   def resolve_counterpart(ctx, channel, value, verb) do
-    with {:ok, agent} <- resolve_agent(value) do
+    with {:ok, agent} <- resolve_agent(value, verb) do
       cond do
         agent.id == ctx.agent.id ->
           {:error, "cannot #{verb} to yourself"}

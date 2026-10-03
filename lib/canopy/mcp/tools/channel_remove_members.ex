@@ -14,7 +14,7 @@ defmodule Canopy.MCP.Tools.ChannelRemoveMembers do
     field :channel, :string, description: "Channel name or id. Defaults to your own channel."
 
     field :agents, {:required, :string},
-      description: "Agents to remove, comma separated (@name or name)."
+      description: "Agents or teams to remove, comma separated (@name). The owner is always kept."
   end
 
   @impl true

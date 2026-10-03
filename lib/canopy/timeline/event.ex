@@ -17,7 +17,7 @@ defmodule Canopy.Timeline.Event do
     delegation_created delegation_completed delegation_failed delegation_cancelled
     handoff_requested handoff_accepted handoff_rejected
     task_updated owner_changed
-    member_added member_removed channel_archived channel_reopened repository_switched
+    member_added member_removed team_added channel_archived channel_reopened repository_switched
     spend_limit_changed spend_limit_reached
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
     permission_requested permission_resolved permission_detached

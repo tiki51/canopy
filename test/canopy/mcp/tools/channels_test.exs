@@ -114,6 +114,31 @@ defmodule Canopy.MCP.Tools.ChannelsTest do
       assert text =~ "@#{ctx.agent.name} (you, in ##{ctx.channel.name}): Test agent"
       assert text =~ "@#{ctx.other.name} (in ##{ctx.channel.name}): Test agent"
       assert text =~ "@#{stranger.name} (inactive): Watches from afar"
+      refute text =~ "Teams"
+    end
+
+    test "appends the teams, with lead, members, and whether the channel holds them", ctx do
+      whole =
+        team_fixture([ctx.agent, ctx.other],
+          name: "pair-" <> unique_suffix(),
+          description: "Pairs up"
+        )
+
+      outsider = agent_fixture(name: "outsider-" <> unique_suffix())
+      partial = team_fixture([outsider, ctx.agent], name: "mixed-" <> unique_suffix())
+
+      assert {:ok, text} = call(AgentsList, %{}, ctx)
+      assert text =~ "\nTeams (a team name stands for its active members"
+
+      members =
+        [ctx.agent, ctx.other]
+        |> Enum.sort_by(& &1.name)
+        |> Enum.map_join(", ", &("@" <> &1.name))
+
+      assert text =~
+               "@#{whole.name} (lead @#{ctx.agent.name}, in ##{ctx.channel.name}): Pairs up — #{members}"
+
+      assert text =~ "@#{partial.name} (lead @#{outsider.name}): #{partial.name} — "
     end
   end
 end

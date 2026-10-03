@@ -151,6 +151,28 @@ defmodule Canopy.Runtime.PromptsTest do
       })
 
     assert with_members =~ "Members of #c: @backend, @reviewer"
+    refute with_members =~ "Teams here"
+  end
+
+  test "the wake names whole teams; the system text never mentions them" do
+    agent = Canopy.Fixtures.agent_fixture(%{name: "teamless"})
+    system = Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"})
+
+    team = Canopy.Fixtures.team_fixture([agent], name: "crew")
+
+    wake =
+      Prompts.new_message(%{
+        channel: "c",
+        sender: "Steven",
+        message_id: "msg_42",
+        thread?: false,
+        members: ["teamless"],
+        teams: [team.name]
+      })
+
+    assert wake =~ "Members of #c: @teamless\nTeams here: @crew.\n"
+    assert Prompts.system(agent, %{name: "c"}, %{id: "r", path: "/r"}) == system
+    refute system =~ "Teams here"
   end
 
   test "the system prompt carries the agent's memory" do

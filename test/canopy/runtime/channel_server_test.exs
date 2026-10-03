@@ -1459,6 +1459,120 @@ defmodule Canopy.Runtime.ChannelServerTest do
       refute_receive {:timeline, %{event_type: "session_compacted"}}, 100
     end
   end
+
+  describe "team mentions" do
+    # The reviewer plus three more agents, all in the channel with a session
+    # each; the owner is not on the team.
+    setup ctx do
+      extra =
+        for n <- ~w(a b c),
+            do: Fixtures.agent_fixture(%{name: "#{n}-#{Fixtures.unique_suffix()}"})
+
+      Enum.each(extra, &({:ok, _} = Canopy.Channels.add_agent(ctx.channel, &1)))
+      members = Enum.sort_by([ctx.reviewer | extra], & &1.name)
+      team = Fixtures.team_fixture(members, name: "crew-#{Fixtures.unique_suffix()}")
+
+      sids =
+        Map.new(members, fn agent ->
+          session = Fixtures.session_fixture(%{channel: ctx.channel, agent_id: agent.id})
+          {agent.id, session.engine_session_id}
+        end)
+
+      test_pid = self()
+
+      stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+        send(test_pid, {:prompted, sid})
+        {:ok, ""}
+      end)
+
+      %{team: team, team_members: members, sids: sids}
+    end
+
+    test "a user's team mention wakes every member and counts as one turn", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 2})
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.team.name} look at #42")
+
+      for agent <- ctx.team_members do
+        sid = ctx.sids[agent.id]
+        assert_receive {:prompted, ^sid}, 2_000
+      end
+
+      assert :sys.get_state(ctx.pid).chatter == 1
+      Enum.each(ctx.team_members, &emit(ctx.sids[&1.id], :agent_completed, %{}))
+
+      # the second turn of the budget is still free: a member's post wakes the owner
+      owner_sid = ctx.session.engine_session_id
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "found it")
+      assert_receive {:prompted, ^owner_sid}, 2_000
+      refute Runtime.paused?(ctx.channel.id)
+
+      # the third pauses
+      a = List.last(ctx.team_members)
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, a.id, "@#{ctx.agent.name} and this")
+      assert_receive {:chatter, :paused}, 2_000
+    end
+
+    test "an agent's team mention is one turn; an agent also named is charged on its own",
+         ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 3})
+
+      owner_sid = ctx.session.engine_session_id
+
+      # the owner wakes as a named agent, the team (minus the sender) as one turn
+      {:ok, _} =
+        Messages.post_agent_message(
+          ctx.channel.id,
+          ctx.reviewer.id,
+          "@#{ctx.team.name} and @#{ctx.agent.name}: plan attached"
+        )
+
+      assert_receive {:prompted, ^owner_sid}, 2_000
+
+      for agent <- ctx.team_members, agent.id != ctx.reviewer.id do
+        sid = ctx.sids[agent.id]
+        assert_receive {:prompted, ^sid}, 2_000
+      end
+
+      reviewer_sid = ctx.sids[ctx.reviewer.id]
+      refute_received {:prompted, ^reviewer_sid}
+      assert :sys.get_state(ctx.pid).chatter == 2
+
+      # one more turn fits, the next mention of the team pauses before anyone wakes
+      emit(owner_sid, :agent_completed, %{})
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "@#{ctx.reviewer.name} ok")
+
+      assert_receive {:prompted, ^reviewer_sid}, 2_000
+      emit(reviewer_sid, :agent_completed, %{})
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "@#{ctx.team.name} again")
+
+      assert_receive {:chatter, :paused}, 2_000
+      refute_receive {:prompted, _}, 300
+    end
+
+    test "with turns serialized, team wakes queue in order and never pause the team", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: true, chatter_pause: true, chatter_limit: 1})
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.team.name} look at #42")
+
+      for agent <- ctx.team_members do
+        sid = ctx.sids[agent.id]
+        assert_receive {:prompted, ^sid}, 2_000
+        refute_receive {:prompted, _}, 100
+        emit(sid, :agent_completed, %{})
+      end
+
+      refute_received {:chatter, :paused}
+      assert :sys.get_state(ctx.pid).chatter == 1
+    end
+  end
 end
 
 defmodule Canopy.Runtime.ChannelServerReconcileTest do

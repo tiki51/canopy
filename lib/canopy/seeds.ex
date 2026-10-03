@@ -1,7 +1,7 @@
 defmodule Canopy.Seeds do
-  @moduledoc "Creates Canopy's initial settings, user, and default agents."
+  @moduledoc "Creates Canopy's initial settings, user, default agents, and starter team."
 
-  alias Canopy.{Agents, Settings, Users}
+  alias Canopy.{Agents, Settings, Teams, Users}
 
   @doc "Seeds missing defaults without changing existing records."
   def run do
@@ -22,6 +22,8 @@ defmodule Canopy.Seeds do
       end
     end
 
+    seed_teams()
+
     # The cost auditor answers "Request audit" on the Costs page.
     case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
       {nil, %{id: id}} ->
@@ -31,6 +33,45 @@ defmodule Canopy.Seeds do
       _ ->
         :ok
     end
+  end
+
+  # Created when missing, from whichever of its agents exist; an existing team
+  # is never edited.
+  defp seed_teams do
+    for %{name: name, members: names, lead: lead} = attrs <- starter_teams() do
+      agents = Enum.flat_map(names, &List.wrap(Agents.get_by_name(&1)))
+      lead = Enum.find(agents, &(&1.name == lead)) || List.first(agents)
+
+      cond do
+        Teams.get_by_name(name) ->
+          IO.puts("team @#{name} already exists")
+
+        Agents.get_by_name(name) || is_nil(lead) ->
+          IO.puts("skipped team @#{name}")
+
+        true ->
+          {:ok, team} =
+            attrs
+            |> Map.drop([:members, :lead])
+            |> Map.merge(%{agent_ids: Enum.map(agents, & &1.id), lead_agent_id: lead.id})
+            |> Teams.create()
+
+          IO.puts("created team @#{team.name}")
+      end
+    end
+  end
+
+  defp starter_teams do
+    [
+      %{
+        name: "bugfix-team",
+        display_name: "Bugfix team",
+        description: "Reproduces, fixes, tests, and reviews bugs",
+        # the implementation engineer owns the fix, so it owns the team's channels
+        lead: "backend",
+        members: ~w(frontend backend test reviewer)
+      }
+    ]
   end
 
   @doc """
@@ -189,7 +230,8 @@ defmodule Canopy.Seeds do
         names the delegation id rather than @mentioning them again. Keep the channel
         task current, check in on stalled work with a scheduled task rather than
         repeated messages, and summarise status for the user in a few lines when
-        asked. You do not implement; you coordinate, and you stop when the plan is
+        asked. Bring a whole team into a channel with canopy_channel_add_members
+        and a team name, then mention the team once with the plan. You do not implement; you coordinate, and you stop when the plan is
         clear and owned.
         """
       },

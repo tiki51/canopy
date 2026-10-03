@@ -959,6 +959,15 @@ defmodule CanopyWeb.TimelineComponents do
       "member_removed" ->
         "#{agent} was removed from the channel"
 
+      "team_added" ->
+        joined =
+          p["agent_ids"]
+          |> List.wrap()
+          |> Enum.map_join(", ", &agent_ref(names, &1, user_name))
+
+        "@#{p["team_name"]} joined: #{joined}" <>
+          if(event.agent_id, do: " (added by #{agent})", else: "")
+
       "channel_archived" ->
         "#{user} archived this channel"
 
@@ -1246,6 +1255,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("owner_changed"), do: "hero-user-circle-mini"
   defp event_icon("member_added"), do: "hero-user-plus-mini"
   defp event_icon("member_removed"), do: "hero-user-minus-mini"
+  defp event_icon("team_added"), do: "hero-user-group-mini"
   defp event_icon("channel_archived"), do: "hero-archive-box-mini"
   defp event_icon("channel_reopened"), do: "hero-archive-box-x-mark-mini"
   defp event_icon("spend_limit_" <> _), do: "hero-banknotes-mini"

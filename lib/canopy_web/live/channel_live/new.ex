@@ -4,26 +4,41 @@ defmodule CanopyWeb.ChannelLive.New do
   member agents (all active agents preselected), and pick the initial owner
   among the chosen members. On success the channel, its task, and its
   memberships are created in one transaction and the user lands in the channel.
+
+  Team chips and group headings tick (or clear) all their active agents at
+  once. `?team=<id>` (the Teams page's "New channel") starts with only that
+  team's members, its lead as owner.
   """
   use CanopyWeb, :live_view
 
-  alias Canopy.Channels
+  alias Canopy.{Channels, Teams}
   alias Canopy.Channels.Channel
   alias CanopyWeb.Nav
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :page_title, "New channel")}
+    {:ok, socket |> assign(:page_title, "New channel") |> assign(:teams, Teams.list())}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    member_ids = Enum.map(socket.assigns.agents, & &1.id)
+    team = params["team"] && Teams.get(params["team"])
+
+    member_ids =
+      if team,
+        do: team_member_ids(team, socket.assigns.agents),
+        else: Enum.map(socket.assigns.agents, & &1.id)
+
     repository_id = preselected_repository(params["repository_id"], socket.assigns.repositories)
+
+    owner =
+      if team && team.lead_agent_id in member_ids,
+        do: team.lead_agent_id,
+        else: List.first(member_ids)
 
     attrs = %{
       "repository_id" => repository_id,
-      "owner_agent_id" => List.first(member_ids)
+      "owner_agent_id" => owner
     }
 
     {:noreply,
@@ -32,30 +47,23 @@ defmodule CanopyWeb.ChannelLive.New do
      |> assign_form(build_changeset(attrs, member_ids))}
   end
 
-  # "Select all" / "Clear all" above the members grid. The rest of the form
-  # keeps what was typed; the owner follows the membership as it does when a
-  # box is unchecked by hand.
+  # "Select all" / "Clear all" above the members grid.
   @impl true
-  def handle_event("toggle_all_members", _params, socket) do
-    all_ids = Enum.map(socket.assigns.agents, & &1.id)
+  def handle_event("toggle_all_members", _params, socket),
+    do: {:noreply, toggle_members(socket, Enum.map(socket.assigns.agents, & &1.id))}
 
-    member_ids =
-      if Enum.sort(socket.assigns.member_ids) == Enum.sort(all_ids), do: [], else: all_ids
+  # A team chip or a group heading: ticks all its active agents, or clears
+  # them when they are all ticked already.
+  def handle_event("toggle_team", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.teams, &(&1.id == id)) do
+      nil -> {:noreply, socket}
+      team -> {:noreply, toggle_members(socket, team_member_ids(team, socket.assigns.agents))}
+    end
+  end
 
-    params =
-      socket.assigns.form.source.params
-      |> Map.put("agent_ids", member_ids)
-      |> ensure_owner(member_ids)
-
-    changeset =
-      params
-      |> build_changeset(member_ids)
-      |> Map.put(:action, socket.assigns.form.source.action)
-
-    {:noreply,
-     socket
-     |> assign(:member_ids, member_ids)
-     |> assign_form(changeset)}
+  def handle_event("toggle_group", %{"group" => group}, socket) do
+    ids = for agent <- socket.assigns.agents, agent.group == group, do: agent.id
+    {:noreply, toggle_members(socket, ids)}
   end
 
   def handle_event("validate", %{"channel" => params}, socket) do
@@ -108,6 +116,42 @@ defmodule CanopyWeb.ChannelLive.New do
          )}
     end
   end
+
+  # Ticks every id in `ids`, or clears them all when every one is ticked. The
+  # rest of the form keeps what was typed; the owner follows the membership as
+  # it does when a box is unchecked by hand.
+  defp toggle_members(socket, []), do: socket
+
+  defp toggle_members(socket, ids) do
+    current = socket.assigns.member_ids
+
+    member_ids =
+      if Enum.all?(ids, &(&1 in current)),
+        do: current -- ids,
+        else: Enum.filter(Enum.map(socket.assigns.agents, & &1.id), &(&1 in current or &1 in ids))
+
+    params =
+      socket.assigns.form.source.params
+      |> Map.put("agent_ids", member_ids)
+      |> ensure_owner(member_ids)
+
+    changeset =
+      params
+      |> build_changeset(member_ids)
+      |> Map.put(:action, socket.assigns.form.source.action)
+
+    socket
+    |> assign(:member_ids, member_ids)
+    |> assign_form(changeset)
+  end
+
+  # The team's members among the active agents, in the agents' order.
+  defp team_member_ids(team, agents) do
+    ids = MapSet.new(Teams.active_members(team), & &1.id)
+    for agent <- agents, MapSet.member?(ids, agent.id), do: agent.id
+  end
+
+  defp all_ticked?(ids, member_ids), do: ids != [] and Enum.all?(ids, &(&1 in member_ids))
 
   # Only ids of currently active agents count as members, whatever the client sent.
   defp members_from(params, agents) do
@@ -241,7 +285,7 @@ defmodule CanopyWeb.ChannelLive.New do
           :if={@repositories != [] and @agents != []}
           id="new-channel-panel"
           title="Channel"
-          description="The owner is woken for every message; other members join when mentioned or delegated to."
+          description="The owner is woken for every message; other members join when mentioned or delegated to. Teams add all their members at once."
         >
           <.form
             for={@form}
@@ -286,13 +330,49 @@ defmodule CanopyWeb.ChannelLive.New do
                   {if length(@member_ids) == length(@agents), do: "Clear all", else: "Select all"}
                 </button>
               </div>
+              <div
+                :if={@teams != []}
+                id="channel-teams"
+                class="mb-2 flex flex-wrap items-center gap-1.5"
+              >
+                <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
+                  Teams
+                </span>
+                <button
+                  :for={team <- @teams}
+                  :if={team_member_ids(team, @agents) != []}
+                  type="button"
+                  id={"team-chip-#{team.id}"}
+                  phx-click="toggle_team"
+                  phx-value-id={team.id}
+                  aria-pressed={to_string(all_ticked?(team_member_ids(team, @agents), @member_ids))}
+                  title={"@#{team.name}: " <> Enum.map_join(Teams.active_members(team), ", ", &("@" <> &1.name))}
+                  class={[
+                    "flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition",
+                    if(all_ticked?(team_member_ids(team, @agents), @member_ids),
+                      do: "border-primary/40 bg-primary/10 text-primary",
+                      else: "border-base-300 hover:bg-base-200"
+                    )
+                  ]}
+                >
+                  <.icon name="hero-user-group-mini" class="size-3.5" />
+                  <span class="font-mono">@{team.name}</span>
+                  <span class="text-base-content/50">{length(team_member_ids(team, @agents))}</span>
+                </button>
+              </div>
               <ul id="channel-members" class="grid gap-1 sm:grid-cols-2">
                 <%= for {group, agents} <- Canopy.Agents.grouped(@agents) do %>
-                  <li
-                    :if={group}
-                    class="pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 sm:col-span-2"
-                  >
-                    {group}
+                  <li :if={group} class="pt-2 sm:col-span-2">
+                    <button
+                      type="button"
+                      id={"group-toggle-#{Layouts.group_slug(group)}"}
+                      phx-click="toggle_group"
+                      phx-value-group={group}
+                      title={"Select or clear everyone in #{group}"}
+                      class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60 transition hover:text-primary"
+                    >
+                      {group}
+                    </button>
                   </li>
                   <li :for={agent <- agents}>
                     <label

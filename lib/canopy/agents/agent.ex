@@ -81,6 +81,7 @@ defmodule Canopy.Agents.Agent do
     |> validate_length(:display_name, max: 80)
     |> validate_length(:role, max: 200)
     |> validate_length(:group, max: 40)
+    |> Canopy.Teams.validate_name_free()
     |> unique_constraint(:name)
   end
 

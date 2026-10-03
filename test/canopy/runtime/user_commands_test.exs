@@ -158,7 +158,7 @@ defmodule Canopy.Runtime.UserCommandsTest do
     assert message.mentions == [second.id]
     assert Canopy.Channels.member?(ctx.channel, second)
 
-    assert {:error, "no agent named @nobody"} =
+    assert {:error, "no agent or team named @nobody"} =
              Runtime.post_user_message(ctx.channel.id, "/i @nobody")
 
     {:ok, _} = Canopy.Agents.deactivate(second)
@@ -167,6 +167,56 @@ defmodule Canopy.Runtime.UserCommandsTest do
 
     assert {:error, "a DM keeps its agents" <> _} =
              Runtime.post_user_message(dm.id, "/i @#{third.name}")
+  end
+
+  test "/i @team adds the team quietly; with a message it mentions the team, waking its members",
+       ctx do
+    one = Fixtures.agent_fixture(%{name: "one#{Fixtures.unique_suffix()}"})
+    two = Fixtures.agent_fixture(%{name: "two#{Fixtures.unique_suffix()}"})
+    team = Fixtures.team_fixture([one, ctx.reviewer], name: "crew#{Fixtures.unique_suffix()}")
+
+    assert {:ok, {:invite_team, %{id: team_id}, [added]}} =
+             Runtime.post_user_message(ctx.channel.id, "/i @#{team.name}")
+
+    assert {team_id, added.id} == {team.id, one.id}
+    assert Canopy.Channels.member?(ctx.channel, one)
+    assert_receive {:timeline, %{event_type: "team_added", payload: %{"by" => "user"}}}, 2_000
+    refute_receive {:timeline, %{event_type: "message"}}, 200
+
+    # everyone already in: an error, and nothing written
+    assert {:error, "everyone on @#{team.name} is already in ##{ctx.channel.name}"} ==
+             Runtime.post_user_message(ctx.channel.id, "/i @#{team.name} hello")
+
+    refute_receive {:timeline, _}, 200
+
+    # with a message, the new members join, then the team is mentioned and they wake
+    {:ok, _} = Canopy.Teams.update(team, %{agent_ids: [one.id, ctx.reviewer.id, two.id]})
+    {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
+    test_pid = self()
+
+    stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+      send(test_pid, {:prompted, sid})
+      {:ok, ""}
+    end)
+
+    assert {:ok, %Canopy.Messages.Message{} = message} =
+             Runtime.post_user_message(ctx.channel.id, "/i @#{team.name} look at #42")
+
+    assert message.body == "@#{team.name} look at #42"
+    assert Enum.sort(message.mentions) == Enum.sort([one.id, ctx.reviewer.id, two.id])
+    assert Canopy.Channels.member?(ctx.channel, two)
+
+    for _ <- 1..3, do: assert_receive({:prompted, _}, 2_000)
+
+    {:ok, dm} = Canopy.Channels.ensure_dm(ctx.repository.id, ctx.agent)
+
+    assert {:error, "a DM keeps its agents" <> _} =
+             Runtime.post_user_message(dm.id, "/i @#{team.name}")
+
+    assert {:error, reason} =
+             Runtime.post_user_message(ctx.channel.id, "/delegate @#{team.name} look")
+
+    assert reason =~ "@#{team.name} is a team; name one member: "
   end
 
   test "bad commands return errors and write nothing", ctx do

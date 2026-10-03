@@ -11,6 +11,7 @@ defmodule Canopy.Channels do
   alias Canopy.Channels.{Channel, ChannelAgent}
   alias Canopy.Repo
   alias Canopy.Tasks.Task
+  alias Canopy.Teams
   alias Canopy.Timeline
   alias Ecto.Multi
 
@@ -46,15 +47,29 @@ defmodule Canopy.Channels do
   Creates a channel with its task row and memberships.
 
   Accepted attrs: `:repository_id`, `:name`, `:topic`, `:owner_agent_id`,
-  `:agent_ids` (members; the owner is always added), `:task_title`,
-  `:task_description`. The task title defaults to the topic, then the name.
+  `:agent_ids` (members; the owner is always added), `:team_ids` (each adds
+  its active members; with no owner given, the first team's lead owns the
+  channel when active), `:task_title`, `:task_description`. The task title
+  defaults to the topic, then the name.
   """
   def create(attrs) when is_map(attrs) do
     attrs = Map.new(attrs, fn {k, v} -> {to_atom_key(k), v} end)
-    owner_id = attrs[:owner_agent_id]
+
+    teams =
+      attrs
+      |> Map.get(:team_ids)
+      |> List.wrap()
+      |> Enum.map(&Teams.get/1)
+      |> Enum.reject(&is_nil/1)
+
+    team_member_ids =
+      Enum.flat_map(teams, fn team -> Enum.map(Teams.active_members(team), & &1.id) end)
+
+    owner_id = attrs[:owner_agent_id] || team_lead(teams, team_member_ids)
+    attrs = Map.put(attrs, :owner_agent_id, owner_id)
 
     member_ids =
-      (List.wrap(attrs[:agent_ids]) ++ List.wrap(owner_id))
+      (List.wrap(attrs[:agent_ids]) ++ team_member_ids ++ List.wrap(owner_id))
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 
@@ -87,6 +102,16 @@ defmodule Canopy.Channels do
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
+  end
+
+  # The lead of the first team owns a channel created for it; an inactive lead
+  # was not added, so the first active member stands in.
+  defp team_lead([], _member_ids), do: nil
+
+  defp team_lead([team | _], member_ids) do
+    if team.lead_agent_id in member_ids,
+      do: team.lead_agent_id,
+      else: team |> Teams.active_members() |> Enum.map(& &1.id) |> List.first()
   end
 
   @topic "channels"
@@ -337,6 +362,62 @@ defmodule Canopy.Channels do
 
       if count > 0, do: record_membership(channel_id, agent_id, "member_removed")
       {:ok, count}
+    end
+  end
+
+  @doc """
+  Brings a team into a channel: its active members who are not in yet join,
+  and one `team_added` event names them (no per-agent `member_added` lines).
+  The membership is a snapshot; later edits to the team leave the channel
+  alone. Adding never wakes anyone or changes the owner. `by` is "user" or the
+  adding agent's id. Records nothing when nobody is added.
+
+  Returns `{:ok, %{added: agents, already: agents, inactive: agents}}`, or
+  `{:error, :dm}` (a DM keeps its agents).
+  """
+  def add_team(%Channel{kind: "dm"}, _team, _by), do: {:error, :dm}
+
+  def add_team(%Channel{} = channel, %Teams.Team{} = team, by) do
+    team = Repo.preload(team, [members: from(a in Agent, order_by: a.name)], force: true)
+    {active, inactive} = Enum.split_with(team.members, & &1.active)
+    member_ids = channel |> members() |> MapSet.new(& &1.id)
+    {already, added} = Enum.split_with(active, &MapSet.member?(member_ids, &1.id))
+    result = %{added: added, already: already, inactive: inactive}
+
+    if added == [] do
+      {:ok, result}
+    else
+      added
+      |> Enum.reduce(Multi.new(), fn agent, multi ->
+        Multi.insert(
+          multi,
+          {:membership, agent.id},
+          ChannelAgent.changeset(%ChannelAgent{}, %{channel_id: channel.id, agent_id: agent.id}),
+          on_conflict: :nothing,
+          conflict_target: [:channel_id, :agent_id]
+        )
+      end)
+      |> Timeline.multi_record(:event, %{
+        channel_id: channel.id,
+        agent_id: if(by == "user", do: nil, else: by),
+        event_type: "team_added",
+        ref_id: team.id,
+        payload: %{
+          "team_id" => team.id,
+          "team_name" => team.name,
+          "agent_ids" => Enum.map(added, & &1.id),
+          "by" => by
+        }
+      })
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{event: event}} ->
+          Timeline.broadcast(event)
+          {:ok, result}
+
+        {:error, _step, changeset, _changes} ->
+          {:error, changeset}
+      end
     end
   end
 

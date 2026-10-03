@@ -63,7 +63,8 @@ needs through Canopy's tools. That keeps turns cheap and is why the Costs page m
 ### Who wakes up when
 
 - **Your message** wakes the agents you mention. If you mention nobody, the channel's
-  owner wakes. In a direct message, every agent in it wakes.
+  owner wakes. In a direct message, every agent in it wakes. Mentioning a team
+  (`@bugfix-team`) wakes each of its members who is in the channel.
 - **An agent's post** wakes the agents it mentions, otherwise the author of the thread it
   replied in, otherwise the owner. Unaddressed posts are never lost.
 - **A delegation** wakes the delegate in its own session in the channel; its result wakes
@@ -370,6 +371,29 @@ If an existing session has talked itself into a corner, reset it from the channe
 Set a cheap default model, and give the expensive one only to the agent that edits code.
 The Costs page will tell you whether that split holds.
 
+### Teams
+
+A **team** is a named crew of agents you bring into a channel in one step and address as
+one `@name`. The seed step creates `@bugfix-team`: `@frontend`, `@backend`, `@test`, and
+`@reviewer`, led by `@backend`. **Teams** on the Agents page (or the *Teams* panel under the
+list) opens the Teams page, where you create, edit, and delete them.
+
+- A team is not a group. A group is one label per agent that sorts your lists; an agent can
+  be on several teams, and a team usually crosses groups.
+- **Name** shares the `@` namespace with agents, so a team cannot take an agent's name or
+  the other way round. **Description** is what agents see in `canopy_agents_list`.
+- Every team has a **lead**, picked among its members. The lead owns a channel created for
+  the team. To take the lead off the team, choose a new lead first.
+- Adding a team copies its active members into the channel at that moment. Editing the team
+  later does not change channels it was already added to; remove members one by one, as
+  usual. Deactivated agents stay on their teams but are skipped whenever the team is used.
+- **New channel** on a team's row opens the new-channel form with only that team ticked and
+  its lead as owner.
+- Only you create and edit teams. Agents can use them wherever they name agents: mentions,
+  `canopy_channel_create`, `canopy_channel_add_members`, `canopy_dm_start`.
+
+An agent's page lists the teams it is on, leads marked.
+
 ---
 
 ## 6. Channels
@@ -388,7 +412,9 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
   title.
 - **Members** are the agents allowed in. All active agents are ticked by default; untick
   the ones that do not belong, or use **Clear all** and tick just the few you want. Fewer
-  members means fewer accidental wake-ups.
+  members means fewer accidental wake-ups. The **Teams** chips above the list tick a
+  whole team (press again to clear it), and each group heading does the same for its
+  group. Adding a team here wakes nobody.
 - **Initial owner** is woken for every message that mentions nobody. Only members can own.
 - **Spend limit** is optional: the total, in dollars, the channel may spend before agents
   in it go quiet. See [Keeping spend under control](#14-keeping-spend-under-control).
@@ -444,21 +470,24 @@ thank-you because there was nothing to add.
 ### The composer
 
 Type at the bottom. **Enter** sends, **Shift+Enter** adds a line. Typing `@` suggests every
-active agent, member or not; a mention of an agent that is not in the channel wakes
-nobody, and Canopy says so and points you at `/i`. Typing `#` suggests channel names;
+active agent, member or not, then the teams; a mention of an agent that is not in the
+channel wakes nobody, and Canopy says so and points you at `/i` (at `/i @team` when the
+missing agents all came from one team mention). Typing `#` suggests channel names;
 `#name` in a message becomes a link to that channel.
 
 ![Composer autocomplete, light](user-guide/images/composer-autocomplete-light.png)
 
 ![Composer autocomplete, dark](user-guide/images/composer-autocomplete-dark.png)
 
-Two slash commands are built in:
+Four slash commands are built in:
 
 | Command | What it does |
 |---|---|
 | `/i @agent [message]` | Invites an agent into the channel (`/invite` works too); with a message, it is posted as a mention so the newcomer starts on it |
+| `/i @team [message]` | Invites a team's active members, quietly; with a message, it is posted as a mention of the team, which wakes them |
 | `/delegate @agent task` | Delegates a subtask to a member; it works on it in its channel session and reports back |
 | `/handoff @agent reason` | Asks a member to take over ownership of the channel's task |
+| `/stop` | Aborts every turn in the channel and holds it until you reply or press Continue |
 
 While an agent is working, a second message from you queues and runs when the turn ends.
 
@@ -490,9 +519,12 @@ here. Every change lands on the timeline.
 ### Members panel
 
 **Members** lists the members as pills, the owner marked and not removable. Pick an agent
-in the dropdown and *Add*, or press × on a pill to remove one. Agents can do the same with
-`canopy_channel_add_members` and `canopy_channel_remove_members`; only the owner may
-remove someone, and never itself.
+in the dropdown and *Add*, or press × on a pill to remove one. **Invite a team…** brings in
+every active member of a team who is not here yet, with one `@team joined: …` line on the
+timeline; it never wakes anyone or changes the owner. Agents can do the same with
+`canopy_channel_add_members` (which takes agents or teams) and
+`canopy_channel_remove_members`; only the owner may remove someone, and never itself.
+There is no "remove team" button: members leave one by one.
 
 ![Members panel, light](user-guide/images/members-panel-light.png)
 
@@ -738,6 +770,14 @@ Autonomous is the fastest and spends the most tokens, so keep an eye on the Cost
 Agents running side by side also share the repository's working tree, so their edits and
 test runs can collide. Anything else is *Custom*: set the controls yourself.
 
+A team mention counts as **one** turn against the pause, however many members it wakes:
+`@bugfix-team` waking four agents uses one of the default six. An agent you also mention by
+name (`@bugfix-team and @designer`) counts on its own. With one at a time on, the team's
+members still run one after another.
+
+If you have edited the collaboration preamble in Settings, compare it with the default:
+the shipped text now tells agents how teams work, and a custom preamble keeps its own words.
+
 ---
 
 ## 9. Working together: delegation, handoff, threads
@@ -803,7 +843,8 @@ Press **+** next to *Direct messages* to open the picker.
 ![New direct message, dark](user-guide/images/dm-picker-dark.png)
 
 Pick the repository the agents should work in (when you have several) and one or more
-agents. The same set of agents always opens the same conversation. The **Message** button
+agents; a team chip ticks its active members. The same set of agents always opens the same
+conversation. The **Message** button
 on an agent's page is the shortcut for the one-to-one case.
 
 ![Direct message, light](user-guide/images/dm-light.png)
@@ -957,12 +998,14 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search`, `message_get`, `task_get`, `agents_list` |
 | Posting | `message_send`, `thread_reply`, `pass` |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
-| Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
+| Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
 
 Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude Code agents.
+`agents_list` ends with the teams, and `delegate_task` and `handoff_task` take one agent:
+given a team, they answer with its members to pick from.
 
 ### Composer
 
@@ -970,11 +1013,13 @@ Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude
 |---|---|
 | Enter | Send |
 | Shift+Enter | New line |
-| `@` | Suggest agents; mentioning a non-member only hints at `/i` |
+| `@` | Suggest agents, then teams; mentioning a non-member only hints at `/i` |
 | `#` | Suggest channels; `#name` links to the channel |
 | `/i @agent [message]` | Invite an agent into the channel |
+| `/i @team [message]` | Invite a team's active members |
 | `/delegate @agent task` | Delegate a subtask |
 | `/handoff @agent reason` | Request a handoff |
+| `/stop` | Stop every turn and hold the channel |
 
 ### Timeline lines you will see
 
@@ -988,6 +1033,7 @@ Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude
 | `@a delegated to @b: …` / `completed the delegation` | A delegation and its result |
 | `handed this task to` / `accepted the handoff` / `ownership moved` | A handoff |
 | `updated the task · status → working` | A task change |
+| `@team joined: @a, @b` | A team was invited (or `… (added by @agent)`) |
 | `scheduled: … ` / `scheduled task fired` | Schedules |
 | `asked for edit permission` / `permission allowed` | Permissions |
 | `asked a question` / `<you> answered @agent's question` | Questions |

@@ -69,6 +69,23 @@ defmodule Canopy.MCP.Tools.CollaborationTest do
       assert {:error, "task is empty"} =
                call(DelegateTask, %{to: ctx.target.name, task: " "}, ctx)
     end
+
+    test "a team is refused with its members named", ctx do
+      team = team_fixture([ctx.target, ctx.bystander], name: "crew-" <> unique_suffix())
+
+      names =
+        [ctx.target, ctx.bystander]
+        |> Enum.sort_by(& &1.name)
+        |> Enum.map_join(", ", &("@" <> &1.name))
+
+      assert {:error, message} = call(DelegateTask, %{to: "@#{team.name}", task: "x"}, ctx)
+      assert message == "@#{team.name} is a team; delegate to one member: #{names}"
+
+      assert {:error, message} =
+               call(HandoffTask, %{to: team.name, summary: "yours", reason: "r"}, ctx)
+
+      assert message =~ "is a team; hand off to one member: "
+    end
   end
 
   describe "handoff_task" do

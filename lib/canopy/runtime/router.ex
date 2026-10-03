@@ -12,8 +12,9 @@ defmodule Canopy.Runtime.Router do
 
   @doc """
   `ctx` carries `channel`, `members` (agent ids), `owner_agent_id`, a `lookup`
-  function `agent_id -> %Agent{} | nil` for display names, and `thread_root`
-  (`message_id -> message | nil`). Targets without an agent (for example the
+  function `agent_id -> %Agent{} | nil` for display names, `thread_root`
+  (`message_id -> message | nil`), and optionally `teams` (names of the teams
+  the channel holds whole, for the wake prompt). Targets without an agent (for example the
   previous owner of a user-initiated handoff) are dropped.
   """
   def wakeups(event, ctx) do
@@ -77,6 +78,7 @@ defmodule Canopy.Runtime.Router do
         message_id: message.id,
         thread?: not is_nil(message.thread_id),
         members: member_names(ctx),
+        teams: Map.get(ctx, :teams, []),
         body: Map.get(message, :body),
         attachments: attachments
       })
@@ -84,10 +86,16 @@ defmodule Canopy.Runtime.Router do
     # With attachments the wake carries the plan too, so the channel server
     # can add the file parts the text promises.
     wake = if attachments == [], do: text, else: %{text: text, attachments: attachments}
+    charges = team_charges(message)
 
     targets
     |> Enum.uniq()
-    |> Enum.map(&{{:root, &1}, wake})
+    |> Enum.map(fn target ->
+      case Map.get(charges, target) do
+        nil -> {{:root, target}, wake}
+        charge -> {{:root, target}, put_charge(wake, charge)}
+      end
+    end)
   end
 
   # Whoever delegated, the delegate does the work in its own session.
@@ -152,6 +160,20 @@ defmodule Canopy.Runtime.Router do
   end
 
   defp do_wakeups(_event, _ctx), do: []
+
+  # A team mention costs one turn of the chatter budget however many members
+  # it wakes: every wake it alone caused carries the same charge key, and the
+  # channel server counts a key once. Agents also named directly carry none,
+  # so they are charged on their own.
+  defp team_charges(message) do
+    for %{"team_id" => team_id, "agent_ids" => ids} <- Map.get(message, :team_mentions) || [],
+        id <- ids,
+        into: %{},
+        do: {id, {message.id, team_id}}
+  end
+
+  defp put_charge(text, charge) when is_binary(text), do: %{text: text, charge: charge}
+  defp put_charge(%{} = wake, charge), do: Map.put(wake, :charge, charge)
 
   defp documents_of(message) do
     case Map.get(message, :documents) do

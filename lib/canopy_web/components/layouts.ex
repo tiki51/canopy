@@ -102,7 +102,10 @@ defmodule CanopyWeb.Layouts do
             navigate={~p"/agents"}
             icon="hero-cpu-chip"
             title="Agents"
-            active={String.starts_with?(@current_path, "/agents")}
+            active={
+              String.starts_with?(@current_path, "/agents") or
+                String.starts_with?(@current_path, "/teams")
+            }
           />
           <.rail_link
             navigate={~p"/files"}

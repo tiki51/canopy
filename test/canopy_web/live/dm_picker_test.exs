@@ -48,4 +48,33 @@ defmodule CanopyWeb.DmPickerTest do
     view |> element("#sidebar-new-dm") |> render_click()
     assert has_element?(view, "#dm-picker-no-agents a[href='/agents/new']")
   end
+
+  test "a team chip ticks the team's active members", %{conn: conn} do
+    repository = Fixtures.repository_fixture()
+    a = Fixtures.agent_fixture(%{name: "alpha" <> Fixtures.unique_suffix()})
+    b = Fixtures.agent_fixture(%{name: "beta" <> Fixtures.unique_suffix()})
+    c = Fixtures.agent_fixture(%{name: "gamma" <> Fixtures.unique_suffix()})
+    team = Fixtures.team_fixture([a, b, c], name: "crew" <> Fixtures.unique_suffix())
+    {:ok, _} = Canopy.Agents.deactivate(c)
+
+    {:ok, view, _html} = live(conn, ~p"/agents")
+    view |> element("#sidebar-new-dm") |> render_click()
+
+    view |> element("#dm-team-#{team.id}") |> render_click()
+    assert has_element?(view, "#dm-agent-#{a.id}[checked]")
+    assert has_element?(view, "#dm-agent-#{b.id}[checked]")
+    assert has_element?(view, "#dm-team-#{team.id}[aria-pressed='true']")
+
+    view |> form("#dm-form") |> render_submit()
+    [dm] = Channels.list_dms(repository.id)
+    assert Enum.map(dm.agents, & &1.id) |> Enum.sort() == Enum.sort([a.id, b.id])
+    assert_redirect(view, ~p"/channels/#{dm.id}")
+
+    # pressed again, it clears them
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    view |> element("#sidebar-new-dm") |> render_click()
+    view |> element("#dm-team-#{team.id}") |> render_click()
+    view |> element("#dm-team-#{team.id}") |> render_click()
+    refute has_element?(view, "#dm-agent-#{a.id}[checked]")
+  end
 end

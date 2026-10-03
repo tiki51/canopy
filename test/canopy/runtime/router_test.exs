@@ -239,4 +239,43 @@ defmodule Canopy.Runtime.RouterTest do
     [{{:root, @backend}, plain}] = Router.wakeups(message_event(%{}), ctx())
     assert is_binary(plain)
   end
+
+  describe "team mentions" do
+    test "wake only members in the channel, never the sender, and share one charge" do
+      team = %{
+        "team_id" => "tm_crew",
+        "name" => "crew",
+        "agent_ids" => [@backend, @reviewer, @outsider]
+      }
+
+      ev =
+        message_event(%{
+          id: "msg_t",
+          agent_id: @backend,
+          mentions: [@backend, @reviewer, @outsider],
+          team_mentions: [team]
+        })
+
+      assert [{{:root, @reviewer}, %{text: _, charge: {"msg_t", "tm_crew"}}}] =
+               Router.wakeups(ev, ctx())
+    end
+
+    test "an agent also named directly carries no team charge" do
+      team = %{"team_id" => "tm_crew", "name" => "crew", "agent_ids" => [@reviewer]}
+
+      ev =
+        message_event(%{id: "msg_t", mentions: [@backend, @reviewer], team_mentions: [team]})
+
+      assert [{{:root, @backend}, backend_wake}, {{:root, @reviewer}, reviewer_wake}] =
+               Router.wakeups(ev, ctx())
+
+      assert is_binary(backend_wake)
+      assert %{charge: {"msg_t", "tm_crew"}} = reviewer_wake
+    end
+
+    test "the wake names the teams the channel holds whole" do
+      [{_, text}] = Router.wakeups(message_event(%{}), ctx(%{teams: ["crew"]}))
+      assert text =~ "Teams here: @crew."
+    end
+  end
 end

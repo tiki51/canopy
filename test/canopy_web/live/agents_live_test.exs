@@ -75,6 +75,32 @@ defmodule CanopyWeb.AgentsLiveTest do
       assert has_element?(view, "#sidebar-agent-#{sleepy.id}")
     end
 
+    test "a Teams button and panel list the teams with their members", %{conn: conn} do
+      lead = Fixtures.agent_fixture(%{name: "lead"})
+      other = Fixtures.agent_fixture(%{name: "other"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#agents-teams[href='/teams']")
+      assert has_element?(view, "#agents-teams-panel", "No teams yet")
+
+      team = Fixtures.team_fixture([lead, other], name: "pair")
+      {:ok, view, _html} = live(conn, ~p"/agents")
+
+      assert has_element?(
+               view,
+               "#agents-team-#{team.id} a[href='/teams/#{team.id}/edit']",
+               "@pair"
+             )
+
+      assert has_element?(view, "#agents-team-#{team.id}", "@other")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{lead.id}")
+      assert has_element?(view, "#agent-team-#{team.id}", "lead")
+      {:ok, view, _html} = live(conn, ~p"/agents/#{other.id}")
+      assert has_element?(view, "#agent-team-#{team.id}", "@pair")
+      refute has_element?(view, "#agent-team-#{team.id}", "lead")
+    end
+
     test "the engine column names each agent's engine, and the OpenCode agent beside it", %{
       conn: conn
     } do

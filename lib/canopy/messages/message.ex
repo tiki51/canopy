@@ -18,6 +18,10 @@ defmodule Canopy.Messages.Message do
     field :kind, :string, default: "post"
     field :body, :string
     field :mentions, {:array, :string}, default: []
+    # one entry per team named in the body, in order:
+    # %{"team_id", "name", "agent_ids"} where agent_ids are the members that
+    # mention alone woke (not also named directly, nor by an earlier team)
+    field :team_mentions, {:array, :map}, default: []
     field :opencode_message_id, :string
 
     belongs_to :channel, Canopy.Channels.Channel
@@ -49,6 +53,7 @@ defmodule Canopy.Messages.Message do
       :kind,
       :body,
       :mentions,
+      :team_mentions,
       :opencode_message_id
     ])
     |> update_change(:body, &String.trim/1)

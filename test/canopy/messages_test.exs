@@ -178,4 +178,59 @@ defmodule Canopy.MessagesTest do
     assert Messages.extract_mentions("mail me at me@example.com") == []
     assert Messages.extract_mentions("no mentions") == []
   end
+
+  describe "team mentions" do
+    setup do
+      backend = agent_fixture(%{name: "backend-" <> unique_suffix()})
+      frontend = agent_fixture(%{name: "frontend-" <> unique_suffix()})
+      tester = agent_fixture(%{name: "tester-" <> unique_suffix()})
+      team = team_fixture([tester, frontend, backend], name: "crew-" <> unique_suffix())
+      %{backend: backend, frontend: frontend, tester: tester, team: team}
+    end
+
+    test "a team expands in place to its active members, by name", ctx do
+      %{backend: b, frontend: f, tester: t, team: team, agent: agent} = ctx
+      sorted = [b, f, t] |> Enum.sort_by(& &1.name) |> Enum.map(& &1.id)
+
+      assert Messages.extract_mentions("@#{agent.name} then @#{team.name}") == [agent.id | sorted]
+
+      # de-duplicated against a member also named directly, who is charged on its own
+      {ids, [entry]} = Messages.resolve_mentions("@#{team.name} and @#{b.name}")
+      assert ids == sorted
+
+      assert entry == %{
+               "team_id" => team.id,
+               "name" => team.name,
+               "agent_ids" => sorted -- [b.id]
+             }
+
+      {:ok, _} = Canopy.Agents.deactivate(t)
+      assert Messages.extract_mentions("@#{team.name}") == sorted -- [t.id]
+    end
+
+    test "an agent wins a name collision", ctx do
+      # a collision cannot be created through the changesets; force one in the table
+      Repo.update_all(Canopy.Teams.Team, set: [name: ctx.backend.name])
+
+      assert Messages.resolve_mentions("@#{ctx.backend.name}") == {[ctx.backend.id], []}
+    end
+
+    test "stored mentions keep the team's members at the time of posting", ctx do
+      %{channel: channel, user: user, team: team} = ctx
+
+      {:ok, message} = Messages.post_user_message(channel.id, user.id, "@#{team.name} look")
+      before = message.mentions
+      assert length(before) == 3
+      assert [%{"team_id" => team_id}] = message.team_mentions
+      assert team_id == team.id
+
+      {:ok, _} =
+        Canopy.Teams.update(team, %{agent_ids: [ctx.backend.id], lead_agent_id: ctx.backend.id})
+
+      reloaded = Messages.get!(message.id)
+      assert reloaded.mentions == before
+      assert [%{"agent_ids" => ids}] = reloaded.team_mentions
+      assert length(ids) == 3
+    end
+  end
 end

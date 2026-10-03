@@ -44,6 +44,7 @@ defmodule Canopy.Runtime.ChannelServer do
     QuestionRequests,
     Repositories,
     Settings,
+    Teams,
     Timeline,
     Users
   }
@@ -92,6 +93,8 @@ defmodule Canopy.Runtime.ChannelServer do
     stream_seen?: false,
     # agent turns started since the user last did something
     chatter: 0,
+    # the team-mention charges already counted in `chatter` (one turn per team mention)
+    charged: MapSet.new(),
     # nil, or the wakeups held back once the chatter budget ran out
     paused: nil,
     # the user pressed Stop: wakes stay held (paused) until they reply or continue
@@ -356,7 +359,8 @@ defmodule Canopy.Runtime.ChannelServer do
         deferred: %{},
         paused: [],
         stopped?: true,
-        chatter: 0
+        chatter: 0,
+        charged: MapSet.new()
     }
 
     turns = state.turns
@@ -413,7 +417,7 @@ defmodule Canopy.Runtime.ChannelServer do
   # The user pressed Continue: the held wakeups run, against a fresh budget.
   def handle_call(:continue, _from, state) do
     held = state.paused || []
-    state = %{state | chatter: 0, paused: nil, stopped?: false}
+    state = %{state | chatter: 0, charged: MapSet.new(), paused: nil, stopped?: false}
     broadcast(state, {:chatter, :resumed})
 
     {:reply, :ok,
@@ -425,7 +429,9 @@ defmodule Canopy.Runtime.ChannelServer do
     do: handle_cast(msg, upgrade(state))
 
   def handle_cast({:wake, target, text}, state),
-    do: {:noreply, wake_within_budget(%{state | chatter: 0, paused: nil}, target, text)}
+    do:
+      {:noreply,
+       wake_within_budget(%{state | chatter: 0, charged: MapSet.new(), paused: nil}, target, text)}
 
   @impl true
   def handle_info(msg, %__MODULE__{} = state) when map_size(state) != @field_count,
@@ -754,7 +760,8 @@ defmodule Canopy.Runtime.ChannelServer do
       over_spend_limit?(state) ->
         note_spend_limit(state)
 
-      is_integer(limit) and state.chatter >= limit and not counted?(text) ->
+      is_integer(limit) and state.chatter >= limit and not counted?(text) and
+          not charged?(state, text) ->
         pause(state, limit, [{target, text}])
 
       # Already in line (a delegation waiting for its delegate, then a message
@@ -769,8 +776,34 @@ defmodule Canopy.Runtime.ChannelServer do
         enqueue_waiting(state, target, text)
 
       true ->
-        chatter = if counted?(text), do: state.chatter, else: state.chatter + 1
-        do_wake(%{state | chatter: chatter}, target, Map.delete(text, :counted?))
+        state |> charge(text) |> do_wake(target, Map.delete(text, :counted?))
+    end
+  end
+
+  # Each turn that starts counts once, except a wake already counted when it
+  # queued, and the second and later wakes of one team mention: the mention
+  # as a whole is one turn (its wakes share a `:charge` key from the router).
+  defp charge(state, text) do
+    cond do
+      counted?(text) ->
+        state
+
+      charged?(state, text) ->
+        state
+
+      key = Map.get(text, :charge) ->
+        %{state | chatter: state.chatter + 1, charged: MapSet.put(state.charged, key)}
+
+      true ->
+        %{state | chatter: state.chatter + 1}
+    end
+  end
+
+  # A team mention already paid for: its other wakes neither count nor pause.
+  defp charged?(state, text) do
+    case Map.get(text, :charge) do
+      nil -> false
+      key -> MapSet.member?(state.charged, key)
     end
   end
 
@@ -922,11 +955,11 @@ defmodule Canopy.Runtime.ChannelServer do
     %{state | paused: held}
   end
 
-  defp resume(%{paused: nil, chatter: 0} = state), do: state
+  defp resume(%{paused: nil, chatter: 0} = state), do: %{state | charged: MapSet.new()}
 
   defp resume(state) do
     if is_list(state.paused), do: broadcast(state, {:chatter, :resumed})
-    %{state | chatter: 0, paused: nil, stopped?: false}
+    %{state | chatter: 0, charged: MapSet.new(), paused: nil, stopped?: false}
   end
 
   defp user_action?(%Timeline.Event{
@@ -1872,9 +1905,12 @@ defmodule Canopy.Runtime.ChannelServer do
   # -- Helpers ----------------------------------------------------------------
 
   defp router_ctx(state) do
+    members = Enum.map(Channels.members(state.channel), & &1.id)
+
     %{
       channel: state.channel,
-      members: Enum.map(Channels.members(state.channel), & &1.id),
+      members: members,
+      teams: Teams.complete_in(members),
       owner_agent_id: state.channel.owner_agent_id,
       user_name: Users.local().display_name,
       lookup: &Agents.get/1,

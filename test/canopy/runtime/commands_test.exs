@@ -27,7 +27,12 @@ defmodule Canopy.Runtime.CommandsTest do
     assert {:command, :invite, "designer", "have a look at the header"} =
              Commands.parse("/invite designer have a look at the header")
 
-    assert {:error, "usage: /i" <> _} = Commands.parse("/i")
+    assert {:error, "usage: /i @agent-or-team" <> _} = Commands.parse("/i")
+
+    assert {:command, :invite, "bugfix-team", "look at #42"} =
+             Commands.parse("/i @bugfix-team look at #42")
+
+    assert Commands.help() =~ "/i @agent|@team"
   end
 
   test "/stop takes no arguments and ignores any given" do

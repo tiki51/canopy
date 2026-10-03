@@ -10,6 +10,7 @@ defmodule Canopy.Messages do
   alias Canopy.Documents
   alias Canopy.Messages.{Attachment, Message}
   alias Canopy.Repo
+  alias Canopy.Teams
   alias Canopy.Timeline
   alias Ecto.Multi
 
@@ -27,7 +28,8 @@ defmodule Canopy.Messages do
 
     * `:attachments` — document ids to attach, in order (max #{@max_attachments});
       with attachments the body may be blank
-    * `:mentions` — override the mentions extracted from the body
+    * `:mentions` — override the mentions extracted from the body (with
+      `:team_mentions`, default none)
   """
   def post_user_message(channel_id, user_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "post"}, opts)
@@ -188,9 +190,23 @@ defmodule Canopy.Messages do
 
   @doc """
   Returns the ids of agents mentioned as `@name` in `body`, in order of first
-  appearance. Unknown names are ignored.
+  appearance. A team name expands in place to its active members, by name;
+  the result has no duplicates. Unknown names are ignored.
   """
-  def extract_mentions(body) when is_binary(body) do
+  def extract_mentions(body), do: body |> resolve_mentions() |> elem(0)
+
+  @doc "The teams named in `body`, as stored in `messages.team_mentions`."
+  def team_mentions(body), do: body |> resolve_mentions() |> elem(1)
+
+  @doc """
+  Resolves the `@name`s in `body` to `{agent_ids, team_mentions}`. Each name is
+  an agent first (an agent wins a name collision), then a team. A team entry
+  is `%{"team_id", "name", "agent_ids"}`, where `agent_ids` are the members
+  only that mention woke: not named directly anywhere in the body, nor
+  claimed by an earlier team. The channel server charges each team one turn
+  of the chatter budget for those wakes.
+  """
+  def resolve_mentions(body) when is_binary(body) do
     names =
       @mention_regex
       |> Regex.scan(body)
@@ -198,21 +214,56 @@ defmodule Canopy.Messages do
       |> Enum.uniq()
 
     case names do
-      [] ->
-        []
-
-      names ->
-        ids = Agents.ids_by_names(names)
-        names |> Enum.map(&Map.get(ids, &1)) |> Enum.reject(&is_nil/1)
+      [] -> {[], []}
+      names -> expand(names)
     end
   end
 
-  def extract_mentions(_), do: []
+  def resolve_mentions(_), do: {[], []}
+
+  defp expand(names) do
+    agents = Agents.ids_by_names(names)
+    teams = names |> Enum.reject(&Map.has_key?(agents, &1)) |> Teams.expand_names()
+
+    ids =
+      names
+      |> Enum.flat_map(fn name ->
+        case {Map.get(agents, name), Map.get(teams, name)} do
+          {id, _} when is_binary(id) -> [id]
+          {nil, %{agent_ids: ids}} -> ids
+          _ -> []
+        end
+      end)
+      |> Enum.uniq()
+
+    {team_mentions, _claimed} =
+      names
+      |> Enum.filter(&Map.has_key?(teams, &1))
+      |> Enum.map_reduce(MapSet.new(Map.values(agents)), fn name, claimed ->
+        %{team_id: team_id, agent_ids: members} = Map.fetch!(teams, name)
+        own = Enum.reject(members, &MapSet.member?(claimed, &1))
+
+        {%{"team_id" => team_id, "name" => name, "agent_ids" => own},
+         MapSet.union(claimed, MapSet.new(own))}
+      end)
+
+    {ids, team_mentions}
+  end
 
   defp insert(attrs, opts) do
+    {mentions, team_mentions} =
+      case Keyword.fetch(opts, :mentions) do
+        {:ok, mentions} when is_list(mentions) ->
+          {mentions, Keyword.get(opts, :team_mentions, [])}
+
+        _ ->
+          resolve_mentions(attrs.body)
+      end
+
     attrs =
       attrs
-      |> Map.put(:mentions, Keyword.get(opts, :mentions) || extract_mentions(attrs.body))
+      |> Map.put(:mentions, mentions)
+      |> Map.put(:team_mentions, team_mentions)
       |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
 
     with {:ok, document_ids} <- check_attachments(Keyword.get(opts, :attachments, [])) do

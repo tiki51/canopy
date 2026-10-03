@@ -264,6 +264,25 @@ docs = Agents.get_by_name("docs")
 
 {:ok, _} = Canopy.Costs.Auditor.assign(finops.id)
 
+# One team for the user guide: the seeded @bugfix-team, made of Acme's cast
+# (the base seeds also put @frontend on it, deleted above), led by @backend.
+crew = [backend.id, reviewer.id, test_agent.id]
+
+{:ok, _} =
+  case Canopy.Teams.get_by_name("bugfix-team") do
+    nil ->
+      Canopy.Teams.create(%{
+        name: "bugfix-team",
+        display_name: "Bugfix team",
+        description: "Reproduces, fixes, tests, and reviews bugs",
+        lead_agent_id: backend.id,
+        agent_ids: crew
+      })
+
+    team ->
+      Canopy.Teams.update(team, %{lead_agent_id: backend.id, agent_ids: crew})
+  end
+
 learned = fn days -> now |> DateTime.to_date() |> Date.add(-days) |> Date.to_iso8601() end
 
 {:ok, _} =

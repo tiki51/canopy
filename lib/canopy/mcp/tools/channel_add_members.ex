@@ -1,8 +1,9 @@
 defmodule Canopy.MCP.Tools.ChannelAddMembers do
   @moduledoc """
-  Add agents to a channel you are in. Any member may bring others in; only
-  the owner can remove them. A DM's members are fixed (open another with
-  `canopy_dm_start` instead).
+  Add agents or teams to a channel you are in. Any member may bring others
+  in; only the owner can remove them. A team brings its active members, as
+  they are now. Adding wakes nobody. A DM's members are fixed (open another
+  with `canopy_dm_start` instead).
   """
 
   use Anubis.Server.Component, type: :tool
@@ -15,7 +16,7 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
     field :channel, :string, description: "Channel name or id. Defaults to your own channel."
 
     field :agents, {:required, :string},
-      description: "Agents to add, comma separated (@name or name)."
+      description: "Agents or teams to add, comma separated (@name)."
   end
 
   @impl true
@@ -23,14 +24,22 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, channel} <- Tool.resolve_channel(ctx, Map.get(params, :channel)),
            :ok <- not_dm(channel),
-           {:ok, agents} <- Tool.resolve_agents(Map.get(params, :agents), except: ctx.agent.id),
-           :ok <- non_empty(agents) do
+           {:ok, agents, teams} <-
+             Tool.resolve_members(Map.get(params, :agents), except: ctx.agent.id),
+           :ok <- non_empty(agents, teams) do
+        # teams first, so an agent named on its own after its team reads as already there
+        team_results =
+          Enum.map(teams, fn team ->
+            {:ok, result} = Channels.add_team(channel, team, ctx.agent.id)
+            {team, result}
+          end)
+
         {added, already} =
           Enum.split_with(agents, fn agent ->
             match?({:ok, %Channels.ChannelAgent{}}, Channels.add_agent(channel, agent))
           end)
 
-        {:ok, describe(channel, added, already)}
+        {:ok, describe(channel, team_results, added, already)}
       end
     end)
   end
@@ -41,18 +50,41 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
       else: :ok
   end
 
-  defp non_empty([]), do: {:error, "no agents to add"}
-  defp non_empty(_), do: :ok
+  defp non_empty([], []), do: {:error, "no agents to add"}
+  defp non_empty(_agents, _teams), do: :ok
 
-  defp describe(channel, added, already) do
+  defp describe(channel, team_results, added, already) do
     names = fn agents -> Enum.map_join(agents, ", ", &("@" <> &1.name)) end
 
-    [
-      added != [] && "added #{names.(added)} to ##{channel.name}",
-      already != [] && "#{names.(already)} already there"
-    ]
+    already =
+      Enum.flat_map(team_results, fn {_team, r} -> r.already end)
+      |> Kernel.++(already)
+      |> Enum.uniq_by(& &1.id)
+
+    teams =
+      Enum.map(team_results, fn
+        {team, %{added: []}} -> "nobody new from @#{team.name}"
+        {team, %{added: members}} -> "@#{team.name} (#{names.(members)})"
+      end)
+
+    added_part =
+      case teams ++ if(added == [], do: [], else: [names.(added)]) do
+        [] -> nil
+        parts -> "added #{Enum.join(parts, ", ")} to ##{channel.name}"
+      end
+
+    mention =
+      case team_results do
+        [] ->
+          "Mention them in a message when you need them."
+
+        teams ->
+          "Mention #{Enum.map_join(teams, " or ", fn {t, _} -> "@" <> t.name end)} when you need them."
+      end
+
+    [added_part, already != [] && "#{names.(already)} already there"]
     |> Enum.filter(& &1)
     |> Enum.join("; ")
-    |> Kernel.<>(". Mention them in a message when you need them.")
+    |> Kernel.<>(". " <> mention)
   end
 end

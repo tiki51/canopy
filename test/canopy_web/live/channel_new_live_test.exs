@@ -230,4 +230,68 @@ defmodule CanopyWeb.ChannelNewLiveTest do
     assert has_element?(view, "#new-channel-no-agents")
     refute has_element?(view, "#channel-form")
   end
+
+  describe "teams and groups" do
+    setup ctx do
+      tester = Fixtures.agent_fixture(%{name: "tester", group: "Review"})
+      {:ok, reviewer} = Canopy.Agents.update(ctx.reviewer, %{group: "Review"})
+
+      team =
+        Fixtures.team_fixture([tester, ctx.builder], name: "qa-team", lead_agent_id: tester.id)
+
+      %{tester: tester, reviewer: reviewer, team: team}
+    end
+
+    test "a team chip ticks its members, or clears them when all are ticked", ctx do
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+      view |> element("#toggle-all-members") |> render_click()
+      refute has_element?(view, "#member-#{ctx.tester.id}[checked]")
+
+      view |> element("#team-chip-#{ctx.team.id}") |> render_click()
+      assert has_element?(view, "#member-#{ctx.tester.id}[checked]")
+      assert has_element?(view, "#member-#{ctx.builder.id}[checked]")
+      refute has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+      assert has_element?(view, "#team-chip-#{ctx.team.id}[aria-pressed='true']")
+
+      view |> element("#team-chip-#{ctx.team.id}") |> render_click()
+      refute has_element?(view, "#member-#{ctx.tester.id}[checked]")
+      refute has_element?(view, "#member-#{ctx.builder.id}[checked]")
+    end
+
+    test "a group heading toggles everyone in the group", ctx do
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      view |> element("#group-toggle-review") |> render_click()
+      refute has_element?(view, "#member-#{ctx.tester.id}[checked]")
+      refute has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+      assert has_element?(view, "#member-#{ctx.builder.id}[checked]")
+
+      view |> element("#group-toggle-review") |> render_click()
+      assert has_element?(view, "#member-#{ctx.tester.id}[checked]")
+      assert has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+    end
+
+    test "?team= preselects only the team's members with its lead as owner", ctx do
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new?team=#{ctx.team.id}")
+
+      assert has_element?(view, "#member-#{ctx.tester.id}[checked]")
+      assert has_element?(view, "#member-#{ctx.builder.id}[checked]")
+      refute has_element?(view, "#member-#{ctx.reviewer.id}[checked]")
+
+      assert has_element?(
+               view,
+               "#channel-form select[name='channel[owner_agent_id]'] option[selected][value='#{ctx.tester.id}']"
+             )
+
+      view
+      |> form("#channel-form", channel: %{name: "qa-pass", repository_id: ctx.repository.id})
+      |> render_submit()
+
+      channel = Channels.get_by_name(ctx.repository.id, "qa-pass")
+      assert channel.owner_agent_id == ctx.tester.id
+
+      assert Enum.map(channel.agents, & &1.id) |> Enum.sort() ==
+               Enum.sort([ctx.tester.id, ctx.builder.id])
+    end
+  end
 end

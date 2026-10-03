@@ -1,9 +1,13 @@
 defmodule Canopy.MCP.Tools.AgentsList do
-  @moduledoc "List every Canopy agent with its role. Members of your channel are marked."
+  @moduledoc """
+  List every Canopy agent with its role, then the teams. Members of your
+  channel are marked; a team name stands for its active members wherever you
+  name agents.
+  """
 
   use Anubis.Server.Component, type: :tool
 
-  alias Canopy.{Agents, Channels}
+  alias Canopy.{Agents, Channels, Teams}
   alias Canopy.MCP.Tool
 
   schema do
@@ -32,8 +36,41 @@ defmodule Canopy.MCP.Tools.AgentsList do
 
       case lines do
         [] -> {:ok, "No agents are configured."}
-        lines -> {:ok, Enum.join(lines, "\n")}
+        lines -> {:ok, Enum.join(lines ++ team_lines(ctx, member_ids), "\n")}
       end
     end)
+  end
+
+  # One line per team: what it is for, its lead, and its active members.
+  defp team_lines(ctx, member_ids) do
+    case Teams.list() do
+      [] ->
+        []
+
+      teams ->
+        lines =
+          Enum.map(teams, fn team ->
+            active = Teams.active_members(team)
+            here? = active != [] and Enum.all?(active, &MapSet.member?(member_ids, &1.id))
+
+            markers =
+              [
+                team.lead && "lead @#{team.lead.name}",
+                here? && "in ##{ctx.channel.name}"
+              ]
+              |> Enum.filter(& &1)
+              |> Enum.join(", ")
+
+            members =
+              if active == [],
+                do: "no active members",
+                else: Enum.map_join(active, ", ", &("@" <> &1.name))
+
+            "@#{team.name} (#{markers}): #{team.description || team.display_name} — #{members}"
+          end)
+
+        ["", "Teams (a team name stands for its active members wherever you name agents):"] ++
+          lines
+    end
   end
 end

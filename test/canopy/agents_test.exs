@@ -19,6 +19,16 @@ defmodule Canopy.AgentsTest do
     assert %{name: [_]} = errors_on(changeset)
   end
 
+  test "an agent may not take a team's name" do
+    agent = agent_fixture()
+    team = team_fixture([agent], name: "bugfix-team")
+
+    assert {:error, changeset} = Agents.create(%{name: "@Bugfix-Team"})
+    assert %{name: ["is already a team's name"]} = errors_on(changeset)
+    assert {:error, _} = Agents.update(agent, %{name: team.name})
+    assert {:ok, _} = Agents.update(agent, %{role: "unrelated edits still save"})
+  end
+
   test "get_by_name/1, list_active/0, update/2, deactivate/1" do
     agent = agent_fixture(%{name: "reviewer"})
     assert Agents.get_by_name("@reviewer").id == agent.id

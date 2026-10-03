@@ -245,4 +245,84 @@ defmodule Canopy.ChannelsTest do
     assert Enum.map(channels, & &1.id) == [channel.id]
     refute dm.id in Enum.map(channels, & &1.id)
   end
+
+  describe "teams" do
+    setup do
+      lead = agent_fixture(name: "lead-" <> unique_suffix())
+      helper = agent_fixture(name: "helper-" <> unique_suffix())
+      idle = agent_fixture(name: "idle-" <> unique_suffix())
+      %{lead: lead, helper: helper, idle: idle, team: team_fixture([lead, helper, idle])}
+    end
+
+    test "add_team/3 adds only missing active members and records one team_added", ctx do
+      {:ok, _} = Canopy.Agents.deactivate(ctx.idle)
+      channel = channel_fixture(owner_agent_id: ctx.lead.id)
+      Timeline.subscribe(channel.id)
+
+      assert {:ok, %{added: [added], already: [already], inactive: [inactive]}} =
+               Channels.add_team(channel, ctx.team, "user")
+
+      assert {added.id, already.id, inactive.id} == {ctx.helper.id, ctx.lead.id, ctx.idle.id}
+      assert Channels.member?(channel, ctx.helper)
+      refute Channels.member?(channel, ctx.idle)
+
+      assert_receive {:timeline, %{event_type: "team_added", agent_id: nil, payload: payload}}
+      assert payload["team_id"] == ctx.team.id
+      assert payload["team_name"] == ctx.team.name
+      assert payload["agent_ids"] == [ctx.helper.id]
+      assert payload["by"] == "user"
+      refute_received {:timeline, %{event_type: "member_added"}}
+
+      # nothing new to add: nothing recorded; the owner never changes
+      assert {:ok, %{added: []}} = Channels.add_team(channel, ctx.team, ctx.lead.id)
+      refute_receive {:timeline, _}, 100
+      assert Channels.get!(channel.id).owner_agent_id == ctx.lead.id
+    end
+
+    test "add_team/3 credits an adding agent and refuses DMs", ctx do
+      channel = channel_fixture()
+      Timeline.subscribe(channel.id)
+      by = channel.owner_agent_id
+
+      assert {:ok, %{added: added}} = Channels.add_team(channel, ctx.team, by)
+      assert length(added) == 3
+      assert_receive {:timeline, %{event_type: "team_added", agent_id: ^by}}
+
+      {:ok, dm} = Channels.ensure_dm(channel.repository_id, ctx.lead)
+      assert {:error, :dm} = Channels.add_team(dm, ctx.team, "user")
+    end
+
+    test "create/1 with team_ids adds the members and makes the lead owner", ctx do
+      other = agent_fixture()
+
+      {:ok, channel} =
+        Channels.create(%{
+          repository_id: repository_fixture().id,
+          name: "bugfix",
+          team_ids: [ctx.team.id],
+          agent_ids: [other.id]
+        })
+
+      assert channel.owner_agent_id == ctx.lead.id
+
+      assert Enum.map(channel.agents, & &1.id) |> Enum.sort() ==
+               Enum.sort([ctx.lead.id, ctx.helper.id, ctx.idle.id, other.id])
+
+      # no membership events at creation
+      assert Timeline.list(channel.id) == []
+
+      # an explicit owner wins; an inactive lead hands over to the first active member
+      {:ok, _} = Canopy.Agents.deactivate(ctx.lead)
+
+      {:ok, channel} =
+        Channels.create(%{
+          repository_id: channel.repository_id,
+          name: "b2",
+          team_ids: [ctx.team.id]
+        })
+
+      refute Channels.member?(channel, ctx.lead)
+      assert channel.owner_agent_id in [ctx.helper.id, ctx.idle.id]
+    end
+  end
 end

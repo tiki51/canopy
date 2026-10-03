@@ -3,7 +3,18 @@ defmodule Canopy.Runtime do
   Facade over the per-channel runtime. LiveViews call this; MCP tools do not.
   """
 
-  alias Canopy.{Agents, AgentSessions, Channels, Delegations, Handoffs, Messages, Tasks, Users}
+  alias Canopy.{
+    Agents,
+    AgentSessions,
+    Channels,
+    Delegations,
+    Handoffs,
+    Messages,
+    Tasks,
+    Teams,
+    Users
+  }
+
   alias Canopy.Runtime.{ChannelServer, Commands, Supervisor}
 
   @doc "Makes sure the channel's process is running and returns its pid."
@@ -17,6 +28,8 @@ defmodule Canopy.Runtime do
 
     * `/handoff @agent reason` → `{:ok, {:handoff, %Handoff{}}}`
     * `/delegate @agent task`  → `{:ok, {:delegation, %Delegation{}}}`
+    * `/i @agent`              → `{:ok, {:invite, %Agent{}}}`
+    * `/i @team`               → `{:ok, {:invite_team, %Team{}, added_agents}}`
 
   Plain text returns `{:ok, %Message{}}`. A malformed or impossible command returns
   `{:error, reason}` with a one-line reason; nothing is written in that case.
@@ -75,17 +88,46 @@ defmodule Canopy.Runtime do
   # `/i @agent [message]`: the user adds an agent to the channel. With a
   # message, it is posted as a mention so the newcomer wakes with something to
   # do; without one, the agent joins quietly. DMs keep their fixed set.
+  # `/i @team [message]` does the same for a team's active members: they join
+  # quietly, and a message is posted as a mention of the team, which wakes them.
   defp user_invite(channel_id, target_name, note) do
     channel = Channels.get!(channel_id)
 
-    with :ok <- invitable(channel),
-         {:ok, agent} <- active_agent_named(target_name),
+    with :ok <- invitable(channel) do
+      case {Agents.get_by_name(target_name), Teams.get_by_name(target_name)} do
+        {nil, %Teams.Team{} = team} -> invite_team(channel, team, note)
+        _ -> invite_agent(channel, target_name, note)
+      end
+    end
+  end
+
+  defp invite_agent(channel, target_name, note) do
+    with {:ok, agent} <- active_agent_named(target_name),
          {:ok, _} <- join(channel, agent) do
       if note == "" do
         {:ok, {:invite, agent}}
       else
-        Messages.post_user_message(channel_id, Users.local().id, "@#{agent.name} #{note}")
+        Messages.post_user_message(channel.id, Users.local().id, "@#{agent.name} #{note}")
       end
+    end
+  end
+
+  defp invite_team(channel, team, note) do
+    case Channels.add_team(channel, team, "user") do
+      {:ok, %{added: [], already: []}} ->
+        {:error, "nobody on @#{team.name} is active"}
+
+      {:ok, %{added: []}} ->
+        {:error, "everyone on @#{team.name} is already in ##{channel.name}"}
+
+      {:ok, %{added: added}} when note == "" ->
+        {:ok, {:invite_team, team, added}}
+
+      {:ok, _} ->
+        Messages.post_user_message(channel.id, Users.local().id, "@#{team.name} #{note}")
+
+      {:error, reason} ->
+        {:error, "could not add @#{team.name}: #{inspect(reason)}"}
     end
   end
 
@@ -96,7 +138,7 @@ defmodule Canopy.Runtime do
 
   defp active_agent_named(name) do
     case Agents.get_by_name(name) do
-      nil -> {:error, "no agent named @#{name}"}
+      nil -> {:error, "no agent or team named @#{name}"}
       %{active: false} = agent -> {:error, "@#{agent.name} is deactivated"}
       agent -> {:ok, agent}
     end
@@ -176,7 +218,15 @@ defmodule Canopy.Runtime do
   defp member_named(channel, name) do
     case Agents.get_by_name(name) do
       nil ->
-        {:error, "no agent named @#{name}"}
+        case Teams.get_by_name(name) do
+          nil ->
+            {:error, "no agent named @#{name}"}
+
+          team ->
+            {:error,
+             "@#{team.name} is a team; name one member: " <>
+               Enum.map_join(Teams.active_members(team), ", ", &("@" <> &1.name))}
+        end
 
       agent ->
         if Channels.member?(channel, agent),

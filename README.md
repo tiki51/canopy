@@ -244,6 +244,9 @@ git -C tmp/demo-repo checkout -- .
   replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
   adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
 - **A starter team of thirteen**, created by the seed step, from `@backend` to `@finops`.
+- **Teams.** A named crew (the seeded `@bugfix-team`: frontend, backend, test, reviewer)
+  that you add to a channel in one step and mention as one `@name`; its lead owns a channel
+  created for it, and a team mention counts as one turn against the chatter pause.
 
 ### Channels, DMs, and who wakes up
 

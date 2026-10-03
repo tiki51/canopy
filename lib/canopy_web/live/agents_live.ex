@@ -18,7 +18,7 @@ defmodule CanopyWeb.AgentsLive do
 
   use CanopyWeb, :live_view
 
-  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules, Settings}
+  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules, Settings, Teams}
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
   alias CanopyWeb.Nav
@@ -40,6 +40,7 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:show_inactive, false)
       |> assign(:agent, nil)
       |> assign(:agent_channels, [])
+      |> assign(:agent_teams, [])
       |> assign(:agent_schedules, [])
       |> assign(:agent_memory, "")
       |> assign(:memory_updated_at, nil)
@@ -50,6 +51,7 @@ defmodule CanopyWeb.AgentsLive do
     if connected?(socket) do
       Memory.subscribe()
       Settings.subscribe()
+      Teams.subscribe()
     end
 
     socket =
@@ -118,6 +120,9 @@ defmodule CanopyWeb.AgentsLive do
        nil -> socket
      end}
   end
+
+  def handle_info({:teams, :changed}, socket),
+    do: {:noreply, socket |> load_agents() |> load_agent_details()}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
@@ -420,6 +425,7 @@ defmodule CanopyWeb.AgentsLive do
     |> assign(:active_agents, active)
     |> assign(:inactive_agents, inactive)
     |> assign(:groups, Agents.groups())
+    |> assign(:teams, Teams.list())
     |> assign(:schedule_counts, Schedules.active_counts_by_agent())
   end
 
@@ -431,6 +437,7 @@ defmodule CanopyWeb.AgentsLive do
 
     socket
     |> assign(:agent_channels, channels)
+    |> assign(:agent_teams, Teams.for_agent(id))
     |> assign(:agent_schedules, Schedules.list_for_agent(id))
     |> assign(:agent_spend, agent_spend(id))
     |> load_memory()
@@ -580,6 +587,9 @@ defmodule CanopyWeb.AgentsLive do
       max_width="max-w-none"
     >
       <:actions>
+        <.link navigate={~p"/teams"} id="agents-teams" class="btn btn-sm btn-ghost">
+          <.icon name="hero-user-group" class="size-4" /> Teams
+        </.link>
         <.link navigate={~p"/agents/new"} id="new-agent" class="btn btn-sm btn-primary">
           <.icon name="hero-plus" class="size-4" /> New agent
         </.link>
@@ -749,6 +759,53 @@ defmodule CanopyWeb.AgentsLive do
             </li>
           </ul>
         </div>
+      </Layouts.panel>
+
+      <Layouts.panel
+        :if={@active_agents != [] or @teams != []}
+        id="agents-teams-panel"
+        title="Teams"
+        description="Crews you can add to a channel at once and mention as one @name. An agent can be on several."
+      >
+        <:actions>
+          <.link navigate={~p"/teams/new"} id="agents-new-team" class="btn btn-ghost btn-xs">
+            <.icon name="hero-plus-mini" class="size-3.5" /> New team
+          </.link>
+        </:actions>
+        <ul :if={@teams != []} id="agents-teams-list" class="divide-y divide-base-300">
+          <li
+            :for={team <- @teams}
+            id={"agents-team-#{team.id}"}
+            class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2"
+          >
+            <.link
+              navigate={~p"/teams/#{team.id}/edit"}
+              class="font-mono text-sm font-semibold hover:underline"
+            >
+              @{team.name}
+            </.link>
+            <span class="flex min-w-0 flex-wrap gap-1">
+              <span
+                :for={member <- team.members}
+                class={[
+                  "rounded-full border px-1.5 font-mono text-[11px]",
+                  cond do
+                    member.id == team.lead_agent_id -> "border-primary/40 text-primary"
+                    member.active -> "border-base-300"
+                    true -> "border-dashed border-base-300 text-base-content/40"
+                  end
+                ]}
+                title={if member.id == team.lead_agent_id, do: "Lead", else: member.role}
+              >
+                @{member.name}
+              </span>
+            </span>
+          </li>
+        </ul>
+        <p :if={@teams == []} class="text-xs text-base-content/60">
+          No teams yet. <.link navigate={~p"/teams/new"} class="link link-primary">Create one</.link>
+          to bring a crew into a channel in one step.
+        </p>
       </Layouts.panel>
 
       <p :if={@inactive_agents != [] and @active_agents == []} class="text-xs text-base-content/60">
@@ -1077,6 +1134,37 @@ defmodule CanopyWeb.AgentsLive do
             </ul>
             <p :if={@agent_channels == []} class="text-xs text-base-content/60">
               Not in any channel yet.
+            </p>
+          </Layouts.panel>
+
+          <Layouts.panel
+            id="agent-teams"
+            title="Teams"
+            description="Teams this agent is on. Leads are marked."
+          >
+            <ul :if={@agent_teams != []} class="divide-y divide-base-300">
+              <li
+                :for={team <- @agent_teams}
+                id={"agent-team-#{team.id}"}
+                class="flex items-center gap-2 py-2 text-sm"
+              >
+                <.icon name="hero-user-group-mini" class="size-4 shrink-0 text-base-content/40" />
+                <.link navigate={~p"/teams/#{team.id}/edit"} class="font-mono text-xs hover:underline">
+                  @{team.name}
+                </.link>
+                <span
+                  :if={team.lead_agent_id == @agent.id}
+                  class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+                >
+                  lead
+                </span>
+                <span class="ml-auto truncate text-xs text-base-content/60">
+                  {length(team.members)} {if length(team.members) == 1, do: "member", else: "members"}
+                </span>
+              </li>
+            </ul>
+            <p :if={@agent_teams == []} class="text-xs text-base-content/60">
+              Not on any team. <.link navigate={~p"/teams"} class="link link-primary">Teams</.link>
             </p>
           </Layouts.panel>
         </div>

@@ -8,15 +8,23 @@ defmodule CanopyWeb.DmPicker do
   A live component rendered at the shell level (outside the sliding sidebar,
   whose transform would otherwise trap a fixed-position overlay), opened by
   the sidebar's `+` with `phx-target="#dm-picker-component"`.
+
+  Team chips tick (or clear) a team's active members; the DM is still the one
+  for that exact set of agents.
   """
 
   use CanopyWeb, :live_component
 
-  alias Canopy.Channels
+  alias Canopy.{Channels, Teams}
 
   @impl true
   def mount(socket) do
-    {:ok, socket |> assign(:open?, false) |> assign(:agent_ids, []) |> assign(:error, nil)}
+    {:ok,
+     socket
+     |> assign(:open?, false)
+     |> assign(:agent_ids, [])
+     |> assign(:teams, [])
+     |> assign(:error, nil)}
   end
 
   @impl true
@@ -36,6 +44,7 @@ defmodule CanopyWeb.DmPicker do
      socket
      |> assign(:open?, true)
      |> assign(:agent_ids, [])
+     |> assign(:teams, Teams.list())
      |> assign(:error, nil)
      |> assign(
        :repository_id,
@@ -51,6 +60,22 @@ defmodule CanopyWeb.DmPicker do
      |> assign(:repository_id, preselected(params["repository_id"], socket.assigns.repositories))
      |> assign(:agent_ids, Map.get(params, "agent_ids", []))
      |> assign(:error, nil)}
+  end
+
+  def handle_event("toggle_team", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.teams, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      team ->
+        ids = team_agent_ids(team, socket.assigns.agents)
+        current = socket.assigns.agent_ids
+
+        agent_ids =
+          if Enum.all?(ids, &(&1 in current)), do: current -- ids, else: Enum.uniq(current ++ ids)
+
+        {:noreply, socket |> assign(:agent_ids, agent_ids) |> assign(:error, nil)}
+    end
   end
 
   def handle_event("open_dm", params, socket) do
@@ -84,6 +109,17 @@ defmodule CanopyWeb.DmPicker do
 
   defp preselected(_id, [first | _]), do: first.id
   defp preselected(_id, []), do: nil
+
+  # The team's active members among the agents the picker offers.
+  defp team_agent_ids(team, agents) do
+    ids = MapSet.new(Teams.active_members(team), & &1.id)
+    for agent <- agents, MapSet.member?(ids, agent.id), do: agent.id
+  end
+
+  defp team_selected?(team, agents, agent_ids) do
+    ids = team_agent_ids(team, agents)
+    ids != [] and Enum.all?(ids, &(&1 in agent_ids))
+  end
 
   defp label(agent_ids, agents) do
     agents
@@ -179,6 +215,28 @@ defmodule CanopyWeb.DmPicker do
 
             <fieldset class="fieldset mb-0">
               <span class="label mb-1">Agents</span>
+              <div :if={@teams != []} id="dm-teams" class="mb-2 flex flex-wrap gap-1.5">
+                <button
+                  :for={team <- @teams}
+                  :if={team_agent_ids(team, @agents) != []}
+                  type="button"
+                  id={"dm-team-#{team.id}"}
+                  phx-click="toggle_team"
+                  phx-value-id={team.id}
+                  phx-target={@myself}
+                  aria-pressed={to_string(team_selected?(team, @agents, @agent_ids))}
+                  class={[
+                    "flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition",
+                    if(team_selected?(team, @agents, @agent_ids),
+                      do: "border-primary/40 bg-primary/10 text-primary",
+                      else: "border-base-300 hover:bg-base-100"
+                    )
+                  ]}
+                >
+                  <.icon name="hero-user-group-mini" class="size-3.5" />
+                  <span class="font-mono">@{team.name}</span>
+                </button>
+              </div>
               <ul id="dm-agents" class="grid max-h-72 gap-1 overflow-y-auto sm:grid-cols-2">
                 <li :for={agent <- @agents}>
                   <label

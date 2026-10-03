@@ -121,6 +121,22 @@ defmodule Canopy.Fixtures do
     }
   end
 
+  @doc """
+  Creates a team of `members` (agents); the lead defaults to the first one.
+  """
+  def team_fixture(members, attrs \\ %{}) when is_list(members) do
+    attrs = Map.new(attrs)
+
+    {:ok, team} =
+      attrs
+      |> Map.put_new_lazy(:name, fn -> "team-" <> unique_suffix() end)
+      |> Map.put_new(:lead_agent_id, List.first(members).id)
+      |> Map.put(:agent_ids, Enum.map(members, & &1.id))
+      |> Canopy.Teams.create()
+
+    team
+  end
+
   def unique_suffix do
     System.unique_integer([:positive]) |> Integer.to_string(36) |> String.downcase()
   end
