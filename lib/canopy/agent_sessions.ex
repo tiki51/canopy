@@ -82,6 +82,16 @@ defmodule Canopy.AgentSessions do
   end
 
   @doc """
+  Stamps the session as prompted with the channel's current brief. Returns
+  the session with `brief_seen_at` set.
+  """
+  def mark_brief_seen(%AgentSession{id: id} = session) do
+    now = DateTime.utc_now()
+    Repo.update_all(from(s in AgentSession, where: s.id == ^id), set: [brief_seen_at: now])
+    %{session | brief_seen_at: now}
+  end
+
+  @doc """
   Records the MCP servers the engine reported for the session at the start of
   a turn (`[%{name, status, tool_count}]`), for the repository page.
   """

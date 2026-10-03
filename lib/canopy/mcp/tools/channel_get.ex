@@ -17,12 +17,12 @@ defmodule Canopy.MCP.Tools.ChannelGet do
   def execute(params, frame) do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, channel} <- Tool.resolve_channel(ctx, Map.get(params, :channel)) do
-        {:ok, render(channel)}
+        {:ok, render(channel, channel.id == ctx.channel.id)}
       end
     end)
   end
 
-  defp render(channel) do
+  defp render(channel, own?) do
     repository = channel.repository
 
     branch =
@@ -40,6 +40,7 @@ defmodule Canopy.MCP.Tools.ChannelGet do
       Format.optional_line("Topic: ", channel.topic),
       "Owner: #{Format.agent_ref(channel.owner)}",
       Format.task_block(task),
+      brief_block(channel, own?),
       "Members: #{members}",
       spend_line(channel),
       handoff_line(channel),
@@ -49,6 +50,31 @@ defmodule Canopy.MCP.Tools.ChannelGet do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  # Your own channel's brief is already in your instructions, so it is not
+  # printed twice; another channel's is shown in full.
+  defp brief_block(%{brief: nil}, _own?), do: nil
+
+  defp brief_block(channel, true) do
+    "Brief: set by #{brief_author(channel)} #{brief_date(channel)} (it is in your instructions)"
+  end
+
+  defp brief_block(channel, false) do
+    "Brief (set by #{brief_author(channel)} #{brief_date(channel)}):\n#{channel.brief}"
+  end
+
+  defp brief_author(%{brief_updated_by: "user"}), do: "the user"
+  defp brief_author(%{brief_updated_by: nil}), do: "the user"
+
+  defp brief_author(%{brief_updated_by: agent_id}) do
+    case Canopy.Agents.get(agent_id) do
+      nil -> "an agent"
+      agent -> Format.agent_ref(agent)
+    end
+  end
+
+  defp brief_date(%{brief_updated_at: nil}), do: ""
+  defp brief_date(%{brief_updated_at: at}), do: Format.relative_time(at)
 
   defp spend_line(%{spend_limit: limit} = channel) when is_number(limit) do
     spent = Canopy.Costs.channel_total(channel.id)

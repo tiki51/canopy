@@ -18,7 +18,8 @@ defmodule Canopy.Runtime.Prompts do
   @doc "The variables a preamble may use, for the Settings page to list."
   def preamble_variables,
     do: ~w(display_name name role channel repository_path notes_path notes
-           execution_mode other_repositories memory engine_name engine_notes playbooks)
+           execution_mode other_repositories memory engine_name engine_notes playbooks
+           channel_brief)
 
   # The user's text when Settings carries one, otherwise what Canopy ships.
   defp preamble do
@@ -28,8 +29,14 @@ defmodule Canopy.Runtime.Prompts do
     end
   end
 
-  @doc "System text appended after the OpenCode agent prompt: preamble plus the agent's role prompt."
+  @doc """
+  System text appended after the engine's own agent prompt: preamble plus the
+  agent's role prompt. The channel's brief goes in through `{{channel_brief}}`,
+  or right after a custom preamble that leaves it out.
+  """
   def system(agent, channel, repository, others \\ []) do
+    brief = brief_block(channel)
+
     vars = %{
       "other_repositories" => other_repositories(others, repository),
       "memory" => Canopy.Memory.for_prompt(Map.get(agent, :id)),
@@ -46,17 +53,53 @@ defmodule Canopy.Runtime.Prompts do
       "notes_path" => Canopy.Notes.shared_path(repository.path),
       "notes" => Canopy.Notes.for_prompt(repository.path),
       # changes only when the library does, so the prefix still caches
-      "playbooks" => Canopy.Playbooks.for_prompt()
+      "playbooks" => Canopy.Playbooks.for_prompt(),
+      # likewise only when the brief does: no timestamp, no editor
+      "channel_brief" => brief
     }
 
+    template = preamble()
+
+    template =
+      cond do
+        # no brief: the placeholder goes, with the blank line before it
+        brief == "" -> Regex.replace(~r/\n*\{\{channel_brief\}\}/, template, "")
+        String.contains?(template, "{{channel_brief}}") -> template
+        # a custom preamble without the placeholder still gets the brief
+        true -> template <> "\n\n{{channel_brief}}"
+      end
+
+    # one pass, so a value that happens to contain `{{name}}` (a memory, a
+    # brief) is never filled in again
     preamble =
-      Enum.reduce(vars, preamble(), fn {k, v}, acc -> String.replace(acc, "{{#{k}}}", v) end)
+      Regex.replace(~r/\{\{(\w+)\}\}/, template, fn whole, key -> Map.get(vars, key, whole) end)
 
     case agent.system_prompt do
       nil -> preamble
       "" -> preamble
       role_prompt -> preamble <> "\n\n" <> String.trim(role_prompt)
     end
+  end
+
+  # The channel's standing context, or "" when it has none.
+  defp brief_block(channel) do
+    case channel |> Map.get(:brief) |> to_string() |> String.trim() do
+      "" ->
+        ""
+
+      brief ->
+        "Channel brief for ##{channel.name} (standing context from the user and the channel owner; it applies to every task here, and where earlier messages disagree, the brief wins. The current task is in canopy_task_get):\n" <>
+          brief
+    end
+  end
+
+  @doc """
+  Appended to the wake of a session that had a turn before the channel's
+  brief last changed: its instructions moved under it. `by` is the editor's
+  display name.
+  """
+  def brief_changed(by) do
+    "\nThe channel brief changed since your last turn (by #{by}). The current version is in your instructions; where it differs from earlier messages, follow it.\n"
   end
 
   # An agent is never told what its own OpenCode agent can do, so when a

@@ -31,6 +31,9 @@ defmodule Canopy.AgentSessions.AgentSession do
     # `%{"servers" => [%{"name", "status", "tool_count"}]}`, and when
     field :mcp_servers, :map
     field :mcp_servers_seen_at, :utc_datetime_usec
+    # when the session was last prompted with the channel's brief as it
+    # stood; nil until its first prompt (see `AgentSessions.mark_brief_seen/1`)
+    field :brief_seen_at, :utc_datetime_usec
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent

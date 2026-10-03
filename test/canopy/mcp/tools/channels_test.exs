@@ -65,6 +65,30 @@ defmodule Canopy.MCP.Tools.ChannelsTest do
       assert text =~ "Spend: $2.50 of a $2.00 limit set by the user (reached: agents are held"
     end
 
+    test "prints another channel's brief in full and only points to your own", ctx do
+      assert {:ok, text} = call(ChannelGet, %{}, ctx)
+      refute text =~ "Brief"
+
+      {:ok, _} = Channels.set_brief(ctx.channel, "Goal: own channel goal.", "user")
+      assert {:ok, text} = call(ChannelGet, %{}, ctx)
+      assert text =~ "Brief: set by the user"
+      assert text =~ "(it is in your instructions)"
+      refute text =~ "Goal: own channel goal."
+
+      other =
+        channel_fixture(%{
+          repository_id: ctx.repository.id,
+          owner_agent_id: ctx.other.id,
+          agent_ids: [ctx.agent.id],
+          name: "other-" <> unique_suffix()
+        })
+
+      {:ok, _} = Channels.set_brief(other, "Line one.\nDon't touch vendor/.", ctx.other.id)
+      assert {:ok, text} = call(ChannelGet, %{channel: other.name}, ctx)
+      assert text =~ "Brief (set by @#{ctx.other.name}"
+      assert text =~ "Line one.\nDon't touch vendor/."
+    end
+
     test "accepts a channel name or id the caller is a member of", ctx do
       assert {:ok, by_name} = call(ChannelGet, %{channel: "#" <> ctx.channel.name}, ctx)
       assert {:ok, by_id} = call(ChannelGet, %{channel: ctx.channel.id}, ctx)

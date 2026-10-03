@@ -1,6 +1,7 @@
 defmodule CanopyWeb.ChannelLive.New do
   @moduledoc """
-  New channel: pick a repository, name the channel, set a topic, choose the
+  New channel: pick a repository, name the channel, set a topic (and, behind
+  "Add a brief", the channel's standing context), choose the
   member agents (all active agents preselected), and pick the initial owner
   among the chosen members. On success the channel, its task, and its
   memberships are created in one transaction and the user lands in the channel.
@@ -17,7 +18,11 @@ defmodule CanopyWeb.ChannelLive.New do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, socket |> assign(:page_title, "New channel") |> assign(:teams, Teams.list())}
+    {:ok,
+     socket
+     |> assign(:page_title, "New channel")
+     |> assign(:teams, Teams.list())
+     |> assign(:brief_open?, false)}
   end
 
   @impl true
@@ -47,8 +52,12 @@ defmodule CanopyWeb.ChannelLive.New do
      |> assign_form(build_changeset(attrs, member_ids))}
   end
 
-  # "Select all" / "Clear all" above the members grid.
+  # The brief field stays out of the way until asked for.
   @impl true
+  def handle_event("add_brief", _params, socket),
+    do: {:noreply, assign(socket, :brief_open?, true)}
+
+  # "Select all" / "Clear all" above the members grid.
   def handle_event("toggle_all_members", _params, socket),
     do: {:noreply, toggle_members(socket, Enum.map(socket.assigns.agents, & &1.id))}
 
@@ -178,11 +187,12 @@ defmodule CanopyWeb.ChannelLive.New do
   defp build_changeset(params, member_ids) do
     params =
       params
-      |> Map.take(["repository_id", "name", "topic", "owner_agent_id", "spend_limit"])
+      |> Map.take(["repository_id", "name", "topic", "brief", "owner_agent_id", "spend_limit"])
       |> blank_to_nil()
 
     %Channel{}
     |> Channels.change(params)
+    |> Channel.brief_changeset(%{"brief" => params["brief"] || ""})
     |> Ecto.Changeset.validate_required([:owner_agent_id], message: "pick an owner")
     |> validate_members(member_ids)
   end
@@ -195,7 +205,7 @@ defmodule CanopyWeb.ChannelLive.New do
 
   defp create_attrs(params) do
     params
-    |> Map.take(["repository_id", "name", "topic", "owner_agent_id", "spend_limit"])
+    |> Map.take(["repository_id", "name", "topic", "brief", "owner_agent_id", "spend_limit"])
     |> blank_to_nil()
     |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
   end
@@ -318,6 +328,27 @@ defmodule CanopyWeb.ChannelLive.New do
               placeholder="Make the HTTP client retry idempotent requests"
               autocomplete="off"
             />
+            <%= if @brief_open? or (@form[:brief].value || "") != "" do %>
+              <.input
+                field={@form[:brief]}
+                type="textarea"
+                rows="4"
+                label="Brief (standing context every agent here gets in its instructions)"
+                placeholder="Goal: …\nConstraints:\n- Don't touch …"
+                class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed"
+              />
+            <% else %>
+              <div>
+                <button
+                  type="button"
+                  id="add-brief"
+                  class="btn btn-ghost btn-xs gap-1"
+                  phx-click="add_brief"
+                >
+                  <.icon name="hero-document-text-mini" class="size-4" /> Add a brief
+                </button>
+              </div>
+            <% end %>
 
             <fieldset class="fieldset mb-2">
               <div class="mb-1 flex items-center justify-between">

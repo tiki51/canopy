@@ -174,6 +174,12 @@ defmodule Mix.Tasks.Canopy.Demo do
           repository_id: repository.id,
           name: "payment-retries",
           topic: "Invoices are occasionally charged twice",
+          brief: """
+          Goal: find why invoices are occasionally charged twice, and fix it without changing the public API.
+          Constraints:
+          - Keep the fix small and covered by a test.
+          - Ask before adding a dependency.
+          """,
           owner_agent_id: backend.id,
           agent_ids: Enum.map([backend, researcher], & &1.id)
         })

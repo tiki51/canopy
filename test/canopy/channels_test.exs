@@ -325,4 +325,130 @@ defmodule Canopy.ChannelsTest do
       assert channel.owner_agent_id in [ctx.helper.id, ctx.idle.id]
     end
   end
+
+  describe "brief" do
+    setup do
+      %{channel: channel_fixture()}
+    end
+
+    test "set_brief/3 stores the trimmed text and records who, what, and the previous text",
+         %{channel: channel} do
+      Timeline.subscribe(channel.id)
+
+      assert {:ok, updated} =
+               Channels.set_brief(channel, "  Goal: stop double charges.\n", "user")
+
+      assert updated.brief == "Goal: stop double charges."
+      assert updated.brief_updated_by == "user"
+      assert %DateTime{} = updated.brief_updated_at
+
+      assert_receive {:timeline, %{event_type: "brief_updated", agent_id: nil, payload: p}}
+      assert p == %{"by" => "user", "body" => "Goal: stop double charges.", "previous" => nil}
+
+      owner = channel.owner_agent_id
+      assert {:ok, again} = Channels.set_brief(updated, "Goal: refunds too.", owner)
+      assert again.brief_updated_by == owner
+      assert_receive {:timeline, %{event_type: "brief_updated", agent_id: ^owner, payload: p}}
+      assert p["previous"] == "Goal: stop double charges."
+      assert p["by"] == owner
+    end
+
+    test "an unchanged text records nothing", %{channel: channel} do
+      {:ok, channel} = Channels.set_brief(channel, "Same.", "user")
+      Timeline.subscribe(channel.id)
+
+      assert {:ok, same} = Channels.set_brief(channel, " Same. ", "user")
+      assert same.brief_updated_at == channel.brief_updated_at
+      refute_receive {:timeline, %{event_type: "brief_updated"}}, 100
+      assert length(Channels.brief_history(channel.id)) == 1
+    end
+
+    test "over the cap is an error and stores nothing", %{channel: channel} do
+      assert {:error, changeset} =
+               Channels.set_brief(channel, String.duplicate("x", 4_001), "user")
+
+      assert %{brief: [_]} = errors_on(changeset)
+      assert Channels.get!(channel.id).brief == nil
+      assert Channels.brief_history(channel.id) == []
+
+      assert {:ok, %{brief: brief}} =
+               Channels.set_brief(channel, String.duplicate("x", 4_000), "user")
+
+      assert String.length(brief) == 4_000
+    end
+
+    test "an empty text clears it and is recorded as a version", %{channel: channel} do
+      {:ok, channel} = Channels.set_brief(channel, "Something.", "user")
+      assert {:ok, cleared} = Channels.set_brief(channel, "", "user")
+      assert cleared.brief == nil
+
+      assert [%{payload: %{"body" => nil, "previous" => "Something."}}, _] =
+               Channels.brief_history(channel.id)
+    end
+
+    test "compares with the stored row, not a stale struct", %{channel: channel} do
+      {:ok, _} = Channels.set_brief(channel, "From an agent.", channel.owner_agent_id)
+      # `channel` still has no brief; the edit made meanwhile is the previous text
+      {:ok, _} = Channels.set_brief(channel, "From the user.", "user")
+
+      assert [%{payload: %{"previous" => "From an agent."}} | _] =
+               Channels.brief_history(channel.id)
+    end
+
+    test "update/2 ignores a brief", %{channel: channel} do
+      assert {:ok, updated} = Channels.update(channel, %{brief: "sneaky", topic: "New topic"})
+      assert updated.topic == "New topic"
+      assert updated.brief == nil
+      assert Channels.brief_history(channel.id) == []
+    end
+
+    test "create/1 with a brief stores it and records one event, credited to the creator" do
+      repository = repository_fixture()
+      owner = agent_fixture()
+
+      assert {:ok, channel} =
+               Channels.create(%{
+                 repository_id: repository.id,
+                 name: "briefed",
+                 owner_agent_id: owner.id,
+                 brief: "Goal: ship it.",
+                 brief_by: owner.id
+               })
+
+      assert channel.brief == "Goal: ship it."
+      assert channel.brief_updated_by == owner.id
+
+      assert [%{agent_id: agent_id, payload: %{"body" => "Goal: ship it.", "previous" => nil}}] =
+               Channels.brief_history(channel.id)
+
+      assert agent_id == owner.id
+      assert Timeline.list(channel.id) |> length() == 1
+
+      # without a brief, creation records nothing
+      {:ok, plain} =
+        Channels.create(%{repository_id: repository.id, name: "plain", owner_agent_id: owner.id})
+
+      assert Timeline.list(plain.id) == []
+    end
+
+    test "create/1 refuses a brief over the cap" do
+      repository = repository_fixture()
+
+      assert {:error, changeset} =
+               Channels.create(%{
+                 repository_id: repository.id,
+                 name: "toolong",
+                 brief: String.duplicate("x", 4_001)
+               })
+
+      assert %{brief: [_]} = errors_on(changeset)
+    end
+
+    test "brief_tokens/1 is a rough four-characters-a-token estimate" do
+      assert Channels.brief_tokens(nil) == 0
+      assert Channels.brief_tokens("abcd") == 1
+      assert Channels.brief_tokens("abcde") == 2
+      assert Channels.brief_tokens(String.duplicate("x", 4_000)) == 1_000
+    end
+  end
 end

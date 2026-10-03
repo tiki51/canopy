@@ -203,6 +203,9 @@ defmodule CanopyWeb.SettingsLiveTest do
       html = render(view)
       assert html =~ "canopy_message_send"
       assert html =~ "{{display_name}}"
+      # the brief's variable is listed, with what happens without it
+      assert html =~ "{{channel_brief}}"
+      assert has_element?(view, "#prompt-brief-note", "gets the brief added after it")
     end
 
     test "a custom prompt reaches the agents, with variables still filled in", %{conn: conn} do

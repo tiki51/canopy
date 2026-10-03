@@ -114,6 +114,35 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  # The new text one click away; mentions in it are highlighted but woke nobody.
+  def timeline_item(%{event: %{event_type: "brief_updated"}} = assigns) do
+    ~H"""
+    <div id={@id} data-activity={activity_class(@event)}>
+      <.system_line
+        id={"line-#{@event.id}"}
+        icon={event_icon(@event.event_type)}
+        tone={event_tone(@event)}
+        at={@event.inserted_at}
+      >
+        {event_text(@event, @names, @user_name)}
+      </.system_line>
+      <details
+        :if={@event.payload["body"]}
+        id={"brief-change-#{@event.id}"}
+        class="group mx-auto mb-1 max-w-2xl px-3 text-xs sm:px-6"
+      >
+        <summary class="flex cursor-pointer list-none justify-center text-base-content/50 transition hover:text-base-content/80">
+          <span class="group-open:hidden">Show the brief</span>
+          <span class="hidden group-open:inline">Hide the brief</span>
+        </summary>
+        <div class="mt-1 max-h-64 overflow-y-auto rounded-lg border border-base-300 bg-base-200/40 px-3 py-2 text-sm">
+          <.message_text body={@event.payload["body"]} channels={@channels} mentions={@mentions} />
+        </div>
+      </details>
+    </div>
+    """
+  end
+
   def timeline_item(assigns) do
     ~H"""
     <div id={@id} data-activity={activity_class(@event)}>
@@ -2462,6 +2491,13 @@ defmodule CanopyWeb.TimelineComponents do
           do: "#{by} set this channel's spend limit to #{Canopy.Costs.money(p["limit"])}",
           else: "#{by} removed this channel's spend limit"
 
+      "brief_updated" ->
+        by = if p["by"] in ["user", nil], do: user, else: agent
+
+        if p["body"],
+          do: "#{by} updated the channel brief",
+          else: "#{by} cleared the channel brief"
+
       "spend_limit_reached" ->
         "spend limit reached: #{Canopy.Costs.money(p["spent"])} of #{Canopy.Costs.money(p["limit"])}; agents stay quiet here until the limit is raised"
 
@@ -2914,6 +2950,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("channel_reopened"), do: "hero-archive-box-x-mark-mini"
   defp event_icon("spend_limit_" <> _), do: "hero-banknotes-mini"
   defp event_icon("repository_switched"), do: "hero-folder-arrow-down-mini"
+  defp event_icon("brief_updated"), do: "hero-document-text-mini"
   defp event_icon("schedule_fired"), do: "hero-bell-alert-mini"
   defp event_icon("schedule_" <> _), do: "hero-clock-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"

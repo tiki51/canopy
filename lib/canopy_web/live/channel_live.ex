@@ -84,6 +84,8 @@ defmodule CanopyWeb.ChannelLive do
      socket
      |> assign(:channel, nil)
      |> assign(:compact?, true)
+     # the pinned brief opened up; this browser remembers it (Pref hook)
+     |> assign(:brief_expanded?, false)
      |> assign(:branch_timer, nil)
      |> assign(:picked, [])
      |> assign(:thread_picked, [])
@@ -354,6 +356,9 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
     |> assign_cards()
     |> assign(:editing_task?, false)
+    |> close_brief_form()
+    |> assign(:brief_history, nil)
+    |> assign(:brief_viewing, nil)
     |> assign(:editing_members?, false)
     |> assign(:addable_agents, [])
     |> assign(:addable_teams, [])
@@ -1092,6 +1097,16 @@ defmodule CanopyWeb.ChannelLive do
   defp react_to(socket, %{event_type: "spend_limit_" <> _}),
     do: socket |> refresh_channel() |> assign(:spent, Costs.channel_total(cid(socket)))
 
+  # an agent's edit (or another window's) shows at once; an open editor keeps
+  # what was typed and says the brief moved under it
+  defp react_to(socket, %{event_type: "brief_updated"} = event) do
+    socket = refresh_channel(socket)
+
+    socket
+    |> assign(:brief_conflict, if(socket.assigns.editing_brief?, do: event, else: nil))
+    |> then(&if(&1.assigns.brief_history, do: load_brief_history(&1), else: &1))
+  end
+
   defp react_to(socket, %{event_type: "task_updated"}),
     do: assign_task(socket, Tasks.for_channel(cid(socket)))
 
@@ -1103,6 +1118,55 @@ defmodule CanopyWeb.ChannelLive do
     channel = Channels.get!(cid(socket))
     assign(socket, :channel, channel)
   end
+
+  defp open_brief_form(socket, text) do
+    socket
+    |> assign(:editing_brief?, true)
+    |> assign(:brief_conflict, nil)
+    |> assign_brief_form(text, nil)
+  end
+
+  defp close_brief_form(socket) do
+    socket
+    |> assign(:editing_brief?, false)
+    |> assign(:brief_form, nil)
+    |> assign(:brief_text, "")
+    |> assign(:brief_conflict, nil)
+  end
+
+  defp assign_brief_form(socket, text, action) do
+    changeset =
+      socket.assigns.channel
+      |> Channels.change_brief(%{"brief" => text})
+      |> Map.put(:action, action)
+
+    socket
+    |> assign(:brief_text, text)
+    |> assign(:brief_form, to_form(changeset, as: "brief", id: "brief-form"))
+  end
+
+  defp save_brief(socket, text, done) do
+    case Channels.set_brief(socket.assigns.channel, text, "user") do
+      {:ok, channel} ->
+        socket
+        |> assign(:channel, channel)
+        |> close_brief_form()
+        |> then(&if(&1.assigns.brief_history, do: load_brief_history(&1), else: &1))
+        |> put_flash(:info, done)
+
+      {:error, changeset} ->
+        socket
+        |> assign(:editing_brief?, true)
+        |> assign(:brief_text, text)
+        |> assign(
+          :brief_form,
+          to_form(Map.put(changeset, :action, :validate), as: "brief", id: "brief-form")
+        )
+    end
+  end
+
+  defp load_brief_history(socket),
+    do: assign(socket, :brief_history, Channels.brief_history(cid(socket)))
 
   defp refresh_members(socket) do
     members = Channels.members(cid(socket))
@@ -1470,6 +1534,60 @@ defmodule CanopyWeb.ChannelLive do
   # now open too.
   def handle_event("pref", %{"key" => "activity-open-live", "value" => value}, socket),
     do: {:noreply, set_auto_open(socket, value == "true")}
+
+  def handle_event("pref", %{"key" => "channel-brief", "value" => value}, socket),
+    do: {:noreply, assign(socket, :brief_expanded?, value == "expanded")}
+
+  def handle_event("toggle_brief", _params, socket) do
+    expanded? = not socket.assigns.brief_expanded?
+
+    {:noreply,
+     socket
+     |> assign(:brief_expanded?, expanded?)
+     |> push_event("pref", %{
+       key: "channel-brief",
+       value: if(expanded?, do: "expanded", else: "collapsed")
+     })}
+  end
+
+  def handle_event("toggle_brief_form", _params, socket) do
+    if socket.assigns.editing_brief?,
+      do: {:noreply, close_brief_form(socket)},
+      else: {:noreply, open_brief_form(socket, socket.assigns.channel.brief || "")}
+  end
+
+  def handle_event("validate_brief", %{"brief" => %{"brief" => text}}, socket),
+    do: {:noreply, assign_brief_form(socket, text, :validate)}
+
+  def handle_event("save_brief", %{"brief" => %{"brief" => text}}, socket),
+    do:
+      {:noreply,
+       save_brief(socket, text, "Brief saved. Every agent here gets it from its next prompt.")}
+
+  def handle_event("clear_brief", _params, socket),
+    do: {:noreply, save_brief(socket, "", "Brief cleared.")}
+
+  def handle_event("toggle_brief_history", _params, socket) do
+    if socket.assigns.brief_history,
+      do: {:noreply, socket |> assign(:brief_history, nil) |> assign(:brief_viewing, nil)},
+      else: {:noreply, load_brief_history(socket)}
+  end
+
+  def handle_event("view_brief_version", %{"id" => id}, socket) do
+    viewing = if socket.assigns.brief_viewing == id, do: nil, else: id
+    {:noreply, assign(socket, :brief_viewing, viewing)}
+  end
+
+  # a restore is an edit like any other: it records a new version
+  def handle_event("restore_brief", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.brief_history || [], &(&1.id == id)) do
+      %{payload: %{"body" => body}} when is_binary(body) ->
+        {:noreply, save_brief(socket, body, "Brief restored.")}
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "That version is no longer available.")}
+    end
+  end
 
   def handle_event("toggle_auto_open_live", _params, socket) do
     on? = not socket.assigns.act.auto_open?
@@ -2093,6 +2211,7 @@ defmodule CanopyWeb.ChannelLive do
             members={@members}
             agent_statuses={@agent_statuses}
             editing_task?={@editing_task?}
+            editing_brief?={@editing_brief?}
             editing_members?={@editing_members?}
             editing_schedules?={@editing_schedules?}
             schedule_count={Enum.count(@schedules, &(&1.status == "active"))}
@@ -2108,6 +2227,24 @@ defmodule CanopyWeb.ChannelLive do
             editing_playbook?={@editing_playbook?}
             steers={@steers}
           />
+
+          <.brief_panel
+            channel={@channel}
+            editing?={@editing_brief?}
+            form={@brief_form}
+            text={@brief_text}
+            expanded?={@brief_expanded?}
+            history={@brief_history}
+            viewing={@brief_viewing}
+            conflict={@brief_conflict}
+            agents={Enum.count(@members, & &1.active)}
+            names={@names}
+            user_name={@user.display_name}
+            channel_links={@channel_links}
+            mention_names={@mention_names}
+          />
+          <%!-- remembers whether the pinned brief is open, for this browser --%>
+          <span id="channel-brief-pref" phx-hook="Pref" data-pref="channel-brief" hidden />
 
           <PlaybookComponents.run_panel
             :if={@editing_playbook?}
@@ -2443,6 +2580,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :members, :list, required: true
   attr :agent_statuses, :map, required: true
   attr :editing_task?, :boolean, default: false
+  attr :editing_brief?, :boolean, default: false
   attr :editing_members?, :boolean, default: false
   attr :editing_schedules?, :boolean, default: false
   attr :schedule_count, :integer, default: 0
@@ -2635,6 +2773,26 @@ defmodule CanopyWeb.ChannelLive do
                 do: " / " <> Costs.money(@channel.spend_limit),
                 else: ""}
             </span>
+          </button>
+          <button
+            type="button"
+            id="edit-brief"
+            class={["btn btn-xs btn-ghost gap-1", @editing_brief? && "btn-active"]}
+            phx-click="toggle_brief_form"
+            title={
+              if @channel.brief,
+                do: "Edit the channel brief",
+                else: "Add a brief: standing context every agent here gets in its instructions"
+            }
+          >
+            <.icon name="hero-document-text-mini" class="size-4" />
+            <span class="hidden @4xl/main:inline">Brief</span>
+            <span
+              :if={@channel.brief}
+              id="brief-dot"
+              class="size-1.5 rounded-full bg-primary"
+              aria-label="a brief is set"
+            />
           </button>
           <button
             type="button"
@@ -3258,6 +3416,335 @@ defmodule CanopyWeb.ChannelLive do
     </section>
     """
   end
+
+  attr :channel, :map, required: true
+  attr :editing?, :boolean, default: false
+  attr :form, :any, default: nil
+  attr :text, :string, default: ""
+  attr :expanded?, :boolean, default: false
+
+  attr :history, :any,
+    default: nil,
+    doc: "the brief's `brief_updated` events, newest first; nil when closed"
+
+  attr :viewing, :string, default: nil, doc: "the history entry whose text is shown"
+
+  attr :conflict, :any,
+    default: nil,
+    doc: "a `brief_updated` that arrived while the editor was open"
+
+  attr :agents, :integer, default: 0, doc: "active members, each of which gets the brief"
+  attr :names, :map, required: true
+  attr :user_name, :string, required: true
+  attr :channel_links, :map, default: %{}
+  attr :mention_names, :any, default: MapSet.new()
+
+  # The brief under the header: the editor while it is open, otherwise (when
+  # a brief is set) the pinned strip, which opens up to the rendered brief.
+  defp brief_panel(%{editing?: true, form: %{}} = assigns) do
+    chars = assigns.text |> to_string() |> String.trim() |> String.length()
+
+    assigns =
+      assigns
+      |> assign(:chars, chars)
+      |> assign(:max, Channels.Channel.brief_max())
+      |> assign(:tokens, div(chars + 3, 4))
+
+    ~H"""
+    <section id="brief-editor" class="border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6">
+      <div class="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
+          Brief
+        </span>
+        <span class="text-xs text-base-content/60">
+          Standing context every agent here gets in its instructions: the goal, constraints,
+          links, what not to touch. The task is for what to do now. Mentions in a brief don't
+          wake anyone.
+        </span>
+      </div>
+
+      <div
+        :if={@conflict}
+        id="brief-conflict"
+        role="status"
+        class="mb-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs"
+      >
+        <span class="font-medium">
+          {brief_author(@conflict.payload["by"], @names, @user_name)} changed the brief while you were editing.
+        </span>
+        Saving replaces their version; it stays in History.
+        <details :if={@conflict.payload["body"]} class="mt-1">
+          <summary id="brief-conflict-view" class="cursor-pointer text-base-content/70">View</summary>
+          <div class="mt-1 max-h-48 overflow-y-auto text-sm">
+            <.message_text
+              body={@conflict.payload["body"]}
+              channels={@channel_links}
+              mentions={@mention_names}
+            />
+          </div>
+        </details>
+      </div>
+
+      <.form for={@form} id="brief-form" phx-change="validate_brief" phx-submit="save_brief">
+        <.input
+          field={@form[:brief]}
+          type="textarea"
+          rows="7"
+          phx-debounce="250"
+          placeholder="Goal: …\nConstraints:\n- Don't touch …\nLinks: …"
+          class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed"
+        />
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+          <span
+            id="brief-chars"
+            class={[
+              "tabular-nums",
+              @chars > @max && "font-medium text-error",
+              @chars <= @max && "text-base-content/60"
+            ]}
+          >
+            {format_count(@chars)} / {format_count(@max)} chars
+          </span>
+          <span id="brief-tokens" class="tabular-nums text-base-content/60">
+            ≈ {format_count(@tokens)} tokens × {agents_label(@agents)}
+          </span>
+          <span
+            :if={@chars > div(@max, 2) and @chars <= @max}
+            id="brief-long"
+            class="text-warning"
+          >
+            long briefs cost on every prompt
+          </span>
+          <div class="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              id="brief-history-toggle"
+              class={["btn btn-sm btn-ghost", @history && "btn-active"]}
+              phx-click="toggle_brief_history"
+            >
+              History
+            </button>
+            <button
+              :if={@channel.brief}
+              type="button"
+              id="clear-brief"
+              class="btn btn-sm btn-ghost text-error"
+              phx-click="clear_brief"
+              data-canopy-confirm="Agents here stop getting it from their next prompt. The text stays in History."
+              data-canopy-confirm-title="Clear the brief?"
+              data-canopy-confirm-label="Clear"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              id="cancel-brief"
+              class="btn btn-sm btn-ghost"
+              phx-click="toggle_brief_form"
+            >
+              Cancel
+            </button>
+            <button type="submit" id="save-brief" class="btn btn-sm btn-primary">Save brief</button>
+          </div>
+        </div>
+        <p class="mt-1 text-[11px] text-base-content/50">
+          Saving re-sends each agent's context once without the cache.
+        </p>
+      </.form>
+
+      <.brief_history
+        :if={@history}
+        history={@history}
+        viewing={@viewing}
+        current={@channel.brief}
+        names={@names}
+        user_name={@user_name}
+        channel_links={@channel_links}
+        mention_names={@mention_names}
+      />
+    </section>
+    """
+  end
+
+  defp brief_panel(%{channel: %{brief: brief}} = assigns) when is_binary(brief) do
+    ~H"""
+    <section
+      id="channel-brief"
+      data-expanded={to_string(@expanded?)}
+      class="border-b border-base-300 bg-base-200/40 px-3 sm:px-6"
+    >
+      <div class="flex min-w-0 items-center gap-2 py-1 text-xs">
+        <button
+          type="button"
+          id="brief-toggle"
+          class="flex min-w-0 flex-1 items-center gap-1.5 rounded py-0.5 text-left transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click="toggle_brief"
+          aria-expanded={to_string(@expanded?)}
+          aria-controls="brief-body"
+          title={if @expanded?, do: "Collapse the brief", else: "Show the whole brief"}
+        >
+          <.icon
+            name={if @expanded?, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+            class="size-4 shrink-0 text-base-content/50"
+          />
+          <span class="shrink-0 font-semibold uppercase tracking-wider text-base-content/60">
+            Brief
+          </span>
+          <span :if={!@expanded?} id="brief-summary" class="min-w-0 truncate text-base-content/70">
+            {brief_first_line(@channel.brief)}
+          </span>
+        </button>
+        <span
+          :if={@expanded?}
+          id="brief-meta"
+          class="hidden shrink-0 text-base-content/50 @2xl/main:inline"
+        >
+          {brief_author(@channel.brief_updated_by, @names, @user_name)} · {Canopy.MCP.Format.relative_time(
+            @channel.brief_updated_at
+          )}
+        </span>
+        <button
+          :if={@expanded?}
+          type="button"
+          id="brief-history-toggle"
+          class={["btn btn-xs btn-ghost", @history && "btn-active"]}
+          phx-click="toggle_brief_history"
+        >
+          History
+        </button>
+        <button
+          type="button"
+          id="brief-edit"
+          class="btn btn-xs btn-ghost"
+          phx-click="toggle_brief_form"
+        >
+          Edit
+        </button>
+      </div>
+      <div :if={@expanded?} class="pb-2 pl-5">
+        <div id="brief-body" class="max-h-64 overflow-y-auto text-sm">
+          <.message_text body={@channel.brief} channels={@channel_links} mentions={@mention_names} />
+        </div>
+        <p id="brief-cost" class="mt-1 text-[11px] text-base-content/50">
+          ≈ {format_count(Channels.brief_tokens(@channel.brief))} tokens in every prompt of {agents_label(
+            @agents
+          )}
+        </p>
+        <.brief_history
+          :if={@history}
+          history={@history}
+          viewing={@viewing}
+          current={@channel.brief}
+          names={@names}
+          user_name={@user_name}
+          channel_links={@channel_links}
+          mention_names={@mention_names}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  defp brief_panel(assigns), do: ~H""
+
+  attr :history, :list, required: true
+  attr :viewing, :string, default: nil
+  attr :current, :string, default: nil
+  attr :names, :map, required: true
+  attr :user_name, :string, required: true
+  attr :channel_links, :map, default: %{}
+  attr :mention_names, :any, default: MapSet.new()
+
+  defp brief_history(assigns) do
+    assigns = assign(assigns, :entries, Enum.with_index(assigns.history))
+
+    ~H"""
+    <div id="brief-history" class="mt-2 border-t border-base-300/70 pt-2">
+      <p class="mb-1 text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+        History
+      </p>
+      <p :if={@history == []} class="text-xs text-base-content/50">No versions yet.</p>
+      <ul class="flex flex-col divide-y divide-base-300/50">
+        <li :for={{event, index} <- @entries} id={"brief-history-#{event.id}"} class="py-1.5 text-xs">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="shrink-0 font-medium">
+              {brief_author(event.payload["by"], @names, @user_name)}
+            </span>
+            <time
+              class="shrink-0 text-base-content/50"
+              title={DateTime.to_iso8601(event.inserted_at)}
+            >
+              {Canopy.MCP.Format.relative_time(event.inserted_at)}
+            </time>
+            <span class="min-w-0 flex-1 truncate text-base-content/60">
+              {if event.payload["body"],
+                do: "“" <> brief_first_line(event.payload["body"]) <> "”",
+                else: "(cleared)"}
+            </span>
+            <span
+              :if={index == 0 and event.payload["body"] == @current}
+              class="badge badge-xs badge-ghost shrink-0"
+            >
+              current
+            </span>
+            <button
+              :if={event.payload["body"]}
+              type="button"
+              id={"brief-version-#{event.id}"}
+              class={["btn btn-ghost btn-xs", @viewing == event.id && "btn-active"]}
+              phx-click="view_brief_version"
+              phx-value-id={event.id}
+            >
+              {if @viewing == event.id, do: "Hide", else: "View"}
+            </button>
+            <button
+              :if={event.payload["body"] && event.payload["body"] != @current}
+              type="button"
+              id={"brief-restore-#{event.id}"}
+              class="btn btn-ghost btn-xs"
+              phx-click="restore_brief"
+              phx-value-id={event.id}
+              title="Make this the brief again (a new version; this one stays in history)"
+            >
+              Restore
+            </button>
+          </div>
+          <div
+            :if={@viewing == event.id}
+            id={"brief-version-body-#{event.id}"}
+            class="mt-1 max-h-48 overflow-y-auto rounded-lg border border-base-300 bg-base-100/60 px-2 py-1 text-sm"
+          >
+            <.message_text
+              body={event.payload["body"]}
+              channels={@channel_links}
+              mentions={@mention_names}
+            />
+          </div>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp brief_author("user", _names, user_name), do: user_name
+  defp brief_author(nil, _names, user_name), do: user_name
+  defp brief_author(agent_id, names, _user_name), do: "@" <> Map.get(names, agent_id, "agent")
+
+  # The first line with words in it, without Markdown's leading markers.
+  defp brief_first_line(text) do
+    text
+    |> String.split("\n")
+    |> Enum.map(&(&1 |> String.trim() |> String.replace(~r/^([#>*+-]+|\d+\.)\s*/, "")))
+    |> Enum.find("", &(&1 != ""))
+  end
+
+  defp agents_label(1), do: "1 agent"
+  defp agents_label(n), do: "#{n} agents"
+
+  defp format_count(n) when n >= 1000,
+    do: "#{div(n, 1000)},#{n |> rem(1000) |> Integer.to_string() |> String.pad_leading(3, "0")}"
+
+  defp format_count(n), do: Integer.to_string(n)
 
   attr :thread, :map, required: true
   attr :stream, :any, required: true

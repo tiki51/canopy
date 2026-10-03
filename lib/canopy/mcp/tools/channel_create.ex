@@ -24,6 +24,10 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
       description:
         "The channel's task, if it has one beyond the topic. Becomes the task description."
 
+    field :brief, :string,
+      description:
+        "Standing context every member gets in their instructions: goal, constraints, links, what not to touch (Markdown). The task is for what to do now."
+
     field :agents, :string,
       description:
         "Other agents or teams to add as members, comma separated (@name). A team adds its active members. You are always a member and the owner."
@@ -57,8 +61,10 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
             do: "; spend limit #{Canopy.Costs.money(channel.spend_limit)}",
             else: ""
 
+        brief = if channel.brief, do: "; brief set", else: ""
+
         {:ok,
-         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{limit}#{posted}. " <>
+         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{limit}#{brief}#{posted}. " <>
            "Post there with canopy_message_send channel: \"#{channel.name}\"."}
       end
     end)
@@ -75,7 +81,9 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
       agent_ids: Enum.map(others, & &1.id),
       task_title: topic || name,
       task_description: Tool.blank_to_nil(Map.get(params, :task)),
-      spend_limit: limit(Map.get(params, :spend_limit))
+      spend_limit: limit(Map.get(params, :spend_limit)),
+      brief: Tool.blank_to_nil(Map.get(params, :brief)),
+      brief_by: ctx.agent.id
     }
 
     case Channels.create(attrs) do

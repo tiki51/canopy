@@ -38,6 +38,7 @@ defmodule Canopy.MCP.Server do
   component(Tools.ChannelCreate, name: "channel_create")
   component(Tools.ChannelAddMembers, name: "channel_add_members")
   component(Tools.ChannelRemoveMembers, name: "channel_remove_members")
+  component(Tools.ChannelBriefSet, name: "channel_brief_set")
   component(Tools.ScheduleCreate, name: "schedule_create")
   component(Tools.SchedulesList, name: "schedules_list")
   component(Tools.ScheduleCancel, name: "schedule_cancel")
@@ -64,7 +65,7 @@ defmodule Canopy.MCP.Server do
     channels_list channel_get messages_read message_get messages_search message_send thread_reply react
     task_get task_update agents_list delegate_task handoff_task handoff_get
     handoff_accept handoff_reject dm_start pass channel_create channel_add_members
-    channel_remove_members schedule_create schedules_list schedule_cancel memory_read memory_write
+    channel_remove_members channel_brief_set schedule_create schedules_list schedule_cancel memory_read memory_write
     notes_read notes_write
     dm_switch_repository costs_report documents_list document_get document_share permission
     lock_acquire lock_release locks_list

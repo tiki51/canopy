@@ -259,6 +259,11 @@ filled in.
   when it is on, a channel holds after the number of agent turns you set until you type
   or press Continue. Leave it off when you want agents to run autonomously for as long as
   the work takes, and use spend limits as the backstop instead.
+- **Collaboration prompt**: the instructions every agent gets above its own role prompt,
+  with `{{variables}}` Canopy fills in per agent (the list is under the editor). Changes
+  reach each agent on its next turn. `{{channel_brief}}` is the channel's
+  [brief](#brief-panel), empty when the channel has none; a custom prompt that leaves the
+  variable out still gets the brief, added after it.
 
 ### Appearance
 
@@ -506,6 +511,8 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
 
 - **Name** is a slug shown as `#name`. **Topic** is one line; it also becomes the task
   title.
+- **Add a brief** opens an optional field for the channel's standing context (the goal,
+  constraints, links, what not to touch). See [Brief panel](#brief-panel).
 - **Members** are the agents allowed in. All active agents are ticked by default; untick
   the ones that do not belong, or use **Clear all** and tick just the few you want. Fewer
   members means fewer accidental wake-ups. The **Teams** chips above the list tick a
@@ -517,7 +524,7 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
 
 Agents can create channels too, through `canopy_channel_create`. Ask one to "create a
 channel called retry-backoff with @reviewer and post a plan" and it appears in the
-sidebar with the agent as owner.
+sidebar with the agent as owner. The tool takes a `brief` as well.
 
 ![Empty channel, light](user-guide/images/channel-empty-light.png)
 
@@ -530,7 +537,9 @@ From left to right on the top row: the channel name and topic, then the buttons
 **Locks** button when there are none), **Playbook** (or, while a run is in progress, a chip
 such as `bug-fix · 3/6 Fix · @backend @frontend`; see [Playbooks](#12-playbooks)),
 **Scheduled** (with a count), the **budget** (spent so far, and the limit when there is
-one), **Task**, **Changes**, and **Archive**.
+one), **Brief** (with a dot when the channel has one), **Task**, **Changes**, and
+**Archive**. When the side panel or a narrow window leaves less room, the buttons keep only
+their icons.
 
 The second row shows the owner badge, the task status pill, the task title, the git
 branch, and one pill per member. A member's dot is grey when idle, green while working,
@@ -540,6 +549,10 @@ agent holds a lock; a clock means it is waiting for one. A working or waiting ag
 has an **Abort** button; an idle agent's pill has a small reset arrow that drops its OpenCode
 session in this channel (with a confirmation) so its next turn starts with a clean
 context.
+
+When the channel has a [brief](#brief-panel), a one-line **BRIEF** strip is pinned under
+the header, showing its first line. Click it to open the whole brief; the strip remembers,
+in this browser, whether you left it open.
 
 ### The conversation
 
@@ -652,6 +665,43 @@ here. Every change lands on the timeline.
 ![Task panel, light](user-guide/images/task-panel-light.png)
 
 ![Task panel, dark](user-guide/images/task-panel-dark.png)
+
+### Brief panel
+
+The brief is the channel's standing context: the goal, constraints, links, and what not
+to touch. Every agent in the channel gets it in its instructions on every prompt, so it
+holds across task changes, handoffs, and compaction, where a first message would scroll
+away. The rule of thumb:
+
+- **Task**: what to do now. It changes as work moves, and agents fetch it.
+- **Brief**: what is always true here. It changes rarely and is in every prompt.
+- **Topic**: the one line in the sidebar and header.
+
+**Brief** in the header opens the editor. Type Markdown and **Save brief**. The counter
+under the box shows the characters (4,000 at most; the brief is never cut short) and a
+rough token estimate times the agents in the channel; from 2,000 characters it warns that
+long briefs cost on every prompt. Put long reference material in the repository notes or
+a shared document and link it. An `@name` in a brief is highlighted but wakes nobody.
+
+Once saved, the brief is pinned as a strip under the header. Open it to read it rendered,
+with who set it and when, and the token cost per prompt. **Edit** reopens the editor;
+**Clear** (in the editor, after a confirmation) removes it.
+
+Who can change it: you, always (in any channel or DM, open or archived), and the
+channel's owner agent, with `canopy_channel_brief_set`. Other members cannot, and no
+agent can clear a brief. Every change is a timeline line ("@backend updated the channel
+brief") with the new text one click away. **History** lists the versions, newest first:
+**View** shows one, and **Restore** makes it the brief again as a new version, so a
+restore can itself be undone. If an agent changes the brief while you have the editor
+open, the editor says so and keeps your draft; saving replaces their version, which stays
+in History.
+
+An agent that had a turn before an edit is told once, at the start of its next turn, that
+the brief changed and that the new version is in its instructions. Saving a brief re-sends
+each agent's context once without the cache (see [What drives cost](#what-drives-cost)).
+If you have edited the collaboration prompt in Settings, the brief still reaches every
+agent (it is added after your text), but the line telling owners about
+`canopy_channel_brief_set` is in the shipped text only.
 
 ### Members panel
 
@@ -1379,6 +1429,15 @@ Canopy puts it into every prompt for that repository, so a fact one agent writes
 first part with a pointer to `canopy_notes_read`. The file is plain Markdown under a short
 header, so you can edit it by hand.
 
+The four kinds of context an agent works from:
+
+| Layer | Scope | Who writes it | How the agent sees it |
+|---|---|---|---|
+| Memory | one agent, everywhere | the agent (`canopy_memory_write`), you on its page | in every prompt |
+| Notes | one repository, every agent | any agent (`canopy_notes_write`), you by hand | in every prompt there |
+| [Brief](#brief-panel) | one channel, every member | you, and the channel's owner agent | in every prompt there |
+| [Task](#task-panel) | one channel, now | the owner and delegates (`canopy_task_update`), you | fetched with `canopy_task_get` |
+
 ---
 
 ## 14. Costs
@@ -1419,6 +1478,11 @@ Context is most of the bill. Canopy keeps it small in four ways:
 - Short messages ride along in the wake-up prompt, so simple turns need no read at all.
 - The clock lives in the wake-up prompt rather than the system text, so the shared prefix
   stays cacheable. The cache hit rate on this page tells you how well that works.
+
+Memory, notes, and the channel brief are part of that system text. An unchanged brief
+costs nothing extra beyond its own tokens, but saving one (like a memory or notes write)
+changes the text once: each agent's next prompt misses the cache for its whole context,
+then caches again.
 
 ### The auditor
 
@@ -1476,7 +1540,7 @@ Canopy provides the same tools to both Claude Code and OpenCode agents through a
 | Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search`, `message_get`, `task_get`, `agents_list` |
 | Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass` |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
-| Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
+| Channels and DMs | `channel_create` (with an optional `brief`), `channel_add_members`, `channel_remove_members`, `channel_brief_set` (the owner only; replaces the whole brief, never clears it), `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel`, `watch_create` (a GitHub watch; listed and cancelled as a schedule) |
 | Playbooks | `playbooks_list`, `playbook_get`, `playbook_start`, `playbook_advance` (the coordinator only), `playbook_cancel`, `playbook_save` (a disabled draft); `delegate_task` takes `step` during a run |
 | Shared resources | `lock_acquire`, `lock_release`, `locks_list` (see [Locks](#locks)) |
@@ -1488,7 +1552,9 @@ Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude
 and a plain read (no `around`, `before`, or `thread`) ends with the reactions added since
 the agent's last read to older messages, reactions to its own messages first.
 `agents_list` ends with the teams, and `delegate_task` and `handoff_task` take one agent:
-given a team, they answer with its members to pick from.
+given a team, they answer with its members to pick from. `channel_get` prints another
+channel's brief in full and, for the agent's own channel, only who set it (the text is
+already in its instructions).
 
 ### Composer
 
@@ -1532,6 +1598,7 @@ Reactions leave no line: they show as chips under the message.
 | `@agent stopped waiting for an answer` | The agent moved on; the card stays and your answer is sent as a new message |
 | `… (sent as a message)` | A late answer or approval, posted to the channel as your message |
 | `set this channel's spend limit` / `spend limit reached` | Budget |
+| `@agent updated the channel brief` / `<you> cleared the channel brief` | A brief change; "Show the brief" opens the new text |
 | `@agent is waiting for the tests lock held by @other (1st in line)` | An agent queued for a lock and ended its turn |
 | `the tests lock passed to @agent` | The lock freed and the next in line was woken |
 | `@agent took the tests lock` / `@agent's turn ended, releasing the tests lock` | Locks taken and freed without a wait (Activity view only) |

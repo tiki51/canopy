@@ -20,7 +20,7 @@ defmodule Canopy.Timeline.Event do
     handoff_requested handoff_accepted handoff_rejected
     task_updated owner_changed
     member_added member_removed team_added channel_archived channel_reopened repository_switched
-    spend_limit_changed spend_limit_reached
+    spend_limit_changed spend_limit_reached brief_updated
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
     permission_requested permission_resolved permission_detached
     question_requested question_resolved question_detached

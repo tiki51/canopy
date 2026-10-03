@@ -124,6 +124,46 @@ defmodule CanopyWeb.ChannelNewLiveTest do
     assert %{spend_limit: 4.5} = Channels.get_by_name(ctx.repository.id, "budgeted")
   end
 
+  test "a brief added behind \"Add a brief\" is stored with the channel", ctx do
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+    refute has_element?(view, "#channel-form textarea[name='channel[brief]']")
+    view |> element("#add-brief") |> render_click()
+    assert has_element?(view, "#channel-form textarea[name='channel[brief]']")
+
+    view
+    |> form("#channel-form",
+      channel: %{
+        repository_id: ctx.repository.id,
+        name: "briefed",
+        owner_agent_id: ctx.reviewer.id,
+        agent_ids: [ctx.reviewer.id],
+        brief: "  Goal: ship it.\nDon't touch vendor/.  "
+      }
+    )
+    |> render_submit()
+
+    channel = Channels.get_by_name(ctx.repository.id, "briefed")
+    assert channel.brief == "Goal: ship it.\nDon't touch vendor/."
+    assert channel.brief_updated_by == "user"
+    assert [%{payload: %{"by" => "user"}}] = Channels.brief_history(channel.id)
+  end
+
+  test "a brief over the cap is an error on the form", ctx do
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+    view |> element("#add-brief") |> render_click()
+
+    html =
+      view
+      |> form("#channel-form",
+        channel: %{name: "toolong", brief: String.duplicate("x", 4_001)}
+      )
+      |> render_submit()
+
+    assert html =~ "should be at most 4000 character"
+    refute Channels.get_by_name(ctx.repository.id, "toolong")
+  end
+
   test "creates a channel with only the owner as member", ctx do
     {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
 

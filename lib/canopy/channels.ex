@@ -49,8 +49,10 @@ defmodule Canopy.Channels do
   Accepted attrs: `:repository_id`, `:name`, `:topic`, `:owner_agent_id`,
   `:agent_ids` (members; the owner is always added), `:team_ids` (each adds
   its active members; with no owner given, the first team's lead owns the
-  channel when active), `:task_title`, `:task_description`. The task title
-  defaults to the topic, then the name.
+  channel when active), `:task_title`, `:task_description`, `:brief` (with
+  `:brief_by`, "user" or an agent id, default "user"). The task title
+  defaults to the topic, then the name. A brief records the channel's one
+  creation event, `brief_updated`, so its history starts here.
   """
   def create(attrs) when is_map(attrs) do
     attrs = Map.new(attrs, fn {k, v} -> {to_atom_key(k), v} end)
@@ -74,7 +76,8 @@ defmodule Canopy.Channels do
       |> Enum.uniq()
 
     Multi.new()
-    |> Multi.insert(:channel, Channel.changeset(%Channel{}, attrs))
+    |> Multi.insert(:channel, new_channel_changeset(attrs))
+    |> Multi.run(:brief_event, fn repo, %{channel: channel} -> creation_brief(repo, channel) end)
     |> Multi.insert(:task, fn %{channel: channel} ->
       Task.changeset(%Task{}, %{
         channel_id: channel.id,
@@ -95,13 +98,38 @@ defmodule Canopy.Channels do
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{channel: channel}} ->
+      {:ok, %{channel: channel, brief_event: event}} ->
+        if event, do: Timeline.broadcast(event)
         notify()
         {:ok, get!(channel.id)}
 
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
+  end
+
+  defp new_channel_changeset(attrs) do
+    changeset =
+      %Channel{}
+      |> Channel.changeset(attrs)
+      |> Channel.brief_changeset(%{brief: attrs[:brief] || ""})
+
+    if Ecto.Changeset.get_change(changeset, :brief),
+      do:
+        Ecto.Changeset.change(changeset,
+          brief_updated_at: DateTime.utc_now(),
+          brief_updated_by: attrs[:brief_by] || "user"
+        ),
+      else: changeset
+  end
+
+  defp creation_brief(_repo, %Channel{brief: nil}), do: {:ok, nil}
+
+  defp creation_brief(repo, %Channel{} = channel) do
+    channel
+    |> brief_event_attrs(channel.brief_updated_by, nil)
+    |> then(&Timeline.Event.changeset(%Timeline.Event{}, &1))
+    |> repo.insert()
   end
 
   # The lead of the first team owns a channel created for it; an inactive lead
@@ -291,6 +319,78 @@ defmodule Canopy.Channels do
       {n, _} -> n
       :error -> text
     end
+  end
+
+  @doc """
+  Sets the channel's brief, the standing context every agent here gets in its
+  system text. `by` is "user" or the id of the agent that wrote it. Records
+  `brief_updated` with the new text and the previous one, so every version
+  can be read back and restored; an empty text clears the brief. A text the
+  same as the stored one records nothing. Compared against the row as stored
+  now, so a stale struct never loses an edit made meanwhile.
+  """
+  def set_brief(%Channel{id: id}, text, by) when is_binary(by) do
+    current = Repo.get!(Channel, id)
+    changeset = Channel.brief_changeset(current, %{brief: text || ""})
+
+    cond do
+      not changeset.valid? ->
+        {:error, changeset}
+
+      not Map.has_key?(changeset.changes, :brief) ->
+        {:ok, Repo.preload(current, @preloads)}
+
+      true ->
+        changeset =
+          Ecto.Changeset.change(changeset,
+            brief_updated_at: DateTime.utc_now(),
+            brief_updated_by: by
+          )
+
+        Multi.new()
+        |> Multi.update(:channel, changeset)
+        |> Timeline.multi_record(:event, fn %{channel: updated} ->
+          brief_event_attrs(updated, by, current.brief)
+        end)
+        |> Repo.transaction()
+        |> case do
+          {:ok, %{channel: updated, event: event}} ->
+            Timeline.broadcast(event)
+            notify()
+            {:ok, Repo.preload(updated, @preloads, force: true)}
+
+          {:error, _step, changeset, _changes} ->
+            {:error, changeset}
+        end
+    end
+  end
+
+  defp brief_event_attrs(channel, by, previous) do
+    %{
+      channel_id: channel.id,
+      event_type: "brief_updated",
+      agent_id: if(by == "user", do: nil, else: by),
+      ref_id: channel.id,
+      payload: %{"by" => by, "body" => channel.brief, "previous" => previous}
+    }
+  end
+
+  @doc "A changeset over the brief alone, for the brief form."
+  def change_brief(%Channel{} = channel, attrs \\ %{}),
+    do: Channel.brief_changeset(channel, attrs)
+
+  @doc """
+  A rough token count for a brief (about four characters a token), for the
+  editor's estimate; the UI labels it with a ≈.
+  """
+  def brief_tokens(nil), do: 0
+  def brief_tokens(text) when is_binary(text), do: div(String.length(text) + 3, 4)
+
+  @doc "The brief's versions, newest first: its `brief_updated` events."
+  def brief_history(channel_id, limit \\ 20) do
+    channel_id
+    |> Timeline.list(types: ["brief_updated"], limit: limit)
+    |> Enum.reverse()
   end
 
   @doc "The channel's spend limit as stored now (nil for none), without the rest of the row."

@@ -622,6 +622,64 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert html =~ ~s(class="block px-4 bg-error/10")
   end
 
+  describe "brief lines" do
+    defp brief_event(by, body, agent_id \\ nil) do
+      %{
+        id: "evt_b",
+        event_type: "brief_updated",
+        agent_id: agent_id,
+        inserted_at: ~U[2026-10-03 12:00:00Z],
+        payload: %{"by" => by, "body" => body, "previous" => nil}
+      }
+    end
+
+    test "says who updated or cleared the brief, and is never routine" do
+      names = %{"agt_be" => "backend"}
+
+      assert TimelineComponents.event_text(brief_event("user", "Goal."), names, "Priya") ==
+               "Priya updated the channel brief"
+
+      assert TimelineComponents.event_text(
+               brief_event("agt_be", "Goal.", "agt_be"),
+               names,
+               "Priya"
+             ) == "@backend updated the channel brief"
+
+      assert TimelineComponents.event_text(brief_event("user", nil), names, "Priya") ==
+               "Priya cleared the channel brief"
+
+      refute TimelineComponents.activity_class(brief_event("user", "Goal."))
+    end
+
+    test "the new text is one click away in a <details>; a clear has none" do
+      assigns = %{event: brief_event("agt_be", "Don't touch **vendor/**.", "agt_be")}
+
+      html =
+        rendered_to_string(~H"""
+        <TimelineComponents.timeline_item
+          id="e"
+          event={@event}
+          names={%{"agt_be" => "backend"}}
+          user_name="Priya"
+        />
+        """)
+
+      assert html =~ "@backend updated the channel brief"
+      assert html =~ ~s(id="brief-change-evt_b")
+      assert html =~ "<strong>vendor/</strong>"
+
+      assigns = %{event: brief_event("user", nil)}
+
+      html =
+        rendered_to_string(~H"""
+        <TimelineComponents.timeline_item id="e" event={@event} names={%{}} user_name="Priya" />
+        """)
+
+      assert html =~ "Priya cleared the channel brief"
+      refute html =~ "brief-change-"
+    end
+  end
+
   describe "playbook and watch lines" do
     @names %{"agt_pm" => "pm", "agt_be" => "backend", "agt_fe" => "frontend"}
 

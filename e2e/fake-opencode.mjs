@@ -14,7 +14,7 @@ const PORT = Number(process.env.FAKE_OPENCODE_PORT || 4396);
 // keep an agent visibly "working" long enough for a screenshot.
 const TURN_DELAY = Number(process.env.FAKE_TURN_DELAY_MS || 50);
 const streams = new Set(); // SSE clients on GET /event
-const sessions = new Map(); // id -> {parentID, title}
+const sessions = new Map(); // id -> {parentID, title, lastSystem, lastText}
 const pendingPermissions = new Map(); // per_id -> resume fn
 const aborted = new Set(); // session ids aborted mid-turn (long turns stop early)
 // Sessions with a turn running (GET /session/status lists them as busy), and
@@ -726,7 +726,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/config/providers")
       return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } }, "claude-sonnet-5": { cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } }, "claude-opus-5-5": { cost: { input: 5, output: 25, cache: { read: 0.5, write: 6.25 } } } } }], default: { opencode: "gpt-5-nano" } });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);
-    // Test-only: every session Canopy created, for specs that check how many it made.
+    // Test-only: every session Canopy created, for specs that check how many it
+    // made, with the system text and wake text each was last prompted with.
     if (req.method === "GET" && p === "/__fake/sessions") return json(res, 200, [...sessions].map(([id, s]) => ({ id, ...s })));
     const directory = url.searchParams.get("directory") || "";
     if (req.method === "GET" && p === "/mcp") {
@@ -780,6 +781,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && (m = p.match(/^\/session\/([^/]+)\/prompt_async$/))) {
       const body = await readBody(req);
       const text = (body.parts || []).map((x) => x.text || "").join("\n");
+      // what the session was last prompted with, for specs that check the
+      // system text (e2e/tests/brief.spec.ts) and the wake text
+      const known = sessions.get(m[1]);
+      if (known) Object.assign(known, { lastSystem: body.system ?? null, lastText: text });
       res.writeHead(204); res.end();
       // a busy session takes the message into its running turn
       if (busy.has(m[1])) {

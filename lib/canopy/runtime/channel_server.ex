@@ -1685,11 +1685,14 @@ defmodule Canopy.Runtime.ChannelServer do
     ids = delegation_ids(wake)
     # before the prompt: a quick delegate may report back before it returns
     start_delegations(ids, session)
+    {brief_note, state} = brief_note(state, session)
 
     prompt = %{
       text:
         text <>
-          locks <> pending_delegations(state, agent_id, ids) <> playbook_note(state, agent_id),
+          locks <>
+          pending_delegations(state, agent_id, ids) <>
+          playbook_note(state, agent_id) <> brief_note,
       system: Prompts.system(agent, state.channel, state.repository, Repositories.list()),
       attachments: plan
     }
@@ -1736,6 +1739,40 @@ defmodule Canopy.Runtime.ChannelServer do
 
     Prompts.pending_delegations(state.channel.name, pending)
   end
+
+  # A session that had a turn before the brief last changed is told so, once:
+  # its history follows the old brief, and its instructions moved under it. A
+  # fresh session (nothing seen yet) gets the brief in its first system text
+  # and no note. The stamp is written only when it is missing or stale.
+  defp brief_note(state, session) do
+    seen = session.brief_seen_at
+    changed = state.channel.brief_updated_at
+
+    cond do
+      is_nil(seen) ->
+        {"", put_session(state, AgentSessions.mark_brief_seen(session))}
+
+      changed && DateTime.after?(changed, seen) ->
+        by = brief_editor(state.channel.brief_updated_by)
+
+        {Prompts.brief_changed(by), put_session(state, AgentSessions.mark_brief_seen(session))}
+
+      true ->
+        {"", state}
+    end
+  end
+
+  defp brief_editor("user"), do: "the user"
+
+  defp brief_editor(agent_id) do
+    case Agents.get(agent_id) do
+      %{name: name} -> "@" <> name
+      nil -> "an agent"
+    end
+  end
+
+  defp put_session(state, session),
+    do: %{state | sessions: Map.put(state.sessions, session.agent_id, session)}
 
   # The coordinator of the channel's playbook run is told where it stands on
   # every prompt, read when the prompt goes out, so the run survives
@@ -2744,8 +2781,9 @@ defmodule Canopy.Runtime.ChannelServer do
     }
   end
 
+  # a brief edit reloads too, so the next prompt's system text carries it
   defp maybe_refresh_channel(%{event_type: type}, state)
-       when type in ["owner_changed", "handoff_accepted"],
+       when type in ["owner_changed", "handoff_accepted", "brief_updated"],
        do: %{state | channel: Channels.get!(state.channel.id)}
 
   defp maybe_refresh_channel(_event, state), do: state

@@ -956,6 +956,11 @@ defmodule CanopyWeb.SettingsLive do
                   class="rounded bg-base-300/60 px-1 font-mono text-[11px]"
                 >{"{{#{name}}}"}</code>
               </p>
+              <p id="prompt-brief-note" class="mt-1">
+                <code class="font-mono">{"{{channel_brief}}"}</code>
+                is the channel's brief, empty when it has none. A prompt that leaves it out gets
+                the brief added after it, so every agent still sees it.
+              </p>
             </div>
             <p class="text-xs text-base-content/60">
               This is also where agents learn the <code class="font-mono">canopy_</code>

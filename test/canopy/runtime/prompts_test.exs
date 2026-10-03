@@ -293,6 +293,125 @@ defmodule Canopy.Runtime.PromptsTest do
     end
   end
 
+  describe "channel brief" do
+    setup do
+      repository = Canopy.Fixtures.repository_fixture()
+      agent = Canopy.Fixtures.agent_fixture(%{system_prompt: "Prefer small diffs."})
+
+      channel =
+        Canopy.Fixtures.channel_fixture(%{
+          name: "payments",
+          repository_id: repository.id,
+          owner_agent_id: agent.id
+        })
+
+      {:ok, _} = Canopy.Notes.put(repository.path, "Run tests with mix test.")
+      %{repository: repository, agent: agent, channel: channel}
+    end
+
+    @heading "Channel brief for #payments (standing context from the user and the channel owner; it applies to every task here, and where earlier messages disagree, the brief wins. The current task is in canopy_task_get):\n"
+
+    test "a set brief appears once, after the notes, before the role prompt", ctx do
+      {:ok, channel} =
+        Canopy.Channels.set_brief(ctx.channel, "Goal: stop double charges.", "user")
+
+      text = Prompts.system(ctx.agent, channel, ctx.repository)
+      block = @heading <> "Goal: stop double charges."
+
+      assert [_, _] = String.split(text, block)
+      {notes_at, _} = :binary.match(text, "Run tests with mix test.")
+      {brief_at, _} = :binary.match(text, block)
+      assert notes_at < brief_at
+      assert String.ends_with?(text, "Prefer small diffs.")
+      refute text =~ "{{"
+      # no editor and no clock: only the brief's own text
+      refute text =~ "The time now is"
+    end
+
+    test "a nil or blank brief adds nothing and leaves no gap", ctx do
+      text = Prompts.system(ctx.agent, ctx.channel, ctx.repository)
+      refute text =~ "Channel brief for"
+      refute text =~ "{{"
+      # the empty placeholder takes its blank line with it
+      refute text =~ "\n\n\n\n"
+
+      blank = Prompts.system(ctx.agent, %{ctx.channel | brief: "  \n "}, ctx.repository)
+      assert blank == text
+    end
+
+    test "an unchanged brief gives byte-identical system text, even from separately loaded channels",
+         ctx do
+      {:ok, _} = Canopy.Channels.set_brief(ctx.channel, "Goal: stop double charges.", "user")
+
+      first = Prompts.system(ctx.agent, Canopy.Channels.get!(ctx.channel.id), ctx.repository)
+
+      # the row is touched in other ways meanwhile; the text does not move
+      {:ok, _} = Canopy.Channels.update(Canopy.Channels.get!(ctx.channel.id), %{topic: "New"})
+      second = Prompts.system(ctx.agent, Canopy.Channels.get!(ctx.channel.id), ctx.repository)
+
+      assert first == second
+    end
+
+    test "changing only the brief changes only the brief block", ctx do
+      {:ok, one} = Canopy.Channels.set_brief(ctx.channel, "Goal: stop double charges.", "user")
+      before = Prompts.system(ctx.agent, one, ctx.repository)
+
+      {:ok, two} = Canopy.Channels.set_brief(one, "Goal: refunds too.", "user")
+      later = Prompts.system(ctx.agent, two, ctx.repository)
+
+      refute before == later
+      [prefix, suffix] = String.split(before, @heading <> "Goal: stop double charges.")
+      [prefix2, suffix2] = String.split(later, @heading <> "Goal: refunds too.")
+      assert prefix == prefix2
+      assert suffix == suffix2
+    end
+
+    test "a custom preamble without the placeholder gets the brief before the role prompt",
+         ctx do
+      {:ok, _} = Canopy.Settings.update(%{collaboration_prompt: "You are {{name}}."})
+      {:ok, channel} = Canopy.Channels.set_brief(ctx.channel, "Don't touch vendor/.", "user")
+
+      assert Prompts.system(ctx.agent, channel, ctx.repository) ==
+               "You are #{ctx.agent.name}.\n\n" <>
+                 @heading <> "Don't touch vendor/.\n\nPrefer small diffs."
+
+      # no brief: nothing is appended
+      assert Prompts.system(ctx.agent, ctx.channel, ctx.repository) ==
+               "You are #{ctx.agent.name}.\n\nPrefer small diffs."
+    end
+
+    test "a custom preamble with the placeholder gets the brief exactly once", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{
+          collaboration_prompt: "Brief first:\n{{channel_brief}}\nYou are {{name}}."
+        })
+
+      {:ok, channel} = Canopy.Channels.set_brief(ctx.channel, "Don't touch vendor/.", "user")
+      text = Prompts.system(ctx.agent, channel, ctx.repository)
+
+      assert text ==
+               "Brief first:\n" <>
+                 @heading <>
+                 "Don't touch vendor/.\nYou are #{ctx.agent.name}.\n\nPrefer small diffs."
+    end
+
+    test "a brief that contains a {{variable}} is not filled in", ctx do
+      {:ok, channel} = Canopy.Channels.set_brief(ctx.channel, "Literal {{memory}} here.", "user")
+      assert Prompts.system(ctx.agent, channel, ctx.repository) =~ "Literal {{memory}} here."
+    end
+
+    test "preamble_variables/0 includes channel_brief and the preamble carries the tool hint" do
+      assert "channel_brief" in Prompts.preamble_variables()
+      assert Prompts.default_preamble() =~ "{{notes}}\n\n{{channel_brief}}\n\n"
+      assert Prompts.default_preamble() =~ "can change it with `canopy_channel_brief_set`"
+    end
+
+    test "the change note names who changed it" do
+      assert Prompts.brief_changed("@backend") =~
+               "The channel brief changed since your last turn (by @backend). The current version is in your instructions"
+    end
+  end
+
   test "the system prompt carries the agent's memory" do
     agent =
       Canopy.Fixtures.agent_fixture(%{

@@ -80,6 +80,25 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
       assert_receive {:channels, :changed}
     end
 
+    test "a brief given at creation is stored and credited to the creating agent", ctx do
+      assert {:ok, text} =
+               call(ChannelCreate, %{name: "briefed", brief: "Goal: ship the fix."}, ctx)
+
+      assert text =~ "brief set"
+      channel = Channels.get_by_name(ctx.repository.id, "briefed")
+      assert channel.brief == "Goal: ship the fix."
+      assert channel.brief_updated_by == ctx.agent.id
+
+      assert [%{agent_id: agent_id, payload: %{"body" => "Goal: ship the fix."}}] =
+               Channels.brief_history(channel.id)
+
+      assert agent_id == ctx.agent.id
+
+      assert {:ok, text} = call(ChannelCreate, %{name: "unbriefed"}, ctx)
+      refute text =~ "brief set"
+      assert Channels.get_by_name(ctx.repository.id, "unbriefed").brief == nil
+    end
+
     test "creates a channel in another registered repository on request", ctx do
       other = repository_fixture(%{name: "calculator_app"})
 
