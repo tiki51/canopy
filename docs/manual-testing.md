@@ -154,9 +154,10 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
 - [ ] `@backend started working` line, owner dot turns green, an *Abort* button appears next to it.
 - [ ] The live card appears closed, with a pulsing green dot, and its verb follows what the
       agent is doing: *thinking* before any tool, *researching* while reading or searching,
-      *building* while editing, *testing* on a test command, *writing* while posting. Open it with the
-      chevron: it lists tools as they run (`read — payments.py`, `grep`, …) and streams
-      the agent's text.
+      *building* while editing, *testing* on a test command, *writing* while posting. Closed,
+      its header names the call running now, ticks the elapsed time, and counts calls by
+      kind. Open it: it lists calls as they run (`Read payments.py`, `$ pytest …`), each
+      with its duration, and streams the agent's text.
 - [ ] Each idle member pill in the header has a small reset arrow: it drops that agent's
       OpenCode session in this channel (with confirmation), the timeline says so, and the
       agent's next turn starts with a fresh context. Use it when an agent has talked itself
@@ -174,11 +175,41 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
       always show.
 - [ ] With the feed scrolled to the bottom, an agent's new message scrolls into view on its
       own; scrolled up to read history, the feed stays put.
-- [ ] (With Activity shown) `@backend finished · N tools · $cost · duration` line sits above the reply and the
-      dot is back to grey. Click that line: it opens to show the same activity the live
-      card held. Each step and patch appears once.
+- [ ] (With Activity shown) the `@backend finished · N tools · $cost · duration` card sits above the reply and the
+      dot is back to grey, left-aligned in the same box the live card was. Click it: it
+      opens to show the same activity the live card held. Patches add file chips, not rows.
+- [ ] In the compact timeline, @backend's post carries a `⚙ N tools · time` receipt chip
+      that opens the turn's activity in the side panel.
 - [ ] The queued second message now runs.
 - [ ] Refresh the page: everything above is still there (it is durable, not a transcript view).
+
+## 5b. Activity cards
+
+Ask for something that runs a failing command, for example *"run the test suite and fix
+what fails"*, on an OpenCode agent and again on a Claude Code agent.
+
+- [ ] Rows show durations; commands show `exit N` (OpenCode always; Claude Code when its
+      failed result starts with `Exit code N`: note what the current `claude` prints, the
+      format is not verified yet). A failed command's row is tinted red and keeps its
+      command; opening it shows the error first, then the command and the output tail.
+- [ ] Open the live card, then let the turn end: the finished card arrives open, with the
+      rows you had open still open.
+- [ ] Filters: *Errors* narrows to the failing rows; the text box filters by command or
+      path; Esc in it clears it; new rows arriving while a filter is set are filtered too.
+- [ ] Follow: on a long turn, the open live card keeps the newest row in view; scroll up and
+      a *↓ N new rows* pill appears; click it to jump back.
+- [ ] Copy on a command copies it; on a cut output the button says *Copy (excerpt)*.
+- [ ] A file chip opens Changes on that file's diff.
+- [ ] ⤢ opens the side panel (`?activity=…`); reload keeps it; the link opens it in a new
+      tab; Esc closes it; opening a thread closes it, and the other way round. A running
+      turn's panel moves to the finished turn when it ends.
+- [ ] At phone width (390 px) the card has no sideways scroll and the panel is a
+      full-screen overlay with Back.
+- [ ] Keyboard only: Tab reaches the card header, the filters, then the rows; Enter opens
+      a row; focus rings are visible.
+- [ ] A turn of more than 60 calls keeps its first rows on the finished card, and its
+      header counts match the rows.
+- [ ] Claude Code: the live card shows tokens and no cost; the finished card has the cost.
 
 ## 6. Permission approval
 

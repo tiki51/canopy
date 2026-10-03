@@ -577,7 +577,7 @@ defmodule CanopyWeb.Layouts do
   def status_dot(%{status: :busy} = assigns) do
     ~H"""
     <span class="relative inline-flex size-2 shrink-0" data-status="busy">
-      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75 motion-reduce:animate-none" />
       <span class="relative inline-flex size-2 rounded-full bg-success" />
     </span>
     """

@@ -419,11 +419,57 @@ async function runTurn(sessionID, text, cwd) {
     emit("message.part.updated", { sessionID, part: { ...base, state: { status: "pending", input: {} } } });
     emit("message.part.updated", { sessionID, part: { ...base, state: { status: "running", input, time: { start } } } });
     await sleep(TURN_DELAY);
-    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "completed", input, title, output, metadata: {}, time: { start, end: Date.now() } } } });
+    const metadata = name === "bash" ? { output, exit: 0, truncated: false } : {};
+    emit("message.part.updated", { sessionID, part: { ...base, state: { status: "completed", input, title, output, metadata, time: { start, end: Date.now() } } } });
   };
   aborted.delete(sessionID);
   emit("session.status", { sessionID, status: { type: "busy" } });
   await sleep(TURN_DELAY);
+
+  // Activity cards (e2e/tests/activity.spec.ts): "activity demo" runs a turn
+  // with narration, two model steps, a failing test command (exit 1, multi-line
+  // output), an edit with line counts that really changes a file, and a passing
+  // command with 300 lines of output; "slowly" holds the failing command for a
+  // few seconds, "long" then keeps reading files so the card overflows.
+  if (/activity demo/i.test(text) && /new Canopy message/i.test(text)) {
+    const slowly = /slowly/i.test(text);
+    const long = /\blong\b/i.test(text);
+    const call = async (name, input, state, hold) => {
+      const callID = nextId("call");
+      const base = { id: nextId("prt"), sessionID, messageID, type: "tool", callID, tool: name };
+      const start = Date.now();
+      emit("message.part.updated", { sessionID, part: { ...base, state: { status: "pending", input: {} } } });
+      emit("message.part.updated", { sessionID, part: { ...base, state: { status: "running", input, time: { start } } } });
+      await sleep(hold);
+      emit("message.part.updated", { sessionID, part: { ...base, state: { ...state, input, time: { start, end: Date.now() } } } });
+    };
+    const narrate = (words) => {
+      const id = nextId("prt");
+      emit("message.part.updated", { sessionID, part: part({ id, type: "text", text: words, time: { start: Date.now() - 5, end: Date.now() } }) });
+    };
+    const step = (input) => emit("message.part.updated", { sessionID, part: part({ type: "step-finish", reason: "tool-calls", cost: 0.0004, tokens: { input, output: 40, reasoning: 0, cache: { read: 0, write: 0 } } }) });
+
+    narrate("I'll run the **billing tests** first, then fix what fails.");
+    const failure = ["Compiling 3 files (.ex)", "", "  1) test claim_charge/1 skips paid invoices (PaymentsTest)", "     Assertion with == failed", "     left:  2", "     right: 1", "", "Finished in 38.1 seconds", "42 tests, 1 failure"].join("\n");
+    await call("bash", { command: "mix test test/billing", description: "Run the billing tests" }, { status: "completed", title: "mix test test/billing", output: failure, metadata: { output: failure, exit: 1, truncated: false } }, slowly ? 4000 : TURN_DELAY);
+    step(900);
+    narrate("One failure: the claim is checked after the charge. Moving it first.");
+    const rel = "activity-demo.txt";
+    if (cwd) fs.writeFileSync(path.join(cwd, rel), "claim first\nthen charge\n");
+    const diff = `--- ${rel}\n+++ ${rel}\n@@ -0,0 +1,2 @@\n+claim first\n+then charge\n`;
+    await call("edit", { filePath: cwd ? path.join(cwd, rel) : rel, oldString: "", newString: "claim first" }, { status: "completed", title: rel, output: "", metadata: { diff, files: [{ filePath: cwd ? path.join(cwd, rel) : rel, relativePath: rel, additions: 2, deletions: 0 }] } }, TURN_DELAY);
+    emit("file.edited", { file: cwd ? path.join(cwd, rel) : rel });
+    const passing = Array.from({ length: 300 }, (_, i) => `test ${i + 1} ok`).join("\n");
+    await call("bash", { command: "mix test test/billing/payments_test.exs:42" }, { status: "completed", title: "mix test", output: passing, metadata: { output: passing, exit: 0, truncated: false } }, TURN_DELAY);
+    step(2100);
+    if (long) {
+      for (let i = 1; i <= 70 && !aborted.has(sessionID); i++) {
+        await call("read", { filePath: `src/module_${i}.ex` }, { status: "completed", title: `src/module_${i}.ex`, output: "defmodule M do\nend", metadata: {} }, 150);
+      }
+    }
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Fixed the double charge: the claim now comes before the charge." });
+    return finishTurn(sessionID, messageID, part, "Fixed it; the billing tests pass.", 0.0021);
+  }
 
   // Site story: @researcher traces every caller of enqueue_charge and reports
   // back with a Markdown file.

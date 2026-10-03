@@ -10,9 +10,8 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page)).toContainText("Why are invoices duplicated?");
 
     // live telemetry while the fake agent works
-    const card = page.locator('[id^="telemetry-"]').first();
+    const card = page.locator('section[id^="telemetry-"]').first();
     await expect(card).toContainText(/is (researching|thinking|building|working)/);
-    await expect(card).toContainText("README.md");
 
     // the agent posted through canopy_message_send
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
@@ -20,10 +19,15 @@ test.describe("channel collaboration", () => {
     await expect(timeline(page).locator(".message-body ol li").first()).toContainText("Read README.md");
     await expect(timeline(page).locator(".message-body pre code")).toContainText("queue.add(invoice_id)");
     await expect(timeline(page)).toContainText(/finished/);
-    // its closing text is kept on the turn card, not posted as a second message
+    await expect(card).toBeHidden();
+    // the finished turn (hidden in the compact timeline) opens to what it ran,
+    // and keeps its closing text instead of posting it as a second message
+    await page.locator("#toggle-activity").click();
+    const turn = timeline(page).locator('section[id^="turn-"]').last();
+    await turn.locator('[id^="turn-toggle-"]').click();
+    await expect(turn).toContainText("README.md");
     await expect(timeline(page).locator('[id^="turn-"][id$="-note"]').first()).toContainText("Reply from the fake agent.");
     await expect(timeline(page).locator('article[data-kind="reply"]')).toHaveCount(0);
-    await expect(card).toBeHidden();
   });
 
   test("a permission request renders a card with the diff and Once resumes the agent", async ({ page }) => {

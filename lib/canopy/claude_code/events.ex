@@ -8,6 +8,13 @@ defmodule Canopy.ClaudeCode.Events do
   stateful across one turn: it remembers each tool call's input
   until its result arrives, and folds the streaming usage of each model call
   into one `:step_completed`.
+
+  Tool results carry what the activity card shows per call: the line
+  `timestamp`s of the tool_use and tool_result give its `time`, and the
+  structured `tool_use_result` gives Bash's stdout, stderr and interrupted
+  flag, an edit's patch and line counts, and a search's match count. A failed
+  Bash call's exit code is read from an `Exit code N` prefix on its result;
+  that format is not in a capture yet, so anything else leaves the code unset.
   """
 
   alias Canopy.Engine.Event
@@ -66,6 +73,8 @@ defmodule Canopy.ClaudeCode.Events do
          title: tool,
          error: line["reason"] || "permission denied",
          output: nil,
+         denied: true,
+         time: line_time(line, "end"),
          message_id: nil,
          part_id: nil
        })
@@ -125,9 +134,13 @@ defmodule Canopy.ClaudeCode.Events do
 
   def normalize(%{"type" => "stream_event"}, acc), do: {[], acc}
 
-  def normalize(%{"type" => "assistant", "message" => %{"content" => blocks} = message}, acc)
+  def normalize(
+        %{"type" => "assistant", "message" => %{"content" => blocks} = message} = line,
+        acc
+      )
       when is_list(blocks) do
     message_id = message["id"] || "assistant-" <> unique()
+    started_at = timestamp_ms(line["timestamp"])
 
     Enum.reduce(blocks, {[], acc}, fn block, {events, acc} ->
       case block do
@@ -151,12 +164,13 @@ defmodule Canopy.ClaudeCode.Events do
               status: :running,
               input: input,
               title: title(name, input, acc.cwd),
+              time: line_time(line, "start"),
               message_id: message_id,
               part_id: id
             })
 
-          {events ++ [started],
-           %{acc | inputs: Map.put(acc.inputs, id, %{tool: name, input: input})}}
+          call = %{tool: name, input: input, started_at: started_at}
+          {events ++ [started], %{acc | inputs: Map.put(acc.inputs, id, call)}}
 
         _ ->
           {events, acc}
@@ -164,26 +178,45 @@ defmodule Canopy.ClaudeCode.Events do
     end)
   end
 
-  def normalize(%{"type" => "user", "message" => %{"content" => blocks}}, acc)
+  def normalize(%{"type" => "user", "message" => %{"content" => blocks}} = line, acc)
       when is_list(blocks) do
+    # The structured result rides on the line, not the block: it can only be
+    # told apart when the line carries one result.
+    structured =
+      if Enum.count(blocks, &match?(%{"type" => "tool_result"}, &1)) == 1,
+        do: line["tool_use_result"]
+
+    ended_at = timestamp_ms(line["timestamp"])
+
     Enum.reduce(blocks, {[], acc}, fn
       %{"type" => "tool_result", "tool_use_id" => id} = block, {events, acc} ->
         {call, inputs} = Map.pop(acc.inputs, id, %{tool: "tool", input: %{}})
         error? = block["is_error"] == true
         output = result_text(block["content"])
 
+        time =
+          %{"start" => Map.get(call, :started_at), "end" => ended_at}
+          |> Map.reject(fn {_k, v} -> is_nil(v) end)
+
         completed =
-          event(:tool_completed, %{
-            call_id: id,
-            tool: call.tool,
-            status: if(error?, do: :error, else: :ok),
-            input: call.input,
-            title: title(call.tool, call.input, acc.cwd),
-            output: output,
-            error: if(error?, do: output),
-            message_id: nil,
-            part_id: id
-          })
+          event(
+            :tool_completed,
+            Map.merge(
+              %{
+                call_id: id,
+                tool: call.tool,
+                status: if(error?, do: :error, else: :ok),
+                input: call.input,
+                title: title(call.tool, call.input, acc.cwd),
+                output: output,
+                error: if(error?, do: output),
+                time: time,
+                message_id: nil,
+                part_id: id
+              },
+              result_facts(call, structured, error?, output, acc.cwd)
+            )
+          )
 
         changed =
           if not error? and call.tool in @edit_tools and is_binary(call.input["file_path"]),
@@ -258,6 +291,78 @@ defmodule Canopy.ClaudeCode.Events do
   def title("Agent", input, _cwd), do: present(input["description"]) || "Agent"
   def title("mcp__canopy__" <> name, _input, _cwd), do: "canopy " <> name
   def title(tool, _input, _cwd), do: tool
+
+  # What the structured result says about the call, as optional event fields.
+  defp result_facts(call, structured, error?, output, cwd) do
+    structured = if is_map(structured), do: structured, else: %{}
+
+    %{
+      stdout: string_or_nil(structured["stdout"]),
+      stderr: string_or_nil(structured["stderr"]),
+      interrupted: if(structured["interrupted"] == true, do: true),
+      matches: integer_or_nil(structured["totalMatches"] || structured["numFiles"]),
+      exit_code: if(call.tool == "Bash" and error?, do: exit_code(output))
+    }
+    |> Map.merge(patch_facts(structured["structuredPatch"], structured["filePath"], cwd))
+    |> Map.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  # Unverified: a failed Bash result is believed to start with `Exit code N`.
+  # Nothing else in the text is read, so an unknown format gives no code.
+  defp exit_code(output) when is_binary(output) do
+    case Regex.run(~r/\AExit code (\d+)/, output) do
+      [_, code] -> String.to_integer(code)
+      _ -> nil
+    end
+  end
+
+  defp exit_code(_output), do: nil
+
+  # An edit's `structuredPatch` hunks as unified diff text, with its counts.
+  defp patch_facts(hunks, path, cwd) when is_list(hunks) and hunks != [] do
+    name = if is_binary(path), do: relative(path, cwd), else: "file"
+
+    lines =
+      Enum.flat_map(hunks, fn hunk ->
+        header =
+          "@@ -#{hunk["oldStart"]},#{hunk["oldLines"]} +#{hunk["newStart"]},#{hunk["newLines"]} @@"
+
+        [header | for(l <- List.wrap(hunk["lines"]), is_binary(l), do: l)]
+      end)
+
+    body = Enum.reject(lines, &String.starts_with?(&1, "@@"))
+
+    %{
+      patch: Enum.join(["--- " <> name, "+++ " <> name | lines], "\n"),
+      adds: Enum.count(body, &String.starts_with?(&1, "+")),
+      dels: Enum.count(body, &String.starts_with?(&1, "-"))
+    }
+  end
+
+  defp patch_facts(_hunks, _path, _cwd), do: %{}
+
+  defp string_or_nil(value) when is_binary(value) and value != "", do: value
+  defp string_or_nil(_), do: nil
+
+  defp integer_or_nil(value) when is_integer(value), do: value
+  defp integer_or_nil(_), do: nil
+
+  # The line's `timestamp` as `%{key => ms}` for an event's `time`, or empty.
+  defp line_time(line, key) do
+    case timestamp_ms(line["timestamp"]) do
+      nil -> %{}
+      ms -> %{key => ms}
+    end
+  end
+
+  defp timestamp_ms(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, at, _offset} -> DateTime.to_unix(at, :millisecond)
+      _ -> nil
+    end
+  end
+
+  defp timestamp_ms(_value), do: nil
 
   defp step_event(id, usage, reason) do
     event(:step_completed, %{

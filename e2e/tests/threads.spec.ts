@@ -16,7 +16,7 @@ async function openThread(page: Page, rootText: string) {
   await send(page, rootText);
   // the owner answers the root in the channel first; wait for its turn to end
   await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
-  await expect(page.locator('details[id^="telemetry-"]')).toHaveCount(0);
+  await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0);
 
   const root = timeline(page).locator("article", { hasText: rootText }).first();
   await root.hover();
@@ -34,14 +34,14 @@ test.describe("threads", () => {
     await expect(replies(page)).toContainText("Take your time and look at the session code.");
 
     // the agent works for the thread: its live card is in the panel, not the feed
-    await expect(panel(page).locator('details[id^="telemetry-"]')).toBeVisible();
-    await expect(page.locator('#timeline-scroll > details[id^="telemetry-"]')).toHaveCount(0);
+    await expect(panel(page).locator('section[id^="telemetry-"]')).toBeVisible();
+    await expect(page.locator('#timeline-scroll > section[id^="telemetry-"]')).toHaveCount(0);
     await expect(page.locator('[id^="thread-working-"]')).toContainText("@backend is replying");
 
     // it answers with canopy_thread_reply: in the thread, not in the channel feed
     await expect(replies(page)).toContainText("Answering in the thread: per-request caching is the safe option.");
     await expect(timeline(page)).not.toContainText("Answering in the thread");
-    await expect(panel(page).locator('details[id^="telemetry-"]')).toHaveCount(0);
+    await expect(panel(page).locator('section[id^="telemetry-"]')).toHaveCount(0);
 
     // the feed keeps the root and its summary row, which opens the thread again
     const summary = page.locator('[id^="thread-summary-"]');
@@ -114,7 +114,7 @@ test.describe("threads", () => {
 
     // reply, then leave the thread before the agent answers
     await reply(page, "Take your time, then answer here.");
-    await expect(panel(page).locator('details[id^="telemetry-"]')).toBeVisible();
+    await expect(panel(page).locator('section[id^="telemetry-"]')).toBeVisible();
     await page.locator("#thread-panel-close").click();
     await expect(panel(page)).toBeHidden();
 

@@ -116,6 +116,28 @@ defmodule Canopy.Timeline do
   @doc "Fetches one event with preloads."
   def get!(id), do: Event |> Repo.get!(id) |> Repo.preload(@preloads)
 
+  @doc "Fetches one event with preloads, or nil."
+  def get(id) when is_binary(id) do
+    case Repo.get(Event, id) do
+      nil -> nil
+      event -> Repo.preload(event, @preloads)
+    end
+  end
+
+  @doc "The agent's latest finished turn in the channel (its `agent_turn_completed` event), or nil."
+  def last_turn(channel_id, agent_id) do
+    Event
+    |> where(
+      [e],
+      e.channel_id == ^channel_id and e.agent_id == ^agent_id and
+        e.event_type == "agent_turn_completed"
+    )
+    |> order_by([e], desc: e.id)
+    |> limit(1)
+    |> preload(^@preloads)
+    |> Repo.one()
+  end
+
   @doc "The `message` event that refers to `message_id`, with preloads, or nil."
   def for_message(message_id) when is_binary(message_id) do
     Event

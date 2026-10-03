@@ -128,6 +128,83 @@ defmodule Canopy.ClaudeCode.EventsTest do
     assert error == %{"name" => "error_max_turns", "data" => %{"message" => "error_max_turns"}}
   end
 
+  test "tool results carry their timing and what the structured result says" do
+    completed =
+      for %Event{type: :tool_completed, data: d} <- replay(), into: %{}, do: {d.call_id, d}
+
+    started = for %Event{type: :tool_started, data: d} <- replay(), into: %{}, do: {d.call_id, d}
+
+    # the tool_use and tool_result line timestamps bracket the call
+    assert %{"start" => start} = started["call-1"].time
+    assert %{"start" => ^start, "end" => finish} = completed["call-1"].time
+    assert finish - start == 676
+
+    bash = completed["call-1"]
+    assert bash.stdout == "clean"
+    refute Map.has_key?(bash, :stderr)
+    refute Map.has_key?(bash, :exit_code)
+
+    assert completed["call-2"].matches == 1
+
+    edit = completed["call-4"]
+    assert edit.adds == 1 and edit.dels == 1
+    assert edit.patch =~ "--- calc.py\n+++ calc.py\n@@ -1,1 +1,1 @@"
+    assert edit.patch =~ "+def add(a, b): return a + b"
+
+    # lines without the newer fields still complete, untimed
+    assert completed["call-5"].time == %{}
+  end
+
+  test "a failed Bash call's exit code comes only from an `Exit code N` prefix" do
+    run = fn content ->
+      {_, acc} =
+        Events.normalize(
+          %{
+            "type" => "assistant",
+            "message" => %{
+              "id" => "m",
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "b1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "mix test"}
+                }
+              ]
+            }
+          },
+          Events.new()
+        )
+
+      {[%Event{type: :tool_completed, data: d}], _} =
+        Events.normalize(
+          %{
+            "type" => "user",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "b1",
+                  "content" => content,
+                  "is_error" => true
+                }
+              ]
+            },
+            "tool_use_result" => %{"stdout" => "", "stderr" => "boom", "interrupted" => true}
+          },
+          acc
+        )
+
+      d
+    end
+
+    # unverified format (no capture yet): read the prefix, nothing else
+    assert %{exit_code: 2, status: :error, stderr: "boom", interrupted: true} =
+             run.("Exit code 2\nboom")
+
+    refute Map.has_key?(run.("Command failed with exit code 2"), :exit_code)
+  end
+
   test "a denied tool shows up as a failed tool call" do
     {[%Event{type: :tool_completed, data: d}], _} =
       Events.normalize(
@@ -141,6 +218,7 @@ defmodule Canopy.ClaudeCode.EventsTest do
       )
 
     assert d.status == :error and d.tool == "Bash" and d.error == "no approval available"
+    assert d.denied == true
   end
 
   test "a tool result for an unknown call still completes something" do

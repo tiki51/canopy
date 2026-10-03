@@ -33,7 +33,10 @@ defmodule CanopyWeb.TimelineComponents do
     * `:divider` — inside the thread panel, the reply count under the root
 
   `dom_prefix` keeps a message's DOM ids unique when it shows both in the feed
-  and in the thread panel.
+  and in the thread panel. A turn card takes `activity`, the view's state for
+  it (see `turn_card/1`); an agent's message takes `receipt`, the turn that
+  posted it (`%{event_id, tools, duration_ms}`), shown as a chip in the
+  compact timeline.
   """
   attr :id, :string, required: true
   attr :event, :map, required: true
@@ -51,6 +54,9 @@ defmodule CanopyWeb.TimelineComponents do
     default: nil,
     doc: "the repository path; tool paths inside it show relative"
 
+  attr :activity, :map, default: %{}
+  attr :receipt, :map, default: nil
+
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
     <div id={@id} data-scroll-target={@thread[:target] && "true"}>
@@ -67,6 +73,7 @@ defmodule CanopyWeb.TimelineComponents do
         parent={@thread[:parent]}
         highlight={@thread[:highlight] == true}
         target={@thread[:target] == true}
+        receipt={@receipt}
       />
       <div
         :if={is_integer(@thread[:divider])}
@@ -84,10 +91,7 @@ defmodule CanopyWeb.TimelineComponents do
     assigns =
       assigns
       |> assign(:final_text, assigns.event.payload["final_text"])
-      |> then(fn assigns ->
-        entries = visible(Activity.from_payload(assigns.event.payload["activity"]))
-        assign(assigns, :entries, drop_closing_note(entries, assigns.final_text))
-      end)
+      |> assign(:card, Activity.card_from_payload(assigns.event.payload))
 
     ~H"""
     <div id={@id} data-activity={activity_class(@event)}>
@@ -95,10 +99,11 @@ defmodule CanopyWeb.TimelineComponents do
         event={@event}
         names={@names}
         user_name={@user_name}
-        entries={@entries}
+        card={@card}
         final_text={@final_text}
         root={@root}
         mentions={@mentions}
+        activity={@activity}
       />
     </div>
     """
@@ -131,6 +136,10 @@ defmodule CanopyWeb.TimelineComponents do
   attr :target, :boolean, default: false
   attr :channels, :map, default: %{}
   attr :mentions, :any, default: MapSet.new()
+
+  attr :receipt, :map,
+    default: nil,
+    doc: "`%{event_id, tools, duration_ms}` of the turn that posted it"
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -203,6 +212,16 @@ defmodule CanopyWeb.TimelineComponents do
           >
             {short_time(@message.inserted_at)}
           </time>
+          <.link
+            :if={@receipt}
+            patch={~p"/channels/#{@message.channel_id}?#{[activity: @receipt.event_id]}"}
+            id={"#{@dom_prefix}-receipt-#{@message.id}"}
+            class="receipt-chip items-center gap-1 rounded-full border border-base-300 px-1.5 text-[10px] text-base-content/60 transition hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            title="See what the agent ran for this"
+          >
+            <.icon name="hero-cog-6-tooth-mini" class="size-3" />
+            {receipt_text(@receipt)}
+          </.link>
           <div
             :if={@thread_href || @link}
             class="message-actions ml-auto flex items-center gap-0.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100"
@@ -574,186 +593,1229 @@ defmodule CanopyWeb.TimelineComponents do
   # -- Activity cards ----------------------------------------------------------
 
   @doc """
-  What a busy agent is doing right now. Closed by default; the header pulses
-  while the turn is in flight.
+  What a busy agent is doing right now. Closed by default: the header says
+  what it is doing (the verb and the call running now), for how long, and
+  how much it has done; opening it (`toggle_activity_card`) renders the
+  rows. A turn blocked on a permission or question card says it is waiting
+  for the user.
   """
   attr :agent_id, :string, required: true
   attr :name, :string, required: true
   attr :card, :map, required: true
   attr :root, :string, default: nil
+  attr :channel_id, :string, default: nil, doc: "for the Open in panel link"
+  attr :status, :atom, default: :busy
+  attr :open?, :boolean, default: false
+  attr :open_rows, :any, default: MapSet.new(), doc: "keys of the rows shown open"
+  attr :highlight, :boolean, default: false, doc: "the card is open in the side panel"
+  attr :auto_open?, :boolean, default: false, doc: "the browser opens live cards by itself"
 
   def telemetry_card(assigns) do
-    assigns = assign(assigns, :entries, visible(assigns.card.entries))
+    card = assigns.card
+
+    assigns =
+      assigns
+      |> assign(:waiting?, assigns.status == :awaiting_user)
+      |> assign(:verb, Activity.verb(card))
+      |> assign(:current, Activity.current(card))
 
     ~H"""
-    <details
+    <section
       id={"telemetry-#{@agent_id}"}
-      phx-hook="KeepOpen"
-      class="group/card mx-3 my-2 overflow-hidden sm:mx-6 rounded-xl border border-secondary/40 bg-secondary/10 shadow-xs"
+      class={[
+        "mx-3 my-2 overflow-hidden rounded-xl border shadow-xs sm:mx-6",
+        !@waiting? && "border-secondary/40 bg-secondary/10",
+        @waiting? && "border-info/40 bg-info/5",
+        @highlight && "ring-2 ring-primary/30"
+      ]}
       data-live="true"
+      data-open={to_string(@open?)}
+      data-status={@status}
     >
-      <summary
-        id={"telemetry-toggle-#{@agent_id}"}
-        class="flex cursor-pointer select-none list-none items-center gap-2 px-4 py-2 text-sm transition hover:bg-secondary/15 [&::-webkit-details-marker]:hidden"
-      >
-        <Layouts.status_dot status={:busy} />
-        <span class="font-medium text-secondary">@{@name} is {Activity.verb(@card)}…</span>
-        <span class="ml-auto flex items-center gap-3 text-[11px] text-base-content/60">
-          <span :if={@card.tool_count > 0}>{count(@card.tool_count, "tool")}</span>
-          <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
-          <.chevron />
-        </span>
-      </summary>
-      <div class="border-t border-secondary/20 px-4 py-2">
-        <.activity_list id={"telemetry-#{@agent_id}"} entries={@entries} root={@root} />
-        <p :if={@entries == []} class="text-xs text-base-content/60">
-          Waiting for the first tool call…
-        </p>
+      <div class={["flex items-center gap-1 pr-2", @open? && "sticky top-0 z-10 bg-inherit"]}>
+        <button
+          type="button"
+          id={"telemetry-toggle-#{@agent_id}"}
+          class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-xl px-4 py-2 text-left text-sm transition hover:bg-secondary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click="toggle_activity_card"
+          phx-value-card={"telemetry-#{@agent_id}"}
+          aria-expanded={to_string(@open?)}
+          aria-controls={"telemetry-#{@agent_id}-body"}
+        >
+          <span class="flex w-full min-w-0 items-center gap-2">
+            <Layouts.status_dot status={if @waiting?, do: :awaiting_user, else: :busy} />
+            <span class={[
+              "shrink-0 font-medium",
+              !@waiting? && "text-secondary",
+              @waiting? && "text-info"
+            ]}>
+              <%= if @waiting? do %>
+                @{@name} is waiting for you
+              <% else %>
+                @{@name} is {@verb}…
+              <% end %>
+            </span>
+            <span
+              :if={@current && !@waiting?}
+              id={"telemetry-#{@agent_id}-current"}
+              class="min-w-0 truncate font-mono text-xs text-base-content/60 max-sm:hidden"
+              title={@current[:command] || @current.label}
+            >
+              {relative_paths(@current.label, @root)}
+            </span>
+            <span class="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-base-content/60">
+              <span
+                :if={@card.started_at}
+                id={"telemetry-#{@agent_id}-elapsed"}
+                class="tabular-nums"
+                phx-hook=".Elapsed"
+                phx-update="ignore"
+                data-started-at={@card.started_at}
+                title="Time since the turn started"
+              />
+              <.chevron open?={@open?} />
+            </span>
+          </span>
+          <span class="flex w-full min-w-0 items-center gap-2 text-[11px] text-base-content/60">
+            <span
+              :if={@current && !@waiting?}
+              class="min-w-0 truncate font-mono sm:hidden"
+            >
+              {relative_paths(@current.label, @root)}
+            </span>
+            <span class="min-w-0 truncate max-sm:hidden">{tally_text(@card)}</span>
+            <span class="sm:hidden">{short_tally(@card)}</span>
+            <span class="ml-auto flex shrink-0 items-center gap-2">
+              <span :if={@card.tokens > 0}>{format_tokens(@card.tokens)} tok</span>
+              <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
+              <span :if={@card.model} class="max-sm:hidden">{@card.model}</span>
+            </span>
+          </span>
+        </button>
+        <.link
+          :if={@channel_id}
+          patch={~p"/channels/#{@channel_id}?#{[activity: "live:" <> @agent_id]}"}
+          id={"telemetry-#{@agent_id}-panel"}
+          class="btn btn-ghost btn-xs btn-square shrink-0 focus-visible:ring-2 focus-visible:ring-primary/50"
+          title="Open in panel"
+          aria-label="Open the activity in the side panel"
+        >
+          <.icon name="hero-arrows-pointing-out-mini" class="size-4" />
+        </.link>
       </div>
-    </details>
+      <span class="sr-only" aria-live="polite">
+        {if @waiting?, do: "@#{@name} is waiting for you", else: "@#{@name} is #{@verb}"}
+      </span>
+      <.activity_body
+        :if={@open?}
+        id={"telemetry-#{@agent_id}"}
+        card_id={"telemetry-#{@agent_id}"}
+        card={@card}
+        live?
+        open_rows={@open_rows}
+        details={@card.details}
+        root={@root}
+        auto_open?={@auto_open?}
+        class="border-t border-secondary/20"
+      />
+    </section>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".Elapsed">
+      // Ticks a live duration from data-started-at (wall-clock ms) once a second.
+      const format = ms => {
+        const s = Math.max(0, Math.floor(ms / 1000))
+        return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
+      }
+      export default {
+        mounted() {
+          this.tick = () => {
+            const at = Number(this.el.dataset.startedAt)
+            if (at) this.el.textContent = format(Date.now() - at)
+          }
+          this.tick()
+          this.timer = setInterval(this.tick, 1000)
+        },
+        updated() { this.tick() },
+        destroyed() { clearInterval(this.timer) },
+      }
+    </script>
     """
   end
 
   @doc """
-  A finished turn: the same summary line as before, reopenable to show the
-  activity the live card held. Falls back to a plain line when nothing was recorded.
+  A finished turn: the same box as the live card, quieter, with the summary
+  line as its header. Opening it shows the rows the live card held and the
+  turn's closing note; a row opens to its input and output. Falls back to a
+  plain line when nothing was recorded.
+
+  `activity` carries the view's state for the card (all optional): `open?`,
+  `open_rows` (the keys of the rows shown open), `details` (the rows'
+  details once loaded, or `:not_recorded`), and `highlight` (shown in the
+  side panel).
   """
   attr :event, :map, required: true
   attr :names, :map, required: true
   attr :user_name, :string, required: true
-  attr :entries, :list, default: []
+  attr :card, :map, required: true
   attr :final_text, :string, default: nil
   attr :root, :string, default: nil
   attr :mentions, :any, default: MapSet.new()
+  attr :activity, :map, default: %{}
 
-  def turn_card(%{entries: [], final_text: nil} = assigns) do
+  def turn_card(assigns) do
+    if Enum.any?(assigns.card.entries, &(&1.kind != :step)) or assigns.final_text do
+      turn_box(assigns)
+    else
+      ~H"""
+      <.system_line
+        id={"line-#{@event.id}"}
+        icon={event_icon(@event.event_type)}
+        tone={event_tone(@event)}
+        at={@event.inserted_at}
+      >
+        {event_text(@event, @names, @user_name)}
+      </.system_line>
+      """
+    end
+  end
+
+  defp turn_box(assigns) do
+    open? = assigns.activity[:open?] == true
+
+    assigns =
+      assigns
+      |> assign(:tone, event_tone(assigns.event))
+      |> assign(:open?, open?)
+      |> assign(:first_error, first_error(assigns.card))
+      |> assign(:text, event_text(assigns.event, assigns.names, assigns.user_name))
+
     ~H"""
-    <.system_line
-      id={"line-#{@event.id}"}
-      icon={event_icon(@event.event_type)}
-      tone={event_tone(@event)}
-      at={@event.inserted_at}
+    <section
+      id={"turn-#{@event.id}"}
+      class={[
+        "mx-3 my-1 overflow-hidden rounded-xl border transition sm:mx-6",
+        @tone == "error" && "border-error/30 bg-error/5",
+        @tone != "error" && !@open? && "border-base-300/70 bg-base-200/40",
+        @tone != "error" && @open? && "border-base-300 bg-base-200/40",
+        @activity[:highlight] && "ring-2 ring-primary/30"
+      ]}
+      data-tone={@tone}
+      data-open={to_string(@open?)}
     >
-      {event_text(@event, @names, @user_name)}
-    </.system_line>
+      <div class={["flex items-center gap-1 pr-2", @open? && "sticky top-0 z-10 bg-inherit"]}>
+        <button
+          type="button"
+          id={"turn-toggle-#{@event.id}"}
+          class="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-4 py-1.5 text-left text-xs transition hover:bg-base-300/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click="toggle_activity_card"
+          phx-value-card={"turn-#{@event.id}"}
+          aria-expanded={to_string(@open?)}
+          aria-controls={"turn-#{@event.id}-body"}
+          title={@text}
+        >
+          <.icon
+            name={outcome_icon(@event.payload)}
+            class={["size-4 shrink-0", outcome_class(@event.payload)]}
+          />
+          <span class={[
+            "min-w-0 truncate",
+            @tone == "error" && "text-error",
+            @tone != "error" && "text-base-content/70"
+          ]}>
+            {@text}
+          </span>
+          <span
+            :if={@first_error}
+            id={"turn-#{@event.id}-first-error"}
+            class="min-w-0 truncate font-mono text-[11px] text-error max-md:hidden"
+          >
+            “{@first_error}”
+          </span>
+          <span class="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-base-content/55">
+            <time title={DateTime.to_iso8601(@event.inserted_at)}>
+              {short_time(@event.inserted_at)}
+            </time>
+            <.chevron open?={@open?} />
+          </span>
+        </button>
+        <.link
+          patch={~p"/channels/#{@event.channel_id}?#{[activity: @event.id]}"}
+          id={"turn-#{@event.id}-panel"}
+          class="btn btn-ghost btn-xs btn-square shrink-0 focus-visible:ring-2 focus-visible:ring-primary/50"
+          title="Open in panel"
+          aria-label="Open the activity in the side panel"
+        >
+          <.icon name="hero-arrows-pointing-out-mini" class="size-4" />
+        </.link>
+      </div>
+      <.activity_body
+        :if={@open?}
+        id={"turn-#{@event.id}"}
+        card_id={"turn-#{@event.id}"}
+        card={@card}
+        open_rows={@activity[:open_rows] || MapSet.new()}
+        details={@activity[:details]}
+        root={@root}
+        final_text={@final_text}
+        mentions={@mentions}
+        class="border-t border-base-300/70"
+      />
+    </section>
     """
   end
 
-  def turn_card(assigns) do
-    assigns = assign(assigns, :tone, event_tone(assigns.event))
+  @doc """
+  The open part of an activity card, shared by the live card, the finished
+  card, and the side panel: the filter bar (category chips with counts, a
+  text filter, and on a live card Follow), the rows grouped by model step,
+  the changed files as chips that open their diff, and the closing note.
+  Filtering, searching and following happen in the browser (the
+  `.ActivityFilter` and `.ActivityFollow` hooks), so new rows arriving
+  while a filter is set are filtered too.
+
+  `id` prefixes every id inside; `card_id` is what the toggle events name
+  (`telemetry-<agent>` or `turn-<event>`), the same in the feed and the panel.
+  """
+  attr :id, :string, required: true
+  attr :card_id, :string, required: true
+  attr :card, :map, required: true
+  attr :live?, :boolean, default: false
+  attr :open_rows, :any, default: MapSet.new()
+  attr :details, :any, default: nil, doc: "row key => details, or :not_recorded"
+  attr :root, :string, default: nil
+  attr :final_text, :string, default: nil
+  attr :mentions, :any, default: MapSet.new()
+  attr :panel?, :boolean, default: false, doc: "full height, in the side panel"
+  attr :auto_open?, :boolean, default: false
+  attr :class, :any, default: nil
+
+  def activity_body(assigns) do
+    items = activity_items(assigns.card)
+
+    assigns =
+      assigns
+      |> assign(:items, items)
+      |> assign(:early, Enum.count(items, &(&1.early? and &1.type == :row)))
+      |> assign(:counts, filter_counts(assigns.card))
 
     ~H"""
-    <details
-      id={"turn-#{@event.id}"}
-      class={[
-        "group/card mx-3 my-1 overflow-hidden sm:mx-6 rounded-xl border transition",
-        @tone == "error" && "border-error/30 open:bg-error/5",
-        @tone != "error" && "border-transparent open:border-base-300 open:bg-base-200/40"
-      ]}
-      data-tone={@tone}
+    <div
+      id={"#{@id}-body"}
+      class={["activity-body", @class]}
+      phx-hook=".ActivityFilter"
+      data-filter="all"
     >
-      <summary
-        id={"turn-toggle-#{@event.id}"}
-        class="flex cursor-pointer select-none list-none items-center justify-center gap-2 px-4 py-1 text-xs [&::-webkit-details-marker]:hidden"
-        title="Show what the agent did"
+      <div
+        id={"#{@id}-filters"}
+        class="flex flex-wrap items-center gap-1 border-b border-base-300/60 px-3 py-1.5 text-[11px]"
       >
-        <span class="h-px flex-1 bg-base-300/70" />
-        <span class={[
-          "flex items-center gap-1.5 whitespace-pre-wrap text-center",
-          @tone == "error" && "text-error",
-          @tone != "error" && "text-base-content/55"
-        ]}>
-          <.icon name={event_icon(@event.event_type)} class="size-3.5 shrink-0 opacity-70" />
-          <span>{event_text(@event, @names, @user_name)}</span>
-          <time
-            class="text-[10px] opacity-60"
-            title={DateTime.to_iso8601(@event.inserted_at)}
+        <button
+          :for={{filter, label} <- filter_chips()}
+          :if={filter == "all" or Map.get(@counts, filter, 0) > 0}
+          type="button"
+          id={"#{@id}-filter-#{filter}"}
+          data-filter-chip={filter}
+          aria-pressed={to_string(filter == "all")}
+          class="activity-chip rounded-full px-2 py-0.5 font-medium text-base-content/60 transition hover:bg-base-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+        >
+          {label} <span class="tabular-nums opacity-70">{Map.get(@counts, filter, 0)}</span>
+        </button>
+        <label class="ml-auto flex min-w-0 items-center gap-1 rounded-md border border-base-300/70 bg-base-100/60 px-1.5 focus-within:ring-2 focus-within:ring-primary/50">
+          <.icon name="hero-magnifying-glass-mini" class="size-3.5 shrink-0 text-base-content/50" />
+          <input
+            type="search"
+            id={"#{@id}-search"}
+            data-filter-search
+            placeholder="Filter…"
+            aria-label="Filter the rows"
+            autocomplete="off"
+            class="w-24 min-w-0 bg-transparent py-0.5 text-[11px] outline-none sm:w-32"
+          />
+        </label>
+        <span :if={@live?} id={"#{@id}-follow-wrap"} phx-update="ignore">
+          <button
+            type="button"
+            id={"#{@id}-follow"}
+            aria-pressed="true"
+            class="activity-chip flex items-center gap-1 rounded-full px-2 py-0.5 font-medium text-base-content/60 transition hover:bg-base-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            title="Keep the newest row in view"
           >
-            {short_time(@event.inserted_at)}
-          </time>
-          <.chevron />
+            <.icon name="hero-arrow-down-circle-mini" class="size-3.5" /> Follow
+          </button>
         </span>
-        <span class="h-px flex-1 bg-base-300/70" />
-      </summary>
-      <div class="px-4 pb-2 pt-1">
-        <.activity_list id={"turn-#{@event.id}"} entries={@entries} root={@root} />
+        <label
+          :if={@live? and not @panel?}
+          for={"#{@id}-auto-open"}
+          class="flex cursor-pointer items-center gap-1 text-base-content/55"
+          title="Open the live activity card whenever an agent starts working (this browser)"
+        >
+          <input
+            type="checkbox"
+            id={"#{@id}-auto-open"}
+            class="checkbox checkbox-xs"
+            checked={@auto_open?}
+            phx-click="toggle_auto_open_live"
+          /> Open automatically
+        </label>
+      </div>
+
+      <div
+        id={"#{@id}-scroll"}
+        class={["relative overflow-y-auto px-3 py-2", !@panel? && "max-h-[60vh]"]}
+        phx-hook=".ActivityFollow"
+        data-live={to_string(@live?)}
+        data-pill={"#{@id}-pill"}
+        data-follow={"#{@id}-follow"}
+      >
+        <p
+          :if={@card.dropped > 0}
+          id={"#{@id}-dropped"}
+          class="mb-1 px-1 text-[11px] text-base-content/55"
+        >
+          ⋯ {ngettext("1 earlier row not kept", "%{count} earlier rows not kept", @card.dropped)} (the turn ran {ngettext(
+            "1 call",
+            "%{count} calls",
+            @card.tool_count
+          )})
+        </p>
+        <button
+          :if={@early > 0}
+          type="button"
+          id={"#{@id}-earlier"}
+          class="activity-earlier mb-1 rounded-md px-1 text-[11px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click={
+            JS.set_attribute({"data-expanded", "true"}, to: "##{@id}-body")
+            |> JS.hide()
+          }
+        >
+          Show {ngettext("1 earlier row", "%{count} earlier rows", @early)}
+        </button>
+        <ol id={"#{@id}-rows"} class="flex flex-col gap-px">
+          <li
+            :for={item <- @items}
+            :key={item.key}
+            id={"#{@id}-#{dom_key(item.key)}"}
+            class={[item.early? && "activity-early"]}
+            data-step-divider={item.type == :divider && "true"}
+            data-row={item.type == :row && "true"}
+            data-kind={item.type == :row && item.entry.kind}
+            data-category={item.type == :row && item.entry.category}
+            data-status={item.type == :row && row_status(item.entry)}
+            data-search={item.type == :row && search_text(item.entry, @root)}
+          >
+            <p
+              :if={item.type == :divider}
+              class="mt-2 mb-0.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/50"
+            >
+              Step {item.step + 1}<span :if={item.tokens > 0}> · {format_tokens(item.tokens)} tok</span>
+            </p>
+            <.narration
+              :if={item.type == :row and item.entry.kind == :text}
+              id={"#{@id}-#{dom_key(item.key)}"}
+              entry={item.entry}
+              mentions={@mentions}
+            />
+            <.activity_row
+              :if={item.type == :row and item.entry.kind != :text}
+              id={"#{@id}-#{dom_key(item.key)}"}
+              card_id={@card_id}
+              entry={item.entry}
+              open?={MapSet.member?(@open_rows, item.entry.key)}
+              details={row_details(@details, item.entry.key)}
+              root={@root}
+            />
+          </li>
+        </ol>
+        <p :if={@items == []} id={"#{@id}-empty"} class="px-1 text-xs text-base-content/60">
+          {if @live?, do: "Waiting for the first tool call…", else: "No calls."}
+        </p>
+
+        <div
+          :if={@card.files != []}
+          id={"#{@id}-files"}
+          class="mt-2 flex flex-wrap items-center gap-1.5 border-t border-dashed border-base-300 pt-2 text-[11px]"
+        >
+          <span class="font-semibold uppercase tracking-wider text-base-content/55">Changed</span>
+          <button
+            :for={chip <- @card.files}
+            type="button"
+            id={"#{@id}-chip-#{:erlang.phash2(chip.path)}"}
+            class="flex max-w-56 items-center gap-1 rounded-md border border-base-300 bg-base-100/70 px-1.5 py-0.5 font-mono transition hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            phx-click="open_changes"
+            phx-value-path={relative_paths(chip.path, @root)}
+            title={"See the diff of " <> relative_paths(chip.path, @root)}
+          >
+            <.icon name="hero-pencil-square-mini" class="size-3 shrink-0 text-warning" />
+            <span class="truncate">{Path.basename(chip.path)}</span>
+            <.line_counts stats={Activity.chip_stats(chip)} />
+          </button>
+          <button
+            type="button"
+            id={"#{@id}-open-changes"}
+            class="ml-auto font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            phx-click="open_changes"
+          >
+            Open Changes ›
+          </button>
+        </div>
         <div
           :if={@final_text}
-          id={"turn-#{@event.id}-note"}
-          class={["border-t border-dashed border-base-300 pt-2", @entries != [] && "mt-2"]}
+          id={"#{@id}-note"}
+          class={[
+            "border-t border-dashed border-base-300 pt-2",
+            (@items != [] or @card.files != []) && "mt-2"
+          ]}
         >
           <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/60">
             Closing note
           </p>
-          <.message_text body={@final_text} mentions={@mentions} />
+          <div class="text-sm"><.message_text body={@final_text} mentions={@mentions} /></div>
         </div>
       </div>
-    </details>
+      <div :if={@live?} id={"#{@id}-pill-wrap"} phx-update="ignore" class="relative">
+        <button
+          type="button"
+          id={"#{@id}-pill"}
+          hidden
+          class="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-primary px-3 py-1 text-[11px] font-medium text-primary-content shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+        >
+          ↓ new rows
+        </button>
+      </div>
+    </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ActivityFilter">
+      // The filter bar of an activity card: a category chip and a text filter,
+      // both applied in the browser. The chip is kept as data-filter on this
+      // element (CSS hides what it excludes) and the text as a class on the
+      // rows that miss it; both are set through LiveView's JS commands, so
+      // patches keep them, and rows that arrive later are filtered too.
+      export default {
+        mounted() {
+          this.filter = "all"
+          this.query = ""
+          this.el.addEventListener("click", e => {
+            const chip = e.target.closest("[data-filter-chip]")
+            if (!chip || !this.el.contains(chip)) return
+            this.filter = chip.dataset.filterChip
+            this.apply()
+          })
+          this.el.addEventListener("input", e => {
+            if (!e.target.matches("[data-filter-search]")) return
+            this.query = e.target.value.trim().toLowerCase()
+            this.apply()
+          })
+          // Esc in the filter box clears it, and goes no further (the side
+          // panel would close)
+          this.el.addEventListener("keydown", e => {
+            if (e.key !== "Escape" || !e.target.matches("[data-filter-search]")) return
+            if (e.target.value === "") return
+            e.preventDefault()
+            e.stopPropagation()
+            e.target.value = ""
+            this.query = ""
+            this.apply()
+          })
+          this.observer = new MutationObserver(() => this.applyRows())
+          const rows = this.el.querySelector("ol")
+          if (rows) this.observer.observe(rows, {childList: true})
+          this.apply()
+        },
+        updated() { this.apply() },
+        destroyed() { this.observer.disconnect() },
+        apply() {
+          const js = this.js()
+          js.setAttribute(this.el, "data-filter", this.filter)
+          if (this.query) js.setAttribute(this.el, "data-searching", "true")
+          else js.removeAttribute(this.el, "data-searching")
+          this.el.querySelectorAll("[data-filter-chip]").forEach(chip => {
+            js.setAttribute(chip, "aria-pressed", String(chip.dataset.filterChip === this.filter))
+          })
+          this.applyRows()
+        },
+        applyRows() {
+          const js = this.js()
+          this.el.querySelectorAll("[data-row]").forEach(row => {
+            const miss = this.query !== "" && !(row.dataset.search || "").toLowerCase().includes(this.query)
+            if (miss && !row.classList.contains("activity-miss")) js.addClass(row, "activity-miss")
+            if (!miss && row.classList.contains("activity-miss")) js.removeClass(row, "activity-miss")
+          })
+        },
+      }
+    </script>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ActivityFollow">
+      // Follow on a live card: while on, new rows keep the list scrolled to the
+      // newest one. Scrolling up turns it off and counts what arrives in a
+      // "new rows" pill; the pill, the Follow chip, or scrolling back down
+      // turns it on again. The pill and the chip sit in phx-update="ignore"
+      // wrappers, so their state here survives patches.
+      const NEAR = 24
+      export default {
+        mounted() {
+          this.live = this.el.dataset.live === "true"
+          if (!this.live) return
+          this.pill = document.getElementById(this.el.dataset.pill)
+          this.chip = document.getElementById(this.el.dataset.follow)
+          this.following = true
+          this.pinning = false
+          this.seen = this.rowCount()
+          this.el.addEventListener("scroll", () => {
+            if (this.pinning) return
+            const near = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < NEAR
+            if (near && !this.following) this.setFollowing(true)
+            else if (!near && this.following) this.setFollowing(false)
+          })
+          if (this.pill) this.pill.addEventListener("click", () => { this.setFollowing(true); this.pin() })
+          if (this.chip) this.chip.addEventListener("click", () => {
+            this.setFollowing(!this.following)
+            if (this.following) this.pin()
+          })
+          this.observer = new MutationObserver(() => this.onRows())
+          this.observer.observe(this.el, {childList: true, subtree: true})
+          this.pin()
+        },
+        destroyed() { if (this.observer) this.observer.disconnect() },
+        rowCount() { return this.el.querySelectorAll("[data-row]").length },
+        onRows() {
+          const count = this.rowCount()
+          if (this.following) { this.seen = count; this.pin(); return }
+          const fresh = count - this.seen
+          if (this.pill && fresh > 0) {
+            this.pill.textContent = `↓ ${fresh} new ${fresh === 1 ? "row" : "rows"}`
+            this.pill.hidden = false
+          }
+        },
+        setFollowing(on) {
+          this.following = on
+          if (this.chip) this.chip.setAttribute("aria-pressed", String(on))
+          if (on) {
+            this.seen = this.rowCount()
+            if (this.pill) this.pill.hidden = true
+          }
+        },
+        pin() {
+          this.pinning = true
+          this.el.scrollTop = this.el.scrollHeight
+          requestAnimationFrame(() => {
+            this.el.scrollTop = this.el.scrollHeight
+            this.pinning = false
+          })
+        },
+      }
+    </script>
     """
   end
 
   attr :id, :string, required: true
-  attr :entries, :list, required: true
-  attr :root, :string, default: nil
+  attr :entry, :map, required: true
+  attr :mentions, :any, default: MapSet.new()
 
-  defp activity_list(assigns) do
-    assigns =
-      assign(assigns, :entries, Enum.map(assigns.entries, &relative_entry(&1, assigns.root)))
+  # The agent's own words between tool calls: Markdown once the part is
+  # done (plain while it streams, so it doesn't reflow), clamped to three
+  # lines with a client-side "more".
+  defp narration(assigns) do
+    assigns = assign(assigns, :long?, long_text?(assigns.entry.label))
 
     ~H"""
-    <ol :if={@entries != []} class="flex flex-col gap-0.5 font-mono text-xs">
-      <li
-        :for={entry <- @entries}
-        id={"#{@id}-#{dom_key(entry.key)}"}
-        class={["flex items-start gap-2 text-base-content/75", entry.kind == :text && "my-1"]}
-        data-kind={entry.kind}
-      >
-        <.icon name={entry_icon(entry)} class={["mt-0.5 size-3.5 shrink-0", entry_class(entry)]} />
-        <%!-- The agent's own words between tool calls: prose, wrapped, in place. --%>
-        <p
-          :if={entry.kind == :text}
-          class="min-w-0 whitespace-pre-wrap break-words font-sans leading-relaxed text-base-content/80"
+    <div class="flex items-start gap-2 px-1 py-1">
+      <.icon
+        name="hero-chat-bubble-bottom-center-text-mini"
+        class={[
+          "mt-0.5 size-3.5 shrink-0",
+          @entry.status == :running && "text-secondary",
+          @entry.status != :running && "text-secondary/60"
+        ]}
+      />
+      <div class="min-w-0 flex-1">
+        <div id={"#{@id}-text"} class="line-clamp-3 text-xs leading-relaxed text-base-content/80">
+          <%= if @entry.status == :running do %>
+            <p class="whitespace-pre-wrap break-words">{@entry.label}</p>
+          <% else %>
+            <.message_text body={@entry.label} mentions={@mentions} />
+          <% end %>
+        </div>
+        <button
+          :if={@long?}
+          type="button"
+          id={"#{@id}-more"}
+          class="text-[11px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click={JS.toggle_class("line-clamp-3", to: "##{@id}-text")}
         >
-          {entry.label}
-        </p>
-        <span :if={entry.kind != :text} class="min-w-0 truncate">
-          <span class="text-base-content">{entry.label}</span>
-          <span :if={entry.detail} class="text-base-content/60">— {entry.detail}</span>
-        </span>
-      </li>
-    </ol>
+          more
+        </button>
+      </div>
+    </div>
     """
   end
 
-  # Step rows ("step tool_use — 218 tokens") are model-call bookkeeping; Costs
-  # counts them, the activity list leaves them out.
-  defp visible(entries), do: Enum.reject(entries, &(&1.kind == :step))
+  attr :id, :string, required: true
+  attr :card_id, :string, required: true
+  attr :entry, :map, required: true
+  attr :open?, :boolean, default: false
+  attr :details, :any, default: nil
+  attr :root, :string, default: nil
 
-  # The turn's closing text is shown under the card as its closing note; the
-  # same text in the activity list would say it twice.
-  defp drop_closing_note(entries, final_text) when is_binary(final_text) do
-    note = String.trim(final_text)
+  # One call: what ran, whether it worked, how long it took. The row is a
+  # button that opens its detail.
+  defp activity_row(assigns) do
+    entry = assigns.entry
 
-    Enum.reject(entries, fn entry ->
-      entry.kind == :text and
-        (String.trim(entry.label) == note or
-           (String.ends_with?(entry.label, "…") and
-              String.starts_with?(note, String.trim(String.trim_trailing(entry.label, "…")))))
+    {label, detail} =
+      path_label(
+        relative_paths(entry.label, assigns.root),
+        relative_paths(entry.detail, assigns.root)
+      )
+
+    detail = if redundant_detail?(label, detail), do: nil, else: detail
+
+    assigns =
+      assigns
+      |> assign(:label, label)
+      |> assign(:detail, detail)
+      |> assign(:status, row_status(entry))
+      |> assign(:chip, tool_chip(entry))
+
+    ~H"""
+    <button
+      type="button"
+      id={"#{@id}-toggle"}
+      class={[
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left font-mono text-xs transition hover:bg-base-300/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+        @status == "error" && "bg-error/5",
+        @entry[:category] == :canopy && "text-base-content/60"
+      ]}
+      phx-click="toggle_activity_row"
+      phx-value-card={@card_id}
+      phx-value-key={@entry.key}
+      aria-expanded={to_string(@open?)}
+      aria-controls={"#{@id}-detail"}
+      title={@entry[:command] || @label}
+    >
+      <.icon
+        name={category_icon(@entry)}
+        class={["size-3.5 shrink-0", category_class(@entry)]}
+      />
+      <span
+        :if={@chip}
+        class="shrink-0 rounded bg-base-300/60 px-1 text-[10px] font-semibold text-base-content/70"
+      >
+        {@chip}
+      </span>
+      <span class={[
+        "min-w-0 flex-1 truncate",
+        @status == "error" && "text-error",
+        @status != "error" && "text-base-content"
+      ]}>
+        {@label}<span :if={@detail} class="text-base-content/60"> — {@detail}</span>
+      </span>
+      <span
+        :if={@entry[:fact]}
+        class={[
+          "shrink-0 text-[11px]",
+          @status == "error" && "text-error",
+          @status != "error" && "text-base-content/60"
+        ]}
+      >
+        {@entry[:fact]}
+      </span>
+      <.status_glyph status={@status} />
+      <span class="w-12 shrink-0 text-right text-[11px] tabular-nums text-base-content/55">
+        <span
+          :if={@entry.status == :running and is_integer(@entry[:started_at])}
+          id={"#{@id}-elapsed"}
+          phx-hook=".Elapsed"
+          phx-update="ignore"
+          data-started-at={@entry[:started_at]}
+        />
+        <span :if={@entry.status != :running}>{format_duration(@entry[:duration_ms])}</span>
+      </span>
+    </button>
+    <.row_detail :if={@open?} id={@id} entry={@entry} details={@details} root={@root} />
+    """
+  end
+
+  attr :status, :string, required: true
+
+  defp status_glyph(%{status: "running"} = assigns) do
+    ~H"""
+    <span class="shrink-0" title="running">
+      <.icon
+        name="hero-arrow-path-mini"
+        class="size-3.5 animate-spin text-success motion-reduce:animate-none"
+      />
+      <span class="sr-only">running</span>
+    </span>
+    """
+  end
+
+  defp status_glyph(%{status: "error"} = assigns) do
+    ~H"""
+    <span class="shrink-0" title="failed">
+      <.icon name="hero-x-mark-mini" class="size-3.5 text-error" />
+      <span class="sr-only">failed</span>
+    </span>
+    """
+  end
+
+  defp status_glyph(%{status: "denied"} = assigns) do
+    ~H"""
+    <span class="shrink-0" title="denied">
+      <.icon name="hero-shield-exclamation-mini" class="size-3.5 text-warning" />
+      <span class="sr-only">denied</span>
+    </span>
+    """
+  end
+
+  defp status_glyph(assigns) do
+    ~H"""
+    <span class="shrink-0" title="done">
+      <.icon name="hero-check-mini" class="size-3.5 text-base-content/35" />
+      <span class="sr-only">done</span>
+    </span>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :entry, :map, required: true
+  attr :details, :any, default: nil
+  attr :root, :string, default: nil
+
+  # What an opened row shows, by category: the error first, then the full
+  # command and its output for a shell call, the patch for an edit, the
+  # input and output otherwise. Outputs are excerpts (head and tail), never
+  # highlighted; Copy copies what is shown.
+  defp row_detail(assigns) do
+    details = if is_map(assigns.details), do: assigns.details, else: %{}
+    entry = assigns.entry
+
+    assigns =
+      assigns
+      |> assign(:d, details)
+      |> assign(:not_recorded?, assigns.details == :not_recorded)
+      |> assign(
+        :show_input?,
+        entry[:category] not in [:canopy, :edit] and is_binary(details["input"])
+      )
+      |> assign(:show_output?, entry[:category] != :read and is_binary(details["output"]))
+      |> assign(:provenance, provenance(entry))
+
+    ~H"""
+    <div
+      id={"#{@id}-detail"}
+      class="mb-1 ml-5 mt-0.5 flex flex-col gap-2 rounded-lg border border-base-300 bg-base-100/70 p-2 text-xs"
+    >
+      <p :if={@not_recorded?} class="text-base-content/60">
+        Details weren't recorded for turns before this version of Canopy.
+      </p>
+      <p :if={@entry[:denied]} class="flex items-center gap-1 text-warning">
+        <.icon name="hero-shield-exclamation-mini" class="size-3.5" />
+        The call was refused, so it never ran.
+      </p>
+      <.detail_block
+        :if={@d["error"]}
+        id={"#{@id}-error"}
+        title="Error"
+        text={@d["error"]}
+        tone="error"
+      />
+      <.detail_block
+        :if={@show_input?}
+        id={"#{@id}-command"}
+        title={if @entry[:category] == :shell, do: "Command", else: "Input"}
+        text={relative_paths(@d["input"], @root)}
+        copy
+      />
+      <p
+        :if={@entry[:category] == :shell and @entry[:description]}
+        class="-mt-1 text-[11px] text-base-content/60"
+      >
+        {@entry[:description]}
+      </p>
+      <p :if={@entry[:category] == :read and @entry[:path]} class="font-mono text-[11px]">
+        {relative_paths(@entry[:path], @root)}
+      </p>
+      <div :if={@entry[:category] == :edit and @d["patch"]}>
+        <.diff_view
+          id={"#{@id}-diff"}
+          diff={relative_paths(@d["patch"], @root)}
+          class="max-h-72 rounded-md bg-base-200/60 py-1"
+        />
+      </div>
+      <button
+        :if={@entry[:category] == :edit and @entry[:path]}
+        type="button"
+        id={"#{@id}-changes"}
+        class="self-start text-[11px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+        phx-click="open_changes"
+        phx-value-path={relative_paths(@entry[:path], @root)}
+      >
+        Open in Changes ›
+      </button>
+      <.detail_block
+        :if={@show_output?}
+        id={"#{@id}-output"}
+        title={output_title(@d)}
+        text={@d["output"]}
+        copy
+        copy_label={if @d["truncated"], do: "Copy (excerpt)", else: "Copy"}
+      />
+      <.detail_block
+        :if={@d["stderr"]}
+        id={"#{@id}-stderr"}
+        title="Stderr"
+        text={@d["stderr"]}
+        tone="warning"
+        copy
+      />
+      <p :if={@d["interrupted"]} class="text-warning">The command was interrupted.</p>
+      <p
+        :if={!@not_recorded? and @d == %{} and @entry.status != :running and !@entry[:denied]}
+        class="text-base-content/60"
+      >
+        Nothing was recorded for this call.
+      </p>
+      <p :if={@entry.status == :running and @d == %{}} class="text-base-content/60">Running…</p>
+      <p :if={@provenance} class="text-[10px] text-base-content/50">{@provenance}</p>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :text, :string, required: true
+  attr :tone, :string, default: nil
+  attr :copy, :boolean, default: false
+  attr :copy_label, :string, default: "Copy"
+
+  defp detail_block(assigns) do
+    ~H"""
+    <div>
+      <div class="mb-0.5 flex items-center gap-2">
+        <span class={[
+          "text-[10px] font-semibold uppercase tracking-wider",
+          @tone == "error" && "text-error",
+          @tone == "warning" && "text-warning",
+          is_nil(@tone) && "text-base-content/55"
+        ]}>
+          {@title}
+        </span>
+        <button
+          :if={@copy}
+          type="button"
+          id={"#{@id}-copy"}
+          class="ml-auto flex items-center gap-1 rounded px-1 text-[10px] text-base-content/60 transition hover:bg-base-300/60 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          phx-click={JS.dispatch("canopy:copy", to: "##{@id}-text", detail: %{button: "#{@id}-copy"})}
+        >
+          <.icon name="hero-clipboard-document-mini" class="size-3" />
+          <span data-copy-label>{@copy_label}</span>
+        </button>
+      </div>
+      <pre
+        id={"#{@id}-text"}
+        class={[
+          "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md px-2 py-1 font-mono text-[11px] leading-relaxed",
+          @tone == "error" && "bg-error/10 text-error",
+          @tone == "warning" && "bg-warning/10",
+          is_nil(@tone) && "bg-base-300/50"
+        ]}
+      >{@text}</pre>
+    </div>
+    """
+  end
+
+  attr :stats, :any, required: true
+
+  defp line_counts(%{stats: {_a, _d}} = assigns) do
+    ~H"""
+    <span class="shrink-0 tabular-nums">
+      <span class="text-success">+{elem(@stats, 0)}</span>
+      <span class="text-error">−{elem(@stats, 1)}</span>
+    </span>
+    """
+  end
+
+  defp line_counts(assigns), do: ~H""
+
+  attr :open?, :boolean, default: false
+
+  defp chevron(assigns) do
+    ~H"""
+    <.icon
+      name="hero-chevron-down-mini"
+      class={["size-4 shrink-0 opacity-60 transition-transform", @open? && "rotate-180"]}
+    />
+    """
+  end
+
+  # The rows of a card in order, with a divider before each model step when
+  # there is more than one. Past 150 rows the earlier complete steps start
+  # collapsed ("Show N earlier rows").
+  @collapse_above 150
+  @keep_open 120
+
+  @doc false
+  def activity_items(card) do
+    rows = Enum.reject(card.entries, &(&1.kind == :step))
+    steps = rows |> Enum.map(&Map.get(&1, :step, 0)) |> Enum.uniq()
+    dividers? = length(steps) > 1
+
+    tokens =
+      card.steps |> Enum.map(& &1.tokens) |> Enum.with_index() |> Map.new(fn {t, i} -> {i, t} end)
+
+    groups = Enum.chunk_by(rows, &Map.get(&1, :step, 0))
+    early = early_groups(groups)
+
+    groups
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {[first | _] = group, index} ->
+      step = Map.get(first, :step, 0)
+      early? = index < early
+
+      divider =
+        if dividers?,
+          do: [
+            %{
+              type: :divider,
+              key: "step-#{index}-#{step}",
+              step: step,
+              tokens: Map.get(tokens, step, 0),
+              early?: early?
+            }
+          ],
+          else: []
+
+      divider ++ Enum.map(group, &%{type: :row, key: &1.key, entry: &1, early?: early?})
     end)
   end
 
-  defp drop_closing_note(entries, _final_text), do: entries
+  # How many leading groups start collapsed: whole steps, never the last,
+  # while at least @keep_open rows stay shown.
+  defp early_groups(groups) do
+    total = groups |> Enum.map(&length/1) |> Enum.sum()
+
+    if total <= @collapse_above do
+      0
+    else
+      groups
+      |> Enum.drop(-1)
+      |> Enum.reduce_while({0, total}, fn group, {count, shown} ->
+        if shown - length(group) >= @keep_open,
+          do: {:cont, {count + 1, shown - length(group)}},
+          else: {:halt, {count, shown}}
+      end)
+      |> elem(0)
+    end
+  end
+
+  defp filter_chips do
+    [
+      {"all", "All"},
+      {"shell", "Commands"},
+      {"files", "Files"},
+      {"errors", "Errors"},
+      {"notes", "Notes"},
+      {"canopy", "Canopy"}
+    ]
+  end
+
+  # The chips count from the card's tallies, so they stay exact past the row cap.
+  defp filter_counts(card) do
+    t = card.tallies
+
+    %{
+      "all" => Enum.count(card.entries, &(&1.kind not in [:step])) + card.dropped,
+      "shell" => Map.get(t, :shell, 0),
+      "files" => Map.get(t, :read, 0) + Map.get(t, :search, 0) + Map.get(t, :edit, 0),
+      "errors" => Map.get(t, :errors, 0),
+      "notes" => Enum.count(card.entries, &(&1.kind == :text)),
+      "canopy" => Map.get(t, :canopy, 0)
+    }
+  end
+
+  defp row_details(:not_recorded, _key), do: :not_recorded
+  defp row_details(details, key) when is_map(details), do: Map.get(details, key, %{})
+  defp row_details(_details, _key), do: nil
+
+  defp row_status(%{status: :running}), do: "running"
+  defp row_status(%{denied: true}), do: "denied"
+  defp row_status(%{status: :error}), do: "error"
+  defp row_status(_entry), do: "ok"
+
+  defp search_text(entry, root) do
+    [
+      entry.label,
+      entry[:command],
+      entry[:path],
+      entry[:description],
+      entry[:fact],
+      entry[:detail]
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&relative_paths(&1, root))
+    |> Enum.uniq()
+    |> Enum.join(" ")
+  end
+
+  defp long_text?(text), do: String.length(text) > 240 or length(String.split(text, "\n")) > 3
+
+  defp output_title(details) do
+    case details["output_lines"] do
+      n when is_integer(n) and n > 1 ->
+        "Output · " <>
+          ngettext("1 line", "%{count} lines", n) <>
+          if(details["truncated"], do: ", excerpt", else: "")
+
+      _ ->
+        "Output"
+    end
+  end
+
+  # When the call started, how long it took, how it ended.
+  defp provenance(entry) do
+    [
+      if(is_integer(entry[:started_at]), do: "started " <> clock(entry[:started_at])),
+      format_duration(entry[:duration_ms]),
+      if(is_integer(entry[:exit_code]), do: "exit #{entry[:exit_code]}")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp clock(ms) do
+    ms
+    |> DateTime.from_unix!(:millisecond)
+    |> Canopy.Schedules.When.to_local_naive()
+    |> Calendar.strftime("%H:%M:%S")
+  end
+
+  # What a finished card's header quotes when the turn had a failed call.
+  defp first_error(card) do
+    case Enum.find(card.entries, &(&1.kind == :tool and &1.status == :error)) do
+      nil -> nil
+      %{fact: "exit " <> _ = fact, label: label} -> "#{fact}: #{truncate(label, 60)}"
+      %{label: label} -> truncate(label, 60)
+    end
+  end
+
+  defp outcome_icon(%{"outcome" => "error"}), do: "hero-x-circle-mini"
+  defp outcome_icon(%{"outcome" => "stopped"}), do: "hero-stop-circle-mini"
+  defp outcome_icon(%{"passed" => true}), do: "hero-forward-mini"
+  defp outcome_icon(_payload), do: "hero-check-circle-mini"
+
+  defp outcome_class(%{"outcome" => "error"}), do: "text-error"
+  defp outcome_class(%{"outcome" => "stopped"}), do: "text-base-content/50"
+  defp outcome_class(_payload), do: "text-success/70"
+
+  @tally_nouns [
+    shell: {"cmd", "cmds"},
+    read: {"read", "reads"},
+    search: {"search", "searches"},
+    edit: {"edit", "edits"},
+    web: {"fetch", "fetches"},
+    agent: {"subagent", "subagents"},
+    plan: {"plan update", "plan updates"},
+    other: {"other call", "other calls"},
+    canopy: {"Canopy call", "Canopy calls"}
+  ]
+
+  @doc false
+  # "7 cmds · 5 reads · 2 edits · 1 failed", from the card's tallies.
+  def tally_text(card) do
+    parts =
+      for {category, {one, many}} <- @tally_nouns,
+          n = Map.get(card.tallies, category, 0),
+          n > 0,
+          do: "#{n} #{if n == 1, do: one, else: many}"
+
+    errors = Map.get(card.tallies, :errors, 0)
+    parts = if errors > 0, do: parts ++ ["#{errors} failed"], else: parts
+    Enum.join(parts, " · ")
+  end
+
+  # The narrow header: calls, and failures if any ("14 · 1 ✕").
+  defp short_tally(%{tool_count: 0}), do: nil
+
+  defp short_tally(card) do
+    case Map.get(card.tallies, :errors, 0) do
+      0 -> "#{card.tool_count}"
+      errors -> "#{card.tool_count} · #{errors} ✕"
+    end
+  end
+
+  @doc false
+  def format_tokens(n) when is_integer(n) and n >= 1000,
+    do: :erlang.float_to_binary(n / 1000, decimals: 1) <> "k"
+
+  def format_tokens(n), do: to_string(n)
+
+  @doc false
+  def tool_chip(%{category: :shell}), do: "$"
+  def tool_chip(%{category: :canopy}), do: nil
+  def tool_chip(%{tool: "mcp__" <> name}), do: name |> String.split("__") |> hd()
+
+  def tool_chip(%{tool: tool}) when is_binary(tool),
+    do: tool |> String.replace("_", " ") |> String.capitalize()
+
+  def tool_chip(_entry), do: nil
+
+  defp category_icon(%{category: :shell}), do: "hero-command-line-mini"
+  defp category_icon(%{category: :read}), do: "hero-document-text-mini"
+  defp category_icon(%{category: :search}), do: "hero-magnifying-glass-mini"
+  defp category_icon(%{category: :edit}), do: "hero-pencil-square-mini"
+  defp category_icon(%{category: :web}), do: "hero-globe-alt-mini"
+  defp category_icon(%{category: :canopy}), do: "hero-chat-bubble-left-right-mini"
+  defp category_icon(%{category: :plan}), do: "hero-list-bullet-mini"
+  defp category_icon(%{category: :agent}), do: "hero-sparkles-mini"
+  defp category_icon(%{kind: :diff}), do: "hero-document-text-mini"
+  defp category_icon(_entry), do: "hero-wrench-screwdriver-mini"
+
+  defp category_class(%{status: :error}), do: "text-error"
+  defp category_class(%{category: :shell}), do: "text-info"
+  defp category_class(%{category: :read}), do: "text-base-content/55"
+  defp category_class(%{category: :search}), do: "text-accent"
+  defp category_class(%{category: :edit}), do: "text-warning"
+  defp category_class(%{category: :web}), do: "text-info"
+  defp category_class(%{category: :canopy}), do: "text-base-content/45"
+
+  defp category_class(%{category: category}) when category in [:plan, :agent],
+    do: "text-secondary"
+
+  defp category_class(_entry), do: "text-base-content/45"
+
+  @doc false
+  # The card as plain text, one row per line ("✓ 0.1s Read a.py"), for Copy
+  # in the side panel: something to paste into a bug report.
+  def card_text(card, root \\ nil) do
+    card.entries
+    |> Enum.reject(&(&1.kind == :step))
+    |> Enum.map(fn
+      %{kind: :text} = e ->
+        "  " <> String.replace(e.label, "\n", " ")
+
+      e ->
+        mark =
+          case row_status(e) do
+            "running" -> "…"
+            "error" -> "✕"
+            "denied" -> "⊘"
+            _ -> "✓"
+          end
+
+        [
+          mark,
+          format_duration(e[:duration_ms]),
+          e[:fact],
+          relative_paths(e[:command] || e.label, root)
+        ]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" ")
+    end)
+    |> Enum.join("\n")
+  end
 
   # Paths inside the channel's repository read relative to its root, so rows
   # never show the user's home directory; a detail the row doesn't need goes.
-  defp relative_entry(%{kind: :text} = entry, _root), do: entry
-
-  defp relative_entry(entry, root) do
-    {label, detail} =
-      path_label(relative_paths(entry.label, root), relative_paths(entry.detail, root))
-
-    %{entry | label: label, detail: if(redundant_detail?(label, detail), do: nil, else: detail)}
-  end
 
   # A changed-file row is labelled with the file's name and carries its path
   # (`payments.py — acme/billing/payments.py`); the path alone says both.
@@ -796,15 +1858,6 @@ defmodule CanopyWeb.TimelineComponents do
 
   # Entry keys carry paths; ids must stay selector-safe.
   defp dom_key(key), do: Regex.replace(~r/[^A-Za-z0-9_-]+/, key, "-")
-
-  defp chevron(assigns) do
-    ~H"""
-    <.icon
-      name="hero-chevron-down-mini"
-      class="size-4 shrink-0 opacity-60 transition-transform group-open/card:rotate-180"
-    />
-    """
-  end
 
   # -- Schedules -----------------------------------------------------------------
 
@@ -1600,6 +2653,15 @@ defmodule CanopyWeb.TimelineComponents do
   defp requester_name(%{agent_session: %{agent: %{name: name}}}, _names), do: name
   defp requester_name(_request, _names), do: "agent"
 
+  defp receipt_text(receipt) do
+    [count(receipt[:tools], "tool"), format_duration(receipt[:duration_ms])]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> "activity"
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
   defp turn_stats(p) do
     [
       count(p["tools"], "tool"),
@@ -1696,20 +2758,4 @@ defmodule CanopyWeb.TimelineComponents do
        do: "warning"
 
   defp event_tone(_), do: "muted"
-
-  defp entry_icon(%{kind: :tool, status: :running}), do: "hero-arrow-path-mini"
-  defp entry_icon(%{kind: :tool, status: :error}), do: "hero-x-circle-mini"
-  defp entry_icon(%{kind: :tool}), do: "hero-wrench-screwdriver-mini"
-  defp entry_icon(%{kind: :file}), do: "hero-pencil-square-mini"
-  defp entry_icon(%{kind: :step}), do: "hero-flag-mini"
-  defp entry_icon(%{kind: :diff}), do: "hero-document-text-mini"
-  defp entry_icon(%{kind: :text}), do: "hero-chat-bubble-bottom-center-text-mini"
-  defp entry_icon(_), do: "hero-information-circle-mini"
-
-  defp entry_class(%{kind: :tool, status: :running}), do: "animate-spin text-success"
-  defp entry_class(%{kind: :tool, status: :error}), do: "text-error"
-  defp entry_class(%{kind: :file}), do: "text-warning"
-  defp entry_class(%{kind: :text, status: :running}), do: "text-secondary"
-  defp entry_class(%{kind: :text}), do: "text-secondary/60"
-  defp entry_class(_), do: "text-base-content/40"
 end

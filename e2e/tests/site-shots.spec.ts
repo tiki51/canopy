@@ -254,9 +254,9 @@ test.describe("stills for canopy_site", () => {
     await expect(page.locator(`#telemetry-${reviewer}`)).toBeHidden({ timeout: 60_000 });
     await page.locator("#toggle-activity").click();
     // @reviewer's review; @backend's pass on the handoff-accepted note comes after it.
-    const lastTurn = page.locator('#timeline details[id^="turn-"]', { hasText: /reviewer.*finished/ }).last();
+    const lastTurn = page.locator('#timeline section[id^="turn-"]', { hasText: /reviewer.*finished/ }).last();
     await expect(lastTurn).toContainText(/finished/);
-    await lastTurn.locator("summary").click();
+    await lastTurn.locator('[id^="turn-toggle-"]').click();
     await lastTurn.scrollIntoViewIfNeeded();
     await park(page);
     // From 16px above the "ownership moved" line (never under the channel header) to 16px
@@ -356,12 +356,12 @@ test.describe("stills for canopy_site", () => {
     // -- F-3: an agent at work and one waiting, then Stop all --------------------------------------------
     await send(page, "@researcher profile `createSession` under load, and @test run the checkout suite against staging while it does.");
     // One turn runs per channel at a time: @researcher works while @test waits its turn.
-    await expect(page.locator(`#telemetry-${researcher}`)).toContainText("tools", { timeout: 30_000 });
+    await expect(page.locator(`#telemetry-${researcher}`)).toContainText(/\d+ (cmd|read|search)/, { timeout: 30_000 });
     await expect(page.locator('main [data-status="queued"]').first()).toBeVisible({ timeout: 30_000 });
     // Open the live card so the frame shows what @researcher is doing.
     const toggle = page.locator(`#telemetry-toggle-${researcher}`);
     if (await toggle.isVisible()) await toggle.click();
-    await expect(page.locator(`#telemetry-${researcher}`)).toContainText(/\d+ tools/);
+    await expect(page.locator(`#telemetry-${researcher}-rows`)).toBeVisible();
     await bottom(page);
     await page.locator("#stop-all").hover();
     await shot(page, "stop-all", pane);

@@ -9,14 +9,14 @@
 {"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}}
 {"type":"stream_event","event":{"type":"message_start","message":{"id":"step-3","usage":{"input_tokens":3}}}}
 {"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}}
-{"type":"assistant","message":{"id":"message-1","content":[{"type":"tool_use","id":"call-1","name":"Bash","input":{"command":"git status --short","description":"Check git status"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"clean","is_error":false}]}}
-{"type":"assistant","message":{"id":"message-2","content":[{"type":"tool_use","id":"call-2","name":"Glob","input":{"pattern":"calc.py"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"/workspace/repo/calc.py","is_error":false}]}}
-{"type":"assistant","message":{"id":"message-3","content":[{"type":"tool_use","id":"call-3","name":"Read","input":{"file_path":"/workspace/repo/calc.py"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-3","content":"def add(a, b): return a - b","is_error":false}]}}
-{"type":"assistant","message":{"id":"message-4","content":[{"type":"tool_use","id":"call-4","name":"Edit","input":{"file_path":"/workspace/repo/calc.py","old_string":"return a - b","new_string":"return a + b"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-4","content":"The file has been updated successfully.","is_error":false}]}}
+{"type":"assistant","message":{"id":"message-1","content":[{"type":"tool_use","id":"call-1","name":"Bash","input":{"command":"git status --short","description":"Check git status"}}]},"timestamp":"2026-09-14T20:58:10.231Z"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"clean","is_error":false}]},"timestamp":"2026-09-14T20:58:10.907Z","tool_use_result":{"stdout":"clean","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}}
+{"type":"assistant","message":{"id":"message-2","content":[{"type":"tool_use","id":"call-2","name":"Glob","input":{"pattern":"calc.py"}}]},"timestamp":"2026-09-14T20:58:12.253Z"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"/workspace/repo/calc.py","is_error":false}]},"timestamp":"2026-09-14T20:58:12.285Z","tool_use_result":{"filenames":["calc.py"],"durationMs":18,"numFiles":1,"truncated":false,"totalMatches":1,"countIsComplete":true}}
+{"type":"assistant","message":{"id":"message-3","content":[{"type":"tool_use","id":"call-3","name":"Read","input":{"file_path":"/workspace/repo/calc.py"}}]},"timestamp":"2026-09-14T20:58:13.734Z"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-3","content":"def add(a, b): return a - b","is_error":false}]},"timestamp":"2026-09-14T20:58:13.749Z","tool_use_result":{"type":"text","file":{"filePath":"/workspace/repo/calc.py","content":"def add(a, b): return a - b\n","numLines":1,"startLine":1,"totalLines":1}}}
+{"type":"assistant","message":{"id":"message-4","content":[{"type":"tool_use","id":"call-4","name":"Edit","input":{"file_path":"/workspace/repo/calc.py","old_string":"return a - b","new_string":"return a + b"}}]},"timestamp":"2026-09-14T20:58:15.527Z"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-4","content":"The file has been updated successfully.","is_error":false}]},"timestamp":"2026-09-14T20:58:15.566Z","tool_use_result":{"filePath":"/workspace/repo/calc.py","oldString":"return a - b","newString":"return a + b","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-def add(a, b): return a - b","+def add(a, b): return a + b"]}],"userModified":false,"replaceAll":false}}
 {"type":"assistant","message":{"id":"message-5","content":[{"type":"tool_use","id":"call-5","name":"ToolSearch","input":{"query":"echo"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-5","content":"found","is_error":false}]}}
 {"type":"assistant","message":{"id":"message-6","content":[{"type":"tool_use","id":"call-6","name":"mcp__spike__echo","input":{"text":"fixed"}}]}}

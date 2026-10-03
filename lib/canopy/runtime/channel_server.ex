@@ -12,7 +12,8 @@ defmodule Canopy.Runtime.ChannelServer do
       delivered on per-session topics.
 
   Outputs on the channel topic (`"channel:<id>"`):
-    * `{:telemetry, agent_id, %Canopy.Engine.Event{}}` — ephemeral tool/text activity
+    * `{:telemetry, agent_id, %Canopy.Engine.Event{}}` — ephemeral tool/text activity,
+      stamped with `at` and slimmed (`Canopy.Runtime.Activity.slim_event/1`)
     * `{:agent_status, agent_id, :idle | :queued | :busy | :awaiting_user | :error}`
     * `{:turn_thread, agent_id, thread_id | nil}` — the thread a turn that just
       started works for (nil: the channel), and nil again when it ends; also
@@ -76,8 +77,8 @@ defmodule Canopy.Runtime.ChannelServer do
   alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.QuestionRequests.QuestionRequest
   alias Canopy.Runtime.{Activity, Prompts, Router}
+  alias Canopy.Timeline.ActivityDetails
 
-  @telemetry_cap 200
   @reconcile_grace_ms 15_000
 
   # How often the turn watchdog looks for turns that have gone quiet, and how
@@ -114,7 +115,8 @@ defmodule Canopy.Runtime.ChannelServer do
     turns: %{},
     # engine_session_id => [pending prompt text]
     queues: %{},
-    # agent_id => [event] newest first
+    # agent_id => the activity card (`Canopy.Runtime.Activity`) of the turn
+    # in flight, folded as its events arrive
     telemetry: %{},
     stream_seen?: false,
     # agent turns started since the user last did something
@@ -449,7 +451,7 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_call(:stopped?, _from, state), do: {:reply, state.stopped? == true, state}
 
   def handle_call({:telemetry, agent_id}, _from, state),
-    do: {:reply, state.telemetry |> Map.get(agent_id, []) |> Enum.reverse(), state}
+    do: {:reply, Map.get(state.telemetry, agent_id) || Activity.new(), state}
 
   def handle_call(:status, _from, state) do
     # An agent with a turn in flight is busy, even with a wake waiting in line
@@ -1481,10 +1483,19 @@ defmodule Canopy.Runtime.ChannelServer do
       thread_id: thread_id,
       delegation_ids: delegation_ids,
       # documents sent along in the prompt; they stay in the session's context
-      attachments: attachments
+      attachments: attachments,
+      # the messages the agent posted during the turn (its fallback reply too)
+      message_ids: []
     }
 
-    %{state | turns: Map.put(state.turns, session.engine_session_id, turn)}
+    {model, _source} = turn_model(agent_id)
+    card = Map.put(Activity.new(System.system_time(:millisecond)), :model, model)
+
+    %{
+      state
+      | turns: Map.put(state.turns, session.engine_session_id, turn),
+        telemetry: Map.put(state.telemetry, agent_id, card)
+    }
   end
 
   # Every attachment is materialised under the repository's .canopy/files/ so
@@ -1705,13 +1716,13 @@ defmodule Canopy.Runtime.ChannelServer do
               :patch,
               :diff
             ] do
-    broadcast(state, {:telemetry, agent_id, event})
-    state = buffer(state, agent_id, event)
+    state = fold_activity(state, agent_id, event)
     update_turn(state, event.session_id, fn turn -> turn_stats(turn, event) end)
   end
 
+  # Streamed text goes to the views only; the finished part replaces it.
   defp handle_execution(%{type: :text_delta} = event, %{agent_id: agent_id}, state) do
-    broadcast(state, {:telemetry, agent_id, event})
+    broadcast(state, {:telemetry, agent_id, stamp(event)})
     state
   end
 
@@ -1720,9 +1731,8 @@ defmodule Canopy.Runtime.ChannelServer do
          %{agent_id: agent_id},
          state
        ) do
-    broadcast(state, {:telemetry, agent_id, event})
-    # kept with the tool events so the finished card shows the narration in place
-    state = buffer(state, agent_id, event)
+    # kept with the tool rows so the finished card shows the narration in place
+    state = fold_activity(state, agent_id, event)
     update_turn(state, event.session_id, fn turn -> %{turn | texts: [text | turn.texts]} end)
   end
 
@@ -1970,53 +1980,70 @@ defmodule Canopy.Runtime.ChannelServer do
           end
 
         # The summary goes in before the reply so its activity card sits above
-        # the message, where the live card was while the agent worked.
-        activity =
-          state.telemetry
-          |> Map.get(who.agent_id, [])
-          |> Enum.reverse()
-          |> Activity.fold_all()
+        # the message, where the live card was while the agent worked. The
+        # reply's id is chosen first, so the summary can name it.
+        card =
+          (Map.get(state.telemetry, who.agent_id) || Activity.new())
           |> Activity.drop_trailing_text()
-          |> Activity.to_payload()
+
+        reply_id = if reply_text(turn), do: Canopy.ID.generate("msg")
+        message_ids = Enum.reverse(Map.get(turn, :message_ids, [])) ++ List.wrap(reply_id)
 
         {model, model_source} = turn_model(who.agent_id)
         thread_id = Map.get(turn, :thread_id)
 
-        {:ok, _} =
-          Timeline.record(%{
-            channel_id: state.channel.id,
-            agent_id: who.agent_id,
-            event_type: "agent_turn_completed",
-            ref_id: session.id,
-            thread_id: thread_id,
-            in_channel: is_nil(thread_id),
-            payload: %{
-              "tools" => turn.tools,
-              "files" => MapSet.to_list(turn.files),
-              "cost" => turn.cost,
-              "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
-              "outcome" => outcome_label(outcome),
-              "model" => model,
-              "model_source" => model_source,
-              # the delegations the turn was woken for: the first, and all
-              "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
-              "delegation_ids" => Map.get(turn, :delegation_ids, []),
-              "activity" => activity,
-              "passed" => is_binary(turn.passed),
-              "note" => turn.passed,
-              "trigger" => turn.trigger,
-              "thread_id" => thread_id,
-              "attachments" => Map.get(turn, :attachments, 0),
-              "steps" => turn.steps,
-              "context" => turn.context,
-              "tokens" => turn.tokens,
-              "final_text" => if(turn.posted?, do: final_text(turn))
-            }
-          })
+        # The rows' details go in with the summary, so a view that opens a
+        # row as soon as the card arrives finds them.
+        summary_attrs = %{
+          channel_id: state.channel.id,
+          agent_id: who.agent_id,
+          event_type: "agent_turn_completed",
+          ref_id: session.id,
+          thread_id: thread_id,
+          in_channel: is_nil(thread_id),
+          payload: %{
+            "tools" => turn.tools,
+            "files" => MapSet.to_list(turn.files),
+            "cost" => turn.cost,
+            "duration_ms" => System.monotonic_time(:millisecond) - turn.started_at,
+            "outcome" => outcome_label(outcome),
+            "model" => model,
+            "model_source" => model_source,
+            # the delegations the turn was woken for: the first, and all
+            "delegation_id" => List.first(Map.get(turn, :delegation_ids, [])),
+            "delegation_ids" => Map.get(turn, :delegation_ids, []),
+            "activity" => Activity.to_payload(card),
+            "activity_meta" => Activity.meta_payload(card),
+            # what the turn posted, so a reply can link back to its activity
+            "message_ids" => message_ids,
+            "passed" => is_binary(turn.passed),
+            "note" => turn.passed,
+            "trigger" => turn.trigger,
+            "thread_id" => thread_id,
+            "attachments" => Map.get(turn, :attachments, 0),
+            "steps" => turn.steps,
+            "context" => turn.context,
+            "tokens" => turn.tokens,
+            "final_text" => if(turn.posted?, do: final_text(turn))
+          }
+        }
+
+        {:ok, %{summary: summary}} =
+          Ecto.Multi.new()
+          |> Timeline.multi_record(:summary, summary_attrs)
+          |> Ecto.Multi.run(:details, fn _repo, %{summary: summary} ->
+            case Activity.details_payload(card) do
+              details when map_size(details) == 0 -> {:ok, nil}
+              details -> ActivityDetails.put(summary.id, details)
+            end
+          end)
+          |> Canopy.Repo.transaction()
+
+        Timeline.broadcast(summary)
 
         # The final text is the reply only when the agent said nothing through
         # the tools; after a message_send it is a recap, kept on the card.
-        if is_nil(turn.passed) and not turn.posted?, do: maybe_post_reply(state, turn, who)
+        if reply_id, do: post_reply(state, turn, who, reply_id)
 
         # Whatever the turn held is free now, however it ended; a waiter that
         # gets a lock is woken through {:lock_granted, _}, after this.
@@ -2099,14 +2126,23 @@ defmodule Canopy.Runtime.ChannelServer do
   # A message the agent posted itself (post or thread reply) while its turn is
   # in flight marks that turn, so the closing text is not posted a second time.
   defp note_agent_post(
-         %Timeline.Event{event_type: "message", message: %{agent_id: agent_id, kind: kind}},
+         %Timeline.Event{
+           event_type: "message",
+           message: %{id: message_id, agent_id: agent_id, kind: kind}
+         },
          state
        )
        when is_binary(agent_id) and kind in ["post", "thread_reply"] do
     turns =
       Map.new(state.turns, fn
-        {sid, %{agent_id: ^agent_id} = turn} -> {sid, %{turn | posted?: true}}
-        other -> other
+        {sid, %{agent_id: ^agent_id} = turn} ->
+          {sid,
+           turn
+           |> Map.put(:posted?, true)
+           |> Map.update(:message_ids, [message_id], &[message_id | &1])}
+
+        other ->
+          other
       end)
 
     %{state | turns: turns}
@@ -2123,26 +2159,24 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp final_text(_turn), do: nil
 
-  # The last text part of the turn is the agent's reply; earlier parts are
-  # narration. A turn working for a thread answers in that thread.
-  defp maybe_post_reply(state, %{texts: [last | _]} = turn, who) when is_binary(last) do
-    case {String.trim(last), Map.get(turn, :thread_id)} do
-      {"", _} ->
-        nil
+  # The last text part of the turn is the agent's reply, unless it passed or
+  # already posted through the tools; earlier parts are narration.
+  defp reply_text(%{passed: nil, posted?: false} = turn), do: final_text(turn)
+  defp reply_text(_turn), do: nil
 
-      {text, nil} ->
-        {:ok, message} = Messages.post_agent_reply(state.channel.id, who.agent_id, text)
-        message.id
+  # A turn working for a thread answers in that thread.
+  defp post_reply(state, turn, who, id) do
+    text = reply_text(turn)
 
-      {text, thread_id} ->
-        {:ok, message} =
-          Messages.thread_reply(thread_id, {:agent, who.agent_id}, text, kind: "reply")
+    case Map.get(turn, :thread_id) do
+      nil ->
+        {:ok, _} = Messages.post_agent_reply(state.channel.id, who.agent_id, text, id: id)
 
-        message.id
+      thread_id ->
+        {:ok, _} =
+          Messages.thread_reply(thread_id, {:agent, who.agent_id}, text, kind: "reply", id: id)
     end
   end
-
-  defp maybe_post_reply(_state, _turn, _who), do: nil
 
   # The engine's label for the model the agent runs on, and whether that is the
   # agent's own choice, its engine's default from Settings, or the engine's pick.
@@ -2286,12 +2320,18 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp buffer(state, agent_id, event) do
-    events =
-      state.telemetry |> Map.get(agent_id, []) |> then(&[event | &1]) |> Enum.take(@telemetry_cap)
-
-    %{state | telemetry: Map.put(state.telemetry, agent_id, events)}
+  # An activity event is stamped and slimmed once, broadcast to the views,
+  # and folded into the turn's card here, so a view that mounts mid-turn gets
+  # the same card the others folded.
+  defp fold_activity(state, agent_id, event) do
+    event = event |> stamp() |> Activity.slim_event()
+    broadcast(state, {:telemetry, agent_id, event})
+    card = Map.get(state.telemetry, agent_id) || Activity.new()
+    %{state | telemetry: Map.put(state.telemetry, agent_id, Activity.fold(event, card))}
   end
+
+  defp stamp(%Event{data: data} = event),
+    do: %{event | data: Map.put(data, :at, System.system_time(:millisecond))}
 
   defp session_for(state, sid),
     do: Enum.find_value(state.sessions, fn {_, s} -> s.engine_session_id == sid && s end)

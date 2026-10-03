@@ -383,7 +383,7 @@ turn = fn channel, agent, opts ->
   steps = Map.get(opts, :steps, 2)
   context = Map.get(opts, :context, 12_000)
   tokens = Map.get(opts, :tokens, tokens_for.(steps, context))
-  activity = with_keys.(Map.get(opts, :activity, []))
+  activity = Map.get(opts, :rows) || with_keys.(Map.get(opts, :activity, []))
 
   {:ok, event} =
     Timeline.record(%{
@@ -402,6 +402,7 @@ turn = fn channel, agent, opts ->
         "model" => model_of.(agent),
         "delegation_id" => nil,
         "activity" => activity,
+        "activity_meta" => Map.get(opts, :activity_meta),
         "passed" => Map.get(opts, :passed, false),
         "note" => Map.get(opts, :note),
         "trigger" => Map.get(opts, :trigger, "user"),
@@ -412,7 +413,18 @@ turn = fn channel, agent, opts ->
       }
     })
 
+  # what opening a row shows (the runtime writes these with the summary)
+  if details = Map.get(opts, :details),
+    do: {:ok, _} = Canopy.Timeline.ActivityDetails.put(event.id, details)
+
   event
+end
+
+# The turn names a message it posted, so the message carries its receipt chip.
+link_message = fn event, message ->
+  event
+  |> Ecto.Changeset.change(payload: Map.put(event.payload, "message_ids", [message.id]))
+  |> Repo.update!()
 end
 
 # -- A billing hold, released in the guide ----------------------------------------------
@@ -997,28 +1009,132 @@ unless site? do
 
   stamp.(retries.id, ago.(64))
 
-  turn.(retries, backend, %{
-    trigger: "user",
-    steps: 5,
-    context: 26_800,
-    duration_ms: 142_000,
-    files: ["acme/billing/payments.py", "acme/billing/invoices.py", "tests/test_payments.py"],
-    activity: [
-      tool.("read", "acme/billing/invoices.py"),
-      tool.("edit", "acme/billing/invoices.py"),
-      file.("acme/billing/invoices.py"),
-      tool.("edit", "acme/billing/payments.py"),
-      file.("acme/billing/payments.py"),
-      tool.("edit", "tests/test_payments.py"),
-      file.("tests/test_payments.py"),
-      tool.("bash", "pytest tests/test_payments.py -q"),
-      tool.("canopy_message_send", nil),
-      tool.("canopy_handoff_task", nil)
-    ],
-    final_text: "Fix and test in the working tree; handed to @reviewer."
-  })
+  # The activity card's showcase (user guide): steps, a failed run with its
+  # output, line counts, and the files it changed.
+  failing_run = """
+  ..............F
+  =================================== FAILURES ===================================
+  ______________________ test_concurrent_retries_charge_once _____________________
+      def test_concurrent_retries_charge_once(open_invoice, slow_gateway):
+  >       assert open_invoice.charges == 1
+  E       assert 2 == 1
+  tests/test_payments.py:61: AssertionError
+  1 failed, 14 passed in 2.3s\
+  """
 
-  {:ok, _} =
+  row = fn key, step, category, label, extra ->
+    Map.merge(
+      %{
+        "key" => key,
+        "kind" => "tool",
+        "status" => "ok",
+        "step" => step,
+        "category" => category,
+        "label" => label
+      },
+      extra
+    )
+  end
+
+  fix_turn =
+    turn.(retries, backend, %{
+      trigger: "user",
+      steps: 3,
+      context: 26_800,
+      duration_ms: 142_000,
+      files: ["acme/billing/payments.py", "acme/billing/invoices.py", "tests/test_payments.py"],
+      rows: [
+        %{
+          "key" => "n1",
+          "kind" => "text",
+          "status" => "ok",
+          "step" => 0,
+          "category" => "note",
+          "label" => "Adding `claim_charge` first, then the guard in `enqueue_charge`."
+        },
+        row.("r1", 0, "read", "acme/billing/invoices.py", %{"duration_ms" => 100}),
+        row.("e1", 0, "edit", "acme/billing/invoices.py", %{
+          "duration_ms" => 200,
+          "adds" => 14,
+          "dels" => 0,
+          "fact" => "+14 −0",
+          "changed" => true
+        }),
+        row.("e2", 1, "edit", "acme/billing/payments.py", %{
+          "duration_ms" => 200,
+          "adds" => 9,
+          "dels" => 2,
+          "fact" => "+9 −2",
+          "changed" => true
+        }),
+        row.("e3", 1, "edit", "tests/test_payments.py", %{
+          "duration_ms" => 100,
+          "adds" => 7,
+          "dels" => 0,
+          "fact" => "+7 −0",
+          "changed" => true
+        }),
+        row.("b1", 1, "shell", "pytest tests/test_payments.py -q", %{
+          "status" => "error",
+          "command" => "pytest tests/test_payments.py -q",
+          "duration_ms" => 2_300,
+          "exit_code" => 1,
+          "fact" => "exit 1"
+        }),
+        %{
+          "key" => "n2",
+          "kind" => "text",
+          "status" => "ok",
+          "step" => 2,
+          "category" => "note",
+          "label" => "The claim was released before the charge returned; moving it into `finally`."
+        },
+        row.("e4", 2, "edit", "acme/billing/payments.py", %{
+          "duration_ms" => 200,
+          "adds" => 3,
+          "dels" => 3,
+          "fact" => "+3 −3"
+        }),
+        row.("b2", 2, "shell", "pytest tests/test_payments.py -q", %{
+          "command" => "pytest tests/test_payments.py -q",
+          "duration_ms" => 2_100,
+          "exit_code" => 0,
+          "fact" => "exit 0"
+        }),
+        row.("m1", 2, "canopy", "canopy message_send", %{"duration_ms" => 100}),
+        row.("h1", 2, "canopy", "canopy handoff_task", %{"duration_ms" => 100})
+      ],
+      activity_meta: %{
+        "v" => 2,
+        "tallies" => %{"read" => 1, "edit" => 4, "shell" => 2, "canopy" => 2, "errors" => 1},
+        "dropped" => 0,
+        "steps" => [4_100, 9_800, 12_900],
+        "files" => [
+          %{"path" => "acme/billing/invoices.py", "adds" => 14, "dels" => 0},
+          %{"path" => "acme/billing/payments.py", "adds" => 12, "dels" => 5},
+          %{"path" => "tests/test_payments.py", "adds" => 7, "dels" => 0}
+        ]
+      },
+      details: %{
+        "b1" => %{
+          "input" => "pytest tests/test_payments.py -q",
+          "output" => failing_run,
+          "output_lines" => 9
+        },
+        "b2" => %{
+          "input" => "pytest tests/test_payments.py -q",
+          "output" => "...............\n15 passed in 2.1s",
+          "output_lines" => 2
+        },
+        "e2" => %{
+          "patch" =>
+            "--- acme/billing/payments.py\n+++ acme/billing/payments.py\n@@ -18,2 +18,9 @@\n-    gateway.charge(invoice.customer_id, invoice.amount_cents)\n-    invoices.mark_paid(invoice_id)\n+    if not invoices.claim_charge(invoice_id):\n+        return\n+    try:\n+        gateway.charge(invoice.customer_id, invoice.amount_cents)\n+        invoices.mark_paid(invoice_id)\n+    finally:\n+        invoices.release_claim(invoice_id)"
+        }
+      },
+      final_text: "Fix and test in the working tree; handed to @reviewer."
+    })
+
+  {:ok, done} =
     Messages.post_agent_message(
       retries.id,
       backend.id,
@@ -1038,6 +1154,7 @@ unless site? do
       """
     )
 
+  link_message.(fix_turn, done)
   stamp.(retries.id, ago.(61))
 
   {:ok, handoff} =

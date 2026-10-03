@@ -15,7 +15,10 @@ defmodule Canopy.Engine.Event do
     * `:message_updated`   data: `%{message: map}`
     * `:turn_usage`        data: `%{message_id, cost, tokens, finish}` (assistant message completed)
     * `:tool_started`      data: `%{call_id, tool, status, input, title, message_id, part_id}`
-    * `:tool_completed`    data: `%{call_id, tool, status: :ok | :error, input, title, output, error, metadata, time, message_id, part_id}`
+    * `:tool_completed`    data: `%{call_id, tool, status: :ok | :error, input, title, output, error, metadata, time, message_id, part_id}`,
+      plus, when the engine reports them: `exit_code`, `stdout`, `stderr`,
+      `truncated`, `interrupted`, `patch` (unified diff text), `adds`, `dels`,
+      `matches`, `denied` (the call was refused, not run)
     * `:text_done`         data: `%{message_id, part_id, text}`
     * `:part_delta`        data: `%{message_id, part_id, field, delta}` (resolved to `:text_delta` by the stream)
     * `:text_delta`        data: `%{message_id, part_id, delta}`
@@ -30,6 +33,11 @@ defmodule Canopy.Engine.Event do
     * `:question_resolved` data: `%{request_id, answers}`
     * `:question_rejected` data: `%{request_id}`
     * `:question_expired`  data: `%{request_id}` (the engine stopped waiting; the agent moved on)
+
+  `time` on tool events is `%{"start" => ms, "end" => ms}` (wall clock), as
+  far as the engine knows it. The channel runtime stamps `at` (wall-clock ms)
+  on every activity event before it broadcasts it, so durations have a
+  fallback whatever the engine sends.
 
   `session_id` is the engine's own session id (`agent_sessions.engine_session_id`);
   `raw_type` names the wire event it came from, for debugging only.

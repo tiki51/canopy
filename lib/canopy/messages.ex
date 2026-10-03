@@ -36,6 +36,8 @@ defmodule Canopy.Messages do
       with attachments the body may be blank
     * `:mentions` — override the mentions extracted from the body (with
       `:team_mentions`, default none)
+    * `:id` — the message's id, chosen ahead (a turn names its reply on its
+      summary before posting it)
   """
   def post_user_message(channel_id, user_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "post"}, opts)
@@ -507,7 +509,9 @@ defmodule Canopy.Messages do
       Multi.new()
       |> Multi.insert(
         :message,
-        Message.changeset(%Message{}, attrs, attachments: document_ids != [])
+        Message.changeset(%Message{id: Keyword.get(opts, :id)}, attrs,
+          attachments: document_ids != []
+        )
       )
       |> Multi.run(:attachments, fn repo, %{message: message} ->
         document_ids

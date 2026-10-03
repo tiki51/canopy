@@ -97,7 +97,7 @@ test.describe("recording for canopy_site", () => {
     await expect(page.locator("#timeline")).toContainText("enqueue-paths.md", { timeout: 60_000 });
     await expect(card).toContainText("is researching", { timeout: 60_000 });
     const researching = now();
-    if (!(await card.evaluate((el) => (el as HTMLDetailsElement).open))) {
+    if ((await card.getAttribute("data-open")) !== "true") {
       await page.locator(`#telemetry-toggle-${backend}`).click();
       await park(page);
     }

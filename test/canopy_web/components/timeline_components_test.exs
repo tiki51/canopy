@@ -18,6 +18,23 @@ defmodule CanopyWeb.TimelineComponentsTest do
     """)
   end
 
+  defp render_turn(event, opts \\ []) do
+    assigns = %{event: event, root: opts[:root], activity: opts[:activity] || %{}}
+
+    rendered_to_string(~H"""
+    <TimelineComponents.timeline_item
+      id="e"
+      event={@event}
+      names={%{"agt_1" => "backend"}}
+      user_name="Priya"
+      root={@root}
+      activity={@activity}
+    />
+    """)
+  end
+
+  defp text_of(doc, selector), do: doc |> LazyHTML.query(selector) |> LazyHTML.text()
+
   test "avatar initials switch to navy where white would fail contrast" do
     assert TimelineComponents.initial_color("#1e40af") == "white"
     assert TimelineComponents.initial_color("#7c3aed") == "white"
@@ -234,11 +251,12 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert TimelineComponents.relative_paths("#{root}/a.py", nil) == "#{root}/a.py"
   end
 
-  test "the activity list hides step rows and drops a detail that repeats the title" do
+  test "a first-version card hides step rows and drops a detail that repeats the title" do
     root = "/Users/me/tmp/acme-billing"
 
     event = %{
       id: "evt_1",
+      channel_id: "chn_1",
       event_type: "agent_turn_completed",
       agent_id: "agt_1",
       inserted_at: ~U[2026-09-29 10:00:00Z],
@@ -273,27 +291,23 @@ defmodule CanopyWeb.TimelineComponentsTest do
       }
     }
 
-    assigns = %{event: event, root: root}
+    html = render_turn(event, root: root, activity: %{open?: true})
+    doc = LazyHTML.from_fragment(html)
 
-    html =
-      rendered_to_string(~H"""
-      <TimelineComponents.timeline_item
-        id="e1"
-        event={@event}
-        names={%{"agt_1" => "backend"}}
-        user_name="Priya"
-        root={@root}
-      />
-      """)
+    assert text_of(doc, "#turn-evt_1-t1") =~ "Read acme/billing/payments.py"
+    refute text_of(doc, "#turn-evt_1-t1") =~ "— acme/billing/payments.py"
+    # a file row labelled with the file's name shows its path instead
+    assert text_of(doc, "#turn-evt_1-file--Users-me-tmp-acme-billing-acme-billing-payments-py") =~
+             "acme/billing/payments.py"
 
-    assert html =~ "Read acme/billing/payments.py"
-    assert html =~ ~s(<span class="text-base-content">acme/billing/payments.py</span>)
-    refute html =~ "/Users/me"
-    refute html =~ "— acme/billing/payments.py"
-    refute html =~ ">payments.py<"
-    assert html =~ "— pytest tests"
+    assert text_of(doc, "#turn-evt_1-t2") =~ "Run tests — pytest tests"
+    # (the row key, a path, still names the row for the toggle event)
+    refute LazyHTML.text(doc) =~ "/Users/me"
     refute html =~ "step tool_use"
     refute html =~ "218 tokens"
+    # first-version rows know no durations, and there are no step dividers
+    assert LazyHTML.query(doc, "[data-step-divider]") |> Enum.count() == 0
+    refute text_of(doc, "#turn-evt_1-t2") =~ ~r/\d+\.\ds/
   end
 
   test "a detail the row doesn't need is dropped" do
@@ -327,11 +341,12 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert TimelineComponents.path_label("patch", nil) == {"patch", nil}
   end
 
-  test "the receipt leaves the closing note out of its activity list" do
+  test "a finished card keeps its narration and shows the closing note when open" do
     note = "Reviewed the diff. Approving with two small notes."
 
     event = %{
       id: "evt_2",
+      channel_id: "chn_1",
       event_type: "agent_turn_completed",
       agent_id: "agt_1",
       inserted_at: ~U[2026-09-29 10:00:00Z],
@@ -341,29 +356,219 @@ defmodule CanopyWeb.TimelineComponentsTest do
         "activity" => [
           %{"key" => "text-1", "kind" => "text", "label" => "Reading the diff first."},
           %{"key" => "t1", "kind" => "tool", "label" => "canopy message_send", "detail" => note},
-          %{"key" => "text-2", "kind" => "text", "label" => note},
           %{"key" => "step-1", "kind" => "step", "label" => "step end_turn"}
         ]
       }
     }
 
-    assigns = %{event: event}
+    closed = render_turn(event)
+    assert closed =~ ~s(id="turn-toggle-evt_2")
+    assert closed =~ ~s(aria-expanded="false")
+    refute closed =~ "Reading the diff first."
+    refute closed =~ "Closing note"
+
+    html = render_turn(event, activity: %{open?: true})
+    assert html =~ "Reading the diff first."
+    assert html =~ "canopy message_send"
+    refute html =~ "— #{note}"
+    assert html =~ ~s(id="turn-evt_2-note")
+    assert html =~ "Closing note"
+  end
+
+  test "a finished turn with nothing recorded is still a plain line" do
+    event = %{
+      id: "evt_3",
+      channel_id: "chn_1",
+      event_type: "agent_turn_completed",
+      agent_id: "agt_1",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      payload: %{"outcome" => "ok", "tools" => 0, "activity" => []}
+    }
+
+    html = render_turn(event)
+    assert html =~ ~s(id="line-evt_3")
+    refute html =~ ~s(id="turn-evt_3")
+  end
+
+  test "rows show their category, status, duration and exit code; steps get dividers" do
+    root = "/r"
+
+    activity = [
+      %{
+        "key" => "text-a",
+        "kind" => "text",
+        "category" => "note",
+        "step" => 0,
+        "label" => "Testing."
+      },
+      %{
+        "key" => "c1",
+        "kind" => "tool",
+        "status" => "error",
+        "category" => "shell",
+        "step" => 0,
+        "label" => "mix test test/billing",
+        "command" => "cd /r && mix test test/billing",
+        "duration_ms" => 38_400,
+        "exit_code" => 1,
+        "fact" => "exit 1"
+      },
+      %{
+        "key" => "c2",
+        "kind" => "tool",
+        "status" => "ok",
+        "category" => "edit",
+        "step" => 1,
+        "label" => "/r/acme/payments.py",
+        "path" => "/r/acme/payments.py",
+        "duration_ms" => 200,
+        "adds" => 12,
+        "dels" => 3,
+        "fact" => "+12 −3"
+      },
+      %{
+        "key" => "c3",
+        "kind" => "tool",
+        "status" => "error",
+        "category" => "shell",
+        "step" => 1,
+        "label" => "rm -rf build",
+        "denied" => true
+      }
+    ]
+
+    event = %{
+      id: "evt_4",
+      channel_id: "chn_1",
+      event_type: "agent_turn_completed",
+      agent_id: "agt_1",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      payload: %{
+        "outcome" => "ok",
+        "tools" => 3,
+        "activity" => activity,
+        "activity_meta" => %{
+          "v" => 2,
+          "tallies" => %{"shell" => 2, "edit" => 1, "errors" => 2},
+          "dropped" => 0,
+          "steps" => [900, 2_100],
+          "files" => [%{"path" => "/r/acme/payments.py", "adds" => 12, "dels" => 3}]
+        }
+      }
+    }
+
+    html = render_turn(event, root: root, activity: %{open?: true})
+    doc = LazyHTML.from_fragment(html)
+
+    assert [row] = LazyHTML.query(doc, "#turn-evt_4-c1") |> Enum.to_list()
+    assert LazyHTML.attribute(row, "data-category") == ["shell"]
+    assert LazyHTML.attribute(row, "data-status") == ["error"]
+    assert text_of(doc, "#turn-evt_4-c1") =~ "exit 1"
+    assert text_of(doc, "#turn-evt_4-c1") =~ "38.4s"
+    assert html =~ ~s(bg-error/5)
+    assert text_of(doc, "#turn-evt_4-c1-toggle") =~ "mix test test/billing"
+
+    assert LazyHTML.attribute(LazyHTML.query(doc, "#turn-evt_4-c3"), "data-status") == ["denied"]
+    assert text_of(doc, "#turn-evt_4-c2") =~ "acme/payments.py"
+    assert text_of(doc, "#turn-evt_4-c2") =~ "+12 −3"
+
+    # two steps: a divider each, with its tokens
+    assert LazyHTML.query(doc, "[data-step-divider]") |> Enum.count() == 2
+    assert html =~ "2.1k tok"
+
+    # the changed file is a chip with its counts that opens Changes on it
+    assert [chip] =
+             LazyHTML.query(doc, "#turn-evt_4-files button[phx-value-path]") |> Enum.to_list()
+
+    assert LazyHTML.attribute(chip, "phx-value-path") == ["acme/payments.py"]
+    assert LazyHTML.text(chip) =~ "+12"
+
+    # the filter chips count from the tallies
+    assert text_of(doc, "#turn-evt_4-filter-errors") =~ "2"
+    assert text_of(doc, "#turn-evt_4-filter-shell") =~ "2"
+
+    # the header quotes the first failure
+    assert text_of(doc, "#turn-evt_4-first-error") =~ "exit 1: mix test test/billing"
+
+    # an opened row shows its detail; a turn from before details were kept says so
+    open =
+      render_turn(event,
+        root: root,
+        activity: %{
+          open?: true,
+          open_rows: MapSet.new(["c1"]),
+          details: %{
+            "c1" => %{
+              "input" => "cd /r && mix test",
+              "output" => "1 failure",
+              "output_lines" => 1
+            }
+          }
+        }
+      )
+
+    assert open =~ ~s(id="turn-evt_4-c1-detail")
+    assert open =~ "1 failure"
+    assert open =~ ~s(id="turn-evt_4-c1-command-text")
+
+    old =
+      render_turn(event,
+        activity: %{open?: true, open_rows: MapSet.new(["c1"]), details: :not_recorded}
+      )
+
+    assert old =~ ~s(id="turn-evt_4-c1-detail")
+    assert old =~ "recorded for turns before"
+  end
+
+  test "a long card starts with its earlier steps collapsed" do
+    entries =
+      for step <- 0..3, i <- 1..50 do
+        %{key: "c#{step}-#{i}", kind: :tool, status: :ok, label: "x", step: step}
+      end
+
+    card = %{Canopy.Runtime.Activity.new() | entries: entries}
+    items = TimelineComponents.activity_items(card)
+    rows = Enum.filter(items, &(&1.type == :row))
+
+    # 200 rows in four steps: whole steps collapse while at least 120 rows stay shown
+    assert Enum.count(rows, & &1.early?) == 50
+    assert Enum.count(items, &(&1.type == :divider)) == 4
+    refute List.last(rows).early?
+
+    short = %{card | entries: Enum.take(entries, 100)}
+    refute Enum.any?(TimelineComponents.activity_items(short), & &1.early?)
+  end
+
+  test "an agent's message carries the receipt of the turn that posted it" do
+    message = %{
+      id: "msg_1",
+      channel_id: "chn_1",
+      agent_id: "agt_1",
+      agent: %{name: "backend", color: nil},
+      user: nil,
+      kind: "post",
+      body: "Fixed.",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      sent_to_channel: false,
+      thread_id: nil,
+      documents: []
+    }
+
+    assigns = %{message: message}
 
     html =
       rendered_to_string(~H"""
-      <TimelineComponents.timeline_item
-        id="e2"
-        event={@event}
-        names={%{"agt_1" => "backend"}}
+      <TimelineComponents.message_item
+        message={@message}
+        names={%{}}
         user_name="Priya"
+        receipt={%{event_id: "evt_9", tools: 14, duration_ms: 185_000}}
       />
       """)
 
-    assert html =~ "Reading the diff first."
-    assert html =~ "canopy message_send"
-    refute html =~ ~s(id="turn-evt_2-text-2")
-    refute html =~ "— #{note}"
-    assert html =~ "Closing note"
+    assert html =~ ~s(id="message-receipt-msg_1")
+    assert html =~ "activity=evt_9"
+    assert html =~ "14 tools · 3m 5s"
   end
 
   test "diffs tint added and removed lines" do

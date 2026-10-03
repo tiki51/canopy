@@ -26,6 +26,13 @@ defmodule Canopy.OpenCode.EventsTest do
     assert Enum.all?(completed, &(&1.status == :ok))
     bash = Enum.find(completed, &(&1.tool == "bash"))
     assert bash.title == "ls -la"
+    # bash's exit code and the patch's line counts come from the metadata
+    assert bash.exit_code == 0
+    refute Map.has_key?(bash, :truncated)
+    assert %{"start" => _, "end" => _} = bash.time
+    patch = Enum.find(completed, &(&1.tool == "apply_patch"))
+    assert patch.adds == 1 and patch.dels == 0
+    assert patch.patch =~ "+spike: hello"
     assert bash.input["command"] == "ls -la"
     assert bash.output =~ "README.md"
 
@@ -172,5 +179,59 @@ defmodule Canopy.OpenCode.EventsTest do
 
     normalized = Enum.flat_map(events, &List.wrap(Events.normalize(&1)))
     assert [%{type: :tool_completed, data: %{tool: "spike_spike_image"}}] = normalized
+  end
+
+  test "a failed or rejected call carries its exit code, truncation, and refusal" do
+    part = fn state ->
+      %{
+        "type" => "message.part.updated",
+        "properties" => %{
+          "part" => %{
+            "id" => "prt_1",
+            "sessionID" => "ses_1",
+            "messageID" => "msg_1",
+            "type" => "tool",
+            "callID" => "call_1",
+            "tool" => "bash",
+            "state" => state
+          }
+        }
+      }
+    end
+
+    [%Event{type: :tool_completed, data: failed}] =
+      Events.normalize(
+        part.(%{
+          "status" => "completed",
+          "input" => %{"command" => "mix test"},
+          "output" => "1 failure",
+          "metadata" => %{"output" => "1 failure", "exit" => 1, "truncated" => true},
+          "time" => %{"start" => 1, "end" => 2}
+        })
+      )
+
+    assert failed.exit_code == 1 and failed.truncated == true
+
+    [%Event{type: :tool_completed, data: rejected}] =
+      Events.normalize(
+        part.(%{
+          "status" => "error",
+          "input" => %{},
+          "error" => "The user rejected permission to use this specific tool call."
+        })
+      )
+
+    assert rejected.status == :error and rejected.denied == true
+
+    [%Event{type: :tool_completed, data: edit}] =
+      Events.normalize(
+        part.(%{
+          "status" => "completed",
+          "input" => %{},
+          "metadata" => %{"diff" => "--- a\n+++ a\n@@\n-x\n+y\n+z"}
+        })
+      )
+
+    assert edit.adds == 2 and edit.dels == 1
   end
 end

@@ -7,7 +7,18 @@ defmodule CanopyWeb.ChannelLive do
   with `&reply=<id>` to point at one reply): its own stream, its own composer,
   and the live card and cards of an agent working for it. The feed shows only
   a thread's root and its summary row. The side panel is one slot shared by
-  every panel kind; only one is open at a time.
+  every panel kind; only one is open at a time. The other kind is an
+  agent's activity (`?activity=<turn event id>`, or `?activity=live:<agent
+  id>` for a turn still running, which moves to the finished turn's id when
+  it ends). A URL naming both opens the thread.
+
+  Activity cards (the live card of a working agent, a finished turn's card)
+  render only their header until opened. What is open lives here: `act`
+  holds the open live cards (by agent), the open finished cards (by event),
+  the open rows (`{card id, row key}`), the details loaded for finished
+  cards, and whether this browser opens live cards by itself. A live card
+  that was open when its turn ends arrives open as the finished card.
+  Finished cards are stream items, so a change to one re-inserts it.
 
   The process subscribes to the channel topic *before* loading the feed so no
   event can slip between the query and the subscription. Live navigation between
@@ -44,6 +55,7 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Engine.Event
   alias Canopy.Playbooks.{Run, Runs}
   alias Canopy.Runtime.{Activity, Commands}
+  alias Canopy.Timeline.ActivityDetails
   alias CanopyWeb.{Nav, PlaybookComponents, PlaybookStart}
   alias Canopy.Tasks.Task
 
@@ -51,6 +63,8 @@ defmodule CanopyWeb.ChannelLive do
   @thread_page 200
   @archived_answer "This channel is archived. Unarchive (Reopen) the channel to answer."
   @branch_interval 15_000
+  # streamed text renders at most this often (ms); tool events render at once
+  @text_flush_ms 100
 
   # -- Lifecycle ---------------------------------------------------------------
 
@@ -73,6 +87,9 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:thread_picked, [])
      |> assign(:library, nil)
      |> assign(:thread, nil)
+     |> assign(:activity, nil)
+     |> assign(:act, new_act(false))
+     |> assign(:pending_text, %{})
      |> allow_upload(:files,
        accept: :any,
        max_entries: Messages.max_attachments(),
@@ -99,7 +116,68 @@ defmodule CanopyWeb.ChannelLive do
         _ -> load_channel(socket, id)
       end
 
-    {:noreply, socket |> attach_from_params(params) |> thread_from_params(params)}
+    {:noreply, socket |> attach_from_params(params) |> panel_from_params(params)}
+  end
+
+  # The side panel shows one thing: a thread, or an agent's activity.
+  defp panel_from_params(socket, %{"activity" => target} = params)
+       when not is_map_key(params, "thread") do
+    socket |> close_thread() |> open_activity(target)
+  end
+
+  defp panel_from_params(socket, params),
+    do: socket |> close_activity() |> thread_from_params(params)
+
+  # `?activity=live:<agent>` shows a running turn; once the agent is no
+  # longer working (a reload after it finished), its latest turn instead.
+  defp open_activity(socket, "live:" <> agent_id) do
+    cond do
+      Map.has_key?(socket.assigns.telemetry, agent_id) ->
+        socket |> close_activity() |> assign(:activity, %{kind: :live, agent_id: agent_id})
+
+      turn = Timeline.last_turn(cid(socket), agent_id) ->
+        push_patch(socket, to: activity_path(cid(socket), turn.id), replace: true)
+
+      true ->
+        socket
+        |> close_activity()
+        |> put_flash(:error, "That agent has no activity in this channel.")
+    end
+  end
+
+  defp open_activity(socket, event_id) do
+    case Timeline.get(event_id) do
+      %{event_type: "agent_turn_completed", channel_id: channel_id} = event
+      when channel_id == socket.assigns.channel.id ->
+        socket
+        |> close_activity()
+        |> assign(:activity, %{kind: :turn, event: event})
+        |> refresh_turn(event)
+
+      _ ->
+        socket
+        |> close_activity()
+        |> put_flash(:error, "That activity is not in this channel.")
+    end
+  end
+
+  defp close_activity(%{assigns: %{activity: %{kind: :turn, event: event}}} = socket),
+    do: socket |> assign(:activity, nil) |> refresh_turn(event)
+
+  defp close_activity(socket), do: assign(socket, :activity, nil)
+
+  @doc false
+  def activity_path(channel_id, target), do: ~p"/channels/#{channel_id}?#{[activity: target]}"
+
+  # What is open on the activity cards; reset with the channel.
+  defp new_act(auto_open?) do
+    %{
+      open_live: MapSet.new(),
+      open_turns: MapSet.new(),
+      open_rows: MapSet.new(),
+      details: %{},
+      auto_open?: auto_open?
+    }
   end
 
   # `/channels/:id?attach=doc_…` arrives from the Files page's "Share to":
@@ -161,6 +239,7 @@ defmodule CanopyWeb.ChannelLive do
       # the messages the panel has rendered: only those are re-rendered in place
       loaded: message_ids(events)
     })
+    |> assign(:receipts, Map.merge(socket.assigns.receipts, receipts(events)))
     |> stream(:thread, events, reset: true)
     |> then(fn socket ->
       if previous == root.id,
@@ -230,8 +309,15 @@ defmodule CanopyWeb.ChannelLive do
     telemetry =
       for {agent_id, status} when status in [:busy, :awaiting_user] <- agent_statuses,
           into: %{} do
-        {agent_id, Activity.fold_all(Runtime.telemetry(id, agent_id))}
+        {agent_id, Runtime.telemetry(id, agent_id)}
       end
+
+    auto_open? = socket.assigns.act.auto_open?
+
+    act =
+      if auto_open?,
+        do: %{new_act(true) | open_live: MapSet.new(Map.keys(telemetry))},
+        else: new_act(false)
 
     socket
     |> assign(:page_title, channel_title(channel))
@@ -245,6 +331,11 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:paused?, Runtime.paused?(id))
     |> assign(:stopped?, Runtime.stopped?(id))
     |> assign(:telemetry, telemetry)
+    |> assign(:act, act)
+    |> assign(:pending_text, %{})
+    |> assign(:activity, nil)
+    |> assign(:receipts, receipts(events))
+    |> assign(:turn_ids, turn_ids(events))
     |> assign(:turn_threads, Runtime.turn_threads(id))
     |> assign(:message_ids, message_ids(events))
     |> assign(:summaries, Messages.thread_summaries(root_ids(events)))
@@ -344,6 +435,27 @@ defmodule CanopyWeb.ChannelLive do
   defp root_ids(events) do
     for %{event_type: "message", message: %{id: id, thread_id: nil}} <- events, do: id
   end
+
+  # The finished turns the feed holds, so a change to one re-renders it in
+  # place (and a turn outside the loaded page is never appended).
+  defp turn_ids(events) do
+    for %{event_type: "agent_turn_completed", id: id, in_channel: true} <- events,
+        into: MapSet.new(),
+        do: id
+  end
+
+  # message id => the turn that posted it, for the receipt chip on the message.
+  defp receipts(events) do
+    for %{event_type: "agent_turn_completed", payload: payload} = event <- events,
+        message_id <- List.wrap(payload["message_ids"]),
+        is_binary(message_id),
+        into: %{} do
+      {message_id, receipt(event)}
+    end
+  end
+
+  defp receipt(%{id: id, payload: payload}),
+    do: %{event_id: id, tools: payload["tools"], duration_ms: payload["duration_ms"]}
 
   # The followed threads with unread replies, from the map CanopyWeb.Nav keeps
   # current (`Nav.refresh_unread/1`), so the dots cost no query of their own.
@@ -527,7 +639,13 @@ defmodule CanopyWeb.ChannelLive do
   def handle_info({:timeline, %Timeline.Event{channel_id: cid} = event}, socket)
       when cid == socket.assigns.channel.id do
     if event.event_type == "message", do: Unread.mark_read(cid, socket.assigns.user)
-    {:noreply, socket |> insert_event(event) |> thread_event(event) |> react_to(event)}
+
+    {:noreply,
+     socket
+     |> turn_finished(event)
+     |> insert_event(event)
+     |> thread_event(event)
+     |> react_to(event)}
   end
 
   # A reply arrived: CanopyWeb.Nav has refreshed the unread map by now (its
@@ -570,32 +688,49 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   # Activity means the agent is working, unless it is blocked on a card: only
-  # the runtime's own status change ends that.
-  def handle_info({:telemetry, agent_id, %Event{} = event}, socket) do
-    card = Activity.fold(event, Map.get(socket.assigns.telemetry, agent_id, Activity.new()))
+  # the runtime's own status change ends that. Streamed text is held and
+  # folded at most every #{@text_flush_ms} ms (one render per batch, not per
+  # token); any other event folds the held text first, keeping the order.
+  def handle_info({:telemetry, agent_id, %Event{type: :text_delta} = event}, socket) do
+    pending = socket.assigns.pending_text
 
-    statuses =
-      Map.update(socket.assigns.agent_statuses, agent_id, :busy, fn
-        :awaiting_user -> :awaiting_user
-        _ -> :busy
-      end)
+    unless Map.has_key?(pending, agent_id),
+      do: Process.send_after(self(), {:flush_text, agent_id}, @text_flush_ms)
 
     {:noreply,
      socket
-     |> assign(:telemetry, Map.put(socket.assigns.telemetry, agent_id, card))
-     |> assign(:agent_statuses, statuses)}
+     |> assign(:pending_text, Map.update(pending, agent_id, [event], &[event | &1]))
+     |> mark_working(agent_id)}
   end
 
+  def handle_info({:telemetry, agent_id, %Event{} = event}, socket) do
+    socket = flush_text(socket, agent_id)
+    card = Activity.fold(event, live_card(socket, agent_id))
+    {:noreply, socket |> put_live(agent_id, card) |> mark_working(agent_id)}
+  end
+
+  def handle_info({:flush_text, agent_id}, socket), do: {:noreply, flush_text(socket, agent_id)}
+
   def handle_info({:agent_status, agent_id, status}, socket) do
-    telemetry =
-      if status in [:busy, :awaiting_user],
-        do: socket.assigns.telemetry,
-        else: Map.delete(socket.assigns.telemetry, agent_id)
+    socket =
+      if status in [:busy, :awaiting_user] do
+        socket
+      else
+        card_id = "telemetry-" <> agent_id
+        act = socket.assigns.act
+
+        socket
+        |> assign(:telemetry, Map.delete(socket.assigns.telemetry, agent_id))
+        |> assign(:pending_text, Map.delete(socket.assigns.pending_text, agent_id))
+        |> assign(:act, %{
+          act
+          | open_live: MapSet.delete(act.open_live, agent_id),
+            open_rows: drop_rows(act.open_rows, card_id)
+        })
+      end
 
     {:noreply,
-     socket
-     |> assign(:agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, status))
-     |> assign(:telemetry, telemetry)}
+     assign(socket, :agent_statuses, Map.put(socket.assigns.agent_statuses, agent_id, status))}
   end
 
   # A document was deleted somewhere: redraw the messages that carried it.
@@ -676,8 +811,148 @@ defmodule CanopyWeb.ChannelLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  defp mark_working(socket, agent_id) do
+    statuses =
+      Map.update(socket.assigns.agent_statuses, agent_id, :busy, fn
+        :awaiting_user -> :awaiting_user
+        _ -> :busy
+      end)
+
+    assign(socket, :agent_statuses, statuses)
+  end
+
+  # The agent's live card, or a fresh one for a turn this view has not seen
+  # yet (opened at once when this browser opens live cards by itself).
+  defp live_card(socket, agent_id) do
+    case Map.get(socket.assigns.telemetry, agent_id) do
+      nil -> Map.put(Activity.new(), :model, Runtime.model_label(agent_id))
+      card -> card
+    end
+  end
+
+  defp flush_text(socket, agent_id) do
+    case Map.pop(socket.assigns.pending_text, agent_id) do
+      {nil, _} ->
+        socket
+
+      {events, pending} ->
+        card =
+          events |> Enum.reverse() |> Enum.reduce(live_card(socket, agent_id), &Activity.fold/2)
+
+        socket |> assign(:pending_text, pending) |> put_live(agent_id, card)
+    end
+  end
+
+  # A card this view had not shown yet opens at once when this browser opens
+  # live cards by itself; after that it stays as the reader left it.
+  defp put_live(socket, agent_id, card) do
+    %{telemetry: telemetry, act: act} = socket.assigns
+
+    socket = assign(socket, :telemetry, Map.put(telemetry, agent_id, card))
+
+    if act.auto_open? and not Map.has_key?(telemetry, agent_id),
+      do: assign(socket, :act, %{act | open_live: MapSet.put(act.open_live, agent_id)}),
+      else: socket
+  end
+
+  defp drop_rows(rows, card_id), do: MapSet.reject(rows, &match?({^card_id, _}, &1))
+
+  # A turn just ended. Its card arrives open when the live card was open
+  # (with its open rows, and the details the live card already holds); the
+  # messages it posted gain their receipt chip; a side panel following the
+  # live turn moves to the finished one.
+  defp turn_finished(socket, %{event_type: "agent_turn_completed", agent_id: agent_id} = event)
+       when is_binary(agent_id) do
+    socket
+    |> carry_over(event)
+    |> add_receipts(event)
+    |> then(fn socket ->
+      case socket.assigns.activity do
+        %{kind: :live, agent_id: ^agent_id} ->
+          push_patch(socket, to: activity_path(cid(socket), event.id), replace: true)
+
+        _ ->
+          socket
+      end
+    end)
+  end
+
+  defp turn_finished(socket, _event), do: socket
+
+  defp carry_over(socket, %{agent_id: agent_id, id: id}) do
+    act = socket.assigns.act
+
+    if MapSet.member?(act.open_live, agent_id) do
+      live_id = "telemetry-" <> agent_id
+
+      rows =
+        for {^live_id, key} <- act.open_rows, into: act.open_rows, do: {"turn-" <> id, key}
+
+      details =
+        case Map.get(socket.assigns.telemetry, agent_id) do
+          %{details: live} -> Map.put(act.details, id, live)
+          _ -> act.details
+        end
+
+      assign(socket, :act, %{
+        act
+        | open_turns: MapSet.put(act.open_turns, id),
+          open_rows: rows,
+          details: details
+      })
+    else
+      socket
+    end
+  end
+
+  defp add_receipts(socket, %{payload: payload} = event) do
+    ids = for id <- List.wrap(payload["message_ids"]), is_binary(id), do: id
+    entry = receipt(event)
+
+    socket =
+      assign(socket, :receipts, Map.merge(socket.assigns.receipts, Map.new(ids, &{&1, entry})))
+
+    # messages already shown re-render with their chip
+    Enum.reduce(ids, socket, fn message_id, socket ->
+      in_feed? = MapSet.member?(socket.assigns.message_ids, message_id)
+      in_panel? = loaded_in_panel?(socket, message_id)
+
+      case (in_feed? or in_panel?) && Timeline.for_message(message_id) do
+        %Timeline.Event{} = message_event ->
+          socket
+          |> then(&if(in_feed?, do: stream_insert(&1, :timeline, message_event), else: &1))
+          |> then(&if(in_panel?, do: stream_insert(&1, :thread, message_event), else: &1))
+
+        _ ->
+          socket
+      end
+    end)
+  end
+
+  # A finished card changed (opened, a row opened, highlighted): re-insert it
+  # where it shows, the feed or the open thread's panel.
+  defp refresh_turn(socket, %Timeline.Event{} = event) do
+    socket
+    |> then(fn socket ->
+      if event.in_channel and MapSet.member?(socket.assigns.turn_ids, event.id),
+        do: stream_insert(socket, :timeline, event),
+        else: socket
+    end)
+    |> then(fn socket ->
+      if event.thread_id && event.thread_id == open_root(socket.assigns),
+        do: stream_insert(socket, :thread, event),
+        else: socket
+    end)
+  end
+
   # Only the thread shows what stays in it.
   defp insert_event(socket, %{in_channel: false}), do: socket
+
+  defp insert_event(socket, %{event_type: "agent_turn_completed", id: id} = event) do
+    socket
+    |> assign(:turn_ids, MapSet.put(socket.assigns.turn_ids, id))
+    |> stream_insert(:timeline, event)
+  end
 
   defp insert_event(socket, %{event_type: "message", message: %{id: message_id}} = event) do
     socket
@@ -1118,6 +1393,93 @@ defmodule CanopyWeb.ChannelLive do
   def handle_event("pref", %{"key" => "timeline-activity", "value" => value}, socket),
     do: {:noreply, assign(socket, :compact?, value != "full")}
 
+  # Open live activity cards by themselves (this browser): the cards showing
+  # now open too.
+  def handle_event("pref", %{"key" => "activity-open-live", "value" => value}, socket),
+    do: {:noreply, set_auto_open(socket, value == "true")}
+
+  def handle_event("toggle_auto_open_live", _params, socket) do
+    on? = not socket.assigns.act.auto_open?
+
+    {:noreply,
+     socket
+     |> set_auto_open(on?)
+     |> push_event("pref", %{key: "activity-open-live", value: to_string(on?)})}
+  end
+
+  # A card's header opens or closes it. A live card is keyed by its agent; a
+  # finished card is a stream item, re-inserted to show the change. Closing
+  # a card closes its rows (and forgets the details it loaded).
+  def handle_event("toggle_activity_card", %{"card" => "telemetry-" <> agent_id}, socket) do
+    act = socket.assigns.act
+
+    act =
+      if MapSet.member?(act.open_live, agent_id),
+        do: %{
+          act
+          | open_live: MapSet.delete(act.open_live, agent_id),
+            open_rows: drop_rows(act.open_rows, "telemetry-" <> agent_id)
+        },
+        else: %{act | open_live: MapSet.put(act.open_live, agent_id)}
+
+    {:noreply, assign(socket, :act, act)}
+  end
+
+  def handle_event("toggle_activity_card", %{"card" => "turn-" <> event_id}, socket) do
+    case channel_turn(socket, event_id) do
+      nil ->
+        {:noreply, socket}
+
+      event ->
+        act = socket.assigns.act
+
+        act =
+          if MapSet.member?(act.open_turns, event_id),
+            do: %{
+              act
+              | open_turns: MapSet.delete(act.open_turns, event_id),
+                open_rows: drop_rows(act.open_rows, "turn-" <> event_id),
+                details: Map.delete(act.details, event_id)
+            },
+            else: %{act | open_turns: MapSet.put(act.open_turns, event_id)}
+
+        {:noreply, socket |> assign(:act, act) |> refresh_turn(event)}
+    end
+  end
+
+  def handle_event("toggle_activity_card", _params, socket), do: {:noreply, socket}
+
+  # A row opens to its detail. A live row's detail is on the live card; a
+  # finished row's comes from the turn's stored details, read once per card.
+  def handle_event("toggle_activity_row", %{"card" => card_id, "key" => key}, socket) do
+    act = socket.assigns.act
+    row = {card_id, key}
+    open? = MapSet.member?(act.open_rows, row)
+    rows = if open?, do: MapSet.delete(act.open_rows, row), else: MapSet.put(act.open_rows, row)
+
+    case card_id do
+      "turn-" <> event_id ->
+        case channel_turn(socket, event_id) do
+          nil ->
+            {:noreply, socket}
+
+          event ->
+            details =
+              if open? or Map.has_key?(act.details, event_id),
+                do: act.details,
+                else: Map.put(act.details, event_id, ActivityDetails.fetch(event_id))
+
+            {:noreply,
+             socket
+             |> assign(:act, %{act | open_rows: rows, details: details})
+             |> refresh_turn(event)}
+        end
+
+      _live ->
+        {:noreply, assign(socket, :act, %{act | open_rows: rows})}
+    end
+  end
+
   def handle_event("pref", _params, socket), do: {:noreply, socket}
 
   def handle_event("switch_repository", %{"repository_id" => repository_id}, socket) do
@@ -1532,7 +1894,9 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
-  def handle_event("open_changes", _params, socket) do
+  # The Changes modal; a file chip or an edit row of an activity card opens
+  # it on that file (`path`, relative to the repository).
+  def handle_event("open_changes", params, socket) do
     changes =
       case Repositories.status(socket.assigns.channel.repository) do
         {:ok, lines} ->
@@ -1542,24 +1906,19 @@ defmodule CanopyWeb.ChannelLive do
           %{files: [], selected: nil, diff: nil, error: reason}
       end
 
-    {:noreply, assign(socket, :changes, changes)}
+    socket = assign(socket, :changes, changes)
+
+    case params["path"] do
+      path when is_binary(path) and path != "" -> {:noreply, select_file(socket, path)}
+      _ -> {:noreply, socket}
+    end
   end
 
   def handle_event("close_changes", _params, socket),
     do: {:noreply, assign(socket, :changes, nil)}
 
-  def handle_event("select_file", %{"path" => path}, socket) do
-    changes = socket.assigns.changes || %{files: [], selected: nil, diff: nil, error: nil}
-
-    diff =
-      case Repositories.file_diff(socket.assigns.channel.repository, path) do
-        {:ok, ""} -> "(no textual diff)"
-        {:ok, patch} -> patch
-        {:error, reason} -> "Could not read diff: #{reason}"
-      end
-
-    {:noreply, assign(socket, :changes, %{changes | selected: path, diff: diff})}
-  end
+  def handle_event("select_file", %{"path" => path}, socket),
+    do: {:noreply, select_file(socket, path)}
 
   def handle_event("load_earlier", _params, socket) do
     older =
@@ -1576,12 +1935,50 @@ defmodule CanopyWeb.ChannelLive do
        Map.merge(socket.assigns.summaries, Messages.thread_summaries(root_ids(older)))
      )
      |> assign(:message_ids, MapSet.union(socket.assigns.message_ids, message_ids(older)))
+     |> assign(:turn_ids, MapSet.union(socket.assigns.turn_ids, turn_ids(older)))
+     |> assign(:receipts, Map.merge(receipts(older), socket.assigns.receipts))
      |> assign(
        :oldest_event_id,
        older |> List.first() |> then(&(&1 && &1.id)) || socket.assigns.oldest_event_id
      )
      |> assign(:has_earlier?, length(older) >= @page_size)
      |> stream(:timeline, Enum.reverse(older), at: 0)}
+  end
+
+  defp select_file(socket, path) do
+    changes = socket.assigns.changes || %{files: [], selected: nil, diff: nil, error: nil}
+
+    diff =
+      case Repositories.file_diff(socket.assigns.channel.repository, path) do
+        {:ok, ""} -> "(no textual diff)"
+        {:ok, patch} -> patch
+        {:error, reason} -> "Could not read diff: #{reason}"
+      end
+
+    assign(socket, :changes, %{changes | selected: path, diff: diff})
+  end
+
+  defp set_auto_open(socket, on?) do
+    act = socket.assigns.act
+
+    open_live =
+      if on?,
+        do: MapSet.union(act.open_live, MapSet.new(Map.keys(socket.assigns.telemetry))),
+        else: act.open_live
+
+    assign(socket, :act, %{act | auto_open?: on?, open_live: open_live})
+  end
+
+  # A finished turn of this channel, or nil.
+  defp channel_turn(socket, event_id) do
+    case Timeline.get(event_id) do
+      %{event_type: "agent_turn_completed", channel_id: channel_id} = event
+      when channel_id == socket.assigns.channel.id ->
+        event
+
+      _ ->
+        nil
+    end
   end
 
   # `git status --porcelain`: two status columns, a space, then the path.
@@ -1743,6 +2140,8 @@ defmodule CanopyWeb.ChannelLive do
                 }
                 channels={@channel_links}
                 mentions={@mention_names}
+                activity={turn_ui(@act, @activity, event)}
+                receipt={receipt_of(@receipts, event)}
               />
             </div>
 
@@ -1755,6 +2154,12 @@ defmodule CanopyWeb.ChannelLive do
               name={Map.get(@names, agent_id, "agent")}
               card={card}
               root={repo_root(@channel)}
+              channel_id={@channel.id}
+              status={Map.get(@agent_statuses, agent_id, :busy)}
+              open?={MapSet.member?(@act.open_live, agent_id)}
+              open_rows={rows_of(@act.open_rows, "telemetry-" <> agent_id)}
+              highlight={live_in_panel?(@activity, agent_id)}
+              auto_open?={@act.auto_open?}
             />
 
             <.permission_card
@@ -1781,7 +2186,7 @@ defmodule CanopyWeb.ChannelLive do
           <.composer
             :if={!Channels.archived?(@channel)}
             id="composer"
-            class={@thread && "max-lg:hidden"}
+            class={(@thread || @activity) && "max-lg:hidden"}
             submit="send"
             waiting={@waiting_on_user}
             form={@composer}
@@ -1834,8 +2239,26 @@ defmodule CanopyWeb.ChannelLive do
           channel_names={@channel_names}
           upload={@uploads.thread_files}
           picked={@thread_picked}
+          act={@act}
+          activity={@activity}
+          receipts={@receipts}
+          agent_statuses={@agent_statuses}
+        />
+
+        <.activity_panel
+          :if={@activity}
+          activity={@activity}
+          channel={@channel}
+          names={@names}
+          user_name={@user.display_name}
+          telemetry={@telemetry}
+          agent_statuses={@agent_statuses}
+          act={@act}
+          mentions={@mention_names}
         />
       </div>
+      <%!-- remembers "Open live activity automatically" for this browser --%>
+      <span id="activity-open-live-pref" phx-hook="Pref" data-pref="activity-open-live" hidden />
       <.library_picker :if={@library} library={@library} />
 
       <.changes_modal :if={@changes} changes={@changes} repository={@channel.repository} />
@@ -2761,6 +3184,10 @@ defmodule CanopyWeb.ChannelLive do
   attr :channel_names, :list, required: true
   attr :upload, :any, required: true
   attr :picked, :list, default: []
+  attr :act, :map, required: true
+  attr :activity, :map, default: nil
+  attr :receipts, :map, default: %{}
+  attr :agent_statuses, :map, default: %{}
 
   # A thread in the side panel: the root, its replies and the turn cards of
   # work done for it, the live card and cards of an agent working here, and a
@@ -2827,6 +3254,8 @@ defmodule CanopyWeb.ChannelLive do
             thread={panel_thread(event, @channel, @thread)}
             channels={@channel_links}
             mentions={@mention_names}
+            activity={turn_ui(@act, @activity, event)}
+            receipt={receipt_of(@receipts, event)}
           />
         </div>
 
@@ -2836,6 +3265,11 @@ defmodule CanopyWeb.ChannelLive do
           name={Map.get(@names, agent_id, "agent")}
           card={card}
           root={repo_root(@channel)}
+          channel_id={@channel.id}
+          status={Map.get(@agent_statuses, agent_id, :busy)}
+          open?={MapSet.member?(@act.open_live, agent_id)}
+          open_rows={rows_of(@act.open_rows, "telemetry-" <> agent_id)}
+          auto_open?={@act.auto_open?}
         />
         <.permission_card :for={request <- @permissions} request={request} names={@names} />
         <.question_card :for={request <- @questions} request={request} names={@names} />
@@ -2866,6 +3300,164 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  attr :activity, :map,
+    required: true,
+    doc: "`%{kind: :turn, event}` or `%{kind: :live, agent_id}`"
+
+  attr :channel, :map, required: true
+  attr :names, :map, required: true
+  attr :user_name, :string, required: true
+  attr :telemetry, :map, required: true
+  attr :agent_statuses, :map, required: true
+  attr :act, :map, required: true
+  attr :mentions, :any, default: MapSet.new()
+
+  # An agent's activity in the side panel: a finished turn, or a running one
+  # (it moves to the finished turn when it ends). The same rows as the card,
+  # full height, with Copy (the rows as text, for a bug report) and Copy link.
+  defp activity_panel(assigns) do
+    assigns = assign(assigns, panel_card(assigns))
+
+    ~H"""
+    <.side_panel id="activity-panel" label="Activity" close={~p"/channels/#{@channel.id}"}>
+      <:title>
+        Activity
+        <span class="font-normal text-base-content/60">
+          · @{Map.get(@names, @agent_id, "agent")}<span :if={@span}> · {@span}</span>
+        </span>
+      </:title>
+      <:actions>
+        <button
+          type="button"
+          id="activity-panel-copy"
+          class="btn btn-ghost btn-xs btn-square"
+          phx-click={
+            JS.dispatch("canopy:copy",
+              to: "#activity-panel-text",
+              detail: %{button: "activity-panel-copy"}
+            )
+          }
+          title="Copy the activity as text"
+          aria-label="Copy the activity as text"
+        >
+          <.icon name="hero-clipboard-document-list-mini" class="size-4" />
+          <span data-copy-label class="sr-only">Copy</span>
+        </button>
+        <button
+          type="button"
+          id="activity-panel-copy-link"
+          phx-hook="CopyLink"
+          data-href={activity_path(@channel.id, @target)}
+          class="btn btn-ghost btn-xs btn-square"
+          title="Copy link to this activity"
+          aria-label="Copy link to this activity"
+        >
+          <.icon name="hero-link-mini" class="size-4" />
+        </button>
+      </:actions>
+
+      <div id="activity-panel-scroll" class="min-h-0 flex-1 overflow-y-auto">
+        <p
+          id="activity-panel-summary"
+          class="flex items-center gap-2 border-b border-base-300/70 px-4 py-2 text-xs text-base-content/70"
+        >
+          <Layouts.status_dot :if={@live?} status={Map.get(@agent_statuses, @agent_id, :busy)} />
+          <span class="min-w-0">{@summary}</span>
+        </p>
+        <.activity_body
+          id={"panel-" <> @card_id}
+          card_id={@card_id}
+          card={@card}
+          live?={@live?}
+          open_rows={rows_of(@act.open_rows, @card_id)}
+          details={@details}
+          root={repo_root(@channel)}
+          final_text={@final_text}
+          mentions={@mentions}
+          panel?
+        />
+        <pre id="activity-panel-text" hidden>{card_text(@card, repo_root(@channel))}</pre>
+      </div>
+    </.side_panel>
+    """
+  end
+
+  defp panel_card(%{activity: %{kind: :live, agent_id: agent_id}} = assigns) do
+    card = Map.get(assigns.telemetry, agent_id) || Activity.new()
+    name = Map.get(assigns.names, agent_id, "agent")
+
+    summary =
+      ["@#{name} is #{Activity.verb(card)}…", tally_text(card)]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(" · ")
+
+    %{
+      card: card,
+      card_id: "telemetry-" <> agent_id,
+      agent_id: agent_id,
+      live?: true,
+      details: card.details,
+      final_text: nil,
+      target: "live:" <> agent_id,
+      span: if(card.started_at, do: "since " <> clock_ms(card.started_at)),
+      summary: summary
+    }
+  end
+
+  defp panel_card(%{activity: %{kind: :turn, event: event}} = assigns) do
+    ended = event.inserted_at
+
+    started =
+      case event.payload["duration_ms"] do
+        ms when is_integer(ms) -> DateTime.add(ended, -ms, :millisecond)
+        _ -> nil
+      end
+
+    %{
+      card: Activity.card_from_payload(event.payload),
+      card_id: "turn-" <> event.id,
+      agent_id: event.agent_id,
+      live?: false,
+      details: Map.get(assigns.act.details, event.id),
+      final_text: event.payload["final_text"],
+      target: event.id,
+      span:
+        Enum.join(
+          Enum.reject([started && short_time(started), short_time(ended)], &is_nil/1),
+          "–"
+        ),
+      summary: event_text(event, assigns.names, assigns.user_name)
+    }
+  end
+
+  defp clock_ms(ms), do: ms |> DateTime.from_unix!(:millisecond) |> short_time()
+
+  # What a timeline item shows of the view's activity state: a finished
+  # card's open state, open rows, loaded details, and the panel highlight.
+  defp turn_ui(act, activity, %{event_type: "agent_turn_completed", id: id}) do
+    card_id = "turn-" <> id
+
+    %{
+      open?: MapSet.member?(act.open_turns, id),
+      open_rows: rows_of(act.open_rows, card_id),
+      details: Map.get(act.details, id),
+      highlight: match?(%{kind: :turn, event: %{id: ^id}}, activity)
+    }
+  end
+
+  defp turn_ui(_act, _activity, _event), do: %{}
+
+  defp receipt_of(receipts, %{event_type: "message", ref_id: message_id}),
+    do: Map.get(receipts, message_id)
+
+  defp receipt_of(_receipts, _event), do: nil
+
+  defp rows_of(open_rows, card_id),
+    do: for({^card_id, key} <- open_rows, into: MapSet.new(), do: key)
+
+  defp live_in_panel?(%{kind: :live, agent_id: agent_id}, agent_id), do: true
+  defp live_in_panel?(_activity, _agent_id), do: false
+
   attr :id, :string, required: true
   attr :label, :string, required: true, doc: "what the panel is, for assistive technology"
   attr :close, :string, required: true, doc: "the path Close and Back patch to"
@@ -2875,7 +3467,7 @@ defmodule CanopyWeb.ChannelLive do
   slot :footer
 
   # The right-hand side panel: one slot beside the feed that one panel kind at
-  # a time fills (a thread now; the URL param says which). Fixed widths from
+  # a time fills (a thread or an activity; the URL param says which). Fixed widths from
   # lg up (28rem, 32rem at 2xl); below lg a full-screen overlay with Back.
   # Esc closes it unless a text box in it has something typed (SidePanel hook).
   defp side_panel(assigns) do

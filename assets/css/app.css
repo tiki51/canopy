@@ -267,6 +267,32 @@
    are hidden; anything that needs the user stays. Toggled from the channel header. */
 .timeline-compact > [data-activity="routine"] { display: none; }
 
+/* The receipt chip on an agent's message opens what its turn ran; it shows
+   only in the compact timeline, where the turn's own card is hidden. */
+.receipt-chip { display: none; }
+.timeline-compact .receipt-chip { display: inline-flex; }
+
+/* Activity card filters (the .ActivityFilter hook sets data-filter, and
+   activity-miss on rows the text filter excludes). Earlier steps of a long
+   turn start collapsed; a filter or a search shows them. */
+.activity-body[data-filter="shell"] [data-row]:not([data-category="shell"]),
+.activity-body[data-filter="files"] [data-row]:not([data-category="read"]):not([data-category="search"]):not([data-category="edit"]),
+.activity-body[data-filter="errors"] [data-row]:not([data-status="error"]):not([data-status="denied"]),
+.activity-body[data-filter="notes"] [data-row]:not([data-kind="text"]),
+.activity-body[data-filter="canopy"] [data-row]:not([data-category="canopy"]),
+.activity-body [data-row].activity-miss,
+.activity-body[data-filter]:not([data-filter="all"]) [data-step-divider],
+.activity-body[data-searching] [data-step-divider] { display: none !important; }
+.activity-body:not([data-expanded]) .activity-early { display: none; }
+.activity-body:not([data-expanded])[data-filter]:not([data-filter="all"]) .activity-early,
+.activity-body:not([data-expanded])[data-searching] .activity-early { display: block; }
+.activity-body[data-filter]:not([data-filter="all"]) .activity-earlier,
+.activity-body[data-searching] .activity-earlier { display: none; }
+.activity-chip[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--color-primary) 14%, transparent);
+  color: var(--color-primary);
+}
+
 /* Message actions (Reply in thread, Copy link) show on hover; a touch screen
    has no hover, so they are always there. */
 @media (hover: none) { .message-actions { opacity: 1; } }

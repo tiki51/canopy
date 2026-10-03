@@ -163,11 +163,16 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
 
-      assert has_element?(view, "details#turn-#{with_activity.id}:not([open])")
+      # closed: only the header, the rows render once opened
+      assert has_element?(view, "#turn-#{with_activity.id}[data-open=false]")
       assert has_element?(view, "#turn-toggle-#{with_activity.id}", "@#{agent.name} finished")
       assert has_element?(view, "#turn-toggle-#{with_activity.id}", "2 tools")
+      refute has_element?(view, "#turn-#{with_activity.id}-c1")
+
+      view |> element("#turn-toggle-#{with_activity.id}") |> render_click()
+      assert has_element?(view, "#turn-toggle-#{with_activity.id}[aria-expanded=true]")
       assert has_element?(view, "#turn-#{with_activity.id}-c1", "Read lib/a.ex")
-      assert has_element?(view, "#turn-#{with_activity.id}-file-lib-a-ex", "a.ex")
+      assert has_element?(view, "#turn-#{with_activity.id}-file-lib-a-ex", "lib/a.ex")
 
       refute has_element?(view, "#turn-#{without.id}")
       assert has_element?(view, "#line-#{without.id}", "@#{agent.name} finished")
@@ -184,7 +189,8 @@ defmodule CanopyWeb.ChannelLiveTest do
           }
         })
 
-      assert has_element?(view, "details#turn-#{recap.id}:not([open])")
+      assert has_element?(view, "#turn-#{recap.id}[data-open=false]")
+      view |> element("#turn-toggle-#{recap.id}") |> render_click()
       assert has_element?(view, "#turn-#{recap.id}-note", "Closing note")
       assert has_element?(view, "#turn-#{recap.id}-note strong", "Summary")
     end
@@ -648,9 +654,15 @@ defmodule CanopyWeb.ChannelLiveTest do
       })
 
       assert has_element?(view, "#telemetry-#{agent.id}", "@#{agent.name} is researching")
-      assert has_element?(view, "#telemetry-#{agent.id}-c1", "read")
-      assert has_element?(view, "#telemetry-#{agent.id}-c1", "lib/a.ex")
+      # closed by default, its header naming the call running now
+      assert has_element?(view, "#telemetry-#{agent.id}-current", "lib/a.ex")
+      refute has_element?(view, "#telemetry-#{agent.id}-c1")
       assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
+
+      view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
+      assert has_element?(view, "#telemetry-#{agent.id}-c1", "Read")
+      assert has_element?(view, "#telemetry-#{agent.id}-c1", "lib/a.ex")
+      assert has_element?(view, "#telemetry-#{agent.id}-c1[data-status=running]")
 
       broadcast_telemetry(channel.id, agent.id, :tool_completed, %{
         call_id: "c1",
@@ -680,9 +692,13 @@ defmodule CanopyWeb.ChannelLiveTest do
         delta: "closer."
       })
 
-      assert has_element?(view, "#telemetry-#{agent.id}-c1", "Read lib/a.ex")
-      assert has_element?(view, "#telemetry-#{agent.id}", "1 tool")
-      refute has_element?(view, "#telemetry-#{agent.id}", "1 tools")
+      # streamed text is folded in batches, at most every 100 ms
+      refute has_element?(view, "#telemetry-#{agent.id}", "Looking closer.")
+      send(view.pid, {:flush_text, agent.id})
+
+      assert has_element?(view, "#telemetry-#{agent.id}-c1[data-status=ok]", "lib/a.ex")
+      assert has_element?(view, "#telemetry-#{agent.id}", "1 read")
+      refute has_element?(view, "#telemetry-#{agent.id}", "1 reads")
       assert has_element?(view, "#telemetry-#{agent.id}", "Looking closer.")
 
       broadcast_telemetry(channel.id, agent.id, :text_done, %{
@@ -694,18 +710,244 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#telemetry-#{agent.id}", "Done looking.")
       refute has_element?(view, "#telemetry-#{agent.id}", "Looking closer.")
 
-      # closed by default (a <details> without `open`), with a pulsing dot in the header
-      assert has_element?(view, "details#telemetry-#{agent.id}:not([open])")
-
-      # The card re-renders on every tool call, and the server never renders
-      # `open`, so a patch would strip the attribute the browser set when the
-      # user expanded it. The hook carries that state across patches.
-      assert has_element?(view, ~s(details#telemetry-#{agent.id}[phx-hook="KeepOpen"]))
+      # the server owns the open state, so a patch keeps it; a pulsing dot in the header
+      assert has_element?(view, "#telemetry-#{agent.id}[data-open=true]")
       assert has_element?(view, "#telemetry-toggle-#{agent.id} [data-status=busy] .animate-ping")
+
+      # closing renders only the header again
+      view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
+      refute has_element?(view, "#telemetry-#{agent.id}-body")
 
       broadcast_status(channel.id, agent.id, :idle)
       refute has_element?(view, "#telemetry-#{agent.id}")
       refute has_element?(view, "#abort-#{agent.id}")
+    end
+  end
+
+  describe "activity cards" do
+    defp record_turn(ctx, payload, opts \\ []) do
+      {:ok, event} =
+        Timeline.record(%{
+          channel_id: ctx.channel.id,
+          agent_id: Keyword.get(opts, :agent_id, ctx.agent.id),
+          event_type: "agent_turn_completed",
+          payload:
+            Map.merge(
+              %{
+                "tools" => 1,
+                "outcome" => "ok",
+                "duration_ms" => 1_200,
+                "activity" => [
+                  %{
+                    "key" => "c1",
+                    "kind" => "tool",
+                    "status" => "ok",
+                    "category" => "shell",
+                    "label" => "mix test",
+                    "command" => "mix test",
+                    "duration_ms" => 900,
+                    "exit_code" => 1,
+                    "fact" => "exit 1"
+                  }
+                ],
+                "activity_meta" => %{"v" => 2, "tallies" => %{"shell" => 1}, "dropped" => 0}
+              },
+              payload
+            )
+        })
+
+      event
+    end
+
+    test "a live card open when the turn ends arrives open as the finished card", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
+      view |> element("#telemetry-#{agent.id}-c1-toggle") |> render_click()
+      assert has_element?(view, "#telemetry-#{agent.id}-c1-detail", "lib/a.ex")
+
+      turn =
+        record_turn(ctx, %{
+          "activity" => [
+            %{
+              "key" => "c1",
+              "kind" => "tool",
+              "status" => "ok",
+              "category" => "read",
+              "label" => "lib/a.ex"
+            }
+          ]
+        })
+
+      broadcast_status(channel.id, agent.id, :idle)
+
+      refute has_element?(view, "#telemetry-#{agent.id}")
+      assert has_element?(view, "#turn-#{turn.id}[data-open=true]")
+      # its open row too, with the details the live card already held
+      assert has_element?(view, "#turn-#{turn.id}-c1-detail", "lib/a.ex")
+
+      # a card that was closed arrives closed
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      next = record_turn(ctx, %{})
+      broadcast_status(channel.id, agent.id, :idle)
+      assert has_element?(view, "#turn-#{next.id}[data-open=false]")
+    end
+
+    test "a finished row opens to its stored details; an old turn says they weren't kept",
+         ctx do
+      %{channel: channel} = ctx
+      turn = record_turn(ctx, %{})
+
+      {:ok, _} =
+        Canopy.Timeline.ActivityDetails.put(turn.id, %{
+          "c1" => %{"input" => "mix test", "output" => "1) test fails\n42 tests, 1 failure"}
+        })
+
+      old = record_turn(ctx, %{})
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#turn-toggle-#{turn.id}") |> render_click()
+      assert has_element?(view, "#turn-#{turn.id}-c1[data-status=ok]", "exit 1")
+      assert has_element?(view, "#turn-#{turn.id}-c1", "0.9s")
+
+      view |> element("#turn-#{turn.id}-c1-toggle") |> render_click()
+      assert has_element?(view, "#turn-#{turn.id}-c1-toggle[aria-expanded=true]")
+      assert has_element?(view, "#turn-#{turn.id}-c1-output-text", "42 tests, 1 failure")
+      assert has_element?(view, "#turn-#{turn.id}-c1-command-text", "mix test")
+
+      view |> element("#turn-#{turn.id}-c1-toggle") |> render_click()
+      refute has_element?(view, "#turn-#{turn.id}-c1-detail")
+
+      view |> element("#turn-toggle-#{old.id}") |> render_click()
+      view |> element("#turn-#{old.id}-c1-toggle") |> render_click()
+      assert has_element?(view, "#turn-#{old.id}-c1-detail", "recorded for turns before")
+    end
+
+    test "a file chip opens Changes on that file", ctx do
+      %{channel: channel, repository: repository} = ctx
+      path = Path.join(repository.path, "notes.txt")
+      File.write!(path, "hello\n")
+
+      turn =
+        record_turn(ctx, %{
+          "files" => [path],
+          "activity_meta" => %{
+            "v" => 2,
+            "tallies" => %{"edit" => 1},
+            "files" => [%{"path" => path, "adds" => 1, "dels" => 0}]
+          }
+        })
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#turn-toggle-#{turn.id}") |> render_click()
+
+      view
+      |> element("#turn-#{turn.id}-files button[phx-value-path='notes.txt']")
+      |> render_click()
+
+      assert has_element?(view, "#changes-modal")
+      assert has_element?(view, "#changed-files .text-primary", "notes.txt")
+      assert has_element?(view, "#file-diff", "+hello")
+    end
+
+    test "?activity= opens the side panel; ?thread= replaces it", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      turn = record_turn(ctx, %{})
+      {:ok, root} = Messages.post_user_message(channel.id, user.id, "a thread")
+
+      {:ok, view, _html} = live(conn_of(ctx), ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel", "@#{agent.name}")
+      assert has_element?(view, "#panel-turn-#{turn.id}-c1", "mix test")
+      assert has_element?(view, "#activity-panel-text", "mix test")
+      # the card in the feed is marked as the one in the panel
+      assert has_element?(view, "#turn-#{turn.id}.ring-2")
+
+      render_patch(view, ChannelLive.thread_path(channel.id, root.id))
+      assert has_element?(view, "#thread-panel")
+      refute has_element?(view, "#activity-panel")
+      refute has_element?(view, "#turn-#{turn.id}.ring-2")
+
+      render_patch(view, ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel")
+      refute has_element?(view, "#thread-panel")
+
+      render_patch(view, ~p"/channels/#{channel.id}")
+      refute has_element?(view, "#activity-panel")
+
+      # an id from elsewhere is refused
+      render_patch(view, ChannelLive.activity_path(channel.id, "evt_nope"))
+      refute has_element?(view, "#activity-panel")
+    end
+
+    test "a live turn in the panel moves to the finished turn when it ends", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+
+      view |> element("#telemetry-#{agent.id}-panel") |> render_click()
+      assert_patch(view, ChannelLive.activity_path(channel.id, "live:" <> agent.id))
+      assert has_element?(view, "#activity-panel #panel-telemetry-#{agent.id}-c1", "lib/a.ex")
+      assert has_element?(view, "#telemetry-#{agent.id}.ring-2")
+
+      turn = record_turn(ctx, %{})
+      assert_patch(view, ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel #panel-turn-#{turn.id}-c1", "mix test")
+    end
+
+    test "in the compact timeline an agent's reply carries a receipt that opens the panel",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      {:ok, message} = Messages.post_agent_message(channel.id, agent.id, "Fixed it.")
+      refute has_element?(view, "#message-receipt-#{message.id}")
+
+      turn =
+        record_turn(ctx, %{"message_ids" => [message.id], "tools" => 14, "duration_ms" => 185_000})
+
+      assert has_element?(view, "#message-receipt-#{message.id}", "14 tools · 3m 5s")
+
+      view |> element("#message-receipt-#{message.id}") |> render_click()
+      assert_patch(view, ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel")
+
+      # a reload builds the same receipt from the stored turn
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#message-receipt-#{message.id}")
+    end
+
+    test "this browser can open live cards by itself", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      render_hook(view, "pref", %{"key" => "activity-open-live", "value" => "true"})
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      assert has_element?(view, "#telemetry-#{agent.id}[data-open=true]")
+      assert has_element?(view, "#telemetry-#{agent.id}-auto-open[checked]")
+
+      # once closed, it stays closed while the turn runs
+      view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
+
+      broadcast_telemetry(
+        channel.id,
+        agent.id,
+        :tool_completed,
+        Map.put(tool_data(), :status, :ok)
+      )
+
+      assert has_element?(view, "#telemetry-#{agent.id}[data-open=false]")
+    end
+
+    test "a turn waiting on a card says so on its live card", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      broadcast_status(channel.id, agent.id, :awaiting_user)
+
+      assert has_element?(view, "#telemetry-#{agent.id}[data-status=awaiting_user]")
+      assert has_element?(view, "#telemetry-toggle-#{agent.id}", "is waiting for you")
     end
   end
 

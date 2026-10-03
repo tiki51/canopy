@@ -137,26 +137,30 @@ defmodule Canopy.OpenCode.Events do
         event(
           :tool_completed,
           sid,
-          Map.merge(common, %{
+          common
+          |> Map.merge(%{
             status: :ok,
             output: Map.get(state, "output"),
             error: nil,
             metadata: Map.get(state, "metadata", %{}),
             time: Map.get(state, "time", %{})
           })
+          |> Map.merge(tool_facts(state))
         )
 
       "error" ->
         event(
           :tool_completed,
           sid,
-          Map.merge(common, %{
+          common
+          |> Map.merge(%{
             status: :error,
             output: nil,
             error: Map.get(state, "error"),
             metadata: Map.get(state, "metadata", %{}),
             time: Map.get(state, "time", %{})
           })
+          |> Map.merge(tool_facts(state))
         )
 
       _ ->
@@ -193,6 +197,69 @@ defmodule Canopy.OpenCode.Events do
   end
 
   defp part_event(_part, _sid), do: []
+
+  # What a finished call's metadata says, as optional event fields: bash's
+  # exit code and truncation (verified), an edit's diff and line counts
+  # (apply_patch's `files` verified; `filediff` and a bare `diff` are read as
+  # fallbacks), a search's match count (unverified key). A permission the
+  # user rejected comes back as an error with this wording.
+  defp tool_facts(state) do
+    meta = if is_map(state["metadata"]), do: state["metadata"], else: %{}
+
+    %{
+      exit_code: if(is_integer(meta["exit"]), do: meta["exit"]),
+      truncated: if(meta["truncated"] == true, do: true),
+      matches: if(is_integer(meta["matches"]), do: meta["matches"]),
+      denied:
+        if(is_binary(state["error"]) and state["error"] =~ ~r/rejected permission/i, do: true)
+    }
+    |> Map.merge(edit_facts(meta))
+    |> Map.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp edit_facts(meta) do
+    patch = if is_binary(meta["diff"]) and meta["diff"] != "", do: meta["diff"]
+
+    {adds, dels} =
+      case {meta["files"], meta["filediff"]} do
+        {[_ | _] = files, _} ->
+          files = Enum.filter(files, &is_map/1)
+          {sum(files, "additions"), sum(files, "deletions")}
+
+        {_, %{} = filediff} ->
+          {filediff["additions"], filediff["deletions"]}
+
+        _ when is_binary(patch) ->
+          diff_counts(patch)
+
+        _ ->
+          {nil, nil}
+      end
+
+    %{patch: patch, adds: integer(adds), dels: integer(dels)}
+  end
+
+  defp sum(files, key) do
+    case for(%{^key => n} <- files, is_integer(n), do: n) do
+      [] -> nil
+      counts -> Enum.sum(counts)
+    end
+  end
+
+  defp diff_counts(patch) do
+    lines = String.split(patch, "\n")
+
+    adds =
+      Enum.count(lines, &(String.starts_with?(&1, "+") and not String.starts_with?(&1, "+++")))
+
+    dels =
+      Enum.count(lines, &(String.starts_with?(&1, "-") and not String.starts_with?(&1, "---")))
+
+    {adds, dels}
+  end
+
+  defp integer(n) when is_integer(n), do: n
+  defp integer(_), do: nil
 
   defp event(type, sid, data), do: %Event{type: type, session_id: sid, data: data}
 

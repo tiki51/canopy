@@ -301,9 +301,10 @@ git -C tmp/demo-repo checkout -- .
 ### Watching an agent work
 
 - **Live telemetry.** Each turn streams what the agent is doing (reading, editing,
-  running a command, installing dependencies) into the channel, then collapses into a
-  card: tools used, cost, duration. A compact timeline and a full Activity view are one
-  toggle apart.
+  running a command, installing dependencies) into an activity card that stays in place
+  when the turn ends: every call with its duration, exit code and output, grouped by
+  model step, with filters, the changed files, and a side panel. A compact timeline and a
+  full Activity view are one toggle apart.
 - **Permission cards.** When an agent wants to do something outside its allowance, a card
   appears in the channel. Allow or deny it there. On Claude Code that is any tool not on
   the agent's allowlist; on OpenCode it follows the repository's OpenCode permission rules.

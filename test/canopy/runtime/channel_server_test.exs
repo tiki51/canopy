@@ -10,6 +10,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   alias Canopy.OpenCode.EventStream
   alias Canopy.Runtime
   alias Canopy.Runtime.ChannelServer
+  alias Canopy.Timeline.ActivityDetails
 
   setup :set_mox_global
   setup :verify_on_exit!
@@ -1293,14 +1294,18 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:telemetry, agent_id, %Event{type: :tool_completed}}, 1_000
     assert agent_id == ctx.agent.id
 
-    # finished text parts are kept with the tools, so the card can show them in place
+    # the runtime folds the card as events arrive; finished text parts are
+    # kept with the tools, so the card can show them in place
+    card = ChannelServer.telemetry(ctx.pid, ctx.agent.id)
+
     assert [
-             %Event{type: :tool_started},
-             %Event{type: :tool_completed},
-             %Event{type: :file_changed},
-             %Event{type: :text_done},
-             %Event{type: :text_done}
-           ] = ChannelServer.telemetry(ctx.pid, ctx.agent.id)
+             %{kind: :tool, key: "c1", status: :ok, changed: false},
+             %{kind: :text, label: "Step 1: looking."},
+             %{kind: :text, label: "I found the bug in a.ex."}
+           ] = card.entries
+
+    assert [%{path: "/repo/lib/a.ex"}] = card.files
+    assert is_integer(card.started_at)
 
     emit(sid, :agent_completed, %{})
 
@@ -1317,10 +1322,15 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     # the narration stays on the card in place; the closing text is the reply
     assert [
-             %{"kind" => "tool", "status" => "ok", "label" => "README.md"},
-             %{"kind" => "file", "label" => "a.ex", "detail" => "/repo/lib/a.ex"},
+             %{"kind" => "tool", "status" => "ok", "label" => "README.md", "category" => "read"},
              %{"kind" => "text", "label" => "Step 1: looking."}
            ] = payload["activity"]
+
+    assert %{"v" => 2, "tallies" => %{"read" => 1}, "files" => [%{"path" => "/repo/lib/a.ex"}]} =
+             payload["activity_meta"]
+
+    # the turn names the reply it posted, so the reply links back to the card
+    assert [reply_id] = payload["message_ids"]
 
     # the summary is recorded before the reply so its card sits above the message
     [summary, reply] =
@@ -1328,11 +1338,88 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     assert summary.event_type == "agent_turn_completed"
     assert reply.event_type == "message"
+    assert reply.ref_id == reply_id
+    # the read's output is a detail, stored apart from the payload
+    assert %{"c1" => %{"output" => "..."}} = ActivityDetails.fetch(summary.id)
     assert_in_delta payload["cost"], 0.0025, 0.00001
     assert payload["outcome"] == "ok"
     assert_receive {:agent_status, _, :idle}, 1_000
     assert %{status: "idle"} = AgentSessions.get!(ctx.session.id)
-    assert ChannelServer.telemetry(ctx.pid, ctx.agent.id) == []
+    assert ChannelServer.telemetry(ctx.pid, ctx.agent.id).entries == []
+  end
+
+  test "a long turn keeps its first rows and exact tallies; broadcasts carry excerpts", ctx do
+    expect_prompt(self())
+    sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^sid, _}, 2_000
+
+    big = Enum.map_join(1..1_000, "\n", &"log line #{&1}")
+
+    for i <- 1..250 do
+      emit(sid, :tool_started, %{
+        call_id: "c#{i}",
+        tool: "bash",
+        input: %{"command" => "echo #{i}"}
+      })
+
+      emit(sid, :tool_completed, %{
+        call_id: "c#{i}",
+        tool: "bash",
+        status: :ok,
+        input: %{"command" => "echo #{i}"},
+        output: if(i == 1, do: big, else: "#{i}"),
+        metadata: %{"output" => big, "exit" => 0},
+        exit_code: 0,
+        time: %{}
+      })
+    end
+
+    # the first call's output went out cut to its head and tail, stamped
+    assert_receive {:telemetry, _, %Event{type: :tool_completed, data: %{call_id: "c1"} = data}},
+                   2_000
+
+    assert data.output_lines == 1_000
+    assert length(String.split(data.output, "\n")) == 121
+    assert data.metadata == %{}
+    assert is_integer(data.at)
+
+    # the view that mounts now gets the folded card
+    card = Runtime.telemetry(ctx.channel.id, ctx.agent.id)
+    assert card.tool_count == 250
+    assert hd(card.entries).key == "c1"
+
+    emit(sid, :agent_completed, %{})
+    assert_receive {:timeline, %{event_type: "agent_turn_completed"} = summary}, 5_000
+
+    payload = summary.payload
+    assert payload["tools"] == 250
+    assert payload["activity_meta"]["tallies"] == %{"shell" => 250}
+    assert payload["activity_meta"]["dropped"] == 0
+    assert length(payload["activity"]) == 250
+    assert %{"key" => "c1", "fact" => "exit 0"} = hd(payload["activity"])
+
+    details = ActivityDetails.fetch(summary.id)
+    assert map_size(details) == 250
+    assert details["c1"]["output_lines"] == 1_000
+    assert details["c1"]["truncated"] == true
+  end
+
+  test "the turn summary lists the messages the agent posted during the turn", ctx do
+    expect_prompt(self())
+    sid = ctx.session.engine_session_id
+    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "go")
+    assert_receive {:prompted, ^sid, _}, 2_000
+
+    {:ok, first} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "Looking.")
+    {:ok, second} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "Found it.")
+    emit(sid, :text_done, %{message_id: "m", part_id: "p", text: "Recap."})
+    emit(sid, :agent_completed, %{})
+
+    assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
+    assert payload["message_ids"] == [first.id, second.id]
+    # it posted through the tools, so the closing text is a recap, not a reply
+    assert payload["final_text"] == "Recap."
   end
 
   test "an agent error ends the turn with an error status and event", ctx do
@@ -1433,7 +1520,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
     expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
     assert {:ok, true} = Runtime.abort(ctx.channel.id, ctx.agent.id)
     assert {:error, :no_session} = ChannelServer.abort(ctx.pid, "agt_nobody")
-    assert Runtime.telemetry(ctx.channel.id, "agt_nobody") == []
+    assert Runtime.telemetry(ctx.channel.id, "agt_nobody").entries == []
   end
 
   test "an agent's turn aborted by the user closes as stopped, not as an error", ctx do
@@ -1999,7 +2086,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
     emit(sid, :text_delta, %{delta: "late", message_id: "m", part_id: "p"})
 
     refute_receive {:telemetry, _, _}, 300
-    assert Runtime.telemetry(ctx.channel.id, agent_id) == []
+    assert Runtime.telemetry(ctx.channel.id, agent_id).entries == []
   end
 
   test "repeated session errors record one concise agent_error per turn", ctx do

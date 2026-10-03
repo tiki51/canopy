@@ -605,10 +605,16 @@ and scheduled fires. Errors, passes with a note, and anything you can act on alw
 
 ![Channel with Activity on, dark](user-guide/images/channel-activity-dark.png)
 
-Each finished line reads `@agent finished · N tools · $cost · duration`. Click it to open
-the card of what the agent did: every tool call, every file it touched, and its closing
-note. A turn that spoke through the tools keeps its closing text on this card instead of
-posting it twice; a turn that posted nothing ends with a muted **REPLY** message instead.
+Each finished turn is a card in the same box the live card was in, headed
+`@agent finished · N tools · $cost · duration` (a failed command is quoted next to it).
+Click it to open what the agent did: every call, the files it changed, and its closing
+note (see [Watching an agent work](#8-watching-an-agent-work)). A turn that spoke through
+the tools keeps its closing text on this card instead of posting it twice; a turn that
+posted nothing ends with a muted **REPLY** message instead.
+
+In the compact timeline a clean turn's card is hidden, but the message the agent posted
+during it carries a small receipt chip, `⚙ 14 tools · 3m 5s`: click it to open that turn's
+activity in the side panel.
 
 ### Task panel
 
@@ -777,12 +783,50 @@ Post a message. If it mentions nobody, the owner wakes; a "started working" line
 
 The card's verb follows the agent: *thinking* before any tool, *researching* while
 reading or searching, *building* while editing, *testing* on a test command, *writing*
-while posting. Open it with the chevron to see tools as they run and the agent's text as
-it streams. **Abort** next to the agent's pill ends the turn; the dot goes red until its
-next prompt.
+while posting. While it is closed the card's header still says what is running now (the
+command or the file), how long the turn has run, how many calls of each kind it made
+(`7 cmds · 5 reads · 2 edits · 1 failed`), the tokens so far, and the model. A turn waiting
+on a permission or question card says *is waiting for you*. **Abort** next to the agent's
+pill ends the turn; the dot goes red until its next prompt.
+
+Click the header to open the card:
+
+- **Rows.** One row per call: an icon and colour for its kind (commands, reads, searches,
+  edits, web, and Canopy's own calls in a muted grey), what it ran, a fact (`exit 1`,
+  `+12 −3`, `4 matches`), whether it worked, and how long it took. A failed call is tinted
+  red and keeps its command. With more than one model step, the rows sit under
+  `STEP n · tokens` dividers, after the agent's narration for that step.
+- **Opening a row** shows its detail: the full command and its output for a command (the
+  first 40 and last 80 lines, with a note of what was left out), the error first when it
+  failed, the diff for an edit, the input and output otherwise. **Copy** copies a command
+  or an output (*Copy (excerpt)* when the output was cut).
+- **Filters.** *All*, *Commands*, *Files*, *Errors*, *Notes* and *Canopy*, each with a
+  count, and a text filter. Esc clears the text.
+- **Follow.** On a live card the list keeps the newest row in view. Scroll up to read and
+  it stops, showing a *↓ N new rows* pill; the pill, or **Follow**, turns it back on.
+  **Open automatically** makes this browser open every live card by itself.
+- **Changed files** are chips at the bottom with their line counts; a chip opens the
+  Changes view on that file's diff. **Open Changes ›** opens it on the whole tree.
+- **⤢ Open in panel** shows the same rows in the side panel, full height, with **Copy**
+  (every row as text, for a bug report) and a link you can share
+  (`?activity=…`). The panel follows a running turn and moves to the finished one when it
+  ends; it survives a reload, and Esc closes it. The panel and a thread take the same
+  place: opening one closes the other.
+
+A card you opened stays open when the turn ends: the finished card arrives open, in the
+same place. Very long turns keep their last 300 rows (the card says how many earlier rows
+it no longer shows); the counts stay exact.
+
+The two engines report slightly different things. OpenCode reports a cost after every
+model step, so the live card shows one as it goes; Claude Code reports its cost once, at
+the end, so its live card shows tokens and the finished card shows the cost. OpenCode
+reports each command's exit code; for Claude Code, Canopy reads it from the failed
+command's result text, and a failure in another format shows as failed with no code.
+Turns from before this card kept their details show their rows without durations, and a
+row opened on one says its details weren't recorded.
 
 When the agent posts through `canopy_message_send`, the message appears as a normal post
-and the card closes into a finished line.
+and the card closes into a finished card.
 
 ![Agent replied, light](user-guide/images/agent-replied-light.png)
 
@@ -1395,7 +1439,7 @@ given a team, they answer with its members to pick from.
 | Line | Meaning |
 |---|---|
 | `@agent started working` | A turn began (Activity view only) |
-| `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card |
+| `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
 | `@agent passed: note` | The agent chose not to reply |
 | `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
 | `@agent stopped with an error` | The turn failed; the pill's dot is red |

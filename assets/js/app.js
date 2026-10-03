@@ -29,7 +29,6 @@ import TimelineScroll from "./hooks/timeline_scroll"
 import Pref from "./hooks/pref"
 import AutoDismiss from "./hooks/auto_dismiss"
 import SidebarScroll from "./hooks/sidebar_scroll"
-import KeepOpen from "./hooks/keep_open"
 import SidePanel from "./hooks/side_panel"
 import CopyLink from "./hooks/copy_link"
 
@@ -44,7 +43,6 @@ const liveSocket = new LiveSocket("/live", Socket, {
     Pref,
     AutoDismiss,
     SidebarScroll,
-    KeepOpen,
     SidePanel,
     CopyLink,
   },
@@ -86,6 +84,37 @@ if (confirmDialog) {
     delete el.dataset.canopyConfirmed
   })
 }
+
+// Copy buttons: JS.dispatch("canopy:copy", to: "#element", detail: {button: id})
+// copies the element's text; the button's [data-copy-label] says "Copied" for
+// a moment. Plain http on a LAN (CANOPY_BIND) has no clipboard API, so a
+// hidden textarea and execCommand stand in.
+const copyText = text => {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text)
+  return new Promise((resolve, reject) => {
+    const box = document.createElement("textarea")
+    box.value = text
+    box.setAttribute("readonly", "")
+    box.style.position = "fixed"
+    box.style.opacity = "0"
+    document.body.appendChild(box)
+    box.select()
+    try { document.execCommand("copy") ? resolve() : reject() } catch (e) { reject(e) }
+    box.remove()
+  })
+}
+window.addEventListener("canopy:copy", e => {
+  const text = e.target.innerText || e.target.textContent || ""
+  const button = e.detail && e.detail.button && document.getElementById(e.detail.button)
+  copyText(text).then(() => {
+    const label = button && button.querySelector("[data-copy-label]")
+    if (!label) return
+    if (!label.dataset.original) label.dataset.original = label.textContent
+    label.textContent = "Copied"
+    clearTimeout(label.copyTimer)
+    label.copyTimer = setTimeout(() => { label.textContent = label.dataset.original }, 1500)
+  }, () => {})
+})
 
 // The mobile drawer (rail + sidebar) closes when navigation lands somewhere.
 window.addEventListener("phx:page-loading-stop", _info => {

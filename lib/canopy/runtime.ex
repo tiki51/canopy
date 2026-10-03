@@ -387,10 +387,22 @@ defmodule Canopy.Runtime do
     end)
   end
 
+  @doc """
+  The activity card (`Canopy.Runtime.Activity`) of the agent's turn in flight
+  in the channel, folded so far; an empty card when nothing is running.
+  """
   def telemetry(channel_id, agent_id) do
     case Supervisor.whereis(channel_id) do
-      nil -> []
+      nil -> Canopy.Runtime.Activity.new()
       pid -> ChannelServer.telemetry(pid, agent_id)
+    end
+  end
+
+  @doc "The label of the model the agent runs on (its own, or its engine's default)."
+  def model_label(agent_id) do
+    case Canopy.Agents.get(agent_id) do
+      nil -> nil
+      agent -> Canopy.Engine.for(agent).model_label(agent)
     end
   end
 
