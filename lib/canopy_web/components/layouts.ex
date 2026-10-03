@@ -51,6 +51,10 @@ defmodule CanopyWeb.Layouts do
 
   attr :hold, :string, default: nil, doc: "why agent activity is held, from CanopyWeb.Nav"
 
+  attr :palette, :map,
+    default: %{},
+    doc: "teams and enabled playbooks for the command palette, from CanopyWeb.Nav"
+
   attr :current_path, :string, default: "/"
   attr :current_channel_id, :string, default: nil
   attr :current_repository_id, :string, default: nil, doc: "repository of the open channel"
@@ -156,7 +160,11 @@ defmodule CanopyWeb.Layouts do
           aria-label="Channels and agents"
           phx-hook="SidebarScroll"
         >
-          <div class="flex items-center justify-between px-4 pt-4 pb-2">
+          <div class="px-3 pt-3">
+            <CanopyWeb.CommandPalette.open_button />
+          </div>
+
+          <div class="flex items-center justify-between px-4 pt-3 pb-2">
             <span class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               Channels
             </span>
@@ -414,6 +422,21 @@ defmodule CanopyWeb.Layouts do
         repositories={@repositories}
         agents={@agents}
         current_repository_id={@current_repository_id}
+      />
+
+      <%!-- Outside #app-nav for the same reason as the DM picker; the dialog
+           opens in the top layer anyway. --%>
+      <CanopyWeb.CommandPalette.palette
+        items={CanopyWeb.CommandPalette.items(@repositories, @dms, @agents, @palette)}
+        badges={CanopyWeb.CommandPalette.badges(@unread, @attention)}
+        context={
+          CanopyWeb.CommandPalette.context(%{
+            current_channel_id: @current_channel_id,
+            current_repository_id: @current_repository_id,
+            current_path: @current_path,
+            hold: @hold
+          })
+        }
       />
     </div>
 

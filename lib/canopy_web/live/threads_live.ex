@@ -107,6 +107,7 @@ defmodule CanopyWeb.ThreadsLive do
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
+      palette={@palette}
     >
       <Layouts.page
         title="Threads"

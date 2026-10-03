@@ -48,10 +48,67 @@ defmodule Canopy.Runtime.Commands do
   @doc "Every command name, aliases included: what the composer highlights."
   def names, do: @commands |> Map.keys() |> Enum.sort()
 
+  # One entry per command (aliases listed on it), in the order help/0 shows
+  # them. `hint` is the composer help's wording; `prefill` is what the command
+  # palette puts in the composer (nil: it runs straight away, as /stop does).
+  @catalog [
+    %{
+      name: "i",
+      aliases: ["invite"],
+      usage: "/i @agent|@team [message]",
+      hint: "/i @agent|@team invites",
+      summary: "Invite an agent or a team into the channel",
+      prefill: "/i @",
+      dm?: false
+    },
+    %{
+      name: "handoff",
+      aliases: [],
+      usage: "/handoff @agent reason",
+      hint: "/handoff @agent reason",
+      summary: "Ask a member to take over the channel's task",
+      prefill: "/handoff @",
+      dm?: true
+    },
+    %{
+      name: "delegate",
+      aliases: [],
+      usage: "/delegate @agent task",
+      hint: "/delegate @agent task",
+      summary: "Delegate a subtask to a member",
+      prefill: "/delegate @",
+      dm?: true
+    },
+    %{
+      name: "playbook",
+      aliases: [],
+      usage: "/playbook name [@coordinator] brief",
+      hint: "/playbook name brief",
+      summary: "Start a playbook run in the channel",
+      prefill: "/playbook ",
+      dm?: true
+    },
+    %{
+      name: "stop",
+      aliases: [],
+      usage: "/stop",
+      hint: "/stop stops everything",
+      summary: "Stop every turn and hold the channel",
+      prefill: nil,
+      dm?: true
+    }
+  ]
+
+  @doc """
+  Every command once, with its aliases, usage, a one-line summary, what the
+  command palette prefills in the composer (`nil`: it runs at once), and
+  whether it can run in a DM (`dm?`). `help/0` is built from it, so the
+  composer hint and the palette say the same thing.
+  """
+  def catalog, do: @catalog
+
   @doc "Short help shown in the composer."
-  def help,
-    do:
-      "/i @agent|@team invites · /handoff @agent reason · /delegate @agent task · /playbook name brief · /stop stops everything"
+  def help, do: Enum.map_join(@catalog, " · ", & &1.hint)
 
   # /stop takes nothing: whatever follows it is ignored.
   defp parse_args(:stop, _args), do: {:command, :stop, "", ""}

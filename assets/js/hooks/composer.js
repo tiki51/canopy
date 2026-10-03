@@ -19,6 +19,11 @@
 // Mentions, channels and commands in the draft are highlighted by a layer
 // behind the textarea (composer_highlight.js).
 //
+// The command palette writes slash commands into the channel's composer:
+// "cmdk:prefill" ({text}) from the same page, or a sessionStorage draft
+// ("canopy:cmdk-draft:<channel id>") left by a palette on another page, read
+// once when this composer mounts.
+//
 // Height: one row by default, growing with its content up to AUTO_MAX. The
 // browser's resize handle is off (CSS resize-none); the manual-floor tracking
 // below is kept in case it is ever turned back on.
@@ -26,6 +31,7 @@ import Highlighter from "../composer_highlight"
 import {maskCode} from "../composer_tokens"
 
 const MAX_SUGGESTIONS = 8
+const DRAFT_PREFIX = "canopy:cmdk-draft:"
 const AUTO_MAX = 192
 
 const Composer = {
@@ -101,6 +107,36 @@ const Composer = {
     }
 
     this.autosize()
+
+    if (this.el.id === "composer-input") {
+      this.el.addEventListener("cmdk:prefill", e => this.prefill(e.detail && e.detail.text))
+      const channel = (window.location.pathname.match(/^\/channels\/([^/]+)$/) || [])[1]
+      let draft = null
+      try {
+        if (channel) {
+          draft = sessionStorage.getItem(DRAFT_PREFIX + channel)
+          sessionStorage.removeItem(DRAFT_PREFIX + channel)
+        }
+      } catch (_e) {
+        draft = null
+      }
+      if (draft) this.prefill(draft)
+    }
+  },
+
+  // A command from the palette: it replaces an empty draft or one that is
+  // itself a command, and goes in front of anything else typed. The caret
+  // lands after it, so "/delegate @" opens the agent list.
+  prefill(text) {
+    if (!text) return
+    const draft = this.el.value.trim()
+    const command = draft.match(/^\/(\w+)/)
+    const replace = draft === "" || (command && this.list("commands").includes(command[1].toLowerCase()))
+    this.el.value = replace ? text : text + (text.endsWith(" ") ? "" : " ") + draft
+    this.el.focus()
+    this.el.setSelectionRange(text.length, text.length)
+    this.autosize()
+    this.el.dispatchEvent(new Event("input", {bubbles: true}))
   },
 
   // Pasted files (a screenshot from the clipboard arrives as "image.png") go

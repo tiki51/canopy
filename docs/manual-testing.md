@@ -538,6 +538,22 @@ repository you own; watches only read.
 - [ ] A reply that stays in a thread does not make the channel bold, unless it mentions you;
       one also sent to the channel does.
 
+## 10l. Command palette
+
+- [ ] macOS: ⌘K opens the palette from any page with a sidebar, also with the caret in the
+      composer; Ctrl+K in the composer still deletes to the end of the line. Linux or
+      Windows: Ctrl+K opens it and the browser's search box does not take the key.
+- [ ] Type part of a channel name and press Enter → you land there; reopen elsewhere and it
+      heads *Recent*.
+- [ ] Open a thread, press ⌘K, then Esc → the palette closes and the thread panel stays,
+      with the caret back in its composer.
+- [ ] In a channel, `/delegate` then Enter → the composer reads `/delegate @` with the agent
+      list open. On Settings, `/stop` then a channel → a "Stopped #name" flash, and you stay
+      on Settings.
+- [ ] On a phone (or a 390 px window): open the menu, tap *Jump to…* → the drawer closes and
+      the palette fills the width; typing does not zoom the page.
+- [ ] Dark mode: the palette, its active row, and the mode chip read clearly.
+
 ## 10h. Lean context
 
 - [ ] Post a short message → the agent's finished line shows no `canopy_messages_read` call

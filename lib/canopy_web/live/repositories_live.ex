@@ -243,6 +243,7 @@ defmodule CanopyWeb.RepositoriesLive do
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
+      palette={@palette}
     >
       <Layouts.page title="Repositories" subtitle="Local git repositories that channels work in">
         <Layouts.panel
@@ -386,6 +387,7 @@ defmodule CanopyWeb.RepositoriesLive do
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
+      palette={@palette}
     >
       <Layouts.page
         title={@repository.name}

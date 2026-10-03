@@ -200,6 +200,33 @@ A reply that stays inside a thread does not make its channel bold, unless it men
 Threads you follow have their own count, on the rail's **Threads** icon (see
 [Threads](#threads)).
 
+#### The command palette
+
+Press **⌘K** on a Mac (**Ctrl+K** elsewhere), or click **Jump to…** at the top of the
+sidebar, to get anywhere from the keyboard. Type part of a name: channels (archived ones
+too, labelled and ranked low), DMs, agents, teams, repositories, files, and commands all
+match, and several words narrow it down (`acme pay` finds `#payment-retries` in acme).
+**↑**/**↓** move, **Enter** opens, **Esc** closes and puts you back where you were. With
+nothing typed it shows where you have been recently, the channels that need you, and the
+pages.
+
+A first character narrows the search: `#` channels, `@` agents, teams and DMs, `>` commands
+(pages, *New channel in* a repository, *New direct message*, *Start playbook*, the theme,
+*Release hold*, and the open channel's header actions such as *Stop all agents here*), and
+`/` slash commands. **Backspace** on an empty box removes the filter.
+
+**Shift+Enter** does the second thing a row offers, shown on the right: an agent opens a
+DM with it instead of its page, a repository starts a new channel in it, and a file is
+attached to the channel's composer instead of opening in a new tab (outside a channel, it
+opens the Files page). A slash command never posts by itself: in a channel it is written
+into the composer, with anything you typed after it, for you to finish and send; on any
+other page you pick the channel first, and you land there with it written. `/stop` is the
+exception and stops at once, as the Stop button does; picked for another channel, it stops
+that one without leaving the page you are on.
+
+Recent places are kept in this browser only. Ctrl+K stays *delete to end of line* in Mac
+text boxes, so it does nothing there. Setup (`/welcome`) has no palette.
+
 ---
 
 ## 3. Settings
@@ -619,7 +646,8 @@ Sent messages follow the same rule: only real agent and team names are highlight
 
 ![Composer autocomplete, dark](user-guide/images/composer-autocomplete-dark.png)
 
-Four slash commands are built in:
+Five slash commands are built in. They can also be started from the
+[command palette](#the-command-palette) (⌘K, then `/`).
 
 | Command | What it does |
 |---|---|
@@ -627,6 +655,7 @@ Four slash commands are built in:
 | `/i @team [message]` | Invites a team's active members, quietly; with a message, it is posted as a mention of the team, which wakes them |
 | `/delegate @agent task` | Delegates a subtask to a member; it works on it in its channel session and reports back |
 | `/handoff @agent reason` | Asks a member to take over ownership of the channel's task |
+| `/playbook name [@coordinator] brief` | Starts a playbook run in the channel (see [Starting a run](#starting-a-run)) |
 | `/stop` | Aborts every turn in the channel and holds it until you reply or press Continue |
 
 While an agent is working, a second message from you queues and runs when the turn ends.
@@ -1573,6 +1602,18 @@ already in its instructions).
 | `/handoff @agent reason` | Request a handoff |
 | `/playbook name [@coordinator] brief` | Start a playbook run in the channel |
 | `/stop` | Stop every turn and hold the channel |
+
+### Keyboard
+
+| Key | Effect |
+|---|---|
+| ⌘K (Mac), Ctrl+K (elsewhere) | Open or close the command palette; the sidebar's **Jump to…** does the same |
+| ↑ / ↓ | Move through the results |
+| Enter | Open the result, or run the command |
+| Shift+Enter | The row's alternative: message an agent, new channel in a repository, attach a file |
+| Esc | Close the palette and go back to where you were |
+| Backspace (empty box) | Remove the filter, or step back from choosing a channel |
+| `#` `@` `>` `/` (first character) | Only channels; agents, teams and DMs; commands; slash commands |
 
 ### Timeline lines you will see
 

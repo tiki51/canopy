@@ -7,10 +7,15 @@ defmodule CanopyWeb.Nav do
   `:threads_unread` (followed threads with unread replies, for the rail's Threads badge) and
   `:thread_unread_summary` (`Canopy.Unread.thread_summary/1`), `:attention`
   (question and permission cards and playbook sign-offs waiting on the user, and runs
-  in progress, per channel), `:current_path`,
+  in progress, per channel), `:palette` (teams and enabled playbooks, for the command
+  palette), `:current_path`,
   `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
+
+  It also answers the command palette's two server questions on every page:
+  `cmdk:files` (a filename search) and `cmdk:stop` (`/stop` in a channel you are
+  not in); see `CanopyWeb.CommandPalette`.
   """
 
   import Phoenix.Component
@@ -20,9 +25,13 @@ defmodule CanopyWeb.Nav do
     Agents,
     Attention,
     Channels,
+    Documents,
     Hold,
+    Playbooks,
     Repositories,
+    Runtime,
     Schedules,
+    Teams,
     Threads,
     Timeline,
     Unread,
@@ -37,6 +46,8 @@ defmodule CanopyWeb.Nav do
       Schedules.subscribe()
       Hold.subscribe()
       Canopy.Playbooks.Runs.subscribe()
+      Teams.subscribe()
+      Playbooks.subscribe()
     end
 
     socket =
@@ -59,8 +70,18 @@ defmodule CanopyWeb.Nav do
     |> assign(:agents, Agents.list_active())
     |> assign(:schedule_counts, Schedules.active_counts_by_agent())
     |> assign(:hold, Hold.reason())
+    |> refresh_palette()
     |> refresh_unread()
     |> refresh_attention()
+  end
+
+  # What the command palette lists beyond the sidebar: teams (as `@` rows) and
+  # the enabled playbooks (as "Start playbook" commands). Names and ids only.
+  defp refresh_palette(socket) do
+    assign(socket, :palette, %{
+      teams: Enum.map(Teams.list(), &%{id: &1.id, name: &1.name}),
+      playbooks: Enum.map(Playbooks.list(enabled: true), &%{id: &1.id, name: &1.name})
+    })
   end
 
   # The hold banner's Release button lives in the shell, so every page handles it.
@@ -73,7 +94,62 @@ defmodule CanopyWeb.Nav do
      |> Phoenix.LiveView.put_flash(:info, "Hold released. Reply in a channel to wake its agents.")}
   end
 
+  # The command palette's file search: filenames only, newest first. Fewer
+  # than two characters asks for nothing. `seq` comes back so the palette can
+  # drop a reply that a later keystroke overtook.
+  defp handle_event("cmdk:files", params, socket) do
+    q = String.trim(to_string(params["q"]))
+
+    files =
+      if String.length(q) < 2 do
+        []
+      else
+        [search: q, limit: 6]
+        |> Documents.list()
+        |> Enum.map(fn document ->
+          %{
+            id: document.id,
+            filename: document.filename,
+            kind: document.kind,
+            size_label: Documents.size_label(document.byte_size),
+            url: Documents.url_path(document)
+          }
+        end)
+      end
+
+    {:halt, %{files: files, seq: params["seq"]}, socket}
+  end
+
+  # `/stop` chosen in the palette for a channel you are not in: the channel
+  # step was the confirmation, so it stops at once and says so here.
+  defp handle_event("cmdk:stop", %{"channel_id" => id}, socket) when is_binary(id) do
+    case Channels.get(id) do
+      %{} = channel ->
+        if Channels.archived?(channel) do
+          {:halt, %{ok: false}, put_flash(socket, :error, "That channel is archived.")}
+        else
+          {:ok, %{aborted: aborted}} = Runtime.stop_all(channel.id)
+
+          {:halt, %{ok: true},
+           put_flash(
+             socket,
+             :info,
+             "Stopped #{stop_label(channel)}: #{aborted} #{if aborted == 1, do: "turn", else: "turns"} aborted. Reply there or press Continue to resume."
+           )}
+        end
+
+      nil ->
+        {:halt, %{ok: false}, put_flash(socket, :error, "That channel no longer exists.")}
+    end
+  end
+
+  defp handle_event("cmdk:stop", _params, socket),
+    do: {:halt, %{ok: false}, put_flash(socket, :error, "That channel no longer exists.")}
+
   defp handle_event(_event, _params, socket), do: {:cont, socket}
+
+  defp stop_label(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
+  defp stop_label(channel), do: "#" <> channel.name
 
   @doc """
   Reloads the per-channel unread and mention counts for the sidebar, and the
@@ -122,6 +198,11 @@ defmodule CanopyWeb.Nav do
   # follow; the channel view may want it too.
   defp handle_info({:playbook_runs, :changed, _channel_id}, socket),
     do: {:cont, refresh_attention(socket)}
+
+  # A team or a playbook changed: the palette's lists follow. Pages that list
+  # them subscribe themselves and want the event too.
+  defp handle_info({:teams, :changed}, socket), do: {:cont, refresh_palette(socket)}
+  defp handle_info({:playbooks, :changed}, socket), do: {:cont, refresh_palette(socket)}
 
   defp handle_info({:schedules, :changed, _channel_id}, socket),
     do: {:cont, assign(socket, :schedule_counts, Schedules.active_counts_by_agent())}

@@ -309,3 +309,10 @@
 @media (prefers-reduced-motion: reduce) {
   .side-panel, .message-target { animation: none; }
 }
+
+/* Keyboard hints: ⌘K on a Mac, Ctrl K elsewhere (app.js sets data-platform). */
+[data-platform="mac"] .kbd-other, html:not([data-platform="mac"]) .kbd-mac { display: none; }
+
+/* The command palette's active row (assets/js/hooks/command_palette.js);
+   system colours keep a visible outline. */
+@media (forced-colors: active) { #cmdk-list [aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; } }

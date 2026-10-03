@@ -333,6 +333,7 @@ defmodule CanopyWeb.PlaybooksLive do
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
+      palette={@palette}
     >
       <%= case @live_action do %>
         <% :index -> %>

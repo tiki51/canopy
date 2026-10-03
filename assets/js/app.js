@@ -31,6 +31,7 @@ import AutoDismiss from "./hooks/auto_dismiss"
 import SidebarScroll from "./hooks/sidebar_scroll"
 import SidePanel from "./hooks/side_panel"
 import CopyLink from "./hooks/copy_link"
+import CommandPalette from "./hooks/command_palette"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
@@ -45,6 +46,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     SidebarScroll,
     SidePanel,
     CopyLink,
+    CommandPalette,
   },
 })
 
@@ -84,6 +86,23 @@ if (confirmDialog) {
     delete el.dataset.canopyConfirmed
   })
 }
+
+// The command palette's shortcut: ⌘K on a Mac (Ctrl+K there is the text
+// fields' kill-line, and the composer is a textarea), Ctrl+K elsewhere, where
+// it would otherwise focus the browser's search. Ignored while another modal
+// is open, and a no-op until the page's LiveView has mounted the hook.
+const mac = /mac/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "")
+document.documentElement.dataset.platform = mac ? "mac" : "other"
+document.addEventListener("keydown", e => {
+  if (e.key !== "k" && e.key !== "K") return
+  if (e.isComposing || e.repeat || e.altKey || e.shiftKey) return
+  if (mac ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return
+  const palette = document.getElementById("cmdk")
+  if (!palette) return
+  if (document.querySelector("dialog[open]:not(#cmdk-dialog), #dm-picker, #library-picker, #changes-modal, #model-picker")) return
+  e.preventDefault()
+  palette.dispatchEvent(new CustomEvent("cmdk:toggle"))
+})
 
 // Copy buttons: JS.dispatch("canopy:copy", to: "#element", detail: {button: id})
 // copies the element's text; the button's [data-copy-label] says "Copied" for
