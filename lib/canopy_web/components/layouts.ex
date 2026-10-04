@@ -63,6 +63,14 @@ defmodule CanopyWeb.Layouts do
     default: %{},
     doc: "agent_id => :idle | :queued | :busy | :awaiting_user | :error"
 
+  attr :setup, :string,
+    default: nil,
+    doc: "the first-run setup step to open the setup modal at, or nil, from CanopyWeb.Nav"
+
+  attr :socket, :any,
+    default: nil,
+    doc: "the page's socket, which the setup modal (a nested LiveView) needs"
+
   slot :inner_block, required: true
 
   # The Canopy shell: a narrow workspace rail, the channels/agents sidebar, and the
@@ -74,7 +82,13 @@ defmodule CanopyWeb.Layouts do
          positioned helper deep inside (an sr-only live region in a scrolled
          feed, whose containing block would otherwise be the page) can't make
          the document taller than the window. --%>
-    <div id="app-shell" class="relative flex h-dvh overflow-clip bg-base-100 text-base-content">
+    <%!-- Inert behind the setup modal, so focus, clicks and screen readers
+         stay in it. --%>
+    <div
+      id="app-shell"
+      class="relative flex h-dvh overflow-clip bg-base-100 text-base-content"
+      inert={@setup != nil and @socket != nil}
+    >
       <%!-- Below lg the rail and sidebar slide in over the page; this checkbox
       is their open state, toggled by <.menu_button> and the overlay. --%>
       <input id="app-drawer" type="checkbox" class="peer sr-only" aria-hidden="true" tabindex="-1" />
@@ -465,53 +479,9 @@ defmodule CanopyWeb.Layouts do
       />
     </div>
 
-    <.flash_group flash={@flash} />
-    """
-  end
-
-  @doc """
-  A shell-less layout for first-run setup: one centred, scrolling column with
-  the Canopy mark and top-right actions (Skip setup), the page, and a footer
-  (Finish setup) that sticks to the bottom of small screens and sits after the
-  last section on wider ones. No rail or sidebar.
-  """
-  attr :flash, :map, required: true
-  slot :actions, doc: "top right, e.g. Skip setup"
-  slot :footer
-  slot :inner_block, required: true
-
-  def focus(assigns) do
-    ~H"""
-    <div class="min-h-dvh bg-base-100 text-base-content">
-      <div class="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-4 pt-6 sm:px-6 sm:pt-12">
-        <header class="flex items-center justify-between gap-4">
-          <div class="flex items-center gap-2.5">
-            <img
-              src={~p"/images/canopy-icon-64.png"}
-              alt=""
-              width="32"
-              height="32"
-              class="size-8 rounded-lg shadow-sm"
-            />
-            <span class="text-base font-semibold">Canopy</span>
-          </div>
-          <div :if={@actions != []} class="flex items-center gap-2">
-            {render_slot(@actions)}
-          </div>
-        </header>
-
-        <main class="mt-10 flex-1 pb-6 sm:mt-14 sm:pb-10">
-          {render_slot(@inner_block)}
-        </main>
-
-        <footer
-          :if={@footer != []}
-          class="sticky bottom-0 -mx-4 border-t border-base-300 bg-base-100/90 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:bg-transparent sm:px-0 sm:pt-6 sm:pb-12 sm:backdrop-blur-none"
-        >
-          {render_slot(@footer)}
-        </footer>
-      </div>
-    </div>
+    <%!-- First-run setup (CanopyWeb.OnboardingLive), over the shell. --%>
+    {@setup && @socket &&
+      live_render(@socket, CanopyWeb.OnboardingLive, id: "setup", session: %{"step" => @setup})}
 
     <.flash_group flash={@flash} />
     """

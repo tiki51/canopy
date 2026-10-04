@@ -4,6 +4,7 @@
 import { test, expect, Page } from "@playwright/test";
 import path from "node:path";
 import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
+import { iso, sql } from "./site-helpers";
 
 const dialog = (page: Page) => page.locator("#cmdk-dialog");
 const input = (page: Page) => page.locator("#cmdk-input");
@@ -252,11 +253,19 @@ test.describe("command palette", () => {
     expect(fontSize).toBeGreaterThanOrEqual(16);
   });
 
-  test("first-run setup has no palette", async ({ page }) => {
-    await page.goto("/welcome");
-    await connected(page);
-    await page.keyboard.press("ControlOrMeta+k");
-    await expect(page.locator("#cmdk")).toHaveCount(0);
+  test("first-run setup keeps the palette shut behind it", async ({ page }) => {
+    // a fresh install, put back however the test ends
+    sql("UPDATE settings SET onboarded_at = NULL");
+    try {
+      await page.goto("/agents");
+      await connected(page);
+      await expect(page.locator("#setup-dialog")).toBeVisible();
+      await page.keyboard.press("ControlOrMeta+k");
+      await expect(dialog(page)).toBeHidden();
+      await expect(page.locator("#setup-dialog")).toBeVisible();
+    } finally {
+      sql(`UPDATE settings SET onboarded_at = '${iso(new Date())}'`);
+    }
   });
 
   test("on a Mac, Ctrl+K stays the composer's kill-line", async ({ page }) => {

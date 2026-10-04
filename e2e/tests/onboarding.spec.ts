@@ -1,13 +1,32 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { sql } from "./site-helpers";
+import { iso, sql } from "./site-helpers";
 import { stubNotifications } from "./notify-helpers";
 
-// bin/server.sh marks setup done so `/` behaves as on an existing install;
+// bin/server.sh marks setup done so pages open as on an existing install;
 // these specs clear `onboarded_at` straight in the e2e database (the server
-// keeps running; SQLite is in WAL mode) to start from a fresh install.
+// keeps running; SQLite is in WAL mode) to start from a fresh install, where
+// setup is a modal over whatever page opens.
 const fresh = () => sql("UPDATE settings SET onboarded_at = NULL");
+const onboarded = () => sql(`UPDATE settings SET onboarded_at = '${iso(new Date())}'`);
+
+const dialog = (page: Page) => page.locator("#setup-dialog");
+const current = (page: Page) => page.locator("#setup-steps [aria-current=step]");
+const next = (page: Page) => page.locator("#setup-next").click();
+
+// The page and the setup modal (a nested LiveView, #setup) both connected.
+async function connected(page: Page) {
+  await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+  await expect(page.locator("#setup.phx-connected")).toBeAttached();
+}
+
+// Where focus is, as an id (or the tag), and whether it is in the modal.
+const focus = (page: Page) =>
+  page.evaluate(() => {
+    const el = document.activeElement;
+    return { id: el?.id || el?.tagName || "", inside: !!el?.closest("#setup-dialog") };
+  });
 
 // A sibling of the suite's tmp/e2e-repo; not a git repository until setup adds it.
 const project = path.resolve("../tmp/e2e-onboard");
@@ -66,33 +85,57 @@ test.describe("first-run setup", () => {
     fs.rmSync(project, { recursive: true, force: true });
   });
 
-  test("walks a fresh install from / down the page to its first channel", async ({ page }) => {
+  test("walks a fresh install through the modal, step by step, to its first channel", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
-    await expect(page).toHaveURL(/\/welcome$/);
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    // the normal home, with setup over it
+    await expect(page).toHaveURL(/\/(channels\/ch_|repositories)/);
+    await connected(page);
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#sidebar")).toBeVisible();
+    await expect(page.locator("#app-shell")).toHaveAttribute("inert", "");
+    // a centred panel, not a page
+    const panel = (await page.locator("#setup-panel").boundingBox())!;
+    expect(panel.width).toBeLessThanOrEqual(680);
+    expect(panel.x).toBeGreaterThan(300);
 
-    // one page: no steps, no Continue
-    await expect(page.locator("#welcome-steps")).toHaveCount(0);
-    await expect(page.locator("#welcome-continue")).toHaveCount(0);
-
-    // you: saves as it is typed, with no Continue
-    await page.getByLabel("What should the agents call you?").fill("Priya");
+    // you: focus starts in the field; it saves as it is typed, Enter moves on
+    await expect(current(page)).toHaveAttribute("id", "setup-step-you");
+    const name = page.getByLabel("What should the agents call you?");
+    await expect(name).toBeFocused();
+    await name.fill("Priya");
     await expect(page.locator("#welcome-you-saved")).toBeVisible();
+    await name.press("Enter");
+    await expect(current(page)).toHaveAttribute("id", "setup-step-look");
+    await expect(page.locator("#welcome-look-title")).toBeFocused();
 
-    // look: applies at once and is kept by the browser
+    // look: applies at once, to the app behind as well, and is kept by the browser
     const html = page.locator("html");
+    const sidebarBg = () => page.locator("#sidebar").evaluate((el) => getComputedStyle(el).backgroundColor);
+    const before = await sidebarBg();
     await page.locator("#palette-moss").click();
     await page.locator("#appearance-mode-dark").click();
     await expect(html).toHaveAttribute("data-palette", "moss");
     await expect(html).toHaveAttribute("data-theme", "dark");
+    expect(await sidebarBg()).not.toBe(before);
+
+    // Back keeps the name
+    await page.locator("#setup-back").click();
+    await expect(name).toHaveValue("Priya");
+
+    // still a fresh install after a reload: the modal again, with what was chosen
     await page.reload();
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await connected(page);
+    await expect(dialog(page)).toBeVisible();
     await expect(html).toHaveAttribute("data-palette", "moss");
     await expect(html).toHaveAttribute("data-theme", "dark");
-    // the name came through the reload too
     await expect(page.getByLabel("What should the agents call you?")).toHaveValue("Priya");
 
-    // engines: the fake Claude Code and the fake OpenCode both answer
+    // the indicator jumps: engines; the fake Claude Code and the fake OpenCode both answer
+    await page.locator("#setup-step-engines").click();
+    await expect(current(page)).toHaveAttribute("id", "setup-step-engines");
+    await expect(page.locator("#setup-step-you")).toHaveAttribute("data-state", "done");
     await expect(page.locator("#welcome-claude")).toHaveAttribute("data-state", "ready");
     await expect(page.locator("#welcome-claude-status")).toContainText("priya@acme.example");
     await expect(page.locator("#welcome-opencode")).toHaveAttribute("data-state", "ready");
@@ -115,24 +158,47 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#welcome-engines-saved")).toBeVisible();
 
     // pace
+    await next(page);
     await expect(page.locator("#welcome-presets-balanced")).toHaveAttribute("aria-checked", "true");
     await page.locator("#welcome-presets-careful").click();
     await expect(page.locator("#welcome-presets-careful")).toHaveAttribute("aria-checked", "true");
     await expect(page.locator("#welcome-pace-saved")).toBeVisible();
 
     // notifications
+    await next(page);
     await expect(page.locator("#welcome-notify #notify-enabled")).toBeAttached();
 
     // project: added by its own button, with the result inline
+    await next(page);
     await page.getByLabel("Project folder (absolute path)").fill(project);
     await page.locator("#welcome-add-repository").click();
     await expect(page.locator("#welcome-repository-added")).toContainText("so one was initialised");
     expect(fs.existsSync(path.join(project, ".git"))).toBe(true);
 
-    // finish: the summary takes the sections' place
+    // Esc asks instead of closing; the question takes focus, and Esc again takes it back
+    await page.locator("#welcome-project-title").focus();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#setup-skip-confirm")).toContainText("Skip setup?");
+    await expect(page.locator("#setup-keep-going")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#setup-skip-confirm")).toHaveCount(0);
+    await expect(page.locator("#welcome-finish")).toBeFocused();
+    await expect(dialog(page)).toBeVisible();
+
+    // Tab and Shift+Tab stay in the modal
+    for (let i = 0; i < 25; i++) {
+      await page.keyboard.press("Tab");
+      expect((await focus(page)).inside).toBe(true);
+    }
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press("Shift+Tab");
+      expect((await focus(page)).inside).toBe(true);
+    }
+
+    // finish: the summary takes the steps' place
     await page.locator("#welcome-finish").click();
     await expect(page.locator("#welcome-done-title")).toBeFocused();
-    await expect(page.locator("#welcome-you")).toHaveCount(0);
+    await expect(page.locator("#setup-steps")).toHaveCount(0);
     await expect(page.locator("#summary-name")).toContainText("Priya");
     // every palette and mode is in the page; CSS shows the ones in force
     await expect(page.locator("#summary-look")).toContainText(/Moss & Paper,\s+dark/, { useInnerText: true });
@@ -144,12 +210,15 @@ test.describe("first-run setup", () => {
 
     await page.locator("#welcome-start-channel").click();
     await expect(page).toHaveURL(/\/channels\/new\?repository_id=/);
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page.locator("#app-shell")).not.toHaveAttribute("inert", "");
     const repositoryId = new URL(page.url()).searchParams.get("repository_id")!;
     await expect(page.getByLabel("Repository")).toHaveValue(repositoryId);
 
-    // setup is done: home no longer sends us back
+    // setup is done: no modal any more
     await page.goto("/");
-    await expect(page).not.toHaveURL(/\/welcome/);
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await expect(dialog(page)).toHaveCount(0);
 
     await page.goto("/settings");
     await expect(page.locator("#profile-form").getByLabel("Display name")).toHaveValue("Priya");
@@ -164,37 +233,95 @@ test.describe("first-run setup", () => {
     await page.evaluate(() => localStorage.clear());
   });
 
-  test("an old ?step= link opens the page at its section", async ({ page }) => {
-    await page.goto("/welcome?step=team");
-    await expect(page).toHaveURL(/\/welcome#welcome-pace$/);
-    await expect(page.locator("#welcome-pace")).toBeInViewport();
+  test("is a full-screen sheet on a phone, walked with Next to the summary", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await connected(page);
+    await expect(dialog(page)).toBeVisible();
+
+    const panel = (await page.locator("#setup-panel").boundingBox())!;
+    expect(Math.round(panel.width)).toBe(390);
+    expect(Math.round(panel.height)).toBe(844);
+    await expect(page.locator("#setup-progress")).toContainText("1 of 6");
+
+    const steps = ["you", "look", "engines", "pace", "notify", "project"];
+    for (const [i, step] of steps.entries()) {
+      await expect(current(page)).toHaveAttribute("id", `setup-step-${step}`);
+      await expect(page.locator("#setup-progress")).toContainText(`${i + 1} of 6`);
+      // nothing sideways, and the primary button always on screen
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      expect(overflow).toBeLessThanOrEqual(0);
+      const primary = page.locator("[data-setup-primary]");
+      await expect(primary).toBeInViewport();
+
+      if (step === "engines") await expect(page.locator("#welcome-claude")).toHaveAttribute("data-state", "ready");
+      if (step === "pace") {
+        // Custom's controls are the widest thing here (Custom only shows them; nothing saves)
+        await page.locator("#welcome-presets-custom").click();
+        await expect(page.locator("#welcome-team-form")).toBeVisible();
+        const form = (await page.locator("#welcome-team-form").boundingBox())!;
+        for (const label of await page.locator("#welcome-team-form .label").all()) {
+          const box = (await label.boundingBox())!;
+          expect(box.x + box.width).toBeLessThanOrEqual(form.x + form.width);
+        }
+        await page.locator("#welcome-team-form").scrollIntoViewIfNeeded();
+        await expect(primary).toBeInViewport();
+      }
+      if (step !== "project") await next(page);
+    }
+
+    await page.locator("#welcome-finish").click();
+    await expect(page.locator("#welcome-done-title")).toBeFocused();
+    await expect(page.locator("#welcome-look-around")).toBeInViewport();
+    const url = page.url();
+    await page.locator("#welcome-look-around").click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(page.url()).toBe(url);
+    await page.evaluate(() => localStorage.clear());
   });
 
-  test("is comfortable on a phone: no sideways scroll, Finish always in reach", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/welcome");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
-    await expect(page.locator("#welcome-claude")).toHaveAttribute("data-state", "ready");
-    // Custom's controls are the widest thing on the page (Custom only shows them; nothing saves)
-    await page.locator("#welcome-presets-custom").click();
-    await expect(page.locator("#welcome-team-form")).toBeVisible();
+  test("an old /welcome?step= link opens the modal at its step, and closing drops ?setup=", async ({ page }) => {
+    await page.goto("/welcome?step=team");
+    await expect(page).toHaveURL(/\/(channels\/ch_[^?]+|repositories)\?setup=pace$/);
+    await connected(page);
+    await expect(current(page)).toHaveAttribute("id", "setup-step-pace");
+    await expect(page.locator("#welcome-pace")).toBeVisible();
 
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-    expect(overflow).toBeLessThanOrEqual(0);
-    const form = (await page.locator("#welcome-team-form").boundingBox())!;
-    for (const label of await page.locator("#welcome-team-form .label").all()) {
-      const box = (await label.boundingBox())!;
-      expect(box.x + box.width).toBeLessThanOrEqual(form.x + form.width);
-    }
-    // the sticky footer keeps Finish on screen halfway down
-    await page.locator("#welcome-pace").scrollIntoViewIfNeeded();
-    await expect(page.locator("#welcome-finish")).toBeInViewport();
+    await page.locator("#skip-setup").click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page).not.toHaveURL(/setup=/);
+  });
+
+  test("Run setup again opens it over Settings, and focus comes back after", async ({ page }) => {
+    onboarded();
+    await page.goto("/settings");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await expect(dialog(page)).toHaveCount(0);
+
+    await page.locator("#run-setup").click();
+    await expect(dialog(page)).toBeVisible();
+    await expect(current(page)).toHaveAttribute("id", "setup-step-you");
+    // the same picker and switch are in the modal, so Settings' own step aside meanwhile
+    await expect(page.locator("#appearance-in-setup")).toBeAttached();
+    await page.locator("#setup-step-look").click();
+    await expect(page.locator("#palette-moss")).toHaveCount(1);
+    await page.locator("#setup-step-notify").click();
+    await expect(page.locator("#notify-prefs")).toHaveCount(1);
+
+    await page.keyboard.press("Escape");
+    await page.locator("#setup-skip-confirmed").click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.locator("#flash-info")).toContainText("Setup skipped");
+    await expect(page.locator("#appearance-panel #palette-moss")).toBeVisible();
+    await expect(page.locator("#run-setup")).toBeFocused();
   });
 
   test("turns desktop notifications on, and the summary says so", async ({ context, page }) => {
     await stubNotifications(context);
-    await page.goto("/welcome");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await page.goto("/");
+    await connected(page);
+    await page.locator("#setup-step-notify").click();
 
     const prefs = page.locator("#welcome-notify #notify-prefs");
     await expect(prefs).toHaveAttribute("data-state", "off");
@@ -207,6 +334,7 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#notify-granted")).toBeVisible();
     expect(await page.evaluate(() => (window as any).__requests)).toBe(1);
 
+    await next(page);
     await page.locator("#welcome-finish").click();
     await expect(page.locator("#summary-notify")).toContainText("Desktop notifications: on", { useInnerText: true });
     await page.evaluate(() => localStorage.clear());
@@ -216,32 +344,40 @@ test.describe("first-run setup", () => {
     const blocked = await browser.newContext({ baseURL: test.info().project.use.baseURL });
     await stubNotifications(blocked, { answer: "denied" });
     const page = await blocked.newPage();
-    await page.goto("/welcome");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await page.goto("/");
+    await connected(page);
+    await page.locator("#setup-step-notify").click();
     await page.locator("#notify-enabled").click();
     await expect(page.locator("#notify-prefs")).toHaveAttribute("data-state", "blocked");
     await expect(page.locator("#notify-blocked")).toBeVisible();
+    await page.locator("#setup-step-project").click();
     await page.locator("#welcome-finish").click();
     await expect(page.locator("#summary-notify")).toContainText("blocked by the browser", { useInnerText: true });
     await blocked.close();
 
+    // finishing marked setup done; the next page is a fresh install again
+    fresh();
     const lan = await browser.newContext({ baseURL: test.info().project.use.baseURL });
     await stubNotifications(lan, { unsupported: true });
     const other = await lan.newPage();
-    await other.goto("/welcome");
+    await other.goto("/welcome?step=notifications");
+    await connected(other);
     await expect(other.locator("#notify-prefs")).toHaveAttribute("data-state", "unsupported");
     await expect(other.locator("#notify-unsupported")).toContainText("http://127.0.0.1");
     await lan.close();
   });
 
-  test("Skip setup finishes it and goes home", async ({ page }) => {
-    await page.goto("/welcome");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+  test("Skip setup finishes it and closes the modal on the page", async ({ page }) => {
+    await page.goto("/");
+    await connected(page);
+    const url = page.url();
     await page.locator("#skip-setup").click();
-    await expect(page).toHaveURL(/\/(channels\/ch_|repositories)/);
+    await expect(dialog(page)).toHaveCount(0);
+    expect(page.url()).toBe(url);
     await expect(page.locator("#flash-info")).toContainText("Setup skipped");
 
     await page.goto("/");
-    await expect(page).not.toHaveURL(/\/welcome/);
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await expect(dialog(page)).toHaveCount(0);
   });
 });

@@ -353,6 +353,8 @@ defmodule CanopyWeb.SearchLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <Layouts.page title="Search" max_width="max-w-4xl">
         <div class="flex flex-col gap-3">

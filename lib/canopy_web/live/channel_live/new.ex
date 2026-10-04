@@ -269,6 +269,8 @@ defmodule CanopyWeb.ChannelLive.New do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <Layouts.page title="New channel" subtitle="A focused room for one task in one repository">
         <Layouts.empty_state

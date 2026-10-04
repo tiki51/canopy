@@ -1,26 +1,35 @@
 defmodule CanopyWeb.OnboardingLive do
   @moduledoc """
-  First-run setup at `/welcome`: one scrolling page with the display name, the
-  look (kept in the browser), which engines are ready, the default engine
-  agents follow and the default model for each engine, how much agents may
-  do on their own (a conversation preset), whether this browser shows
-  desktop notifications (kept in the browser, like the look), and an
-  optional first repository. `/` sends a fresh install here until
-  setup is finished or skipped (`Canopy.Settings.onboarded?/0`); Settings →
-  *Run setup again* comes back any time.
+  First-run setup: a stepped modal over the app. Six steps, clicked through
+  with *Back* / *Next* or the step indicator: You (display name), Look (mode
+  and palette, kept in the browser; the app behind updates as you click),
+  Engines (which are ready, the default engine and each engine's default
+  model), Pace (a conversation preset), Notifications (kept in the browser,
+  like the look) and an optional first project. *Finish setup* on the last
+  step shows a summary in the modal; *Skip setup* is always there.
+
+  It is a nested LiveView, rendered by `CanopyWeb.Layouts.app/1` (as
+  `live_render(..., id: "setup")`) while `CanopyWeb.Nav` has set the page's
+  `:setup` assign: on any page while `Canopy.Settings.onboarded?/0` is false,
+  with `?setup=<step>` in the URL (what `/welcome` and its old `?step=` links
+  redirect to), or after Settings → *Run setup again* (`"open_setup"`).
+  Closing it (Skip, *Look around*, *Start a channel*) asks the page to
+  navigate (`{:canopy_setup, :close, opts}` to the parent, handled by `Nav`):
+  to the same page, live, so what is behind shows what was chosen, or to New
+  channel.
 
   Every choice saves as it is made (the name debounced, on change or blur), so
-  leaving the page halfway keeps what was chosen; a project is added by its own
-  button. Only `onboarded_at` waits for *Finish setup* (or *Skip setup*), after
-  which the page shows a summary in place of the sections.
+  closing halfway keeps what was chosen and *Next* or a jump never loses
+  input: each step's form lives in an assign, not only in the DOM. A project
+  is added by its own button. Only `onboarded_at` waits for *Finish setup*
+  (or *Skip setup*). Esc never closes the modal silently: it asks "Skip
+  setup?" in the footer.
 
   The default engine (`CanopyWeb.EngineComponents.default_engine_choice/1`)
   is preselected from the checks and saved, until the user picks one: only
   Claude Code ready → Claude Code; only OpenCode, or both → OpenCode. The
   starter agents follow the default, so they answer on whichever engine
   works. The default model controls list the default engine first.
-
-  The old wizard's `?step=` links redirect to the page, at the matching section.
   """
   use CanopyWeb, :live_view
 
@@ -32,13 +41,24 @@ defmodule CanopyWeb.OnboardingLive do
   alias Canopy.Settings.Presets
   alias CanopyWeb.{AppearanceComponents, EngineComponents, NotifyComponents, PresetComponents}
 
-  @step_anchors %{
-    "name" => "welcome-you",
-    "theme" => "welcome-look",
-    "engines" => "welcome-engines",
-    "team" => "welcome-pace",
-    "repository" => "welcome-project",
-    "done" => "welcome-finish-bar"
+  @steps [
+    %{id: "you", label: "You"},
+    %{id: "look", label: "Look"},
+    %{id: "engines", label: "Engines"},
+    %{id: "pace", label: "Pace"},
+    %{id: "notify", label: "Notifications"},
+    %{id: "project", label: "Project"}
+  ]
+  @step_ids Enum.map(@steps, & &1.id)
+
+  # The one-page version's anchors and the first wizard's `?step=` names.
+  @step_aliases %{
+    "name" => "you",
+    "theme" => "look",
+    "team" => "pace",
+    "notifications" => "notify",
+    "repository" => "project",
+    "done" => "project"
   }
 
   # How long a section's "Saved" stays up.
@@ -51,23 +71,25 @@ defmodule CanopyWeb.OnboardingLive do
   @claude_guide "https://tiki51.github.io/canopy-site/getting-started/claude-code/"
   @opencode_guide "https://tiki51.github.io/canopy-site/getting-started/opencode/"
 
+  @doc "The setup steps, in order, as `%{id, label}`."
+  def steps, do: @steps
+
+  @doc """
+  The step a `?setup=` (or old `?step=`) value names, or nil: a step id, or
+  one of the names the earlier wizard and one-page versions used.
+  """
+  def step_for(step) when step in @step_ids, do: step
+  def step_for(step) when is_binary(step), do: Map.get(@step_aliases, step)
+  def step_for(_step), do: nil
+
   @impl true
-  def mount(%{"step" => step}, _session, socket) do
-    to =
-      case Map.fetch(@step_anchors, step) do
-        {:ok, anchor} -> ~p"/welcome" <> "#" <> anchor
-        :error -> ~p"/welcome"
-      end
-
-    {:ok, redirect(socket, to: to)}
-  end
-
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     setting = Settings.get()
 
     socket =
       socket
-      |> assign(:page_title, "Welcome")
+      |> assign(:step, step_for(session["step"]) || "you")
+      |> assign(:confirm_skip, false)
       |> assign(:finished, false)
       |> assign(:saved, %{})
       |> assign(:setting, setting)
@@ -94,6 +116,8 @@ defmodule CanopyWeb.OnboardingLive do
 
     socket =
       if connected?(socket) do
+        # Checked at once, whatever the step, so the Engines step is ready
+        # by the time it is reached.
         socket = check_engines(socket)
 
         # Still "You": suggest the name git knows, unless the user types first.
@@ -107,20 +131,38 @@ defmodule CanopyWeb.OnboardingLive do
     {:ok, socket}
   end
 
-  # -- Skip and finish -----------------------------------------------------------
+  # -- Steps ---------------------------------------------------------------------
 
   @impl true
+  def handle_event("go", %{"step" => step}, socket) when step in @step_ids,
+    do: {:noreply, go(socket, step)}
+
+  def handle_event("go", _params, socket), do: {:noreply, socket}
+
+  def handle_event("next", _params, socket), do: {:noreply, go(socket, neighbour(socket, 1))}
+  def handle_event("back", _params, socket), do: {:noreply, go(socket, neighbour(socket, -1))}
+
+  # Esc asks before anything closes; a second Esc takes the question back.
+  # After Finish there is nothing left to skip.
+  def handle_event("escape", _params, %{assigns: %{finished: true}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("escape", _params, socket),
+    do: {:noreply, update(socket, :confirm_skip, &(not &1))}
+
+  def handle_event("keep_going", _params, socket),
+    do: {:noreply, assign(socket, :confirm_skip, false)}
+
+  # -- Skip and finish -----------------------------------------------------------
+
   def handle_event("skip", _params, socket) do
     {:ok, _} = Settings.mark_onboarded()
 
-    {:noreply,
-     socket
-     |> put_flash(:info, "Setup skipped. You can run it any time from Settings.")
-     |> redirect(to: ~p"/")}
+    {:noreply, close(socket, flash: "Setup skipped. You can run it any time from Settings.")}
   end
 
   # A git name still sitting untouched in the field is kept on Finish: it is
-  # what the page showed.
+  # what the modal showed.
   def handle_event("finish", _params, socket) do
     socket = keep_name_suggestion(socket)
     {:ok, setting} = Settings.mark_onboarded()
@@ -128,49 +170,30 @@ defmodule CanopyWeb.OnboardingLive do
     {:noreply,
      socket
      |> assign(:finished, true)
+     |> assign(:confirm_skip, false)
      |> assign(:setting, setting)
      |> assign(:repositories, Repositories.list())}
   end
 
   def handle_event("start_channel", _params, socket) do
     case socket.assigns.added_repository do
-      %Repository{id: id} ->
-        {:noreply, push_navigate(socket, to: ~p"/channels/new?repository_id=#{id}")}
-
-      nil ->
-        {:noreply, redirect(socket, to: ~p"/")}
+      %Repository{id: id} -> {:noreply, close(socket, to: ~p"/channels/new?repository_id=#{id}")}
+      nil -> {:noreply, close(socket, to: ~p"/channels/new")}
     end
   end
 
-  def handle_event("look_around", _params, socket),
-    do: {:noreply, push_navigate(socket, to: ~p"/agents")}
+  def handle_event("look_around", _params, socket), do: {:noreply, close(socket)}
 
   # -- You -----------------------------------------------------------------------
 
-  def handle_event("save_name", %{"setting" => params}, socket) do
-    socket = assign(socket, :name_touched, true)
-    checked = name_changeset(socket.assigns.setting, params)
+  def handle_event("save_name", %{"setting" => params}, socket),
+    do: {:noreply, socket |> save_name(params) |> elem(0)}
 
-    cond do
-      not checked.valid? ->
-        {:noreply,
-         assign(socket, :name_form, name_form_from(Map.put(checked, :action, :validate)))}
-
-      not Ecto.Changeset.changed?(checked, :user_display_name) ->
-        {:noreply, assign(socket, :name_form, name_form_from(checked))}
-
-      true ->
-        case Settings.update(Map.take(params, ["user_display_name"])) do
-          {:ok, setting} ->
-            {:noreply,
-             socket
-             |> assign(:setting, setting)
-             |> assign(:name_form, name_form_from(Settings.change(setting)))
-             |> mark_saved(:you)}
-
-          {:error, changeset} ->
-            {:noreply, assign(socket, :name_form, name_form_from(changeset))}
-        end
+  # Enter in the field: the name is saved and, when it is a name, Next.
+  def handle_event("submit_name", %{"setting" => params}, socket) do
+    case save_name(socket, params) do
+      {socket, :ok} -> {:noreply, go(socket, neighbour(socket, 1))}
+      {socket, :error} -> {:noreply, socket}
     end
   end
 
@@ -403,6 +426,59 @@ defmodule CanopyWeb.OnboardingLive do
 
   # -- Helpers -------------------------------------------------------------------
 
+  defp go(socket, step) do
+    socket
+    |> assign(:step, step)
+    |> assign(:confirm_skip, false)
+  end
+
+  # The step before (-1) or after (1) the current one, staying in range.
+  defp neighbour(socket, offset) do
+    index = Enum.find_index(@step_ids, &(&1 == socket.assigns.step)) + offset
+    Enum.at(@step_ids, index |> max(0) |> min(length(@step_ids) - 1))
+  end
+
+  # The page behind navigates (CanopyWeb.Nav): to the same page, live, so it
+  # shows what was chosen, or where the user asked to go. Always nested in a
+  # page; mounted on its own it goes home instead.
+  defp close(socket, opts \\ []) do
+    case socket.parent_pid do
+      pid when is_pid(pid) ->
+        send(pid, {:canopy_setup, :close, Map.new(opts)})
+        socket
+
+      nil ->
+        socket
+        |> then(&if(opts[:flash], do: put_flash(&1, :info, opts[:flash]), else: &1))
+        |> push_navigate(to: opts[:to] || ~p"/")
+    end
+  end
+
+  defp save_name(socket, params) do
+    socket = assign(socket, :name_touched, true)
+    checked = name_changeset(socket.assigns.setting, params)
+
+    cond do
+      not checked.valid? ->
+        {assign(socket, :name_form, name_form_from(Map.put(checked, :action, :validate))), :error}
+
+      not Ecto.Changeset.changed?(checked, :user_display_name) ->
+        {assign(socket, :name_form, name_form_from(checked)), :ok}
+
+      true ->
+        case Settings.update(Map.take(params, ["user_display_name"])) do
+          {:ok, setting} ->
+            {socket
+             |> assign(:setting, setting)
+             |> assign(:name_form, name_form_from(Settings.change(setting)))
+             |> mark_saved(:you), :ok}
+
+          {:error, changeset} ->
+            {assign(socket, :name_form, name_form_from(changeset)), :error}
+        end
+    end
+  end
+
   # Both engines (and OpenCode's model list, from the saved URL) at once.
   defp check_engines(socket) do
     url = socket.assigns.setting.opencode_url
@@ -589,153 +665,453 @@ defmodule CanopyWeb.OnboardingLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(assigns,
+        steps: @steps,
+        index: Enum.find_index(@step_ids, &(&1 == assigns.step)),
+        last?: assigns.step == List.last(@step_ids)
+      )
+
     ~H"""
-    <Layouts.focus flash={@flash}>
-      <:actions :if={!@finished}>
-        <button type="button" id="skip-setup" class="btn btn-ghost btn-sm" phx-click="skip">
-          Skip setup
-        </button>
-      </:actions>
+    <%!-- A modal over the app (CanopyWeb.Layouts.app/1 makes #app-shell inert
+         while it is open). Not a <dialog>: Chrome closes a modal dialog on a
+         repeated Esc whatever its cancel handler says, and setup closes only
+         by an explicit choice. The hook traps focus, turns Esc into "Skip
+         setup?", lets Enter press the primary button, and moves focus to each
+         step as it shows. --%>
+    <div
+      id="setup-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="setup-title"
+      data-step={if @finished, do: "done", else: @step}
+      data-skip-question={to_string(@confirm_skip)}
+      phx-hook=".SetupDialog"
+      class="fixed inset-0 z-50 flex items-stretch justify-center sm:items-center sm:p-6"
+    >
+      <div
+        class="setup-backdrop absolute inset-0 bg-neutral/30 backdrop-blur-[2px] dark:bg-black/50"
+        aria-hidden="true"
+      >
+      </div>
 
-      <%= if @finished do %>
-        <.done
-          setting={@setting}
-          claude_check={@claude_check}
-          opencode_health={@opencode_health}
-          added_repository={@added_repository}
-          repositories={@repositories}
-        />
-      <% else %>
-        <div id="welcome-intro">
-          <h1 class="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-            Welcome to Canopy
-          </h1>
-          <p class="mt-3 max-w-xl text-base leading-relaxed text-pretty text-base-content/70">
-            A few choices and your AI agents are ready to work as a team. Each one saves as you
-            make it, and all of them can be changed later in Settings.
-          </p>
-        </div>
-
-        <.setup_section id="welcome-you" title="You" saved={@saved[:you]}>
-          <:description>Shown on your messages. The agents see it too.</:description>
-          <.form
-            for={@name_form}
-            id="welcome-name-form"
-            phx-change="save_name"
-            phx-submit="save_name"
-            class="max-w-sm"
-          >
-            <.input
-              field={@name_form[:user_display_name]}
-              type="text"
-              label="What should the agents call you?"
-              placeholder="Your name"
-              autocomplete="name"
-              phx-debounce="600"
-            />
-          </.form>
-        </.setup_section>
-
-        <.setup_section id="welcome-look" title="Look">
-          <:description>
-            Light, dark or the system's, in one of four palettes. It applies as you click and
-            is kept in this browser.
-          </:description>
-          <AppearanceComponents.appearance_picker />
-        </.setup_section>
-
-        <.engines_section
-          saved={@saved[:engines]}
-          claude_check={@claude_check}
-          opencode_health={@opencode_health}
-          opencode_url={@setting.opencode_url}
-          setting={@setting}
-          providers={@providers}
-          providers_state={@providers_state}
-          form={@engines_form}
-          claude_path_form={@claude_path_form}
-          release={@release}
-        />
-
-        <.setup_section
-          id="welcome-pace"
-          title="How much agents do on their own"
-          saved={@saved[:pace]}
-        >
-          <:description>
-            Agents wake each other by mentioning, delegating and handing off. This decides how
-            far that goes before you're back in the loop.
-          </:description>
-          <PresetComponents.preset_cards
-            id="welcome-presets"
-            selected={@preset}
-            event="pick_preset"
-            custom
+      <%!-- A fixed height from sm up, so it doesn't jump between steps; a
+           full-screen sheet below. --%>
+      <div
+        id="setup-panel"
+        class="setup-panel relative flex h-dvh w-full flex-col bg-base-100 text-base-content shadow-2xl sm:h-[min(46rem,calc(100dvh-3rem))] sm:max-w-2xl sm:rounded-2xl sm:ring-1 sm:ring-base-content/10"
+      >
+        <header class="flex items-center gap-2.5 px-5 pt-[max(1rem,env(safe-area-inset-top))] sm:px-8 sm:pt-6">
+          <img
+            src={~p"/images/canopy-icon-64.png"}
+            alt=""
+            width="28"
+            height="28"
+            class="size-7 rounded-lg shadow-sm"
           />
-          <.form
-            :if={@preset == :custom}
-            for={@team_form}
-            id="welcome-team-form"
-            phx-change="save_team"
-            phx-submit="save_team"
-            class="mt-3 flex flex-col gap-2 rounded-xl border border-base-300 p-4 [&_.label]:whitespace-normal [&_.label]:items-start"
+          <p id="setup-title" class="text-sm font-semibold">Set up Canopy</p>
+          <span
+            :if={!@finished}
+            id="setup-progress"
+            class="text-xs text-base-content/55 tabular-nums sm:hidden"
           >
-            <.input
-              field={@team_form[:serialize_turns]}
-              type="checkbox"
-              label="One agent at a time per channel"
-            />
-            <.input
-              field={@team_form[:chatter_pause]}
-              type="checkbox"
-              label="Pause a channel after agents have taken turns without me"
-            />
-            <div class="max-w-xs">
-              <.input
-                field={@team_form[:chatter_limit]}
-                type="number"
-                min="1"
-                max="1000"
-                label="Turns before pausing"
-                phx-debounce="400"
-              />
-            </div>
-          </.form>
-          <p class="mt-4 text-xs text-base-content/60">
-            A paused channel shows a Continue button; your next message also resumes it.
-          </p>
-        </.setup_section>
-
-        <%!-- Kept in this browser by notify.js, like the look; the same
-             controls as Settings → Notifications. --%>
-        <.setup_section id="welcome-notify" title="Notifications" optional>
-          <:description>
-            Hear about it when an agent needs you and you're looking elsewhere. Applies to this
-            browser; Settings has the details.
-          </:description>
-          <NotifyComponents.notify_prefs kinds={false} />
-        </.setup_section>
-
-        <.project_section
-          form={@repository_form}
-          repositories={@repositories}
-          home={@home}
-          note={@repository_note}
-        />
-      <% end %>
-
-      <:footer :if={!@finished}>
-        <div id="welcome-finish-bar" class="flex items-center justify-between gap-4">
-          <p class="min-w-0 text-sm text-base-content/60">
-            <span class="sm:hidden">Saved as you go.</span>
-            <span class="hidden sm:inline">Your choices are saved as you go.</span>
-          </p>
-          <button type="button" id="welcome-finish" class="btn btn-primary" phx-click="finish">
-            Finish setup <.icon name="hero-arrow-right-micro" class="size-4" />
+            · {@index + 1} of {length(@steps)}
+          </span>
+          <button
+            :if={!@finished}
+            type="button"
+            id="skip-setup"
+            class="btn btn-ghost btn-sm -mr-2 ml-auto font-normal text-base-content/70"
+            phx-click="skip"
+          >
+            Skip setup
           </button>
+        </header>
+
+        <nav :if={!@finished} id="setup-steps" aria-label="Setup steps" class="px-5 pt-5 sm:px-8">
+          <ol class="grid grid-cols-6 gap-1.5 sm:gap-2">
+            <li :for={{step, i} <- Enum.with_index(@steps)}>
+              <button
+                type="button"
+                id={"setup-step-#{step.id}"}
+                phx-click="go"
+                phx-value-step={step.id}
+                aria-current={if(i == @index, do: "step")}
+                data-state={step_state(i, @index)}
+                class="group flex w-full cursor-pointer flex-col gap-2 rounded-md py-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                <span class={[
+                  "block h-1 w-full rounded-full transition-colors duration-300",
+                  i <= @index && "bg-primary",
+                  i > @index && "bg-base-300 group-hover:bg-base-content/25"
+                ]}></span>
+                <span class={[
+                  "hidden truncate text-xs transition-colors sm:block",
+                  i == @index && "font-semibold text-base-content",
+                  i < @index && "text-base-content/70 group-hover:text-base-content",
+                  i > @index && "text-base-content/50 group-hover:text-base-content/75"
+                ]}>
+                  {step.label}
+                </span>
+                <span class="sr-only sm:hidden">{step.label}</span>
+              </button>
+            </li>
+          </ol>
+        </nav>
+
+        <div
+          id="setup-body"
+          class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pt-7 pb-8 sm:px-8 sm:pt-8"
+        >
+          <%= if @finished do %>
+            <.done
+              setting={@setting}
+              claude_check={@claude_check}
+              opencode_health={@opencode_health}
+              added_repository={@added_repository}
+              repositories={@repositories}
+            />
+          <% else %>
+            <.step_content {assigns} />
+          <% end %>
         </div>
-      </:footer>
-    </Layouts.focus>
+
+        <footer
+          id="setup-footer"
+          class="border-t border-base-300/60 px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-8 sm:py-4"
+        >
+          <%= cond do %>
+            <% @finished -> %>
+              <div class="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+                <button
+                  type="button"
+                  id="welcome-look-around"
+                  class="btn btn-ghost"
+                  phx-click="look_around"
+                >
+                  Look around
+                </button>
+                <button
+                  type="button"
+                  id="welcome-start-channel"
+                  class="btn btn-primary"
+                  phx-click="start_channel"
+                >
+                  <.icon name="hero-chat-bubble-left-right" class="size-4" /> Start a channel
+                </button>
+              </div>
+            <% @confirm_skip -> %>
+              <div
+                id="setup-skip-confirm"
+                role="group"
+                aria-labelledby="setup-skip-question"
+                class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3"
+              >
+                <p id="setup-skip-question" class="min-w-0 flex-1 text-sm">
+                  <span class="font-semibold">Skip setup?</span>
+                  <span class="text-base-content/65">What you've chosen so far is kept.</span>
+                </p>
+                <div class="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    id="setup-keep-going"
+                    class="btn btn-ghost btn-sm"
+                    phx-click="keep_going"
+                    phx-mounted={JS.focus()}
+                  >
+                    Keep going
+                  </button>
+                  <button
+                    type="button"
+                    id="setup-skip-confirmed"
+                    class="btn btn-soft btn-warning btn-sm"
+                    phx-click="skip"
+                  >
+                    Skip setup
+                  </button>
+                </div>
+              </div>
+            <% true -> %>
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  id="setup-back"
+                  class={["btn btn-ghost", @index == 0 && "invisible"]}
+                  phx-click="back"
+                  disabled={@index == 0}
+                >
+                  <.icon name="hero-arrow-left-micro" class="size-4" /> Back
+                </button>
+                <p class="min-w-0 flex-1 text-center text-xs text-base-content/55">
+                  <span class="hidden sm:inline">Saved as you go</span>
+                </p>
+                <%= if @last? do %>
+                  <button
+                    type="button"
+                    id="welcome-finish"
+                    class="btn btn-primary"
+                    phx-click="finish"
+                    data-setup-primary
+                  >
+                    Finish setup <.icon name="hero-check-micro" class="size-4" />
+                  </button>
+                <% else %>
+                  <button
+                    type="button"
+                    id="setup-next"
+                    class="btn btn-primary"
+                    phx-click="next"
+                    data-setup-primary
+                  >
+                    Next <.icon name="hero-arrow-right-micro" class="size-4" />
+                  </button>
+                <% end %>
+              </div>
+          <% end %>
+        </footer>
+      </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".SetupDialog">
+        const FOCUSABLE =
+          "a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+        // Enter on these keeps its own meaning (submit, toggle, follow).
+        const OWN_ENTER = "input, textarea, select, button, a, summary, [role=radio], [role=switch], [contenteditable]"
+
+        export default {
+          mounted() {
+            const active = document.activeElement
+            this.returnTo = active && active !== document.body && active.id ? active.id : null
+            this.step = this.el.dataset.step
+            // (not data-confirm: phoenix_html turns that into a confirm() box)
+            this.question = this.el.dataset.skipQuestion
+            this.onKeydown = (e) => this.keydown(e)
+            document.addEventListener("keydown", this.onKeydown)
+            this.focusStep()
+          },
+
+          updated() {
+            if (this.el.dataset.step !== this.step) {
+              this.step = this.el.dataset.step
+              this.focusStep()
+            } else if (this.el.dataset.skipQuestion !== this.question && this.el.dataset.skipQuestion === "false") {
+              // "Keep going": back to where the question took focus from
+              const primary = this.el.querySelector("[data-setup-primary]")
+              primary ? primary.focus() : this.focusStep()
+            }
+            this.question = this.el.dataset.skipQuestion
+          },
+
+          destroyed() {
+            document.removeEventListener("keydown", this.onKeydown)
+            // Closing navigates the page behind; once it is back, focus returns
+            // to what had it, or to what opens setup ([data-setup-return],
+            // Settings' Run setup again: the inert shell had already taken
+            // focus from it when this mounted), if the page has one.
+            const id = this.returnTo
+            const target = () => {
+              const el = (id && document.getElementById(id)) || document.querySelector("[data-setup-return]")
+              return el && el.isConnected && !el.closest("[inert]") ? el : null
+            }
+            // The new page arrives over a few frames, and LiveView may drop
+            // focus as it does; keep at it for a moment, until it holds, unless
+            // the user has put focus somewhere else by then.
+            const until = performance.now() + 1500
+            let held = 0
+            const restore = () => {
+              const el = target()
+              const active = document.activeElement
+              if (held > 0 && active && active !== document.body && active !== el) return
+              if (el && active !== el) el.focus({preventScroll: true})
+              held = el && document.activeElement === el ? held + 1 : 0
+              if (held < 5 && performance.now() < until) requestAnimationFrame(restore)
+            }
+            requestAnimationFrame(restore)
+          },
+
+          // The step's own field when it has one (the name), else its heading,
+          // so a screen reader hears where it is.
+          focusStep() {
+            const target =
+              this.el.querySelector("#setup-body [data-setup-autofocus]") ||
+              this.el.querySelector("#setup-body h2[tabindex]")
+            if (target) target.focus({preventScroll: true})
+          },
+
+          keydown(e) {
+            if (e.defaultPrevented || e.isComposing) return
+            if (e.key === "Escape") {
+              e.preventDefault()
+              e.stopPropagation()
+              this.pushEvent("escape", {})
+            } else if (e.key === "Tab") {
+              this.trap(e)
+            } else if (e.key === "Enter" && !(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey)) {
+              if (e.target.closest && e.target.closest(OWN_ENTER)) return
+              const primary = this.el.querySelector("[data-setup-primary]")
+              if (primary) {
+                e.preventDefault()
+                primary.click()
+              }
+            }
+          },
+
+          trap(e) {
+            const items = [...this.el.querySelectorAll(FOCUSABLE)].filter((el) => el.getClientRects().length > 0)
+            if (items.length === 0) return
+            const first = items[0]
+            const last = items[items.length - 1]
+            const inside = this.el.contains(document.activeElement)
+            if (e.shiftKey && (!inside || document.activeElement === first)) {
+              e.preventDefault()
+              last.focus()
+            } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+              e.preventDefault()
+              first.focus()
+            }
+          },
+        }
+      </script>
+    </div>
+    """
+  end
+
+  defp step_state(i, index) when i < index, do: "done"
+  defp step_state(index, index), do: "current"
+  defp step_state(_i, _index), do: "upcoming"
+
+  # The current step's section. Each keeps its id (`welcome-<step>`) and its
+  # own "Saved".
+  defp step_content(%{step: "you"} = assigns) do
+    ~H"""
+    <.setup_section id="welcome-you" title="Welcome to Canopy" saved={@saved[:you]}>
+      <:description>
+        A few choices and your AI agents are ready to work as a team. Each one saves as you make
+        it, and all of them can be changed later in Settings.
+      </:description>
+      <.form
+        for={@name_form}
+        id="welcome-name-form"
+        phx-change="save_name"
+        phx-submit="submit_name"
+        class="max-w-sm"
+      >
+        <.input
+          field={@name_form[:user_display_name]}
+          type="text"
+          label="What should the agents call you?"
+          placeholder="Your name"
+          autocomplete="name"
+          phx-debounce="600"
+          data-setup-autofocus
+        />
+        <p class="-mt-1 text-xs text-base-content/60">
+          Shown on your messages. The agents see it too.
+        </p>
+      </.form>
+    </.setup_section>
+    """
+  end
+
+  defp step_content(%{step: "look"} = assigns) do
+    ~H"""
+    <.setup_section id="welcome-look" title="Pick a look">
+      <:description>
+        Light, dark or the system's, in one of four palettes. Canopy changes behind this as you
+        click, and remembers it in this browser.
+      </:description>
+      <AppearanceComponents.appearance_picker />
+    </.setup_section>
+    """
+  end
+
+  defp step_content(%{step: "engines"} = assigns) do
+    ~H"""
+    <.engines_section
+      saved={@saved[:engines]}
+      claude_check={@claude_check}
+      opencode_health={@opencode_health}
+      opencode_url={@setting.opencode_url}
+      setting={@setting}
+      providers={@providers}
+      providers_state={@providers_state}
+      form={@engines_form}
+      claude_path_form={@claude_path_form}
+      release={@release}
+    />
+    """
+  end
+
+  defp step_content(%{step: "pace"} = assigns) do
+    ~H"""
+    <.setup_section id="welcome-pace" title="How much agents do on their own" saved={@saved[:pace]}>
+      <:description>
+        Agents wake each other by mentioning, delegating and handing off. This decides how far
+        that goes before you're back in the loop.
+      </:description>
+      <PresetComponents.preset_cards
+        id="welcome-presets"
+        selected={@preset}
+        event="pick_preset"
+        custom
+      />
+      <.form
+        :if={@preset == :custom}
+        for={@team_form}
+        id="welcome-team-form"
+        phx-change="save_team"
+        phx-submit="save_team"
+        class="mt-3 flex flex-col gap-2 rounded-xl bg-base-200/60 p-4 ring-1 ring-inset ring-base-300/60 [&_.label]:items-start [&_.label]:whitespace-normal"
+      >
+        <.input
+          field={@team_form[:serialize_turns]}
+          type="checkbox"
+          label="One agent at a time per channel"
+        />
+        <.input
+          field={@team_form[:chatter_pause]}
+          type="checkbox"
+          label="Pause a channel after agents have taken turns without me"
+        />
+        <div class="max-w-xs">
+          <.input
+            field={@team_form[:chatter_limit]}
+            type="number"
+            min="1"
+            max="1000"
+            label="Turns before pausing"
+            phx-debounce="400"
+          />
+        </div>
+      </.form>
+      <p class="mt-4 text-xs text-base-content/60">
+        A paused channel shows a Continue button; your next message also resumes it.
+      </p>
+    </.setup_section>
+    """
+  end
+
+  # Kept in this browser by notify.js, like the look; the same controls as
+  # Settings → Notifications.
+  defp step_content(%{step: "notify"} = assigns) do
+    ~H"""
+    <.setup_section id="welcome-notify" title="Notifications" optional>
+      <:description>
+        Hear about it when an agent needs you and you're looking elsewhere. Applies to this
+        browser; Settings has the details.
+      </:description>
+      <NotifyComponents.notify_prefs kinds={false} />
+    </.setup_section>
+    """
+  end
+
+  defp step_content(%{step: "project"} = assigns) do
+    ~H"""
+    <.project_section
+      form={@repository_form}
+      repositories={@repositories}
+      home={@home}
+      note={@repository_note}
+    />
     """
   end
 
@@ -748,20 +1124,22 @@ defmodule CanopyWeb.OnboardingLive do
 
   defp setup_section(assigns) do
     ~H"""
-    <section
-      id={@id}
-      aria-labelledby={"#{@id}-title"}
-      class="scroll-mt-8 border-t border-base-300/70 py-10 first-of-type:mt-10 sm:py-12"
-    >
+    <section id={@id} aria-labelledby={"#{@id}-title"} class="setup-step">
       <div class="flex items-center gap-2.5">
-        <h2 id={"#{@id}-title"} class="text-lg font-semibold tracking-tight">{@title}</h2>
+        <h2
+          id={"#{@id}-title"}
+          tabindex="-1"
+          class="text-xl font-semibold tracking-tight text-balance outline-none sm:text-2xl"
+        >
+          {@title}
+        </h2>
         <span
           :if={@optional}
           class="rounded-full bg-base-200 px-2 py-0.5 text-[11px] font-medium text-base-content/60"
         >
           Optional
         </span>
-        <span id={"#{@id}-status"} role="status" aria-live="polite" class="ml-auto">
+        <span id={"#{@id}-status"} role="status" aria-live="polite" class="ml-auto shrink-0">
           <span
             :if={@saved}
             id={"#{@id}-saved"}
@@ -775,10 +1153,10 @@ defmodule CanopyWeb.OnboardingLive do
           </span>
         </span>
       </div>
-      <p class="mt-1 max-w-xl text-sm leading-relaxed text-pretty text-base-content/65">
+      <p class="mt-2 max-w-xl text-sm leading-relaxed text-pretty text-base-content/65">
         {render_slot(@description)}
       </p>
-      <div class="mt-6">
+      <div class="mt-7">
         {render_slot(@inner_block)}
       </div>
     </section>
@@ -807,7 +1185,7 @@ defmodule CanopyWeb.OnboardingLive do
       |> assign(:opencode_guide, @opencode_guide)
 
     ~H"""
-    <.setup_section id="welcome-engines" title="Engines" saved={@saved}>
+    <.setup_section id="welcome-engines" title="Your engines" saved={@saved}>
       <:description>
         Agents do their work through a coding engine installed on this Mac. You need at least one.
       </:description>
@@ -816,7 +1194,7 @@ defmodule CanopyWeb.OnboardingLive do
         <div
           id="welcome-claude"
           data-state={engine_state(@claude_check, @claude_ready)}
-          class="flex flex-col gap-2 rounded-xl border border-base-300 bg-base-200 p-4"
+          class="flex flex-col gap-2 rounded-xl bg-base-200/60 p-4 ring-1 ring-inset ring-base-300/60"
         >
           <div class="flex items-center gap-2">
             <.engine_icon state={engine_state(@claude_check, @claude_ready)} />
@@ -881,7 +1259,7 @@ defmodule CanopyWeb.OnboardingLive do
         <div
           id="welcome-opencode"
           data-state={engine_state(@opencode_health, @opencode_ready)}
-          class="flex flex-col gap-2 rounded-xl border border-base-300 bg-base-200 p-4"
+          class="flex flex-col gap-2 rounded-xl bg-base-200/60 p-4 ring-1 ring-inset ring-base-300/60"
         >
           <div class="flex items-center gap-2">
             <.engine_icon state={engine_state(@opencode_health, @opencode_ready)} />
@@ -897,11 +1275,10 @@ defmodule CanopyWeb.OnboardingLive do
                 Not running at <code class="font-mono text-xs break-all">{@opencode_url}</code>.
                 Start it with <code class="font-mono text-xs">opencode serve --port 4096</code>
                 and leave it running, then <em>Check again</em>.
+                <%!-- Not a link: Settings is behind this modal. --%>
                 <span class="mt-1 block text-xs text-base-content/60">
-                  Running it somewhere else? Change the URL in <.link
-                    navigate={~p"/settings"}
-                    class="link link-primary"
-                  >Settings</.link>.
+                  Running it somewhere else? Set its URL in Settings → OpenCode server once setup
+                  is done.
                 </span>
             <% end %>
           </div>
@@ -1121,7 +1498,7 @@ defmodule CanopyWeb.OnboardingLive do
       <div
         :if={@repositories != []}
         id="welcome-repositories"
-        class="mb-5 rounded-xl border border-base-300 bg-base-200 p-4 text-sm"
+        class="mb-5 rounded-xl bg-base-200/60 p-4 text-sm ring-1 ring-inset ring-base-300/60"
       >
         <p>
           You have {length(@repositories)} already. Add another, or leave it there.
@@ -1198,25 +1575,24 @@ defmodule CanopyWeb.OnboardingLive do
       |> assign(:named, assigns.setting.user_display_name not in [nil, "", "You"])
 
     ~H"""
-    <section id="welcome-done" aria-labelledby="welcome-done-title">
-      <div class="flex size-12 items-center justify-center rounded-full bg-success/15 text-success">
+    <section id="welcome-done" aria-labelledby="welcome-done-title" class="setup-step">
+      <div class="flex size-11 items-center justify-center rounded-full bg-success/15 text-success">
         <.icon name="hero-check" class="size-6" />
       </div>
-      <h1
+      <h2
         id="welcome-done-title"
         tabindex="-1"
-        phx-mounted={JS.focus()}
-        class="mt-5 text-3xl font-semibold tracking-tight outline-none sm:text-4xl"
+        class="mt-5 text-2xl font-semibold tracking-tight outline-none sm:text-3xl"
       >
         You're set
-      </h1>
-      <p class="mt-3 text-base leading-relaxed text-base-content/70">
+      </h2>
+      <p class="mt-2 text-sm leading-relaxed text-base-content/65">
         Here's what you chose. Each line links to where it lives in Settings.
       </p>
 
       <ul
         id="welcome-summary"
-        class="mt-8 flex flex-col divide-y divide-base-300 rounded-xl border border-base-300 bg-base-200 text-sm"
+        class="mt-6 flex flex-col divide-y divide-base-300/70 overflow-hidden rounded-xl bg-base-200/60 text-sm ring-1 ring-inset ring-base-300/60"
       >
         <.summary_line id="summary-name" href={~p"/settings#profile-panel"} icon="hero-user">
           <%= if @named do %>
@@ -1264,20 +1640,6 @@ defmodule CanopyWeb.OnboardingLive do
           <% end %>
         </.summary_line>
       </ul>
-
-      <div class="mt-8 flex flex-wrap items-center gap-3 pb-12">
-        <button
-          type="button"
-          id="welcome-start-channel"
-          class="btn btn-primary"
-          phx-click="start_channel"
-        >
-          <.icon name="hero-chat-bubble-left-right" class="size-4" /> Start a channel
-        </button>
-        <button type="button" id="welcome-look-around" class="btn btn-ghost" phx-click="look_around">
-          Look around first
-        </button>
-      </div>
     </section>
     """
   end

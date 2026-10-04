@@ -33,10 +33,9 @@ defmodule CanopyWeb.Router do
     get "/teams/:id/export", TemplateController, :team
     get "/playbooks/:id/export", TemplateController, :playbook
 
-    # First-run setup: no sidebar, so none of CanopyWeb.Nav's loading.
-    live_session :onboarding, on_mount: [] do
-      live "/welcome", OnboardingLive
-    end
+    # First-run setup is a modal over the app (CanopyWeb.OnboardingLive);
+    # the old page's address opens it.
+    get "/welcome", PageController, :welcome
 
     live_session :default, on_mount: [CanopyWeb.Nav] do
       live "/settings", SettingsLive

@@ -335,6 +335,8 @@ defmodule CanopyWeb.PlaybooksLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <%= case @live_action do %>
         <% :index -> %>

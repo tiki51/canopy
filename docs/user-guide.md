@@ -138,14 +138,18 @@ opts in for one run. The Homebrew build always stays on loopback.
 
 ### First-run setup
 
-The first time you open Canopy, setup is one page you scroll down. Each section is a
-heading, a line about it, and its controls:
+The first time you open Canopy, setup opens as a window over the app, on whichever page
+you land (the workspace stays visible, dimmed, behind it). It has six short steps; a row
+of bars at the top shows where you are (labelled You, Look, Engines, Pace, Notifications,
+Project; on a phone it says "2 of 6"), and you can click any of them to jump there.
+**Next** and **Back** move one step at a time, and **Enter** presses Next when you are not
+in a field (in the name field it saves the name and moves on):
 
 - **You**: what agents call you, prefilled from your global git `user.name` when there is
   one.
 - **Look**: light, dark, or following the system, and one of the four palettes. It applies
-  as you click and is kept in this browser.
-- **Engines**: Canopy checks both engines at once as the page opens. Claude Code shows its
+  as you click, to the app behind the window too, and is kept in this browser.
+- **Engines**: Canopy checks both engines at once as setup opens, whatever step you are on. Claude Code shows its
   version and the account it is logged in as; OpenCode shows its version and URL. Below
   them, the **default engine**: the engine agents without one of their own run on, the
   thirteen starter agents among them. It is picked for you from what is ready (Claude Code
@@ -155,11 +159,11 @@ heading, a line about it, and its controls:
   for each engine that answered (and Claude Code's default effort), the default engine's
   first; agents without a model of their own run on it. The OpenCode model list comes from
   OpenCode itself, so it stays disabled until OpenCode answers.
-- **How much agents do on their own**: a preset for the brakes (see
+- **Pace** (how much agents do on their own): a preset for the brakes (see
   [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
   *Custom* to set them yourself.
 - **Notifications** (optional): the **Desktop notifications** switch, off unless you turn
-  it on. Flipping it on is when the browser asks to allow them, and the page says at once
+  it on. Flipping it on is when the browser asks to allow them, and setup says at once
   whether it did, whether the browser blocks them, or whether this page can't have them
   (see [Notifications](#notifications)). It is kept in this browser, like the look.
 - **Your first project** (optional): a folder on this Mac and a name. *Add project* adds
@@ -167,13 +171,17 @@ heading, a line about it, and its controls:
   Leave it empty if you would rather add one later.
 
 Every choice saves as you make it (the name a moment after you stop typing), and a small
-*Saved* appears beside the section's heading. So leaving the page halfway keeps what you
-chose. **Finish setup** at the bottom (it stays in reach at the foot of the screen on a
-phone) replaces the page with a summary, each line linking to its place in Settings
-(including whether desktop notifications are on in this browser). *Start a channel* opens
-New channel with your new project already picked; *Look around first* opens Agents.
-*Skip setup* (top right) ends it at once; either way it does not come back by itself.
-**Settings → Run setup again** reopens it, prefilled with your current choices.
+*Saved* appears beside the step's heading. Moving between steps never loses anything, and
+closing the window or the tab halfway keeps what you chose (until setup is finished or
+skipped, it opens again next time). **Finish setup**, on the last step, shows a summary in
+the window, each line linking to its place in Settings (including whether desktop
+notifications are on in this browser). *Start a channel* opens New channel with your new
+project already picked; *Look around* closes the window and leaves you on the page behind
+it, which now shows what you chose. *Skip setup* (top right, on every step) ends it at
+once; **Esc** never closes the window by itself, it asks "Skip setup?" first (*Keep going*
+or Esc again takes the question back). Either way setup does not come back by itself.
+**Settings → Run setup again** reopens it over Settings, prefilled with your current
+choices. On a phone the window fills the screen, with Back and Next at the foot.
 
 If setup says an engine isn't ready:
 
@@ -244,7 +252,8 @@ exception and stops at once, as the Stop button does; picked for another channel
 that one without leaving the page you are on.
 
 Recent places are kept in this browser only. Ctrl+K stays *delete to end of line* in Mac
-text boxes, so it does nothing there. Setup (`/welcome`) has no palette.
+text boxes, so it does nothing there. While the setup window is open the palette stays
+shut.
 
 The palette matches names only. Its last row, **Search everywhere for "…"**, takes what
 you typed to the Search page; when nothing matches, **Shift+Enter** does the same.
@@ -301,8 +310,8 @@ A result opens the exact place it came from:
 ## 3. Settings
 
 Settings is where Canopy meets OpenCode. Open it from the gear in the rail. **Run setup
-again**, top right, reopens [first-run setup](#first-run-setup) with your current choices
-filled in.
+again**, top right, reopens [first-run setup](#first-run-setup) over the page, with your
+current choices filled in.
 
 Each control carries one sentence of help right under it; where there is more to say, a
 **More** disclosure under that sentence opens the rest.

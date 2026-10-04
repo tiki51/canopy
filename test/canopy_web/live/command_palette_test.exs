@@ -56,10 +56,15 @@ defmodule CanopyWeb.CommandPaletteLiveTest do
     end
   end
 
-  test "is not on the first-run setup", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/welcome")
-    refute has_element?(view, "#cmdk")
-    refute has_element?(view, "#cmdk-open")
+  # The shortcut leaves it shut while #setup-dialog is up (app.js; the e2e
+  # spec presses it).
+  test "stays in the inert shell behind first-run setup", %{conn: conn} do
+    Canopy.Repo.update_all(Canopy.Settings.Setting, set: [onboarded_at: nil])
+    # the modal checks the engines as it opens
+    Mox.stub(OC, :health, fn _opts -> {:error, :econnrefused} end)
+    {:ok, view, _html} = live(conn, ~p"/agents")
+    assert has_element?(view, "#app-shell[inert] #cmdk")
+    assert find_live_child(view, "setup")
   end
 
   test "data-items lists archived channels flagged, DMs by label, active agents, teams and enabled playbooks",

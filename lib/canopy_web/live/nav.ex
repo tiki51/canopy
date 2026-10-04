@@ -20,6 +20,15 @@ defmodule CanopyWeb.Nav do
   still waiting from the last half hour as `"canopy:pending"`, so a page that
   was asleep or offline can catch up.
 
+  It also hosts first-run setup on every page: `:setup` is the step the setup
+  modal (`CanopyWeb.OnboardingLive`, rendered by `CanopyWeb.Layouts.app/1`)
+  opens at, or nil. It is set on mount while setup has never been finished or
+  skipped, or when the URL carries `?setup=<step>` (where `/welcome` sends);
+  `"open_setup"` (Settings → *Run setup again*) sets it on the spot. The modal
+  closes by sending `{:canopy_setup, :close, opts}`: the page navigates, live,
+  to `opts[:to]` or to itself without `?setup=`, with `opts[:flash]` as an
+  info flash, so what is behind it shows what was chosen.
+
   It also answers the command palette's server questions on every page:
   `cmdk:files` (a filename search), `cmdk:stop` (`/stop` in a channel you are
   not in) and `cmdk:notify` (the desktop notifications switch was flipped: a
@@ -48,7 +57,7 @@ defmodule CanopyWeb.Nav do
     Users
   }
 
-  def on_mount(:default, _params, _session, socket) do
+  def on_mount(:default, params, _session, socket) do
     if connected?(socket) do
       Channels.subscribe()
       Timeline.subscribe_all()
@@ -68,6 +77,7 @@ defmodule CanopyWeb.Nav do
       |> attach_hook(:canopy_nav_events, :handle_event, &handle_event/3)
       |> assign_new(:current_channel_id, fn -> nil end)
       |> assign_new(:current_repository_id, fn -> nil end)
+      |> assign(:setup, setup_step(params))
       |> attach_hook(:canopy_nav_path, :handle_params, &handle_params/3)
       |> push_pending()
 
@@ -115,6 +125,23 @@ defmodule CanopyWeb.Nav do
       teams: Enum.map(Teams.list(), &%{id: &1.id, name: &1.name}),
       playbooks: Enum.map(Playbooks.list(enabled: true), &%{id: &1.id, name: &1.name})
     })
+  end
+
+  # A step named in the URL, else the first one while setup was never finished
+  # or skipped (`Canopy.Settings.onboarded?/0`), else no modal.
+  defp setup_step(params) do
+    step = if is_map(params), do: CanopyWeb.OnboardingLive.step_for(params["setup"])
+
+    cond do
+      step -> step
+      Canopy.Settings.onboarded?() -> nil
+      true -> "you"
+    end
+  end
+
+  # Settings → Run setup again: the modal opens over the page, from the start.
+  defp handle_event("open_setup", _params, socket) do
+    {:halt, assign(socket, :setup, socket.assigns.setup || "you")}
   end
 
   # The hold banner's Release button lives in the shell, so every page handles it.
@@ -261,7 +288,30 @@ defmodule CanopyWeb.Nav do
   defp handle_info({:schedules, :changed, _channel_id}, socket),
     do: {:cont, assign(socket, :schedule_counts, Schedules.active_counts_by_agent())}
 
+  # The setup modal closed (Skip, Look around, Start a channel): the page
+  # navigates, live, so it is mounted again with what was chosen (and its
+  # pickers, which the modal's would have duplicated, come back).
+  defp handle_info({:canopy_setup, :close, opts}, socket) do
+    socket = assign(socket, :setup, nil)
+    socket = if opts[:flash], do: put_flash(socket, :info, opts[:flash]), else: socket
+    {:halt, push_navigate(socket, to: opts[:to] || without_setup(socket))}
+  end
+
   defp handle_info(_message, socket), do: {:cont, socket}
+
+  # The page as it is, minus `?setup=`, so a reload doesn't open setup again.
+  defp without_setup(socket) do
+    uri = URI.parse(socket.private[:canopy_uri] || socket.assigns[:current_path] || "/")
+
+    query =
+      (uri.query || "")
+      |> URI.decode_query()
+      |> Map.delete("setup")
+
+    if query == %{},
+      do: uri.path || "/",
+      else: (uri.path || "/") <> "?" <> URI.encode_query(query)
+  end
 
   # The page decides whether to show it (`assets/js/notify.js`); the channel
   # comes from what the sidebar already holds.
@@ -300,6 +350,7 @@ defmodule CanopyWeb.Nav do
 
     socket =
       socket
+      |> put_private(:canopy_uri, uri)
       |> assign(:current_path, path)
       |> assign(:current_channel_id, channel_id)
       |> assign(:current_repository_id, channel && channel.repository_id)

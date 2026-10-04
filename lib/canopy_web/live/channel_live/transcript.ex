@@ -350,6 +350,8 @@ defmodule CanopyWeb.ChannelLive.Transcript do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <Layouts.page
         title={"@#{@agent.name} · Transcript"}

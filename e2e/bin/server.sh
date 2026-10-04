@@ -35,7 +35,7 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 
 # Setup counts as done, so `/` behaves as on an existing install; the
-# onboarding spec drives /welcome itself.
+# onboarding spec clears it to open the setup modal.
 mix run -e "
   {:ok, _} = Canopy.Settings.update(%{opencode_url: \"$FAKE_URL\"})
   {:ok, _} = Canopy.Settings.mark_onboarded()

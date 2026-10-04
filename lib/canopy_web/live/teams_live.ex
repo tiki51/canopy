@@ -186,6 +186,8 @@ defmodule CanopyWeb.TeamsLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <%= if @live_action == :index do %>
         <.index_page {assigns} />

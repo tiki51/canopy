@@ -395,9 +395,25 @@ defmodule CanopyWeb.SettingsLiveTest do
     end
   end
 
-  test "Run setup again opens first-run setup", %{conn: conn} do
+  test "Run setup again opens the setup modal over Settings, whose pickers step aside",
+       %{conn: conn} do
+    # the modal checks the engines as it opens
+    stub(OC, :health, fn _opts -> {:error, :econnrefused} end)
     {:ok, view, _html} = live(conn, ~p"/settings")
-    assert has_element?(view, "a#run-setup[href='/welcome']")
+    refute find_live_child(view, "setup")
+    assert has_element?(view, "#appearance-panel #palette-moss")
+    assert has_element?(view, "#notifications-panel #notify-prefs")
+
+    view |> element("#run-setup") |> render_click()
+
+    assert setup = find_live_child(view, "setup")
+    assert has_element?(setup, "#setup-dialog #welcome-you")
+    assert has_element?(view, "#app-shell[inert]")
+    # the modal's picker and switch have the same ids
+    assert has_element?(view, "#appearance-in-setup")
+    refute has_element?(view, "#appearance-panel #palette-moss")
+    assert has_element?(view, "#notifications-in-setup")
+    refute has_element?(view, "#notifications-panel #notify-prefs")
   end
 
   test "the conversation presets show the one in force and save on a click", %{conn: conn} do

@@ -139,6 +139,12 @@ defmodule CanopyWeb.NotifyComponents do
           this.unsubscribe = this.notifier.subscribe(() => this.render())
           this.render()
         },
+        // phx-update="ignore" keeps the children but still patches the
+        // container's data-* attributes, so any re-render of the page puts the
+        // server's data-state="off" back: say it again.
+        updated() {
+          if (this.notifier) this.render()
+        },
         destroyed() {
           if (this.unsubscribe) this.unsubscribe()
         },

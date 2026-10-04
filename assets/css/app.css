@@ -315,8 +315,20 @@
 @media (max-width: 63.999rem) {
   .side-panel { animation: side-panel-in 180ms ease-out; }
 }
+/* First-run setup (CanopyWeb.OnboardingLive): the backdrop fades in, the
+   panel rises a little, and each step's content eases in as it shows. CSS
+   animations, not phx-mounted, so the server-rendered modal doesn't replay
+   them when LiveView connects. */
+@keyframes setup-fade { from { opacity: 0; } }
+@keyframes setup-rise { from { opacity: 0; transform: translateY(0.5rem) scale(0.985); } }
+@keyframes setup-step { from { opacity: 0; transform: translateY(0.25rem); } }
+.setup-backdrop { animation: setup-fade 200ms ease-out; }
+.setup-panel { animation: setup-rise 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.setup-step { animation: setup-step 220ms ease-out; }
+
 @media (prefers-reduced-motion: reduce) {
-  .side-panel, .message-target, .search-hit { animation: none; }
+  .side-panel, .message-target, .search-hit,
+  .setup-backdrop, .setup-panel, .setup-step { animation: none; }
 }
 
 /* Keyboard hints: ⌘K on a Mac, Ctrl K elsewhere (app.js sets data-platform). */

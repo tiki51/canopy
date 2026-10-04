@@ -33,6 +33,12 @@ defmodule CanopyWeb.ConnCase do
 
   setup tags do
     Canopy.DataCase.setup_sandbox(tags)
+
+    # An existing install, as e2e/bin/server.sh makes the e2e one: pages open
+    # without the first-run setup modal unless a test clears `onboarded_at`
+    # (a fresh test database has no settings row, so it would be first run).
+    unless tags[:async], do: {:ok, _} = Canopy.Settings.mark_onboarded()
+
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

@@ -110,7 +110,7 @@ document.addEventListener("keydown", e => {
   if (mac ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return
   const palette = document.getElementById("cmdk")
   if (!palette) return
-  if (document.querySelector("dialog[open]:not(#cmdk-dialog), #dm-picker, #library-picker, #changes-modal, #model-picker")) return
+  if (document.querySelector("dialog[open]:not(#cmdk-dialog), #dm-picker, #library-picker, #changes-modal, #model-picker, #setup-dialog")) return
   e.preventDefault()
   palette.dispatchEvent(new CustomEvent("cmdk:toggle"))
 })

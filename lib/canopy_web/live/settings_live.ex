@@ -632,15 +632,24 @@ defmodule CanopyWeb.SettingsLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
     >
       <Layouts.page
         title="Settings"
         subtitle="Engines, your name, appearance, notifications, and the MCP bridge"
       >
         <:actions>
-          <.link navigate={~p"/welcome"} id="run-setup" class="btn btn-soft btn-sm">
+          <%!-- Opens the setup modal over this page (CanopyWeb.Nav). --%>
+          <button
+            type="button"
+            id="run-setup"
+            class="btn btn-soft btn-sm"
+            phx-click="open_setup"
+            data-setup-return
+          >
             <.icon name="hero-sparkles" class="size-4" /> Run setup again
-          </.link>
+          </button>
         </:actions>
         <Layouts.panel
           id="engine-panel"
@@ -1033,9 +1042,9 @@ defmodule CanopyWeb.SettingsLive do
           </.form>
         </Layouts.panel>
 
-        <.appearance_panel />
+        <.appearance_panel setup={@setup} />
 
-        <.notifications_panel />
+        <.notifications_panel setup={@setup} />
 
         <Layouts.panel
           id="chatter-panel"
@@ -1511,6 +1520,12 @@ defmodule CanopyWeb.SettingsLive do
 
   # Mode and palette live in this browser's localStorage, so the panel holds no
   # server state (see `CanopyWeb.AppearanceComponents`).
+  #
+  # While the setup modal is open over this page it has the same picker (and
+  # notification controls), with the same ids, so these step aside until it
+  # closes; closing mounts the page again with what was chosen there.
+  attr :setup, :string, default: nil
+
   defp appearance_panel(assigns) do
     ~H"""
     <Layouts.panel
@@ -1519,7 +1534,11 @@ defmodule CanopyWeb.SettingsLive do
       description="How Canopy looks in this browser. The rail's sun/moon switch changes the same setting."
     >
       <div class="flex flex-col gap-5">
-        <AppearanceComponents.appearance_picker />
+        <%= if @setup do %>
+          <p id="appearance-in-setup" class="text-sm text-base-content/60">In setup, above.</p>
+        <% else %>
+          <AppearanceComponents.appearance_picker />
+        <% end %>
 
         <p class="text-xs text-base-content/60">
           Agent colours are set per agent on the Agents page and look the same in every palette.
@@ -1532,6 +1551,8 @@ defmodule CanopyWeb.SettingsLive do
   # Desktop notifications belong to this browser (permission is per browser
   # and origin), so the panel holds no server state (see
   # `CanopyWeb.NotifyComponents`).
+  attr :setup, :string, default: nil
+
   defp notifications_panel(assigns) do
     ~H"""
     <Layouts.panel
@@ -1539,7 +1560,11 @@ defmodule CanopyWeb.SettingsLive do
       title="Notifications"
       description="Desktop notifications from this browser when an agent needs you while you look elsewhere. Nothing leaves this machine."
     >
-      <NotifyComponents.notify_prefs />
+      <%= if @setup do %>
+        <p id="notifications-in-setup" class="text-sm text-base-content/60">In setup, above.</p>
+      <% else %>
+        <NotifyComponents.notify_prefs />
+      <% end %>
     </Layouts.panel>
     """
   end

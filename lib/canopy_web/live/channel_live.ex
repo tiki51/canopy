@@ -2397,6 +2397,8 @@ defmodule CanopyWeb.ChannelLive do
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
       palette={@palette}
+      setup={@setup}
+      socket={@socket}
       agent_statuses={@agent_statuses}
     >
       <div id="channel-layout" class="flex min-h-0 flex-1 overflow-hidden">
