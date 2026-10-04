@@ -17,9 +17,12 @@ defmodule CanopyWeb.AgentsLive do
   first repository (always offering the built-in `build` and `plan`), and the provider/model selects come from
   `GET /config/providers`; both degrade to plain inputs when OpenCode is away.
 
-  An agent with no model (or, on Claude Code, no effort) of its own inherits
-  its engine's default from Settings; the list, the picker, and the form show
-  which default that is.
+  An agent with no engine of its own runs on the default engine from
+  Settings ("Default (…)" in the form's engine select, muted in the list),
+  and everything engine-specific on these pages (the model choices,
+  permissions, prices) follows the engine it runs on. An agent with no model
+  (or, on Claude Code, no effort) of its own inherits its engine's default
+  from Settings; the list, the picker, and the form show which default that is.
 
   Model routing (experimental, off by default and unverified until the Phase
   0 spike): the form's Routing section turns it on per agent and picks the
@@ -160,20 +163,22 @@ defmodule CanopyWeb.AgentsLive do
     # A model belongs to one engine: switching lands the agent on the new
     # engine's default rather than on a model that engine cannot run.
     params =
-      if params["engine"] && params["engine"] != socket.assigns.form[:engine].value,
-        do:
-          Map.merge(params, %{
-            "model_provider" => nil,
-            "model_id" => nil,
-            "light_model_provider" => nil,
-            "light_model_id" => nil
-          }),
-        else: params
+      if Map.has_key?(params, "engine") and
+           form_engine(params["engine"], socket.assigns.default_engine) !=
+             form_engine(socket.assigns.form[:engine].value, socket.assigns.default_engine),
+         do:
+           Map.merge(params, %{
+             "model_provider" => nil,
+             "model_id" => nil,
+             "light_model_provider" => nil,
+             "light_model_id" => nil
+           }),
+         else: params
 
     changeset =
       (socket.assigns.agent || %Agent{})
       |> Agents.change(blank_to_nil(params))
-      |> maybe_validate_model(socket.assigns.providers)
+      |> maybe_validate_model(socket.assigns.providers, socket.assigns.default_engine)
       |> Map.put(:action, :validate)
 
     {:noreply, assign_form(socket, changeset)}
@@ -182,7 +187,11 @@ defmodule CanopyWeb.AgentsLive do
   def handle_event("save", %{"agent" => params}, socket) do
     params = blank_to_nil(params)
     editing = socket.assigns.agent || %Agent{}
-    checked = editing |> Agents.change(params) |> maybe_validate_model(socket.assigns.providers)
+
+    checked =
+      editing
+      |> Agents.change(params)
+      |> maybe_validate_model(socket.assigns.providers, socket.assigns.default_engine)
 
     result =
       cond do
@@ -401,9 +410,13 @@ defmodule CanopyWeb.AgentsLive do
     end
   end
 
-  defp agent_price_line(%Agent{engine: "claude_code"}, _providers, _defaults, _server), do: nil
-
   defp agent_price_line(agent, providers, defaults, server_defaults) do
+    if engine_of(agent, defaults.engine) == "claude_code",
+      do: nil,
+      else: opencode_price_line(agent, providers, defaults, server_defaults)
+  end
+
+  defp opencode_price_line(agent, providers, defaults, server_defaults) do
     case priced_model({agent.model_provider, agent.model_id}, defaults, server_defaults) do
       nil ->
         nil
@@ -439,8 +452,8 @@ defmodule CanopyWeb.AgentsLive do
 
   # The provider check only makes sense for agents OpenCode runs; Claude Code
   # models are checked against the alias list by the schema.
-  defp maybe_validate_model(changeset, providers) do
-    if Ecto.Changeset.get_field(changeset, :engine) == "opencode",
+  defp maybe_validate_model(changeset, providers, default_engine) do
+    if form_engine(Ecto.Changeset.get_field(changeset, :engine), default_engine) == "opencode",
       do:
         changeset
         |> Providers.validate(providers)
@@ -449,8 +462,10 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   defp model_saved(agent, defaults) do
-    case {model_label(agent), default_label(defaults, agent.engine)} do
-      {nil, nil} -> "@#{agent.name} is back on its #{engine_label(agent)} default model."
+    engine = engine_of(agent, defaults.engine)
+
+    case {own_label(agent, engine), default_label(defaults, engine)} do
+      {nil, nil} -> "@#{agent.name} is back on its #{engine_label(engine)} default model."
       {nil, default} -> "@#{agent.name} now uses the default model (#{default})."
       {label, _} -> "@#{agent.name} now runs on #{label}."
     end
@@ -479,10 +494,15 @@ defmodule CanopyWeb.AgentsLive do
     assign(socket, :form, to_form(changeset, id: "agent-form"))
   end
 
-  # Each engine's default model from Settings, and Claude Code's default effort.
+  # The default engine, each engine's default model from Settings, and
+  # Claude Code's default effort. `defaults.engine` carries the default
+  # engine too, for helpers that only get `@defaults`.
   defp assign_defaults(socket) do
+    default_engine = Settings.default_engine()
+
     socket
-    |> assign(:defaults, Settings.default_models())
+    |> assign(:default_engine, default_engine)
+    |> assign(:defaults, Map.put(Settings.default_models(), :engine, default_engine))
     |> assign(:default_effort, Settings.default_effort("claude_code"))
     |> assign(:light_defaults, Settings.light_profiles())
   end
@@ -566,13 +586,24 @@ defmodule CanopyWeb.AgentsLive do
 
   defp blank_to_nil(value), do: value
 
-  defp engine_options, do: Enum.map(Canopy.Engine.names(), &{engine_label(&1), &1})
+  # "Default (…)" first: a blank engine follows the default from Settings.
+  defp engine_options(default_engine),
+    do: [
+      {"Default (#{engine_label(default_engine)})", ""}
+      | Enum.map(Canopy.Engine.names(), &{engine_label(&1), &1})
+    ]
 
-  defp engine_label(%Agent{engine: engine}), do: engine_label(engine)
   defp engine_label(engine), do: Canopy.Engine.label(engine)
 
-  defp default_model_label(%Agent{engine: "claude_code"}), do: "Claude Code default"
-  defp default_model_label(_agent), do: "OpenCode default"
+  # The engine an agent runs on: its own, else the default.
+  defp engine_of(%Agent{engine: engine}, default_engine), do: engine || default_engine
+
+  # The engine the form's agent runs on (the select sends "" for the default).
+  defp form_engine(value, default_engine) when value in [nil, ""], do: default_engine
+  defp form_engine(value, _default_engine), do: value
+
+  defp default_model_label("claude_code"), do: "Claude Code default"
+  defp default_model_label(_engine), do: "OpenCode default"
 
   # The engine's default model from Settings as a label, or nil when the
   # engine picks.
@@ -666,6 +697,12 @@ defmodule CanopyWeb.AgentsLive do
     ]
   end
 
+  # The agent's own model as a label, when the engine it runs on can run it
+  # (one left from another engine is passed over for the default).
+  defp own_label(%Agent{model_provider: provider, model_id: model} = agent, engine) do
+    if Agent.model_fits?(engine, provider, model), do: model_label(agent)
+  end
+
   defp model_label(%Agent{model_provider: nil, model_id: nil}), do: nil
   defp model_label(%Agent{model_provider: nil, model_id: id}), do: id
   defp model_label(%Agent{model_provider: provider, model_id: nil}), do: provider
@@ -744,6 +781,11 @@ defmodule CanopyWeb.AgentsLive do
         id="default-models-hint"
         class="flex flex-wrap items-center gap-x-1.5 text-xs text-base-content/60"
       >
+        <span>Default engine:</span>
+        <span id="default-engine-label" class="text-base-content/80">
+          {engine_label(@default_engine)}
+        </span>
+        <span aria-hidden="true">·</span>
         <span>Default models:</span>
         <%= for {engine, index} <- Enum.with_index(Canopy.Engine.names()) do %>
           <span :if={index > 0} aria-hidden="true">·</span>
@@ -820,13 +862,17 @@ defmodule CanopyWeb.AgentsLive do
                 id={"engine-#{agent.id}"}
                 class="min-w-0 truncate text-sm"
                 title={
-                  if agent.engine == "claude_code",
-                    do: "Claude Code · #{agent.permission_mode}",
-                    else: "OpenCode · agent #{agent.opencode_agent}"
+                  "#{if is_nil(agent.engine), do: "Default engine: "}" <>
+                    if engine_of(agent, @default_engine) == "claude_code",
+                      do: "Claude Code · #{agent.permission_mode}",
+                      else: "OpenCode · agent #{agent.opencode_agent}"
                 }
               >
-                {engine_label(agent)}<span
-                  :if={agent.engine == "opencode"}
+                <span
+                  data-default-engine={is_nil(agent.engine)}
+                  class={is_nil(agent.engine) && "text-base-content/60"}
+                >{engine_label(engine_of(agent, @default_engine))}</span><span
+                  :if={engine_of(agent, @default_engine) == "opencode"}
                   class="text-base-content/60"
                 > · {agent.opencode_agent}</span>
               </span>
@@ -836,18 +882,20 @@ defmodule CanopyWeb.AgentsLive do
                 phx-click="open_model_picker"
                 phx-value-id={agent.id}
                 title={
-                  if model_label(agent),
+                  if own_label(agent, engine_of(agent, @default_engine)),
                     do: "Change this agent's model",
                     else: "Uses the default model; click to choose its own"
                 }
                 class={[
                   "relative max-w-full justify-self-start truncate rounded-md font-mono text-xs transition hover:ring-2 hover:ring-primary/40",
-                  model_label(agent) && "badge badge-soft badge-primary badge-sm",
-                  !model_label(agent) &&
+                  own_label(agent, engine_of(agent, @default_engine)) &&
+                    "badge badge-soft badge-primary badge-sm",
+                  !own_label(agent, engine_of(agent, @default_engine)) &&
                     "px-1.5 py-0.5 text-base-content/60 hover:text-base-content"
                 ]}
               >
-                {model_label(agent) || inherited_label(@defaults, agent.engine)}
+                {own_label(agent, engine_of(agent, @default_engine)) ||
+                  inherited_label(@defaults, engine_of(agent, @default_engine))}
               </button>
               <span
                 :if={agent.routing_enabled}
@@ -969,6 +1017,7 @@ defmodule CanopyWeb.AgentsLive do
       <.model_picker
         :if={@model_picker}
         agent={@model_picker}
+        engine={engine_of(@model_picker, @default_engine)}
         providers={@providers}
         defaults={@defaults}
       />
@@ -1018,6 +1067,7 @@ defmodule CanopyWeb.AgentsLive do
   attr :agent, :map, required: true
   attr :providers, :list, required: true
   attr :defaults, :map, required: true
+  attr :engine, :string, required: true, doc: "the engine the agent runs on"
 
   defp model_picker(assigns) do
     ~H"""
@@ -1052,7 +1102,7 @@ defmodule CanopyWeb.AgentsLive do
 
         <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           <p
-            :if={@agent.engine == "opencode" and @providers == []}
+            :if={@engine == "opencode" and @providers == []}
             id="model-picker-empty"
             class="px-3 py-6 text-center text-xs text-base-content/60"
           >
@@ -1069,24 +1119,24 @@ defmodule CanopyWeb.AgentsLive do
             phx-value-model=""
             class={[
               "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition hover:bg-base-300/60",
-              is_nil(model_label(@agent)) && "bg-primary/10"
+              is_nil(own_label(@agent, @engine)) && "bg-primary/10"
             ]}
           >
             <.icon
               name="hero-check-mini"
-              class={["size-4 shrink-0", model_label(@agent) && "invisible"]}
+              class={["size-4 shrink-0", own_label(@agent, @engine) && "invisible"]}
             />
             <span class="min-w-0 flex-1">
               <span class="block text-sm font-medium">
-                {if default_label(@defaults, @agent.engine),
-                  do: default_option(@defaults, @agent.engine),
-                  else: default_model_label(@agent)}
+                {if default_label(@defaults, @engine),
+                  do: default_option(@defaults, @engine),
+                  else: default_model_label(@engine)}
               </span>
               <span class="block text-xs text-base-content/60">
                 <%= cond do %>
-                  <% default_label(@defaults, @agent.engine) -> %>
-                    Canopy's {engine_label(@agent)} default · change in Settings
-                  <% @agent.engine == "claude_code" -> %>
+                  <% default_label(@defaults, @engine) -> %>
+                    Canopy's {engine_label(@engine)} default · change in Settings
+                  <% @engine == "claude_code" -> %>
                     Whatever Claude Code is set to use; pick a default in Settings.
                   <% true -> %>
                     Whatever <code class="font-mono">{@agent.opencode_agent}</code>
@@ -1096,7 +1146,7 @@ defmodule CanopyWeb.AgentsLive do
             </span>
           </button>
 
-          <div :if={@agent.engine == "claude_code"} class="mt-1">
+          <div :if={@engine == "claude_code"} class="mt-1">
             <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               Claude Code
             </p>
@@ -1120,7 +1170,7 @@ defmodule CanopyWeb.AgentsLive do
             </button>
           </div>
 
-          <div :for={provider <- @providers} :if={@agent.engine == "opencode"} class="mt-1">
+          <div :for={provider <- @providers} :if={@engine == "opencode"} class="mt-1">
             <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
               {provider.name}
             </p>
@@ -1269,8 +1319,17 @@ defmodule CanopyWeb.AgentsLive do
                 <dt class="text-base-content/60">Role</dt>
                 <dd>{@agent.role || "—"}</dd>
                 <dt class="text-base-content/60">Engine</dt>
-                <dd id="agent-engine">{engine_label(@agent)}</dd>
-                <%= if @agent.engine == "claude_code" do %>
+                <dd id="agent-engine">
+                  {engine_label(engine_of(@agent, @default_engine))}
+                  <span
+                    :if={is_nil(@agent.engine)}
+                    id="agent-engine-default"
+                    class="text-base-content/60"
+                  >
+                    (<.link navigate={~p"/settings" <> "#engine-panel"} class="link">default</.link>)
+                  </span>
+                </dd>
+                <%= if engine_of(@agent, @default_engine) == "claude_code" do %>
                   <dt class="text-base-content/60">Permissions</dt>
                   <dd id="agent-permissions" class="font-mono text-xs">
                     {@agent.permission_mode}{effort_text(@agent, @default_effort)}
@@ -1282,20 +1341,20 @@ defmodule CanopyWeb.AgentsLive do
                 <dt class="text-base-content/60">Model</dt>
                 <dd id="agent-model" class="font-mono text-xs">
                   <%= cond do %>
-                    <% model_label(@agent) -> %>
-                      {model_label(@agent)}
-                    <% default_label(@defaults, @agent.engine) -> %>
-                      {default_label(@defaults, @agent.engine)}
+                    <% own_label(@agent, engine_of(@agent, @default_engine)) -> %>
+                      {own_label(@agent, engine_of(@agent, @default_engine))}
+                    <% default_label(@defaults, engine_of(@agent, @default_engine)) -> %>
+                      {default_label(@defaults, engine_of(@agent, @default_engine))}
                       <span class="font-sans text-base-content/60">
                         (<.link
-                          navigate={settings_anchor(@agent.engine)}
+                          navigate={settings_anchor(engine_of(@agent, @default_engine))}
                           id="agent-model-default"
                           class="link"
                           title="The default model, set in Settings"
                         >default</.link>)
                       </span>
                     <% true -> %>
-                      {default_model_label(@agent)}
+                      {default_model_label(engine_of(@agent, @default_engine))}
                   <% end %>
                   <span
                     :if={agent_price_line(@agent, @providers, @defaults, @server_defaults)}
@@ -1622,9 +1681,9 @@ defmodule CanopyWeb.AgentsLive do
             type="select"
             id="agent-engine-select"
             label="Engine"
-            options={engine_options()}
+            options={engine_options(@default_engine)}
           />
-          <%= if @form[:engine].value == "claude_code" do %>
+          <%= if form_engine(@form[:engine].value, @default_engine) == "claude_code" do %>
             <div class="grid gap-3 sm:grid-cols-3">
               <.input
                 field={@form[:model_id]}
@@ -1750,6 +1809,7 @@ defmodule CanopyWeb.AgentsLive do
           <% end %>
           <.routing_fields
             form={@form}
+            engine={form_engine(@form[:engine].value, @default_engine)}
             providers={@providers}
             light_defaults={@light_defaults}
           />
@@ -1767,6 +1827,7 @@ defmodule CanopyWeb.AgentsLive do
   attr :form, :any, required: true
   attr :providers, :list, required: true
   attr :light_defaults, :map, required: true
+  attr :engine, :string, required: true, doc: "the engine the form's agent runs on"
 
   # Model routing on the edit form: off by default, experimental, with the
   # light model and effort in the same pattern as the main ones.
@@ -1788,7 +1849,7 @@ defmodule CanopyWeb.AgentsLive do
         id="agent-routing-enabled"
         label="Run cheap wakes on a light model"
       />
-      <%= if @form[:engine].value == "claude_code" do %>
+      <%= if @engine == "claude_code" do %>
         <div class="grid gap-3 sm:grid-cols-2">
           <.input
             field={@form[:light_model_id]}

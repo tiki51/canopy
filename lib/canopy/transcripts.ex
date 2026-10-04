@@ -56,7 +56,7 @@ defmodule Canopy.Transcripts do
     agent_engine =
       case Agents.get(agent_id) do
         nil -> "opencode"
-        agent -> agent.engine
+        agent -> Agents.effective_engine(agent)
       end
 
     base = %{channel_id: channel_id, agent_id: agent_id, delegation_id: nil}

@@ -3152,7 +3152,7 @@ defmodule CanopyWeb.ChannelLive do
               class="btn btn-xs btn-ghost h-5 min-h-0 px-1 text-base-content/40 hover:text-base-content"
               phx-click="reset_session"
               phx-value-agent-id={member.id}
-              data-canopy-confirm={"Reset @#{member.name}'s session in this channel? Its next turn starts with a fresh #{Canopy.Engine.label(member.engine)} session; channel messages are kept, and the old session stays readable in its transcript."}
+              data-canopy-confirm={"Reset @#{member.name}'s session in this channel? Its next turn starts with a fresh #{Canopy.Engine.label(Canopy.Agents.effective_engine(member))} session; channel messages are kept, and the old session stays readable in its transcript."}
               title="Reset session (fresh context on the next turn)"
             >
               <.icon name="hero-arrow-path-mini" class="size-3.5" />

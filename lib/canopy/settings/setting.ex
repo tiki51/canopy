@@ -42,6 +42,9 @@ defmodule Canopy.Settings.Setting do
     field :claude_max_budget_usd, :float
     # GitHub watches run the user's `gh` CLI (a name on PATH or a path)
     field :gh_binary, :string, default: "gh"
+    # the engine an agent with none of its own runs on (`Canopy.Settings.default_engine/1`);
+    # nil: OpenCode, as before there was a default
+    field :default_engine, :string
     # the model (and, for Claude Code, the effort) an agent with none of its own
     # runs on, per engine; nil leaves the choice to the engine
     field :claude_default_model, :string
@@ -81,6 +84,7 @@ defmodule Canopy.Settings.Setting do
       :claude_config_dir,
       :claude_max_budget_usd,
       :gh_binary,
+      :default_engine,
       :claude_default_model,
       :claude_default_effort,
       :opencode_default_provider,
@@ -92,6 +96,7 @@ defmodule Canopy.Settings.Setting do
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
     |> update_change(:gh_binary, &trim_or_nil/1)
+    |> update_change(:default_engine, &trim_or_nil/1)
     |> update_change(:claude_default_model, &trim_or_nil/1)
     |> update_change(:claude_default_effort, &trim_or_nil/1)
     |> update_change(:opencode_default_provider, &trim_or_nil/1)
@@ -131,6 +136,7 @@ defmodule Canopy.Settings.Setting do
         else: [claude_config_dir: "must be an absolute path"]
     end)
     |> validate_url(:opencode_url)
+    |> validate_inclusion(:default_engine, Canopy.Engine.names())
     |> validate_inclusion(:claude_default_effort, Agent.efforts())
     |> validate_inclusion(:claude_light_effort, Agent.efforts())
     |> validate_default_models()

@@ -109,15 +109,24 @@ defmodule Canopy.Runtime.Prompts do
   @contagion "A teammate's limits are their own. If someone reports that work is blocked by plan mode or that they cannot execute, that describes their session, not yours."
 
   defp engine_name(agent) do
-    case Map.get(agent, :engine, "opencode") do
+    case engine(agent) do
       "claude_code" -> "Claude Code"
       _ -> "OpenCode"
     end
   end
 
+  # The agent's effective engine (nil follows the default); a plain map
+  # without one, as prompt tests pass, reads as OpenCode.
+  defp engine(agent) do
+    case Map.get(agent, :engine, "opencode") do
+      nil -> Canopy.Settings.default_engine()
+      engine -> engine
+    end
+  end
+
   # What differs per engine about talking to Canopy.
   defp engine_notes(agent) do
-    case Map.get(agent, :engine, "opencode") do
+    case engine(agent) do
       "claude_code" ->
         "Your identity travels with every Canopy tool call; there is nothing to set. Questions you ask with AskUserQuestion reach the user as a card in the channel, and their answer usually comes back to you in the same turn. If they have not answered within a few minutes the tool tells you so: end your turn then, and their answer reaches you later as a new message. A `/compact` message means Canopy is compacting your context; nothing is asked of you."
 

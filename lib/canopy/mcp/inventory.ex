@@ -64,8 +64,10 @@ defmodule Canopy.MCP.Inventory do
       }
   end
 
-  @doc "The engines the members of the repository's channels run on."
+  @doc "The engines the members of the repository's channels run on (their own, or the default)."
   def engines_in_use(repository_id) do
+    default = Canopy.Settings.default_engine()
+
     Repo.all(
       from a in Agent,
         join: m in ChannelAgent,
@@ -76,5 +78,7 @@ defmodule Canopy.MCP.Inventory do
         distinct: true,
         select: a.engine
     )
+    |> Enum.map(&(&1 || default))
+    |> Enum.uniq()
   end
 end

@@ -131,7 +131,8 @@ defmodule Canopy.Templates.BundleTest do
                action: :rename,
                name: "builder-2",
                memory: nil,
-               engine: "opencode"
+               # the file names no engine: the agent follows the default
+               engine: nil
              }
 
       team = named(plan, "crew")

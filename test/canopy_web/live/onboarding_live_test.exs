@@ -73,6 +73,12 @@ defmodule CanopyWeb.OnboardingLiveTest do
     view
   end
 
+  # Where an element id first appears in rendered html (it must be there).
+  defp at(html, id) do
+    {position, _length} = :binary.match(html, ~s(id="#{id}"))
+    position
+  end
+
   defp finish(view) do
     view |> element("#welcome-finish") |> render_click()
     render_async(view)
@@ -365,47 +371,95 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert Settings.default_effort("claude_code") == "high"
     end
 
-    test "only Claude Code: moving the starter agents is a button, done at once",
+    test "only Claude Code ready: it is preselected as the default and saved; starters follow",
          %{conn: conn} do
       backend = Fixtures.agent_fixture(%{name: "backend"})
+      mine = Fixtures.agent_fixture(%{name: "my-own", engine: "opencode"})
+      assert Agents.effective_engine(backend) == "opencode"
 
-      configured =
-        Fixtures.agent_fixture(%{
-          name: "reviewer",
-          model_provider: "opencode",
-          model_id: "big-pickle"
-        })
-
-      mine = Fixtures.agent_fixture(%{name: "my-own"})
       view = open(conn)
+
+      assert has_element?(view, "#welcome-engine-choice-claude_code[aria-checked=true]")
+      assert has_element?(view, "#welcome-engine-choice-claude_code[data-ready=ready]", "Ready")
 
       assert has_element?(
                view,
-               "#welcome-move-starters",
-               "Move the 1 starter agent to Claude Code"
+               "#welcome-engine-choice-opencode[aria-checked=false][data-ready=not_ready]",
+               "Not running"
              )
 
-      assert Agents.get!(backend.id).engine == "opencode"
-
-      view |> element("#welcome-move-starters") |> render_click()
-
-      assert Agents.get!(backend.id).engine == "claude_code"
-      assert Agents.get!(configured.id).engine == "opencode"
+      assert Settings.get().default_engine == "claude_code"
+      assert Agents.effective_engine(Agents.get!(backend.id)) == "claude_code"
+      assert Agents.get!(backend.id).engine == nil
       assert Agents.get!(mine.id).engine == "opencode"
-      assert has_element?(view, "#welcome-moved-starters", "Moved 1 starter agent")
-      refute has_element?(view, "#welcome-move-starters-block")
       assert has_element?(view, "#welcome-engines-saved")
+      refute has_element?(view, "#welcome-move-starters")
     end
 
-    test "with OpenCode running, no move is offered and its default comes from its own list",
+    test "only OpenCode ready: OpenCode stays the default, nothing is written", %{conn: conn} do
+      claude_missing()
+      opencode_running()
+      view = open(conn)
+
+      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
+      assert has_element?(view, "#welcome-engine-choice-claude_code[data-ready=not_ready]")
+      assert Settings.get().default_engine == nil
+      assert Settings.default_engine() == "opencode"
+    end
+
+    test "both ready: OpenCode unless the user picks; a pick saves and outlasts Check again",
+         %{conn: conn} do
+      opencode_running()
+      view = open(conn)
+
+      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
+      assert Settings.get().default_engine == nil
+      # the default engine's model controls come first
+      html = view |> element("#welcome-default-model") |> render()
+      assert at(html, "welcome-opencode-defaults") < at(html, "welcome-claude-defaults")
+
+      view |> element("#welcome-engine-choice-claude_code") |> render_click()
+
+      assert Settings.get().default_engine == "claude_code"
+      assert has_element?(view, "#welcome-engine-choice-claude_code[aria-checked=true]")
+      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=false]")
+      assert has_element?(view, "#welcome-engines-saved")
+      html = view |> element("#welcome-default-model") |> render()
+      assert at(html, "welcome-claude-defaults") < at(html, "welcome-opencode-defaults")
+
+      view |> element("#welcome-check-engines") |> render_click()
+      render_async(view)
+      assert Settings.get().default_engine == "claude_code"
+    end
+
+    test "until the user picks, Check again re-applies the rule", %{conn: conn} do
+      view = open(conn)
+      assert Settings.get().default_engine == "claude_code"
+
+      opencode_running()
+      view |> element("#welcome-check-engines") |> render_click()
+      render_async(view)
+
+      assert Settings.get().default_engine == "opencode"
+      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
+    end
+
+    test "a default engine chosen before is kept, whatever the checks say", %{conn: conn} do
+      {:ok, _} = Settings.put_default_engine("opencode")
+      view = open(conn)
+
+      assert has_element?(view, "#welcome-claude[data-state=ready]")
+      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
+      assert Settings.get().default_engine == "opencode"
+    end
+
+    test "with only OpenCode running, its default comes from its own list",
          %{conn: conn} do
       claude_missing()
       opencode_running()
-      Fixtures.agent_fixture(%{name: "backend"})
       view = open(conn)
 
       refute has_element?(view, "#welcome-claude-default-model")
-      refute has_element?(view, "#welcome-move-starters-block")
 
       assert has_element?(
                view,
@@ -609,6 +663,8 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert has_element?(view, "#summary-appearance [data-palette-name=moss]")
       assert has_element?(view, "#summary-engines", "Claude Code ✓")
       assert has_element?(view, "#summary-engines", "OpenCode ✗")
+      # only Claude Code was ready, so it became the default
+      assert has_element?(view, "#summary-default-engine", "Claude Code")
       assert has_element?(view, "#summary-model", "opus")
       assert has_element?(view, "#summary-pace", "Careful")
       # on or off is the browser's to say (<html data-notify>, set by notify.js)

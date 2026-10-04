@@ -132,6 +132,26 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert turn.("error") =~ "stopped with an error"
   end
 
+  test "a session reset says who reset it, or that the agent's engine changed" do
+    text = fn payload ->
+      TimelineComponents.event_text(
+        %{event_type: "session_reset", agent_id: "agt_1", payload: payload},
+        %{"agt_1" => "backend"},
+        "Priya"
+      )
+    end
+
+    assert text.(%{"by" => "user"}) ==
+             "Priya reset @backend's session; it starts fresh on its next turn"
+
+    assert text.(%{
+             "by" => "engine_change",
+             "from_engine" => "opencode",
+             "to_engine" => "claude_code"
+           }) ==
+             "@backend started a fresh session: its engine changed from OpenCode to Claude Code"
+  end
+
   test "interrupts read as sentences; a steered turn says what it took mid-turn" do
     text = fn type, payload ->
       TimelineComponents.event_text(

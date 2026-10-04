@@ -33,11 +33,17 @@ CANOPY_DB=/tmp/canopy-fresh.db PORT=4001 mix phx.server     # http://localhost:4
       your global git `user.name` (or is empty); a blank name is refused inline; a typed
       name shows *Saved* and survives a reload with no other click.
 - [ ] Palette and mode apply as you click and survive a reload; the summary names them.
-- [ ] Engines: both cards go green with versions (Claude Code also shows the login email).
-      Changing a default model shows *Saved*. Stop `opencode serve` and press *Check
-      again*: the OpenCode card explains how to start it, its model picker disappears, and
-      *Move the 13 starter agents to Claude Code* shows; pressing it moves them at once
-      (Agents page shows Claude Code).
+- [ ] Engines: both cards go green with versions (Claude Code also shows the login email),
+      and *Default engine* has OpenCode selected. Changing a default model shows *Saved*.
+      Stop `opencode serve` and press *Check again*: the OpenCode card explains how to start
+      it, its model picker disappears, and *Default engine* moves to Claude Code with
+      *Saved* (the Agents page shows the 13 starter agents on Claude Code, muted as the
+      default). Click OpenCode, start `opencode serve`, stop it again and *Check again*:
+      your pick stays.
+- [ ] Default engine switch: with a channel where a starter agent has answered on
+      OpenCode, choose Claude Code in Settings → Default engine, then message that agent:
+      the channel shows "@… started a fresh session: its engine changed from OpenCode to
+      Claude Code" and the reply comes from a Claude Code session (its transcript says so).
 - [ ] Pace: *Careful* saves 3 turns on click; Settings → Conversation then shows Careful.
 - [ ] Project: a plain folder under your home is added by *Add project* with the
       "initialised" note inline; *Finish setup* shows the summary, and *Start a channel*

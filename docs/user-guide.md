@@ -147,11 +147,14 @@ heading, a line about it, and its controls:
   as you click and is kept in this browser.
 - **Engines**: Canopy checks both engines at once as the page opens. Claude Code shows its
   version and the account it is logged in as; OpenCode shows its version and URL. Below
-  them, pick the **default model** for each engine that answered (and Claude Code's default
-  effort); agents without a model of their own run on it. The OpenCode model list comes
-  from OpenCode itself, so it stays disabled until OpenCode answers. When only Claude Code
-  is ready, a **Move the starter agents to Claude Code** button puts the seeded agents that
-  are still on OpenCode with no model of their own onto Claude Code, so they can answer.
+  them, the **default engine**: the engine agents without one of their own run on, the
+  thirteen starter agents among them. It is picked for you from what is ready (Claude Code
+  when only Claude Code works, OpenCode when only OpenCode does, OpenCode when both do)
+  and saved at once, so the starter agents can answer; click the other card to change it.
+  Once you pick, *Check again* leaves your choice alone. Then pick the **default model**
+  for each engine that answered (and Claude Code's default effort), the default engine's
+  first; agents without a model of their own run on it. The OpenCode model list comes from
+  OpenCode itself, so it stays disabled until OpenCode answers.
 - **How much agents do on their own**: a preset for the brakes (see
   [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
   *Custom* to set them yourself.
@@ -186,8 +189,9 @@ If setup says an engine isn't ready:
 - **Neither**: you can still finish; agents won't reply until one engine works.
 
 Then post your first message in the new channel. The owner wakes up, works, and posts back.
-Each agent's engine and model can be changed on the Agents page; override the model only
-where an agent needs a different one. Claude Code agents also take a permission mode.
+Each agent's engine and model can be changed on the Agents page; override them only where
+an agent needs a different one, and the rest follow the defaults. Claude Code agents also
+take a permission mode.
 
 ### The layout
 
@@ -304,6 +308,19 @@ filled in.
 
 ![Settings, dark](user-guide/images/settings-dark.png)
 
+- **Default engine**: first, above the engine panels. The engine every agent without one
+  of its own runs on, as a card per engine with whether it is ready (*Ready* after a
+  successful check, *Installed* when `claude` is found but not checked yet, *Not running*
+  for an OpenCode that doesn't answer). Until you choose one it is OpenCode, what agents
+  ran on before there was a choice. A line counts the active agents that use the default
+  and those with an engine of their own; **Use the default for all** (after a
+  confirmation) clears their own engine. An agent that changes engine that way also drops
+  its own model, as switching engine on its form does. Changing the default reaches those
+  agents at their next turn in each channel: their old session belongs to the old engine,
+  so they start a fresh session on the new one, with a line in the channel saying so
+  ("@backend started a fresh session: its engine changed from OpenCode to Claude Code").
+  Their memory and the channel's history carry over, as after a session reset; a turn
+  already running finishes on the old engine first.
 - **OpenCode server**: the URL of your `opencode serve`. *Check connection* shows the
   version it answered with, in green when it worked. **Default provider** and **Default
   model** are what OpenCode agents without a model of their own run on, with the price per
@@ -550,10 +567,11 @@ plus `@finops` for spending and a retired `@docs`.
 
 ![Agents, dark](user-guide/images/agents-dark.png)
 
-The list shows each agent's role, the OpenCode agent it runs as (or `claude` for agents
-on Claude Code), its model, and how many scheduled tasks it has. A model the agent chose
-is a badge (`opus`); one it inherits is muted, `default · sonnet`, and the line above the
-list names each engine's default with a link to Settings. Click either to open the model
+The list shows each agent's role, its engine (with the OpenCode agent it runs as on
+OpenCode), its model, and how many scheduled tasks it has. An engine the agent follows
+from the default is muted; one it names itself is not. A model the agent chose is a badge
+(`opus`); one it inherits is muted, `default · sonnet`, and the line above the list names
+the default engine and each engine's default model, with a link to Settings. Click either to open the model
 picker: its first option is *Default (…)*, which puts the agent back on its engine's
 default, followed by the Claude Code aliases or OpenCode's models with their prices. Agents with a **group** (Engineering, Product, and so on; set it on
 the agent's edit form) are listed under that heading here, in the sidebar, and in the
@@ -588,7 +606,12 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **Role** is one line that other agents and the sidebar see.
 - **System prompt** is the agent's personality and standing instructions. It is sent with
   every prompt on top of OpenCode's own agent prompt.
-- **Engine**: OpenCode or Claude Code. The fields below change with it.
+- **Engine**: *Default (Claude Code)* (whichever engine Settings names), OpenCode, or
+  Claude Code. A new agent starts on *Default*: it follows the default engine, so changing
+  the default in Settings moves it too. The fields below change with the engine the agent
+  runs on. While an agent follows the default, making it read-only on one engine does the
+  same on the other (OpenCode's `plan` agent and Claude Code's `plan` permission mode go
+  together), so it keeps its reach when the default changes.
 - On OpenCode: **OpenCode agent** (`build`, `plan`, or any agent your OpenCode server
   offers; the suggestions come from the server), and **Model provider** and **Model** as
   optional overrides; leave the provider on *Default (…)* to use the default model from
@@ -635,8 +658,12 @@ and a light model the engine does not know pauses routing for every wake. The ag
 also shows the recent light turns and escalations per wake kind.
 
 Changing the model or the prompt takes effect on the agent's next turn; no reset needed,
-and the same goes for a new default in Settings. Switching an agent's engine clears its
-model, so it lands on the new engine's default.
+and the same goes for a new default model in Settings. Switching an agent's engine clears
+its model, so it lands on the new engine's default. A new default *engine* is different: a
+session belongs to one engine, so each agent that follows the default starts a fresh
+session on the new engine at its next turn in each channel, with a line saying so (see
+[Settings](#3-settings)). A model it chose for the old engine is passed over for the new
+engine's default meanwhile, and dropped the next time you save the agent.
 If an existing session has talked itself into a corner, reset it from the channel header
 (the arrow on the agent's pill), and the next turn starts fresh with the new settings.
 
@@ -701,7 +728,9 @@ You are @security-reviewer. You review diffs and designs for security problems�
 
 - What goes in: name, display name, role, group, colour, prompt, engine, model, effort,
   permissions and allowed tools (Claude Code) or OpenCode agent, and `mode` (`plan` or
-  `build`), which says in engine-neutral terms whether the agent edits.
+  `build`), which says in engine-neutral terms whether the agent edits. An agent that
+  follows the default engine is written without `engine` (with the settings of the engine
+  it runs on now), so on import it follows the importing machine's default.
 - What never goes in: ids, channels, sessions, schedules, costs, notes, Settings, and default
   models. Agents hold no secrets.
 - **Include memory** (off by default) appends the agent's [memory](#13-agent-memory) after a
@@ -733,15 +762,16 @@ The preview has a row per agent, team, and playbook:
   keeps its id, channels, sessions, schedules, and memory (pick *Replace* or *Append* in the
   memory box to change it), and a deactivated agent stays deactivated. A skipped agent stays
   as it is, and a team or playbook in the same bundle uses it.
-- An engine box for each agent, to move it to the other engine before importing.
+- An engine box for each agent: *Default (…)* to follow this machine's default engine (what
+  a file that names no engine gets), or a named engine.
 
 **Import** writes everything at once, or nothing. If something changed in the meantime (an
 agent with that name appeared), the preview is worked out again for you to check.
 
 When a file names something this machine doesn't have, the import falls back and says so:
 
-- An engine this Canopy doesn't know: the agent goes on OpenCode (on Claude Code when
-  OpenCode isn't reachable and Claude Code is installed), with its `mode`.
+- An engine this Canopy doesn't know: the agent follows the default engine, with its
+  `mode`.
 - An engine that isn't installed or running: the agent keeps it, with a notice that it won't
   run until it is.
 - A model this machine doesn't offer (a Claude alias it doesn't know, or an OpenCode model
@@ -759,7 +789,7 @@ enabled and yours; they bring no GitHub watches.
 **The gallery.** **Gallery** on the Agents page lists starter agents by group: the thirteen
 seeded ones plus a security reviewer, release manager, dependency updater, performance
 engineer, accessibility reviewer, migration reviewer, and incident investigator. Gallery
-agents name no engine or model, so each follows this machine's engine and default model;
+agents name no engine or model, so each follows this machine's default engine and model;
 their `mode` keeps reviewers read-only. **Add** opens the import preview. A card for an
 agent you already have says **Added**, or **Differs** when you changed its role, prompt, or
 mode, with **Compare** opening the preview set to replace it. The **Bug-fix team and

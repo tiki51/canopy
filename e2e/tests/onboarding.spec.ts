@@ -18,6 +18,7 @@ const project = path.resolve("../tmp/e2e-onboard");
 const settingsColumns = [
   "onboarded_at",
   "user_display_name",
+  "default_engine",
   "claude_default_model",
   "claude_default_effort",
   "opencode_default_provider",
@@ -97,7 +98,19 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#welcome-opencode")).toHaveAttribute("data-state", "ready");
     await expect(page.locator("#welcome-opencode-status")).toContainText("fake-1.0");
     await expect(page.locator("#welcome-opencode-default-provider")).toBeEnabled();
-    await expect(page.locator("#welcome-move-starters")).toHaveCount(0);
+    // default engine: both ready, so OpenCode until the user picks; a pick saves at once
+    const opencodeCard = page.locator("#welcome-engine-choice-opencode");
+    const claudeCard = page.locator("#welcome-engine-choice-claude_code");
+    await expect(opencodeCard).toHaveAttribute("aria-checked", "true");
+    await expect(opencodeCard).toHaveAttribute("data-ready", "ready");
+    await expect(claudeCard).toHaveAttribute("data-ready", "ready");
+    await claudeCard.click();
+    await expect(claudeCard).toHaveAttribute("aria-checked", "true");
+    await expect(page.locator("#welcome-engines-saved")).toBeVisible();
+    expect(sql("SELECT default_engine FROM settings")).toBe("claude_code");
+    // the default engine's model controls come first
+    const first = page.locator("#welcome-default-model [id$='-defaults']").first();
+    await expect(first).toHaveAttribute("id", "welcome-claude-defaults");
     await page.locator("#welcome-claude-default-model").selectOption("sonnet");
     await expect(page.locator("#welcome-engines-saved")).toBeVisible();
 
@@ -124,6 +137,7 @@ test.describe("first-run setup", () => {
     // every palette and mode is in the page; CSS shows the ones in force
     await expect(page.locator("#summary-look")).toContainText(/Moss & Paper,\s+dark/, { useInnerText: true });
     await expect(page.locator("#summary-engines")).toContainText(/Claude Code ✓,\s+OpenCode ✓/);
+    await expect(page.locator("#summary-default-engine")).toContainText("Claude Code");
     await expect(page.locator("#summary-model")).toContainText("sonnet");
     await expect(page.locator("#summary-pace")).toContainText("Careful");
     await expect(page.locator("#summary-project")).toContainText("e2e-onboard");

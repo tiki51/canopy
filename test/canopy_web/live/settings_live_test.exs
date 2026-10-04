@@ -329,6 +329,63 @@ defmodule CanopyWeb.SettingsLiveTest do
     assert Canopy.Settings.chatter_limit() == nil
   end
 
+  describe "the default engine" do
+    test "sits above the engine panels, shows readiness, and saves on a click", %{conn: conn} do
+      follower = Canopy.Fixtures.agent_fixture(%{name: "follower"})
+      Canopy.Fixtures.agent_fixture(%{name: "own", engine: "opencode"})
+
+      {:ok, view, html} = live(conn, ~p"/settings")
+      render_async(view)
+
+      {engine_at, _} = :binary.match(html, ~s(id="engine-panel"))
+      {opencode_at, _} = :binary.match(html, ~s(id="opencode-panel"))
+      {claude_at, _} = :binary.match(html, ~s(id="claude-panel"))
+      assert engine_at < opencode_at and engine_at < claude_at
+
+      assert has_element?(view, "#default-engine-choice-opencode[aria-checked=true]")
+      # OpenCode sent no models; `claude` is found but its login is not checked yet
+      assert has_element?(view, "#default-engine-choice-opencode[data-ready=not_ready]")
+      assert has_element?(view, "#default-engine-choice-claude_code[data-ready=installed]")
+      assert has_element?(view, "#engine-panel", "starts those agents on a fresh session")
+      assert has_element?(view, "#engine-usage", "1 agent uses the default · 1 has its own")
+
+      view |> element("#default-engine-choice-claude_code") |> render_click()
+
+      assert Settings.get().default_engine == "claude_code"
+      assert Canopy.Agents.effective_engine(follower) == "claude_code"
+      assert has_element?(view, "#default-engine-choice-claude_code[aria-checked=true]")
+      assert has_element?(view, "#default-engine-choice-opencode[aria-checked=false]")
+
+      assert render(view) =~
+               "Claude Code is the default engine. 1 agent on the default starts a fresh Claude Code session"
+    end
+
+    test "a Claude Code check updates its readiness", %{conn: conn} do
+      fake = Path.expand("../../support/fake_claude.sh", __DIR__)
+      {:ok, view, _html} = live(conn, ~p"/settings")
+      view |> form("#claude-form", setting: %{claude_binary: fake}) |> render_change()
+      view |> element("#check-claude") |> render_click()
+      render_async(view)
+
+      assert has_element?(view, "#default-engine-choice-claude_code[data-ready=ready]", "Ready")
+    end
+
+    test "Use the default for all clears every agent's own engine", %{conn: conn} do
+      Canopy.Fixtures.agent_fixture(%{name: "follower"})
+      own = Canopy.Fixtures.agent_fixture(%{name: "own", engine: "claude_code"})
+
+      {:ok, view, _html} = live(conn, ~p"/settings")
+      assert has_element?(view, "#engine-usage-inherit[data-canopy-confirm]")
+
+      view |> element("#engine-usage-inherit") |> render_click()
+
+      assert Canopy.Agents.get!(own.id).engine == nil
+      assert has_element?(view, "#engine-usage", "2 agents use the default · 0 have their own")
+      refute has_element?(view, "#engine-usage-inherit")
+      assert render(view) =~ "1 agent now uses the default engine."
+    end
+  end
+
   test "Run setup again opens first-run setup", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings")
     assert has_element?(view, "a#run-setup[href='/welcome']")

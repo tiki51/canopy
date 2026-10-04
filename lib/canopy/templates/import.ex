@@ -225,6 +225,10 @@ defmodule Canopy.Templates.Import do
         {"memory", v} when v in [:import, :skip, :keep, :replace, :append] ->
           Map.put(acc, :memory, v)
 
+        # "default": follow the default engine, whatever the file names
+        {"engine", v} when v in ["default", :default] ->
+          Map.put(acc, :engine, :default)
+
         {"engine", v} when is_binary(v) ->
           if v in Canopy.Engine.names(), do: Map.put(acc, :engine, v), else: acc
 
@@ -259,19 +263,29 @@ defmodule Canopy.Templates.Import do
   defp fit_agent(%Item{template: nil} = item, _machine),
     do: %{item | status: :invalid, errors: item.file_errors, notices: item.file_notices}
 
+  # The file's engine when it names one this Canopy knows, else (or when the
+  # user picks "default") nil: the agent follows the default engine.
   defp fit_agent(%Item{template: t} = item, machine) do
     known? = t.engine in Canopy.Engine.names()
 
     engine =
-      item.picked[:engine] || if(known?, do: t.engine, else: Machine.default_engine(machine))
+      case item.picked[:engine] do
+        :default -> nil
+        picked when is_binary(picked) -> picked
+        nil -> if(known?, do: t.engine)
+      end
+
+    effective = engine || Canopy.Settings.default_engine()
 
     engine_notices =
-      if t.engine && not known?,
-        do: ["engine #{t.engine} isn't supported here; using #{Canopy.Engine.label(engine)}"],
+      if t.engine && not known? && is_nil(item.picked[:engine]),
+        do: [
+          "engine #{t.engine} isn't supported here; using the default engine (#{Canopy.Engine.label(effective)})"
+        ],
         else: []
 
     {attrs, attr_notices} = AgentTemplate.attrs(t, engine)
-    {attrs, machine_notices} = fit_machine(attrs, machine)
+    {attrs, machine_notices} = fit_machine(attrs, effective, machine)
 
     existing = Agents.get_by_name(item.name)
     team_clash? = not is_nil(Teams.get_by_name(item.name))
@@ -319,15 +333,16 @@ defmodule Canopy.Templates.Import do
     }
   end
 
-  # Fallbacks for what this machine has; each one says what it did.
-  defp fit_machine(%{engine: "claude_code"} = attrs, machine) do
+  # Fallbacks for what this machine has (for the engine the agent will run
+  # on); each one says what it did.
+  defp fit_machine(attrs, "claude_code", machine) do
     if machine.claude_code,
       do: {attrs, []},
       else:
         {attrs, ["Claude Code isn't installed on this machine; the agent won't run until it is"]}
   end
 
-  defp fit_machine(%{engine: "opencode"} = attrs, machine) do
+  defp fit_machine(attrs, "opencode", machine) do
     {attrs, model_notices} = fit_opencode_model(attrs, machine.opencode)
     {attrs, agent_notices} = fit_opencode_agent(attrs, machine.opencode_agents)
 
@@ -339,7 +354,7 @@ defmodule Canopy.Templates.Import do
     {attrs, reach ++ model_notices ++ agent_notices}
   end
 
-  defp fit_machine(attrs, _machine), do: {attrs, []}
+  defp fit_machine(attrs, _engine, _machine), do: {attrs, []}
 
   defp fit_opencode_model(%{model_id: nil} = attrs, _opencode), do: {attrs, []}
 
@@ -386,7 +401,10 @@ defmodule Canopy.Templates.Import do
   # Field changes an import would make to `existing`, and a line diff of the
   # prompt when it changes. Only the fields the engine uses count.
   defp diff(existing, attrs) do
-    fields = if attrs.engine == "claude_code", do: @claude_fields, else: @opencode_fields
+    fields =
+      if Agents.effective_engine(attrs) == "claude_code",
+        do: @claude_fields,
+        else: @opencode_fields
 
     changes =
       Enum.flat_map(fields, fn field ->
@@ -431,8 +449,12 @@ defmodule Canopy.Templates.Import do
 
   @doc """
   The permission line for an agent's attrs: `%{text, risky}`. Risky (shown
-  amber) when it edits without asking or approves broad tool patterns.
+  amber) when it edits without asking or approves broad tool patterns. An
+  agent on the default engine is described for the engine it will run on.
   """
+  def permission(%{engine: nil} = attrs),
+    do: permission(%{attrs | engine: Canopy.Settings.default_engine()})
+
   def permission(%{engine: "claude_code"} = attrs) do
     tools = Agent.allowed_tools_list(%{allowed_tools: attrs.allowed_tools})
 

@@ -28,6 +28,21 @@ defmodule Canopy.SeedsTest do
 
     assert Enum.sort(Seeds.agent_names()) == Enum.map(Agents.list(), & &1.name)
 
+    # no engine or model of their own: they follow the defaults from Settings
+    assert Enum.all?(Agents.list(), &(is_nil(&1.engine) and is_nil(&1.model_id)))
+
+    # a `plan` starter is read-only whichever engine is the default
+    pm = Agents.get_by_name("product-manager")
+    assert {pm.opencode_agent, pm.permission_mode} == {"plan", "plan"}
+    assert Canopy.Agents.Agent.execution_mode(pm) == :plan
+    {:ok, setting} = Settings.put_default_engine("claude_code")
+    assert Agents.effective_engine(pm, setting) == "claude_code"
+    assert Canopy.Agents.Agent.execution_mode(pm) == :plan
+    {:ok, _} = Settings.put_default_engine(nil)
+
+    backend = Agents.get_by_name("backend")
+    assert {backend.opencode_agent, backend.permission_mode} == {"build", "default"}
+
     # agents take locks themselves; the project manager never brokers them
     assert Agents.get_by_name("project-manager").system_prompt =~ "Don't assign\nor pass locks"
 

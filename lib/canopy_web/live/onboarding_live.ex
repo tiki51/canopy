@@ -1,10 +1,11 @@
 defmodule CanopyWeb.OnboardingLive do
   @moduledoc """
   First-run setup at `/welcome`: one scrolling page with the display name, the
-  look (kept in the browser), which engines are ready and the default model for
-  each, how much agents may do on their own (a conversation preset), whether
-  this browser shows desktop notifications (kept in the browser, like the
-  look), and an optional first repository. `/` sends a fresh install here until
+  look (kept in the browser), which engines are ready, the default engine
+  agents follow and the default model for each engine, how much agents may
+  do on their own (a conversation preset), whether this browser shows
+  desktop notifications (kept in the browser, like the look), and an
+  optional first repository. `/` sends a fresh install here until
   setup is finished or skipped (`Canopy.Settings.onboarded?/0`); Settings →
   *Run setup again* comes back any time.
 
@@ -13,17 +14,23 @@ defmodule CanopyWeb.OnboardingLive do
   button. Only `onboarded_at` waits for *Finish setup* (or *Skip setup*), after
   which the page shows a summary in place of the sections.
 
+  The default engine (`CanopyWeb.EngineComponents.default_engine_choice/1`)
+  is preselected from the checks and saved, until the user picks one: only
+  Claude Code ready → Claude Code; only OpenCode, or both → OpenCode. The
+  starter agents follow the default, so they answer on whichever engine
+  works. The default model controls list the default engine first.
+
   The old wizard's `?step=` links redirect to the page, at the matching section.
   """
   use CanopyWeb, :live_view
 
-  alias Canopy.{Agents, Repositories, Seeds, Settings}
+  alias Canopy.{Repositories, Settings}
   alias Canopy.Agents.Agent
   alias Canopy.Engine.ClaudeCode
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Repositories.Repository
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, NotifyComponents, PresetComponents}
+  alias CanopyWeb.{AppearanceComponents, EngineComponents, NotifyComponents, PresetComponents}
 
   @step_anchors %{
     "name" => "welcome-you",
@@ -73,8 +80,9 @@ defmodule CanopyWeb.OnboardingLive do
       |> assign(:providers_state, :loading)
       |> assign(:engines_form, engines_form(Settings.change(setting)))
       |> assign(:claude_path_form, claude_path_form(""))
-      |> assign(:starter_count, starter_count())
-      |> assign(:moved_count, nil)
+      # a default engine picked by the user, before this visit or on it, is
+      # never changed by the checks (`preselect_engine/1`)
+      |> assign(:engine_picked, Settings.default_engine_chosen?(setting))
       |> assign(:preset, Presets.match(setting))
       |> assign(:team_form, team_form(Settings.change(setting)))
       |> assign(:repository_form, repository_form(Repositories.change(%Repository{})))
@@ -229,17 +237,17 @@ defmodule CanopyWeb.OnboardingLive do
     {:noreply, if(changed == [], do: socket, else: mark_saved(socket, :engines))}
   end
 
-  def handle_event("move_starters", _params, socket) do
-    if offer_move?(socket.assigns) do
-      {:ok, moved} = Agents.move_to_engine(Seeds.agent_names(), "opencode", "claude_code")
+  def handle_event("pick_default_engine", %{"engine" => engine}, socket) do
+    case Settings.put_default_engine(engine) do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:engine_picked, true)
+         |> mark_saved(:engines)}
 
-      {:noreply,
-       socket
-       |> assign(:moved_count, moved)
-       |> assign(:starter_count, starter_count())
-       |> mark_saved(:engines)}
-    else
-      {:noreply, socket}
+      {:error, _changeset} ->
+        {:noreply, socket}
     end
   end
 
@@ -344,7 +352,7 @@ defmodule CanopyWeb.OnboardingLive do
   def handle_async(:git_name, _result, socket), do: {:noreply, socket}
 
   def handle_async(:claude_check, {:ok, result}, socket),
-    do: {:noreply, assign(socket, :claude_check, result)}
+    do: {:noreply, socket |> assign(:claude_check, result) |> preselect_engine()}
 
   def handle_async(:claude_check, {:exit, reason}, socket),
     do: {:noreply, assign(socket, :claude_check, {:error, "check crashed: #{inspect(reason)}"})}
@@ -357,7 +365,7 @@ defmodule CanopyWeb.OnboardingLive do
         {:error, _changeset} -> socket
       end
 
-    {:noreply, assign(socket, :claude_check, result)}
+    {:noreply, socket |> assign(:claude_check, result) |> preselect_engine()}
   end
 
   def handle_async(:claude_path, {:ok, {_binary, result}}, socket),
@@ -367,13 +375,18 @@ defmodule CanopyWeb.OnboardingLive do
     do: {:noreply, assign(socket, :claude_check, {:error, "check crashed: #{inspect(reason)}"})}
 
   def handle_async(:opencode_health, {:ok, {:ok, %{"healthy" => false}}}, socket),
-    do: {:noreply, assign(socket, :opencode_health, {:error, :unhealthy})}
+    do: {:noreply, socket |> assign(:opencode_health, {:error, :unhealthy}) |> preselect_engine()}
 
   def handle_async(:opencode_health, {:ok, {:ok, body}}, socket),
-    do: {:noreply, assign(socket, :opencode_health, {:ok, is_map(body) && body["version"]})}
+    do:
+      {:noreply,
+       socket
+       |> assign(:opencode_health, {:ok, is_map(body) && body["version"]})
+       |> preselect_engine()}
 
   def handle_async(:opencode_health, _result, socket),
-    do: {:noreply, assign(socket, :opencode_health, {:error, :unreachable})}
+    do:
+      {:noreply, socket |> assign(:opencode_health, {:error, :unreachable}) |> preselect_engine()}
 
   def handle_async(:providers, {:ok, {:ok, %{providers: [_ | _] = providers}}}, socket),
     do: {:noreply, socket |> assign(:providers, providers) |> assign(:providers_state, :ok)}
@@ -543,19 +556,34 @@ defmodule CanopyWeb.OnboardingLive do
 
   defp checking?(assigns), do: :checking in [assigns.claude_check, assigns.opencode_health]
 
-  # Only Claude Code works, and some starter agents still sit on OpenCode with
-  # no model: they would never answer.
-  defp offer_move?(assigns) do
-    claude_ready?(assigns.claude_check) and match?({:error, _}, assigns.opencode_health) and
-      assigns.starter_count > 0
+  # Once both checks are in, the default engine follows what is ready until
+  # the user picks one (on this visit or before it): only Claude Code ready →
+  # Claude Code; only OpenCode, or both → OpenCode; neither → left alone.
+  # It is saved like every control here, since the starter agents follow the
+  # default: on a Mac with only Claude Code they would otherwise sit on an
+  # OpenCode that isn't running. A *Check again* re-applies the rule.
+  defp preselect_engine(socket) do
+    %{claude_check: claude, opencode_health: opencode, setting: setting} = socket.assigns
+
+    pick =
+      cond do
+        socket.assigns.engine_picked -> nil
+        :checking in [claude, opencode] or nil in [claude, opencode] -> nil
+        claude_ready?(claude) and not opencode_ready?(opencode) -> "claude_code"
+        opencode_ready?(opencode) -> "opencode"
+        true -> nil
+      end
+
+    with engine when is_binary(engine) <- pick,
+         true <- engine != Settings.default_engine(setting),
+         {:ok, setting} <- Settings.put_default_engine(engine) do
+      socket |> assign(:setting, setting) |> mark_saved(:engines)
+    else
+      _ -> socket
+    end
   end
 
-  defp starter_count, do: Agents.movable_count(Seeds.agent_names(), "opencode")
-
   defp blank?(value), do: value in [nil, ""]
-
-  defp agents_word(1), do: "agent"
-  defp agents_word(_n), do: "agents"
 
   # -- Render --------------------------------------------------------------------
 
@@ -626,8 +654,6 @@ defmodule CanopyWeb.OnboardingLive do
           providers_state={@providers_state}
           form={@engines_form}
           claude_path_form={@claude_path_form}
-          starter_count={@starter_count}
-          moved_count={@moved_count}
           release={@release}
         />
 
@@ -768,8 +794,6 @@ defmodule CanopyWeb.OnboardingLive do
   attr :providers_state, :atom, required: true
   attr :form, :any, required: true
   attr :claude_path_form, :any, required: true
-  attr :starter_count, :integer, required: true
-  attr :moved_count, :any, required: true
   attr :release, :boolean, required: true
 
   defp engines_section(assigns) do
@@ -778,7 +802,7 @@ defmodule CanopyWeb.OnboardingLive do
       |> assign(:claude_ready, claude_ready?(assigns.claude_check))
       |> assign(:opencode_ready, opencode_ready?(assigns.opencode_health))
       |> assign(:checking, checking?(assigns))
-      |> assign(:offer_move, offer_move?(assigns))
+      |> assign(:default_engine, Settings.default_engine(assigns.setting))
       |> assign(:claude_guide, @claude_guide)
       |> assign(:opencode_guide, @opencode_guide)
 
@@ -897,39 +921,25 @@ defmodule CanopyWeb.OnboardingLive do
         </button>
       </div>
 
-      <div
-        :if={@moved_count}
-        id="welcome-moved-starters"
-        class="mt-6 flex items-start gap-3 rounded-xl border border-success/30 bg-success/10 p-4 text-sm"
-      >
-        <.icon name="hero-check-circle" class="size-5 shrink-0 text-success" />
-        <span>
-          Moved {@moved_count} starter {agents_word(@moved_count)} to Claude Code. They keep
-          asking before they edit files.
-        </span>
-      </div>
-
-      <div
-        :if={@offer_move}
-        id="welcome-move-starters-block"
-        class="mt-6 flex flex-col gap-3 rounded-xl border border-base-300 p-4 sm:flex-row sm:items-center"
-      >
-        <p class="min-w-0 flex-1 text-sm text-base-content/80">
-          {@starter_count} starter {agents_word(@starter_count)} {if @starter_count == 1,
-            do: "is",
-            else: "are"} set up for OpenCode, which isn't running. Move {if @starter_count == 1,
-            do: "it",
-            else: "them"} so they can answer; they keep asking
-          before they edit files.
-        </p>
-        <button
-          type="button"
-          id="welcome-move-starters"
-          class="btn btn-soft btn-sm shrink-0"
-          phx-click="move_starters"
-        >
-          Move the {@starter_count} starter {agents_word(@starter_count)} to Claude Code
-        </button>
+      <div id="welcome-default-engine" class="mt-8 flex flex-col gap-3">
+        <div>
+          <h3 class="text-sm font-semibold">Default engine</h3>
+          <p class="mt-0.5 text-xs text-base-content/60">
+            Agents without an engine of their own, the starter agents among them, run on this.
+            You can still pick one per agent on the Agents page.
+          </p>
+        </div>
+        <EngineComponents.default_engine_choice
+          id="welcome-engine-choice"
+          selected={@default_engine}
+          readiness={
+            %{
+              "claude_code" => readiness(@claude_check, @claude_ready),
+              "opencode" => readiness(@opencode_health, @opencode_ready)
+            }
+          }
+          not_ready={%{"claude_code" => "Not ready", "opencode" => "Not running"}}
+        />
       </div>
 
       <div
@@ -962,94 +972,113 @@ defmodule CanopyWeb.OnboardingLive do
               Agents page.
             </p>
           </div>
-          <div :if={@claude_ready} class="grid gap-x-3 sm:grid-cols-2">
-            <.input
-              field={@form[:claude_default_model]}
-              type="select"
-              id="welcome-claude-default-model"
-              label="Claude Code model"
-              prompt="Claude Code's own default"
-              options={Agent.claude_models()}
-            />
-            <.input
-              field={@form[:claude_default_effort]}
-              type="select"
-              id="welcome-claude-default-effort"
-              label="Claude Code effort"
-              prompt="Claude Code's own default"
-              options={Agent.efforts()}
-            />
-          </div>
-          <div :if={@opencode_ready} class="grid gap-x-3 sm:grid-cols-2">
-            <%= if @providers != [] do %>
+          <%!-- the default engine's controls first --%>
+          <%= for engine <- engines_default_first(@default_engine) do %>
+            <div
+              :if={engine == "claude_code" and @claude_ready}
+              id="welcome-claude-defaults"
+              class="grid gap-x-3 sm:grid-cols-2"
+            >
               <.input
-                field={@form[:opencode_default_provider]}
+                field={@form[:claude_default_model]}
                 type="select"
-                id="welcome-opencode-default-provider"
-                label="OpenCode provider"
-                prompt="OpenCode's own default"
-                options={
-                  Providers.provider_options(
-                    @providers,
-                    @form[:opencode_default_provider].value
-                  )
-                }
+                id="welcome-claude-default-model"
+                label="Claude Code model"
+                prompt="Claude Code's own default"
+                options={Agent.claude_models()}
               />
               <.input
-                field={@form[:opencode_default_model]}
+                field={@form[:claude_default_effort]}
                 type="select"
-                id="welcome-opencode-default-model"
-                label="OpenCode model"
-                prompt={
-                  if blank?(@form[:opencode_default_provider].value),
-                    do: "Pick a provider first",
-                    else: "Pick a model"
-                }
-                options={
-                  Providers.model_options(
-                    @providers,
-                    @form[:opencode_default_provider].value,
-                    @form[:opencode_default_model].value
-                  )
-                }
-                disabled={blank?(@form[:opencode_default_provider].value)}
+                id="welcome-claude-default-effort"
+                label="Claude Code effort"
+                prompt="Claude Code's own default"
+                options={Agent.efforts()}
               />
-            <% else %>
-              <%!-- Chosen from OpenCode's own list only, as in Settings: a
+            </div>
+            <div
+              :if={engine == "opencode" and @opencode_ready}
+              id="welcome-opencode-defaults"
+              class="grid gap-x-3 sm:grid-cols-2"
+            >
+              <%= if @providers != [] do %>
+                <.input
+                  field={@form[:opencode_default_provider]}
+                  type="select"
+                  id="welcome-opencode-default-provider"
+                  label="OpenCode provider"
+                  prompt="OpenCode's own default"
+                  options={
+                    Providers.provider_options(
+                      @providers,
+                      @form[:opencode_default_provider].value
+                    )
+                  }
+                />
+                <.input
+                  field={@form[:opencode_default_model]}
+                  type="select"
+                  id="welcome-opencode-default-model"
+                  label="OpenCode model"
+                  prompt={
+                    if blank?(@form[:opencode_default_provider].value),
+                      do: "Pick a provider first",
+                      else: "Pick a model"
+                  }
+                  options={
+                    Providers.model_options(
+                      @providers,
+                      @form[:opencode_default_provider].value,
+                      @form[:opencode_default_model].value
+                    )
+                  }
+                  disabled={blank?(@form[:opencode_default_provider].value)}
+                />
+              <% else %>
+                <%!-- Chosen from OpenCode's own list only, as in Settings: a
                    default it cannot run would fail every inheriting agent. --%>
-              <.input
-                field={@form[:opencode_default_provider]}
-                type="select"
-                id="welcome-opencode-default-provider"
-                label="OpenCode provider"
-                prompt={
-                  if @providers_state == :loading,
-                    do: "Loading OpenCode's models…",
-                    else: "OpenCode sent no models"
-                }
-                options={List.wrap(@setting.opencode_default_provider)}
-                disabled
-              />
-              <.input
-                field={@form[:opencode_default_model]}
-                type="select"
-                id="welcome-opencode-default-model"
-                label="OpenCode model"
-                prompt={
-                  if @providers_state == :loading,
-                    do: "Loading OpenCode's models…",
-                    else: "OpenCode sent no models"
-                }
-                options={List.wrap(@setting.opencode_default_model)}
-                disabled
-              />
-            <% end %>
-          </div>
+                <.input
+                  field={@form[:opencode_default_provider]}
+                  type="select"
+                  id="welcome-opencode-default-provider"
+                  label="OpenCode provider"
+                  prompt={
+                    if @providers_state == :loading,
+                      do: "Loading OpenCode's models…",
+                      else: "OpenCode sent no models"
+                  }
+                  options={List.wrap(@setting.opencode_default_provider)}
+                  disabled
+                />
+                <.input
+                  field={@form[:opencode_default_model]}
+                  type="select"
+                  id="welcome-opencode-default-model"
+                  label="OpenCode model"
+                  prompt={
+                    if @providers_state == :loading,
+                      do: "Loading OpenCode's models…",
+                      else: "OpenCode sent no models"
+                  }
+                  options={List.wrap(@setting.opencode_default_model)}
+                  disabled
+                />
+              <% end %>
+            </div>
+          <% end %>
         </div>
       </.form>
     </.setup_section>
     """
   end
+
+  # The engines with the default first, so its model controls lead.
+  defp engines_default_first(default),
+    do: [default | List.delete(Canopy.Engine.names(), default)]
+
+  defp readiness(value, _ready) when value in [nil, :checking], do: :checking
+  defp readiness(_value, true), do: :ready
+  defp readiness(_value, false), do: :not_ready
 
   defp engine_state(value, _ready) when value in [nil, :checking], do: "checking"
   defp engine_state(_value, true), do: "ready"
@@ -1202,6 +1231,13 @@ defmodule CanopyWeb.OnboardingLive do
         <.summary_line id="summary-engines" href={~p"/settings#claude-panel"} icon="hero-cpu-chip">
           Engines: Claude Code {engine_mark(@claude_check, claude_ready?(@claude_check))},
           OpenCode {engine_mark(@opencode_health, opencode_ready?(@opencode_health))}.
+        </.summary_line>
+        <.summary_line
+          id="summary-default-engine"
+          href={~p"/settings#engine-panel"}
+          icon="hero-cog-6-tooth"
+        >
+          Default engine: <strong>{Canopy.Engine.label(Settings.default_engine(@setting))}</strong>.
         </.summary_line>
         <.summary_line id="summary-model" href={~p"/settings#claude-panel"} icon="hero-sparkles">
           Default model: Claude Code <strong>{model_text(@defaults["claude_code"])}</strong>{if @claude_effort,

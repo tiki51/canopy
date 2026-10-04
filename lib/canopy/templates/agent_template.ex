@@ -79,8 +79,11 @@ defmodule Canopy.Templates.AgentTemplate do
 
     mode = Agent.execution_mode(agent)
 
+    # an agent on the default engine is written without `engine` (an import
+    # then follows the importing machine's default), with the settings of the
+    # engine it runs on now
     engine_fields =
-      case agent.engine do
+      case Canopy.Agents.effective_engine(agent) do
         "claude_code" ->
           [
             model: agent.model_id,
@@ -348,17 +351,29 @@ defmodule Canopy.Templates.AgentTemplate do
   @doc """
   The agent attributes for `engine`, as `{attrs, notices}`. Every agent field
   is present (nil where the file says nothing), so the same attrs create a
-  new agent or replace an existing one like saving its edit form.
+  new agent or replace an existing one like saving its edit form. A nil
+  `engine` makes an agent that follows the default engine: the attrs are
+  worked out for the default engine (`Canopy.Settings.default_engine/1`) and
+  `engine` stays nil.
+
+  Both engines' mode settings always follow `mode` (`plan` → OpenCode's
+  `plan` agent and Claude Code's `plan` permission mode), so the agent keeps
+  its reach when its engine changes; the engine's own key, when the file
+  names it, wins for that engine.
 
   Engine-specific keys apply when they belong to `engine` and the file named
-  that engine or none; otherwise they are dropped with a notice. When the
-  engine's own mode key is absent, `mode` sets it (`plan` → OpenCode's `plan`
-  agent or Claude Code's `plan` permission mode). `model` is read as the
-  engine's kind of model; one that cannot be is dropped, so the agent
-  inherits the default.
+  that engine or none; otherwise they are dropped with a notice. `model` is
+  read as the engine's kind of model; one that cannot be is dropped, so the
+  agent inherits the default.
   """
+  def attrs(%__MODULE__{} = t, nil) do
+    {attrs, notices} = attrs(t, Canopy.Settings.default_engine())
+    {%{attrs | engine: nil}, notices}
+  end
+
   def attrs(%__MODULE__{} = t, engine) do
     own? = is_nil(t.engine) or t.engine == engine
+    plan? = t.mode == "plan"
 
     base = %{
       name: t.name,
@@ -368,8 +383,8 @@ defmodule Canopy.Templates.AgentTemplate do
       color: t.color,
       system_prompt: t.system_prompt,
       engine: engine,
-      opencode_agent: "build",
-      permission_mode: "default",
+      opencode_agent: if(plan?, do: "plan", else: "build"),
+      permission_mode: if(plan?, do: "plan", else: "default"),
       model_provider: nil,
       model_id: nil,
       effort: nil,

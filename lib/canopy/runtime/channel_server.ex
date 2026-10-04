@@ -429,32 +429,7 @@ defmodule Canopy.Runtime.ChannelServer do
         {:reply, {:error, :busy}, state}
 
       true ->
-        {:ok, _} = AgentSessions.delete(session)
-
-        {:ok, _} =
-          Timeline.record(%{
-            channel_id: state.channel.id,
-            agent_id: agent_id,
-            event_type: "session_reset",
-            ref_id: session.id,
-            # the engine keeps the session: enough to read its transcript later
-            payload: %{
-              "by" => by,
-              "engine_session_id" => session.engine_session_id,
-              "engine" => session.engine,
-              "directory" => state.repository.path
-            }
-          })
-
-        state = %{
-          state
-          | sessions: Map.delete(state.sessions, agent_id),
-            index: Map.delete(state.index, session.engine_session_id),
-            queues: Map.delete(state.queues, session.engine_session_id),
-            telemetry: Map.delete(state.telemetry, agent_id)
-        }
-
-        {:reply, :ok, state}
+        {:reply, :ok, drop_session(state, session, %{"by" => by})}
     end
   end
 
@@ -1501,7 +1476,7 @@ defmodule Canopy.Runtime.ChannelServer do
         not Map.get(turn, :stopped?, false) and
         not Map.get(turn, :interrupted?, false) and
         Map.get(turn, :thread_id) == Map.get(wake, :thread_id) and
-        can_steer?(Engine.for(session))
+        can_steer?(Engine.for(session)) and current_engine?(session)
     else
       _ -> false
     end
@@ -2281,30 +2256,112 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # -- Sessions ---------------------------------------------------------------
 
+  # The agent's root session in this channel, created when it has none. A
+  # session belongs to the engine it was created on: when the agent's
+  # effective engine changed since (the default engine changed, or the agent
+  # switched), the old session is dropped with a timeline line and a fresh
+  # one starts on the new engine. Memory and the channel's history carry
+  # over, as after a reset. A session with a turn in flight is kept until the
+  # turn ends (the wake queues on it, and the queue drains through here).
   defp ensure_root_session(state, agent_id) do
+    agent = Agents.get!(agent_id)
+    engine = Agents.effective_engine(agent)
+
     case Map.get(state.sessions, agent_id) || AgentSessions.get_root(state.channel.id, agent_id) do
-      %AgentSessions.AgentSession{} = session ->
+      %AgentSessions.AgentSession{engine: ^engine} = session ->
         {:ok, session, put_root(state, session)}
 
-      nil ->
-        agent = Agents.get!(agent_id)
-        title = "##{state.channel.name} · @#{agent.name}"
-        {mod, es, state} = engine_of(state, agent)
-
-        with {:ok, attrs} <- mod.create_session(ctx(state), es, agent, title: title),
-             {:ok, session} <-
-               AgentSessions.create(
-                 Map.merge(attrs, %{
-                   channel_id: state.channel.id,
-                   agent_id: agent_id,
-                   engine: agent.engine
-                 })
-               ) do
+      %AgentSessions.AgentSession{} = session ->
+        if Map.has_key?(state.turns, session.engine_session_id) do
           {:ok, session, put_root(state, session)}
         else
+          Logger.info(
+            "channel #{state.channel.name}: @#{agent.name} moved from #{session.engine} to #{engine}; starting a fresh session"
+          )
+
+          create_root_session(state, agent, engine, session)
+        end
+
+      nil ->
+        create_root_session(state, agent, engine, nil)
+    end
+  end
+
+  # Creates the root session on `engine`. One replacing a session of another
+  # engine drops it only once the new engine made its session, so a new
+  # engine that cannot start one leaves the old row (and the next wake tries
+  # again) rather than a line saying it moved.
+  defp create_root_session(state, agent, engine, replacing) do
+    title = "##{state.channel.name} · @#{agent.name}"
+    {mod, es, state} = engine_of(state, %{engine: engine})
+
+    case mod.create_session(ctx(state), es, agent, title: title) do
+      {:ok, attrs} ->
+        state = drop_replaced(state, replacing, engine)
+
+        case AgentSessions.create(
+               Map.merge(attrs, %{
+                 channel_id: state.channel.id,
+                 agent_id: agent.id,
+                 engine: engine
+               })
+             ) do
+          {:ok, session} -> {:ok, session, put_root(state, session)}
           {:error, reason} -> {:error, reason, state}
         end
+
+      {:error, reason} ->
+        {:error, reason, state}
     end
+  end
+
+  defp drop_replaced(state, nil, _engine), do: state
+
+  defp drop_replaced(state, session, engine) do
+    drop_session(state, session, %{
+      "by" => "engine_change",
+      "from_engine" => session.engine,
+      "to_engine" => engine
+    })
+  end
+
+  # A session belongs to the engine it was created on; its agent may have
+  # moved since (the default engine changed, or its own). A generic check:
+  # the runtime compares names, never branches on them.
+  defp current_engine?(session) do
+    case Agents.get(session.agent_id) do
+      nil -> true
+      agent -> Agents.effective_engine(agent) == session.engine
+    end
+  end
+
+  # Drops a root session (a reset, or an engine change): its row goes, a
+  # `session_reset` line records why, and the next wake starts fresh. The
+  # engine keeps the session itself, enough to read its transcript later.
+  defp drop_session(state, session, payload) do
+    {:ok, _} = AgentSessions.delete(session)
+
+    {:ok, _} =
+      Timeline.record(%{
+        channel_id: state.channel.id,
+        agent_id: session.agent_id,
+        event_type: "session_reset",
+        ref_id: session.id,
+        payload:
+          Map.merge(payload, %{
+            "engine_session_id" => session.engine_session_id,
+            "engine" => session.engine,
+            "directory" => state.repository.path
+          })
+      })
+
+    %{
+      state
+      | sessions: Map.delete(state.sessions, session.agent_id),
+        index: Map.delete(state.index, session.engine_session_id),
+        queues: Map.delete(state.queues, session.engine_session_id),
+        telemetry: Map.delete(state.telemetry, session.agent_id)
+    }
   end
 
   defp put_root(state, session) do
@@ -3129,8 +3186,10 @@ defmodule Canopy.Runtime.ChannelServer do
         state = %{state | queues: Map.put(state.queues, sid, rest)}
 
         cond do
+          # through the session lookup, so a wake that queued on a session of
+          # an engine the agent has since left starts on a fresh session instead
           not Canopy.Settings.serialize_turns?() or running_turns(state) == 0 ->
-            send_prompt(state, session, agent_id, next)
+            do_wake(state, {:root, agent_id}, next)
 
           # the same work continuing: ahead of everything already in line
           escalation?(next) ->
@@ -3216,11 +3275,13 @@ defmodule Canopy.Runtime.ChannelServer do
   # A session that has grown past the cap gets compacted by its engine: its
   # history becomes a summary, so the next turn starts small. Memory and the
   # channel tools carry everything else. Best effort: a failure is logged.
+  # A session its agent has left (the engine changed) is not compacted: the
+  # next wake replaces it anyway.
   defp maybe_compact(state, session, %{context: context}, who) when context > 0 do
     {mod, es, state} = engine_of(state, session)
     cap = mod.context_cap()
 
-    if context > cap do
+    if context > cap and current_engine?(session) do
       record = fn ->
         {:ok, _} =
           Timeline.record(%{

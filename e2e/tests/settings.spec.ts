@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { sql } from "./site-helpers";
 
 test.describe("settings", () => {
   test("checks the OpenCode connection and shows MCP install details", async ({ page }) => {
@@ -90,6 +91,30 @@ test.describe("settings", () => {
     await page.goto("/agents");
     await expect(page.locator("#default-model-opencode")).toContainText("its own default");
     await expect(page.locator("#default-model-claude_code")).toContainText("its own default");
+  });
+
+  test("the default engine moves the seeded agents with it", async ({ page }) => {
+    await page.goto("/settings");
+    const opencode = page.locator("#default-engine-choice-opencode");
+    const claude = page.locator("#default-engine-choice-claude_code");
+    await expect(opencode).toHaveAttribute("aria-checked", "true");
+    await expect(opencode).toHaveAttribute("data-ready", "ready");
+    await expect(page.locator("#engine-usage")).toContainText(/\d+ agents? uses? the default/);
+
+    try {
+      await claude.click();
+      await expect(claude).toHaveAttribute("aria-checked", "true");
+      await expect(page.locator("#flash-info")).toContainText("Claude Code is the default engine");
+
+      // the seeded agents name no engine: the list shows the default's, muted
+      await page.goto("/agents");
+      await expect(page.locator("#default-engine-label")).toContainText("Claude Code");
+      const backend = page.locator('#active-agents [id^="engine-"]', { hasText: "Claude Code" });
+      await expect(backend.first().locator("[data-default-engine]")).toBeVisible();
+    } finally {
+      // back to no choice (OpenCode) for the specs that follow
+      sql("UPDATE settings SET default_engine = NULL");
+    }
   });
 
   test("saves the display name", async ({ page }) => {

@@ -29,8 +29,9 @@ defmodule Canopy.Agents.Agent do
     # optional label the sidebar and pickers group agents under ("Engineering")
     field :group, :string
     field :system_prompt, :string
-    # which execution engine runs this agent (see `Canopy.Engine`)
-    field :engine, :string, default: "opencode"
+    # which execution engine runs this agent (see `Canopy.Engine`); nil
+    # follows the default engine from Settings (`Canopy.Agents.effective_engine/2`)
+    field :engine, :string
     field :opencode_agent, :string, default: "build"
     field :model_provider, :string
     field :model_id, :string
@@ -76,7 +77,9 @@ defmodule Canopy.Agents.Agent do
     |> update_change(:name, &normalize_name/1)
     |> update_change(:group, &normalize_group/1)
     |> put_default_display_name()
-    |> validate_required([:name, :display_name, :engine, :opencode_agent, :permission_mode])
+    |> update_change(:engine, &blank_to_nil/1)
+    |> sync_reach()
+    |> validate_required([:name, :display_name, :opencode_agent, :permission_mode])
     |> validate_inclusion(:engine, Canopy.Engine.names())
     |> validate_inclusion(:permission_mode, @permission_modes)
     |> update_change(:effort, &blank_to_nil/1)
@@ -84,6 +87,7 @@ defmodule Canopy.Agents.Agent do
     |> update_change(:light_effort, &blank_to_nil/1)
     |> validate_inclusion(:light_effort, @efforts)
     |> update_change(:allowed_tools, &blank_to_nil/1)
+    |> drop_stale_models()
     |> validate_claude_code()
     |> validate_model()
     |> validate_light_model()
@@ -100,12 +104,18 @@ defmodule Canopy.Agents.Agent do
 
   @doc """
   What the agent's session can do: `:plan` (read-only) or `:build` (edits
-  files), or nil when the engine settings say nothing about it. Accepts plain
-  maps too, for prompt tests.
+  files), or nil when the engine settings say nothing about it. Read for the
+  agent's effective engine (its own, else the default). Accepts plain maps
+  too, for prompt tests (no `engine` key reads as OpenCode).
   """
   def execution_mode(agent) do
-    case {Map.get(agent, :engine, "opencode"), Map.get(agent, :opencode_agent),
-          Map.get(agent, :permission_mode)} do
+    engine =
+      case Map.get(agent, :engine, "opencode") do
+        nil -> Canopy.Settings.default_engine()
+        engine -> engine
+      end
+
+    case {engine, Map.get(agent, :opencode_agent), Map.get(agent, :permission_mode)} do
       {"opencode", "plan", _} -> :plan
       {"opencode", "build", _} -> :build
       {"claude_code", _, "plan"} -> :plan
@@ -133,10 +143,68 @@ defmodule Canopy.Agents.Agent do
 
   defp blank_to_nil(value), do: value
 
+  # An agent on the default engine keeps its reach when the default changes:
+  # making it read-only (or not) through one engine's field does the same
+  # through the other's (OpenCode's `plan` agent, Claude Code's `plan`
+  # permission mode). Only when one of the two changes; a change that names
+  # both (a template, say) is taken as given.
+  defp sync_reach(changeset) do
+    agent = changeset.changes[:opencode_agent]
+    permission = changeset.changes[:permission_mode]
+
+    cond do
+      not is_nil(get_field(changeset, :engine)) -> changeset
+      agent && is_nil(permission) -> mirror_plan(changeset, agent, :permission_mode, "default")
+      permission && is_nil(agent) -> mirror_plan(changeset, permission, :opencode_agent, "build")
+      true -> changeset
+    end
+  end
+
+  defp mirror_plan(changeset, "plan", field, _unplanned), do: put_change(changeset, field, "plan")
+
+  defp mirror_plan(changeset, _value, field, unplanned) do
+    if get_field(changeset, field) == "plan",
+      do: put_change(changeset, field, unplanned),
+      else: changeset
+  end
+
+  # The engine the changeset's model rules apply to: the agent's own, else
+  # the default engine from Settings (read only when the agent has none).
+  defp effective_engine(changeset),
+    do: get_field(changeset, :engine) || Canopy.Settings.default_engine()
+
+  # An agent on the default engine may hold a model left from the engine the
+  # default was before (passed over meanwhile, see
+  # `Canopy.Agents.effective_model/2`). Saving it drops that model, as
+  # switching engine on the form does, rather than refusing the save over a
+  # field the form no longer shows.
+  defp drop_stale_models(changeset) do
+    if is_nil(get_field(changeset, :engine)) do
+      engine = effective_engine(changeset)
+
+      changeset
+      |> drop_stale(engine, :model_provider, :model_id)
+      |> drop_stale(engine, :light_model_provider, :light_model_id)
+    else
+      changeset
+    end
+  end
+
+  defp drop_stale(changeset, engine, provider_field, model_field) do
+    if changed?(changeset, provider_field) or changed?(changeset, model_field) or
+         model_fits?(
+           engine,
+           get_field(changeset, provider_field),
+           get_field(changeset, model_field)
+         ),
+       do: changeset,
+       else: changeset |> put_change(provider_field, nil) |> put_change(model_field, nil)
+  end
+
   # A Claude Code agent names its permissions; a blank model or effort
   # inherits the default from Settings. Claude Code has no providers.
   defp validate_claude_code(changeset) do
-    if get_field(changeset, :engine) == "claude_code" do
+    if effective_engine(changeset) == "claude_code" do
       changeset
       |> put_change(:model_provider, nil)
       |> put_change(:light_model_provider, nil)
@@ -156,7 +224,7 @@ defmodule Canopy.Agents.Agent do
 
     if Enum.any?([:engine, :model_provider, :model_id], &changed?(changeset, &1)) do
       changeset
-      |> get_field(:engine)
+      |> effective_engine()
       |> model_errors(get_field(changeset, :model_provider), get_field(changeset, :model_id))
       |> Enum.reduce(changeset, fn {field, message}, acc -> add_error(acc, field, message) end)
     else
@@ -174,7 +242,7 @@ defmodule Canopy.Agents.Agent do
 
     if Enum.any?([:engine, :light_model_provider, :light_model_id], &changed?(changeset, &1)) do
       changeset
-      |> get_field(:engine)
+      |> effective_engine()
       |> model_errors(
         get_field(changeset, :light_model_provider),
         get_field(changeset, :light_model_id)
@@ -207,6 +275,19 @@ defmodule Canopy.Agents.Agent do
   def model_errors(_engine, nil, _model), do: [model_provider: "pick a provider for this model"]
   def model_errors(_engine, provider, nil), do: [model_id: "pick a model from #{provider}"]
   def model_errors(_engine, _provider, _model), do: []
+
+  @doc """
+  Whether `engine` can run an agent's own model, or whether it was left from
+  the other engine (when the default engine changed under an agent that
+  follows it). Claude Code runs only its aliases; OpenCode runs anything
+  but a bare Claude Code alias, so an older half-filled OpenCode row counts
+  as before. No model always fits.
+  """
+  def model_fits?(_engine, _provider, nil), do: true
+  def model_fits?("claude_code", _provider, model), do: model in @claude_models
+
+  def model_fits?(_engine, provider, model),
+    do: not (is_nil(provider) and model in @claude_models)
 
   defp normalize_name(name) when is_binary(name) do
     name |> String.trim() |> String.trim_leading("@") |> String.downcase()

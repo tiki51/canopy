@@ -272,15 +272,20 @@ defmodule Canopy.Templates.ImportTest do
   end
 
   describe "machine fallbacks" do
-    test "an engine this Canopy doesn't know becomes the engine for new agents" do
+    test "an engine this Canopy doesn't know makes the agent follow the default engine" do
       text = template("futurist", "engine: codex\nmode: plan\nmodel: gpt-9")
       item = item(plan(text))
-      assert %{engine: "opencode", opencode_agent: "plan", model_id: nil} = item.attrs
-      assert Enum.any?(item.notices, &(&1 =~ "engine codex isn't supported here; using OpenCode"))
+      assert %{engine: nil, opencode_agent: "plan", model_id: nil} = item.attrs
+
+      assert Enum.any?(
+               item.notices,
+               &(&1 =~ "engine codex isn't supported here; using the default engine (OpenCode)")
+             )
+
       assert item.errors == []
     end
 
-    test "with OpenCode away and Claude Code installed, new agents go to Claude Code" do
+    test "a file naming no engine follows the default, read-only on both engines in plan mode" do
       item =
         item(
           plan(template("roamer", "mode: plan"),
@@ -288,7 +293,53 @@ defmodule Canopy.Templates.ImportTest do
           )
         )
 
-      assert %{engine: "claude_code", permission_mode: "plan"} = item.attrs
+      assert %{engine: nil, opencode_agent: "plan", permission_mode: "plan"} = item.attrs
+
+      # worked out for the default engine: Claude Code's checks when it is the default
+      {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+
+      item =
+        item(plan(template("roamer", "mode: plan"), machine: machine(claude_code: false)))
+
+      assert %{engine: nil, permission_mode: "plan"} = item.attrs
+      assert Enum.any?(item.notices, &(&1 =~ "Claude Code isn't installed on this machine"))
+    end
+
+    test "an agent on the default engine round-trips without an engine" do
+      {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "tripper",
+          opencode_agent: "plan",
+          model_id: "opus",
+          effort: "high"
+        })
+
+      text = Canopy.Templates.AgentTemplate.encode(agent)
+      refute text =~ "engine:"
+      assert text =~ "mode: plan"
+      assert text =~ "model: opus"
+
+      Canopy.Repo.delete!(agent)
+      item = item(plan(text))
+
+      assert %{engine: nil, permission_mode: "plan", opencode_agent: "plan", model_id: "opus"} =
+               item.attrs
+
+      assert {:ok, _summary} = Import.apply(plan(text))
+
+      assert %{engine: nil, permission_mode: "plan", model_id: "opus"} =
+               Agents.get_by_name("tripper")
+    end
+
+    test "the engine choice \"default\" makes the agent follow the default engine" do
+      plan = plan(template("chooser", "engine: claude_code"))
+      chooser = item(plan)
+      assert chooser.attrs.engine == "claude_code"
+
+      plan = Import.choose(plan, %{chooser.id => %{"action" => "create", "engine" => "default"}})
+      assert item(plan, "chooser").attrs.engine == nil
     end
 
     test "a Claude model alias this Canopy doesn't offer inherits the default" do

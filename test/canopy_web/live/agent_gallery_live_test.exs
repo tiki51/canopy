@@ -47,9 +47,10 @@ defmodule CanopyWeb.AgentGalleryLiveTest do
     assert flash["info"] == "Imported @security-reviewer."
 
     agent = Agents.get_by_name("security-reviewer")
-    # engine-neutral: OpenCode is away in this test but Claude Code is
-    # installed, so the agent goes there, read-only as its mode says
-    assert %{engine: "claude_code", permission_mode: "plan", model_id: nil} = agent
+    # engine-neutral: the agent follows the default engine, read-only on
+    # either engine as its mode says
+    assert %{engine: nil, opencode_agent: "plan", permission_mode: "plan", model_id: nil} =
+             agent
 
     {:ok, view, _html} = live(conn, ~p"/agents/gallery")
     assert has_element?(view, "#gallery-added-security-reviewer")

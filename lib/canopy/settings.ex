@@ -17,6 +17,7 @@ defmodule Canopy.Settings do
   }
   @effort_fields %{"claude_code" => :claude_default_effort}
   @default_fields [
+    :default_engine,
     :claude_default_model,
     :claude_default_effort,
     :opencode_default_provider,
@@ -52,8 +53,8 @@ defmodule Canopy.Settings do
 
   @doc """
   Updates the settings. A changed `user_display_name` is copied to the local
-  user row so message attribution stays in sync; a changed default model or
-  effort is broadcast as `{:settings, :default_models_changed}`, a changed
+  user row so message attribution stays in sync; a changed default engine,
+  model or effort is broadcast as `{:settings, :default_models_changed}`, a changed
   light model or effort as `{:settings, :light_profiles_changed}`.
   """
   def update(attrs) do
@@ -84,12 +85,45 @@ defmodule Canopy.Settings do
   end
 
   @doc """
-  Tells the pages that show default models that a default, or which agents
-  inherit one, changed. Agents re-read their model every turn, so the runtime
-  needs nothing.
+  Tells the pages that show default models that a default (engine, model or
+  effort), or which agents inherit one, changed. Agents re-read their engine
+  and model every turn, so the runtime needs nothing: a channel compares an
+  agent's session with its engine on the next wake.
   """
   def broadcast_defaults_changed,
     do: Phoenix.PubSub.broadcast(Canopy.PubSub, topic(), {:settings, :default_models_changed})
+
+  # -- Default engine -----------------------------------------------------------
+
+  # What every agent ran on before there was a default (the old schema default).
+  @fallback_engine "opencode"
+
+  @doc """
+  The engine an agent without one of its own runs on: the one chosen in
+  Settings, else OpenCode (what agents ran on before there was a default),
+  else the first engine configured. Never nil. Pass the settings row to skip
+  a read.
+  """
+  def default_engine(setting \\ nil) do
+    setting = setting || get()
+    names = Canopy.Engine.names()
+
+    cond do
+      setting.default_engine in names -> setting.default_engine
+      @fallback_engine in names -> @fallback_engine
+      true -> List.first(names)
+    end
+  end
+
+  @doc "Whether a default engine was chosen (rather than falling back to OpenCode)."
+  def default_engine_chosen?(setting \\ nil), do: is_binary((setting || get()).default_engine)
+
+  @doc """
+  Sets the default engine: one of `Canopy.Engine.names/0`, or nil to fall
+  back to OpenCode. Agents on the default start a fresh session on the new
+  engine at their next wake in each channel (`Canopy.Runtime.ChannelServer`).
+  """
+  def put_default_engine(engine), do: update(%{default_engine: engine})
 
   # -- Default models -----------------------------------------------------------
 

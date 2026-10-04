@@ -67,18 +67,6 @@ defmodule Canopy.Templates.Machine do
   def opencode_reachable?(%__MODULE__{opencode: {:ok, _}}), do: true
   def opencode_reachable?(_machine), do: false
 
-  @doc """
-  The engine a new agent gets when its file names none (or one this Canopy
-  doesn't know): OpenCode, the schema default, unless OpenCode is away and
-  Claude Code is installed.
-  """
-  def default_engine(%__MODULE__{} = machine) do
-    if not opencode_reachable?(machine) and machine.claude_code and
-         "claude_code" in Canopy.Engine.names(),
-       do: "claude_code",
-       else: "opencode"
-  end
-
   @doc "Whether the engine can run here (installed, or reachable)."
   def engine_ready?(%__MODULE__{claude_code: ready}, "claude_code"), do: ready
   def engine_ready?(%__MODULE__{} = machine, "opencode"), do: opencode_reachable?(machine)

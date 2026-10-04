@@ -184,6 +184,127 @@ defmodule Canopy.Engine.CrossEngineTest do
     assert is_nil(session.parent_session_id)
   end
 
+  describe "the default engine changes under an agent" do
+    defp stdin(log) do
+      log
+      |> File.read!()
+      |> String.split("\n")
+      |> Enum.filter(&String.starts_with?(&1, "STDIN "))
+      |> Enum.join("\n")
+    end
+
+    defp emit_idle(sid) do
+      Phoenix.PubSub.broadcast(
+        Canopy.PubSub,
+        Canopy.OpenCode.EventStream.session_topic(sid),
+        {:engine_event, %Canopy.Engine.Event{type: :agent_completed, session_id: sid, data: %{}}}
+      )
+    end
+
+    test "its next wake starts a fresh session on the new engine, with a line saying why",
+         ctx do
+      old = ctx.session
+      assert ctx.agent.engine == nil
+      assert old.engine == "opencode"
+
+      # the OpenCode session is never prompted again
+      expect(OC, :prompt_async, 0, fn _dir, _sid, _body, _opts -> {:ok, ""} end)
+
+      {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello after the switch")
+
+      assert_receive {:timeline,
+                      %{event_type: "session_reset", agent_id: agent_id, payload: payload}},
+                     5_000
+
+      assert agent_id == ctx.agent.id
+
+      assert %{
+               "by" => "engine_change",
+               "from_engine" => "opencode",
+               "to_engine" => "claude_code",
+               "engine" => "opencode",
+               "engine_session_id" => old_sid
+             } = payload
+
+      assert old_sid == old.engine_session_id
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "agent_turn_completed",
+                        agent_id: ^agent_id,
+                        payload: %{"cost" => 0.002}
+                      }},
+                     10_000
+
+      new = AgentSessions.get_root(ctx.channel.id, ctx.agent.id)
+      assert new.engine == "claude_code"
+      refute new.id == old.id
+      assert is_binary(new.mcp_token)
+      assert stdin(ctx.log) =~ "hello after the switch"
+
+      # the agent itself still follows the default
+      assert Canopy.Agents.get!(ctx.agent.id).engine == nil
+    end
+
+    test "a turn in flight keeps its session; the wake queued behind it starts fresh", ctx do
+      test_pid = self()
+      old = ctx.session
+
+      stub(OC, :session_status, fn _dir, _opts -> {:ok, %{}} end)
+      stub(OC, :pending_permissions, fn _dir, _opts -> {:ok, []} end)
+
+      # exactly one OpenCode prompt: the turn that was already running
+      expect(OC, :prompt_async, 1, fn _dir, sid, _body, _opts ->
+        send(test_pid, {:oc_prompted, sid})
+        {:ok, ""}
+      end)
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "first, on OpenCode")
+      assert_receive {:oc_prompted, sid}, 5_000
+      assert sid == old.engine_session_id
+
+      {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "second, after the switch")
+
+      # nothing moves while the OpenCode turn runs
+      refute_receive {:timeline, %{event_type: "session_reset"}}, 300
+      assert AgentSessions.get_root(ctx.channel.id, ctx.agent.id).id == old.id
+
+      emit_idle(sid)
+
+      assert_receive {:timeline,
+                      %{event_type: "session_reset", payload: %{"by" => "engine_change"}}},
+                     5_000
+
+      assert_receive {:timeline,
+                      %{event_type: "agent_turn_completed", payload: %{"cost" => 0.002}}},
+                     10_000
+
+      assert AgentSessions.get_root(ctx.channel.id, ctx.agent.id).engine == "claude_code"
+      assert stdin(ctx.log) =~ "second, after the switch"
+    end
+
+    test "an agent with an engine of its own keeps its session", ctx do
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} first")
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", agent_id: coder_id}},
+                     10_000
+
+      assert coder_id == ctx.coder.id
+      session = AgentSessions.get_root(ctx.channel.id, ctx.coder.id)
+
+      {:ok, _} = Canopy.Settings.put_default_engine("opencode")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} second")
+
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", agent_id: ^coder_id}},
+                     10_000
+
+      refute_received {:timeline, %{event_type: "session_reset"}}
+      assert AgentSessions.get_root(ctx.channel.id, ctx.coder.id).id == session.id
+    end
+  end
+
   test "a scheduled wake runs a Claude Code turn with the scheduled trigger", ctx do
     :ok =
       Runtime.wake_scheduled(ctx.channel.id, ctx.coder.id, "Nightly check: is the build green?")

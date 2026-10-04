@@ -2463,7 +2463,16 @@ defmodule CanopyWeb.TimelineComponents do
         "#{agent}'s session was compacted after reaching #{p["context"]} tokens of context"
 
       "session_reset" ->
-        "#{if p["by"] == "user", do: user, else: p["by"]} reset #{agent}'s session; it starts fresh on its next turn"
+        case p["by"] do
+          "engine_change" ->
+            "#{agent} started a fresh session: its engine changed from #{Canopy.Engine.label(p["from_engine"] || "?")} to #{Canopy.Engine.label(p["to_engine"] || "?")}"
+
+          "user" ->
+            "#{user} reset #{agent}'s session; it starts fresh on its next turn"
+
+          by ->
+            "#{by} reset #{agent}'s session; it starts fresh on its next turn"
+        end
 
       "agent_turn_completed" ->
         verb =

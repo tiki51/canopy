@@ -11,7 +11,8 @@ defmodule Canopy.Engine do
   cards, costs, the MCP tools) is engine-neutral.
 
   Adapters are looked up by the `engine` name stored on agents and sessions,
-  through `config :canopy, :engines`. Per-channel adapter state (an MCP
+  through `config :canopy, :engines`; an agent without one follows the
+  default engine from Settings. Per-channel adapter state (an MCP
   registration memo, client options) is opaque to the runtime: `attach/2`
   creates it, the runtime hands it back on every call that needs it.
 
@@ -67,7 +68,10 @@ defmodule Canopy.Engine do
           questions: [Event.t()] | :unknown
         }
 
-  @doc "The engine's name, as stored in `agents.engine` and `agent_sessions.engine`."
+  @doc """
+  The engine's name, as stored in `agents.engine` (nil there: the default
+  engine from Settings) and `agent_sessions.engine`.
+  """
   @callback name() :: String.t()
 
   @doc "Called when a channel process starts (or moves repository); returns the adapter's state."
@@ -246,7 +250,12 @@ defmodule Canopy.Engine do
   @doc "The engine's name as people read it (`\"Claude Code\"`)."
   def label(name) when is_binary(name), do: Map.get(@labels, name, name)
 
-  @doc "The adapter for an agent or session (anything with an `engine` name)."
+  @doc """
+  The adapter for an agent or session (anything with an `engine` name). An
+  agent with no engine of its own runs on the default engine
+  (`Canopy.Agents.effective_engine/2`); a session always names its own.
+  """
+  def for(%{engine: nil}), do: module!(Canopy.Settings.default_engine())
   def for(%{engine: name}), do: module!(name)
 
   @doc """

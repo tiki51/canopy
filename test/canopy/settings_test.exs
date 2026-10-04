@@ -134,6 +134,41 @@ defmodule Canopy.SettingsTest do
     end
   end
 
+  describe "default engine" do
+    test "falls back to OpenCode until one is chosen; put_default_engine/1 round-trips" do
+      {:ok, _} = Settings.put_default_engine(nil)
+      refute Settings.default_engine_chosen?()
+      assert Settings.default_engine() == "opencode"
+
+      assert {:ok, setting} = Settings.put_default_engine("claude_code")
+      assert setting.default_engine == "claude_code"
+      assert Settings.default_engine() == "claude_code"
+      assert Settings.default_engine(setting) == "claude_code"
+      assert Settings.default_engine_chosen?()
+
+      # blank clears it
+      assert {:ok, _} = Settings.update(%{default_engine: " "})
+      assert Settings.get().default_engine == nil
+      assert Settings.default_engine() == "opencode"
+    end
+
+    test "only an engine Canopy has is accepted" do
+      assert {:error, changeset} = Settings.put_default_engine("codex")
+      assert %{default_engine: [_]} = errors_on(changeset)
+      assert Settings.get().default_engine == nil
+    end
+
+    test "a change is broadcast with the default models'; saving it again is not" do
+      Settings.subscribe()
+
+      {:ok, _} = Settings.put_default_engine("claude_code")
+      assert_receive {:settings, :default_models_changed}
+
+      {:ok, _} = Settings.put_default_engine("claude_code")
+      refute_receive {:settings, :default_models_changed}, 50
+    end
+  end
+
   describe "first-run setup" do
     alias Canopy.Repo
     alias Canopy.Settings.{Presets, Setting}

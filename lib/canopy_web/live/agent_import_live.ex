@@ -419,6 +419,9 @@ defmodule CanopyWeb.AgentImportLive do
           aria-label="Engine"
           class="select select-bordered select-xs w-auto"
         >
+          <option value="default" selected={is_nil(@item.engine)}>
+            Default ({Canopy.Engine.label(Canopy.Settings.default_engine())})
+          </option>
           <option
             :for={engine <- Canopy.Engine.names()}
             value={engine}

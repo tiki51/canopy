@@ -82,29 +82,31 @@ defmodule Canopy.Seeds do
     ]
   end
 
-  @doc """
-  The names of the starter agents. First-run setup moves those still on
-  OpenCode with no model to Claude Code when only Claude Code works.
-  """
+  @doc "The names of the starter agents."
   def agent_names, do: Enum.map(starter_agents(), & &1.name)
 
   # The 13 starter agents are gallery templates marked `seed: true`
   # (priv/templates/agents), so the gallery can re-add one that was changed or
-  # retired. Like before, they get no engine of their own (OpenCode, the
-  # schema default) and no model.
+  # retired. They get no engine and no model of their own: they follow the
+  # default engine and its default model from Settings. Their `mode` sets
+  # both engines' reach (OpenCode's agent, Claude Code's permission mode), so
+  # a `plan` starter is read-only whichever engine is the default.
   defp starter_agents do
     for template <- Canopy.Templates.Gallery.seed_agents() do
       {attrs, _notices} = Canopy.Templates.AgentTemplate.attrs(template, "opencode")
 
-      Map.take(attrs, [
+      attrs
+      |> Map.take([
         :name,
         :display_name,
         :role,
         :group,
         :color,
         :system_prompt,
-        :opencode_agent
+        :opencode_agent,
+        :permission_mode
       ])
+      |> Map.put(:engine, nil)
     end
   end
 end

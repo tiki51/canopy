@@ -104,14 +104,36 @@ defmodule CanopyWeb.AgentsLiveTest do
     test "the engine column names each agent's engine, and the OpenCode agent beside it", %{
       conn: conn
     } do
-      oc = Fixtures.agent_fixture(%{name: "oc", opencode_agent: "build"})
+      oc = Fixtures.agent_fixture(%{name: "oc", engine: "opencode", opencode_agent: "build"})
       cc = Fixtures.agent_fixture(%{name: "cc", engine: "claude_code"})
 
       {:ok, view, html} = live(conn, ~p"/agents")
 
       refute html =~ "OpenCode agent"
-      assert view |> element("#engine-#{oc.id}") |> render() =~ ~r/OpenCode<span[^>]*> · build/
+
+      assert view |> element("#engine-#{oc.id}") |> render() =~
+               ~r/OpenCode<\/span><span[^>]*> · build/
+
       assert has_element?(view, "#engine-#{cc.id}", "Claude Code")
+      # their own engines: not muted as the default
+      refute has_element?(view, "#engine-#{oc.id} [data-default-engine]")
+      refute has_element?(view, "#engine-#{cc.id} [data-default-engine]")
+    end
+
+    test "an agent on the default engine shows the default's engine, muted", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "follower", opencode_agent: "plan"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#engine-#{agent.id} [data-default-engine]", "OpenCode")
+      assert has_element?(view, "#engine-#{agent.id}", "plan")
+      assert has_element?(view, "#default-engine-label", "OpenCode")
+
+      # the default changes: the row follows, the agent itself still says nothing
+      {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+      assert has_element?(view, "#engine-#{agent.id} [data-default-engine]", "Claude Code")
+      refute has_element?(view, "#engine-#{agent.id}", "plan")
+      assert has_element?(view, "#default-engine-label", "Claude Code")
+      assert Canopy.Agents.get!(agent.id).engine == nil
     end
   end
 
@@ -718,6 +740,86 @@ defmodule CanopyWeb.AgentsLiveTest do
       view |> form("#agent-form", agent: %{engine: "claude_code"}) |> render_submit()
 
       assert %{engine: "claude_code", model_provider: nil, model_id: nil} = Agents.get!(agent.id)
+    end
+
+    test "the engine select offers the default first; a new agent follows it", %{conn: conn} do
+      {:ok, _} = Settings.put_default_engine("claude_code")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/new")
+
+      assert has_element?(
+               view,
+               "select#agent-engine-select option:first-child[value='']",
+               "Default (Claude Code)"
+             )
+
+      # the form shows the fields of the engine the agent will run on
+      assert has_element?(view, "select#claude-model")
+
+      view
+      |> form("#agent-form",
+        agent: %{name: "follower", system_prompt: "You follow.", engine: ""}
+      )
+      |> render_submit()
+
+      agent = Agents.get_by_name("follower")
+      assert agent.engine == nil
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#agent-engine", "Claude Code")
+      assert has_element?(view, "#agent-engine-default a[href='/settings#engine-panel']")
+      assert has_element?(view, "#agent-permissions")
+    end
+
+    test "switching between the default and its own engine keeps the model", %{conn: conn} do
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "keeper",
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      render_async(view)
+
+      # OpenCode is the default, so naming it changes nothing the agent runs on
+      view |> form("#agent-form", agent: %{engine: "opencode"}) |> render_change()
+      view |> form("#agent-form", agent: %{engine: "opencode"}) |> render_submit()
+
+      assert %{engine: "opencode", model_provider: "opencode", model_id: "gpt-5-nano"} =
+               Agents.get!(agent.id)
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      render_async(view)
+      view |> form("#agent-form", agent: %{engine: ""}) |> render_change()
+      view |> form("#agent-form", agent: %{engine: ""}) |> render_submit()
+
+      assert %{engine: nil, model_id: "gpt-5-nano"} = Agents.get!(agent.id)
+    end
+
+    test "a model left from the old default shows the new default, and saves away", %{
+      conn: conn
+    } do
+      set_defaults()
+
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "left",
+          model_provider: "opencode",
+          model_id: "gpt-5-nano"
+        })
+
+      {:ok, _} = Settings.put_default_engine("claude_code")
+
+      {:ok, view, _html} = live(conn, ~p"/agents")
+      assert has_element?(view, "#model-#{agent.id}", "default · sonnet")
+      refute has_element?(view, "#model-#{agent.id}.badge")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      view |> form("#agent-form", agent: %{role: "Still here"}) |> render_submit()
+
+      assert %{role: "Still here", model_provider: nil, model_id: nil, engine: nil} =
+               Agents.get!(agent.id)
     end
 
     test "the price lines price the default model", %{conn: conn} do

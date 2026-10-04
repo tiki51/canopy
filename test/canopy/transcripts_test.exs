@@ -114,8 +114,9 @@ defmodule Canopy.TranscriptsTest do
       assert reset.engine_session_id == "ses_reset"
       assert reset.ref_id == "as_gone"
 
-      # no engine or directory recorded: the agent's engine, the channel's repository
-      assert older.engine == agent.engine
+      # no engine or directory recorded: the agent's engine (here the default
+      # it follows), the channel's repository
+      assert older.engine == Canopy.Agents.effective_engine(agent)
       assert older.directory == Canopy.Channels.get!(channel.id).repository.path
     end
 

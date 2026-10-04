@@ -1,6 +1,8 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
-  Settings: the OpenCode server URL (with a connection check), the Claude Code
+  Settings: the default engine agents without one of their own run on (with
+  which engines are ready and how many agents follow it), the OpenCode server
+  URL (with a connection check), the Claude Code
   binary (with a version and login check), the `gh` binary GitHub watches use
   (with the same check), each engine's default model (and
   Claude Code's default effort) with how many agents use it, each engine's
@@ -17,7 +19,7 @@ defmodule CanopyWeb.SettingsLive do
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, NotifyComponents, PresetComponents}
+  alias CanopyWeb.{AppearanceComponents, EngineComponents, NotifyComponents, PresetComponents}
 
   @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
   @opencode_light_fields {:opencode_light_provider, :opencode_light_model}
@@ -38,6 +40,7 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
      |> assign(:claude_check, nil)
+     |> assign(:claude_found, claude_found?())
      |> assign(:gh_form, to_form(Settings.change(setting), id: "gh-form"))
      |> assign(:gh_check, nil)
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
@@ -105,6 +108,39 @@ defmodule CanopyWeb.SettingsLive do
       {:error, changeset} ->
         {:noreply, assign(socket, :opencode_form, to_form(changeset, id: "opencode-form"))}
     end
+  end
+
+  # Agents on the default start a fresh session on the new engine at their
+  # next wake in each channel (the channel compares the session's engine).
+  def handle_event("pick_default_engine", %{"engine" => engine}, socket) do
+    before = Settings.default_engine(socket.assigns.setting)
+
+    case Settings.put_default_engine(engine) do
+      {:ok, setting} ->
+        socket = socket |> assign(:setting, setting) |> assign_usage()
+
+        message =
+          if engine == before,
+            do: "#{Canopy.Engine.label(engine)} is the default engine.",
+            else: default_engine_saved(engine, socket.assigns.engine_usage.default)
+
+        {:noreply, put_flash(socket, :info, message)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not change the default engine.")}
+    end
+  end
+
+  # Clears every active agent's own engine, after the confirmation on the button.
+  def handle_event("inherit_default_engine", _params, socket) do
+    {:ok, count} = Agents.inherit_default_engine()
+
+    message =
+      if count == 1,
+        do: "1 agent now uses the default engine.",
+        else: "#{count} agents now use the default engine."
+
+    {:noreply, socket |> assign_usage() |> put_flash(:info, message)}
   end
 
   # Clears every active agent's own model (or effort) on that engine, after
@@ -471,13 +507,73 @@ defmodule CanopyWeb.SettingsLive do
   end
 
   defp assign_usage(socket) do
-    assign(socket, :usage, %{
+    socket
+    |> assign(:engine_usage, Agents.engine_usage())
+    |> assign(:usage, %{
       "claude_code" => %{
         model: Agents.model_usage("claude_code"),
         effort: Agents.effort_usage("claude_code")
       },
       "opencode" => %{model: Agents.model_usage("opencode")}
     })
+  end
+
+  defp engine_usage_text(%{default: default, own: own}) do
+    "#{default} #{agents_word(default)} #{if default == 1, do: "uses", else: "use"} the default · " <>
+      "#{own} #{if own == 1, do: "has its", else: "have their"} own"
+  end
+
+  defp default_engine_saved(engine, n) do
+    who =
+      if n == 1,
+        do: "1 agent on the default starts",
+        else: "#{n} agents on the default start"
+
+    "#{Canopy.Engine.label(engine)} is the default engine. #{who} a fresh #{Canopy.Engine.label(engine)} session at their next turn in each channel; memory and channel history carry over."
+  end
+
+  # Whether each engine is ready, for the default engine cards: the last
+  # check when there was one, else what the page knows without asking
+  # (OpenCode's model list; whether the `claude` binary is on PATH, which
+  # says nothing about the login, so it reads "Installed").
+  defp engine_readiness(assigns) do
+    claude =
+      case assigns.claude_check do
+        {:ok, %{logged_in: true}} -> :ready
+        {:ok, _} -> :not_ready
+        {:error, _} -> :not_ready
+        :checking -> :checking
+        nil -> if assigns.claude_found, do: :installed, else: :not_ready
+      end
+
+    opencode =
+      case {assigns.health, assigns.providers_state} do
+        {{:ok, _}, _} -> :ready
+        {{:error, _}, _} -> :not_ready
+        {_, :ok} -> :ready
+        {_, :loading} -> :checking
+        {_, _} -> :not_ready
+      end
+
+    %{"claude_code" => claude, "opencode" => opencode}
+  end
+
+  defp engine_not_ready(assigns) do
+    claude =
+      case assigns.claude_check do
+        {:ok, _} -> "Not logged in"
+        {:error, "enter the binary first"} -> "Not set"
+        {:error, reason} when is_binary(reason) -> "Not ready"
+        _ -> "Not found"
+      end
+
+    %{"claude_code" => claude, "opencode" => "Not running"}
+  end
+
+  defp claude_found? do
+    not is_nil(System.find_executable(Canopy.Engine.ClaudeCode.binary_name()))
+  rescue
+    _ -> false
   end
 
   defp opencode_saved(changeset) do
@@ -546,6 +642,39 @@ defmodule CanopyWeb.SettingsLive do
             <.icon name="hero-sparkles" class="size-4" /> Run setup again
           </.link>
         </:actions>
+        <Layouts.panel
+          id="engine-panel"
+          title="Default engine"
+          description="Agents without an engine of their own run on this; set one per agent on its edit form to override. Changing it starts those agents on a fresh session on the new engine at their next turn in each channel."
+        >
+          <div class="flex flex-col gap-3">
+            <EngineComponents.default_engine_choice
+              id="default-engine-choice"
+              selected={Settings.default_engine(@setting)}
+              readiness={engine_readiness(assigns)}
+              not_ready={engine_not_ready(assigns)}
+            />
+            <div
+              id="engine-usage"
+              class="flex flex-wrap items-center gap-x-2 text-xs text-base-content/60"
+            >
+              <span>{engine_usage_text(@engine_usage)}</span>
+              <button
+                :if={@engine_usage.own > 0}
+                type="button"
+                id="engine-usage-inherit"
+                class="btn btn-ghost btn-xs text-primary"
+                phx-click="inherit_default_engine"
+                data-canopy-confirm={"Clear the engine set on #{@engine_usage.own} #{agents_word(@engine_usage.own)}, so they run on the default (#{Canopy.Engine.label(Settings.default_engine(@setting))})? An agent that changes engine this way also drops its own model, and starts a fresh session at its next turn."}
+                data-canopy-confirm-title="Use the default engine for all?"
+                data-canopy-confirm-label="Use the default"
+              >
+                Use the default for all
+              </button>
+            </div>
+          </div>
+        </Layouts.panel>
+
         <Layouts.panel
           id="opencode-panel"
           title="OpenCode server"

@@ -1,5 +1,8 @@
 defmodule Canopy.Agents do
-  @moduledoc "Canopy agents: a name, a role prompt, and the OpenCode agent to run as."
+  @moduledoc """
+  Canopy agents: a name, a role prompt, the engine that runs them (their own,
+  or the default engine from Settings), and that engine's settings.
+  """
 
   import Ecto.Query, warn: false
 
@@ -79,42 +82,72 @@ defmodule Canopy.Agents do
 
   def change(%Agent{} = agent, attrs \\ %{}), do: Agent.changeset(agent, attrs)
 
-  # -- Models and defaults ------------------------------------------------------
+  # -- Engines, models and defaults ----------------------------------------------
+
+  @doc """
+  The engine the agent runs on: its own, else the default engine from
+  Settings (`Canopy.Settings.default_engine/1`, never nil). Like a blank
+  model, a nil engine means "follow the default"; it is never rewritten.
+  Accepts plain maps (no `engine` key reads as the default too).
+  """
+  def effective_engine(agent, setting \\ nil) do
+    case Map.get(agent, :engine) do
+      engine when is_binary(engine) and engine != "" -> engine
+      _ -> Settings.default_engine(setting)
+    end
+  end
 
   @doc """
   The model the agent runs on, and where the choice came from: its own model
   (`:agent`), else its engine's default from Settings (`:default`), else nils
   (`:engine`: no model is sent and the engine picks). The agent's own fields
-  are never rewritten; nil keeps meaning "inherit".
+  are never rewritten; nil keeps meaning "inherit". A model of its own that
+  its effective engine cannot run (left from another engine, when the default
+  engine changed under it) is passed over for the default, without being
+  cleared, so switching back restores it.
   """
-  def effective_model(%{engine: engine} = agent, setting \\ nil) do
-    case agent do
-      %{model_id: model} when is_binary(model) and model != "" ->
-        %{model_provider: agent.model_provider, model_id: model, source: :agent}
+  def effective_model(agent, setting \\ nil) do
+    setting = setting || Settings.get()
+    engine = effective_engine(agent, setting)
+    provider = Map.get(agent, :model_provider)
+
+    case Map.get(agent, :model_id) do
+      model when is_binary(model) and model != "" ->
+        if fits?(engine, provider, model),
+          do: %{model_provider: provider, model_id: model, source: :agent},
+          else: default_model(engine, setting)
 
       _ ->
-        case Settings.default_model(engine, setting) do
-          %{model_id: model} = default when is_binary(model) ->
-            Map.put(default, :source, :default)
-
-          _ ->
-            %{model_provider: nil, model_id: nil, source: :engine}
-        end
+        default_model(engine, setting)
     end
   end
+
+  defp default_model(engine, setting) do
+    case Settings.default_model(engine, setting) do
+      %{model_id: model} = default when is_binary(model) ->
+        Map.put(default, :source, :default)
+
+      _ ->
+        %{model_provider: nil, model_id: nil, source: :engine}
+    end
+  end
+
+  defp fits?(engine, provider, model), do: Agent.model_fits?(engine, provider, model)
 
   @doc """
   The effort the agent runs at, as `%{effort: e, source: s}`, resolved like
   `effective_model/1`: its own, else the engine's default, else nil (the
   engine picks; OpenCode has no effort setting).
   """
-  def effective_effort(%{engine: engine} = agent, setting \\ nil) do
+  def effective_effort(agent, setting \\ nil) do
     case Map.get(agent, :effort) do
       effort when is_binary(effort) and effort != "" ->
         %{effort: effort, source: :agent}
 
       _ ->
-        case Settings.default_effort(engine, setting) do
+        setting = setting || Settings.get()
+
+        case Settings.default_effort(effective_engine(agent, setting), setting) do
           effort when is_binary(effort) -> %{effort: effort, source: :default}
           _ -> %{effort: nil, source: :engine}
         end
@@ -125,7 +158,8 @@ defmodule Canopy.Agents do
 
   @doc """
   The model and effort a wake runs on, per profile, as
-  `%{model_provider, model_id, effort, source}`.
+  `%{model_provider, model_id, effort, source}`, for the agent's effective
+  engine (`effective_engine/2`).
 
   `:main` is today's resolution: `effective_model/2` with `effective_effort/2`
   (`source` is the model's).
@@ -144,7 +178,7 @@ defmodule Canopy.Agents do
   """
   def effective_profile(agent, profile, setting \\ nil)
 
-  def effective_profile(%{engine: _} = agent, :main, setting) do
+  def effective_profile(agent, :main, setting) do
     model = effective_model(agent, setting)
     %{effort: effort} = effective_effort(agent, setting)
 
@@ -156,13 +190,22 @@ defmodule Canopy.Agents do
     }
   end
 
-  def effective_profile(%{engine: engine} = agent, :light, setting) do
+  def effective_profile(agent, :light, setting) do
     setting = setting || Settings.get()
+    engine = effective_engine(agent, setting)
     default = Settings.light_profile(engine, setting)
     # only Claude Code has an effort setting; OpenCode routes the model only
     efforts? = engine == "claude_code"
 
-    own_model = present(Map.get(agent, :light_model_id))
+    # like the main model, a light model left from another engine is passed over
+    own_model =
+      with model when is_binary(model) <- present(Map.get(agent, :light_model_id)),
+           true <- fits?(engine, Map.get(agent, :light_model_provider), model) do
+        model
+      else
+        _ -> nil
+      end
+
     own_effort = efforts? && present(Map.get(agent, :light_effort))
 
     {provider, model} =
@@ -280,19 +323,17 @@ defmodule Canopy.Agents do
         {:settings, :light_profiles_changed}
       )
 
-  @doc "Active agents of an engine that inherit its default model (`:default`) or name their own (`:own`)."
-  def model_usage(engine), do: usage(engine, :model_id)
-
-  @doc "Active agents of an engine that inherit its default effort (`:default`) or set their own (`:own`)."
-  def effort_usage(engine), do: usage(engine, :effort)
-
-  defp usage(engine, field) do
+  @doc """
+  Active agents that follow the default engine (`:default`) or name their
+  own (`:own`).
+  """
+  def engine_usage do
     counts =
       Repo.all(
         from a in Agent,
-          where: a.engine == ^engine and a.active == true,
-          group_by: is_nil(field(a, ^field)),
-          select: {is_nil(field(a, ^field)), count(a.id)}
+          where: a.active == true,
+          group_by: is_nil(a.engine),
+          select: {is_nil(a.engine), count(a.id)}
       )
       |> Map.new()
 
@@ -300,58 +341,120 @@ defmodule Canopy.Agents do
   end
 
   @doc """
-  Puts every active agent of the engine on its default model by clearing
-  their own. Returns how many changed. Only ever runs when the user asks.
+  Puts every active agent on the default engine by clearing its own. An
+  agent that changes engine this way loses its model and light model, as
+  switching engine on its form does (a model belongs to one engine); one
+  already on the default's engine keeps them. Each keeps its reach on both
+  engines (read-only stays read-only). Returns how many changed. Only ever
+  runs when the user asks.
   """
-  def inherit_default_model(engine),
-    do: inherit(engine, :model_id, model_provider: nil, model_id: nil)
+  def inherit_default_engine do
+    default = Settings.default_engine()
+    now = DateTime.utc_now()
+    agents = Repo.all(from a in Agent, where: a.active == true and not is_nil(a.engine))
 
-  @doc "Puts every active agent of the engine on its default effort. Returns how many changed."
-  def inherit_default_effort(engine), do: inherit(engine, :effort, effort: nil)
+    {:ok, _} =
+      Repo.transaction(fn ->
+        for agent <- agents do
+          agent
+          |> Ecto.Changeset.change(inherit_engine_changes(agent, default))
+          |> Ecto.Changeset.put_change(:updated_at, now)
+          |> Repo.update!()
+        end
+      end)
 
-  @doc """
-  How many active agents among `names` are still on `engine` with no model of
-  their own: the ones `move_to_engine/3` would move from it.
-  """
-  def movable_count(names, engine) when is_list(names) and is_binary(engine),
-    do: Repo.aggregate(movable(names, engine), :count)
-
-  @doc """
-  Moves the active agents among `names` that are still on `from_engine` with
-  no model of their own to `to_engine`, where they inherit its default model
-  and effort. Agents the user configured are left alone. Returns how many moved.
-  """
-  def move_to_engine(names, from_engine, to_engine) when is_list(names) do
-    true = to_engine in Canopy.Engine.names()
-
-    {count, _} =
-      Repo.update_all(movable(names, from_engine),
-        # a light model belongs to the old engine too
-        set: [
-          engine: to_engine,
-          model_provider: nil,
-          light_model_provider: nil,
-          light_model_id: nil,
-          updated_at: DateTime.utc_now()
-        ]
-      )
-
+    count = length(agents)
     if count > 0, do: Settings.broadcast_defaults_changed()
 
     {:ok, count}
   end
 
-  defp movable(names, engine) do
-    from a in Agent,
-      where: a.name in ^names and a.engine == ^engine and a.active == true and is_nil(a.model_id)
+  # The agent's own engine cleared, with its reach written to both engines'
+  # fields (as the agent changeset keeps them for agents on the default), and
+  # its models dropped when it changes engine.
+  defp inherit_engine_changes(agent, default) do
+    reach =
+      case Agent.execution_mode(agent) do
+        :plan ->
+          [opencode_agent: "plan", permission_mode: "plan"]
+
+        :build ->
+          [
+            opencode_agent:
+              if(agent.opencode_agent == "plan", do: "build", else: agent.opencode_agent),
+            permission_mode:
+              if(agent.permission_mode == "plan", do: "default", else: agent.permission_mode)
+          ]
+
+        nil ->
+          []
+      end
+
+    models =
+      if agent.engine == default,
+        do: [],
+        else: [model_provider: nil, model_id: nil, light_model_provider: nil, light_model_id: nil]
+
+    [engine: nil] ++ reach ++ models
   end
 
+  @doc """
+  Active agents running on `engine` (their own, or the default) that inherit
+  its default model (`:default`) or name their own (`:own`). A model left
+  from another engine counts as inheriting, since it is passed over.
+  """
+  def model_usage(engine) do
+    setting = Settings.get()
+
+    engine
+    |> active_on(setting)
+    |> Enum.frequencies_by(
+      &if(effective_model(&1, setting).source == :agent, do: :own, else: :default)
+    )
+    |> usage_counts()
+  end
+
+  @doc "Active agents running on `engine` that inherit its default effort (`:default`) or set their own (`:own`)."
+  def effort_usage(engine) do
+    engine
+    |> active_on(Settings.get())
+    |> Enum.frequencies_by(&if(is_nil(&1.effort), do: :default, else: :own))
+    |> usage_counts()
+  end
+
+  defp usage_counts(frequencies),
+    do: %{default: Map.get(frequencies, :default, 0), own: Map.get(frequencies, :own, 0)}
+
+  # The active agents whose effective engine is `engine`.
+  defp active_on(engine, setting) do
+    default? = Settings.default_engine(setting) == engine
+
+    Repo.all(
+      from a in Agent,
+        where: a.active == true and (a.engine == ^engine or (^default? and is_nil(a.engine)))
+    )
+  end
+
+  @doc """
+  Puts every active agent running on the engine on its default model by
+  clearing their own. Returns how many changed. Only ever runs when the user asks.
+  """
+  def inherit_default_model(engine),
+    do: inherit(engine, :model_id, model_provider: nil, model_id: nil)
+
+  @doc "Puts every active agent running on the engine on its default effort. Returns how many changed."
+  def inherit_default_effort(engine), do: inherit(engine, :effort, effort: nil)
+
   defp inherit(engine, field, set) do
+    ids =
+      engine
+      |> active_on(Settings.get())
+      |> Enum.reject(&is_nil(Map.fetch!(&1, field)))
+      |> Enum.map(& &1.id)
+
     {count, _} =
       Repo.update_all(
-        from(a in Agent,
-          where: a.engine == ^engine and a.active == true and not is_nil(field(a, ^field))
-        ),
+        from(a in Agent, where: a.id in ^ids),
         set: set ++ [updated_at: DateTime.utc_now()]
       )
 

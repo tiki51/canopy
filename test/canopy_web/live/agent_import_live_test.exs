@@ -47,6 +47,39 @@ defmodule CanopyWeb.AgentImportLiveTest do
     assert %{role: "Imported role", opencode_agent: "plan"} = Agents.get_by_name("scout")
   end
 
+  test "a file naming no engine follows the default; the engine select can pick one", %{
+    conn: conn
+  } do
+    {:ok, _} = Canopy.Settings.put_default_engine("claude_code")
+    {:ok, view, _html} = live(conn, ~p"/agents/import")
+    upload(view, "scout.md", template("scout"))
+
+    assert has_element?(
+             view,
+             "#import-item-1-engine option[value=default][selected]",
+             "Default (Claude Code)"
+           )
+
+    assert has_element?(view, "#import-item-1-permission", "Claude Code")
+
+    view
+    |> form("#import-choices", %{choices: %{"item-1" => %{engine: "opencode"}}})
+    |> render_change()
+
+    assert has_element?(view, "#import-item-1-engine option[value=opencode][selected]")
+    assert has_element?(view, "#import-item-1-permission", "OpenCode · agent plan")
+
+    view
+    |> form("#import-choices", %{choices: %{"item-1" => %{engine: "default"}}})
+    |> render_change()
+
+    view |> form("#import-choices") |> render_submit()
+    assert_redirect(view)
+
+    assert %{engine: nil, permission_mode: "plan", opencode_agent: "plan"} =
+             Agents.get_by_name("scout")
+  end
+
   test "a taken name: rename by default, or replace, or skip", %{conn: conn} do
     existing = Fixtures.agent_fixture(%{name: "taken", role: "Original"})
     {:ok, _} = Memory.put(existing.id, "Kept.")
