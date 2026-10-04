@@ -111,6 +111,13 @@ defmodule CanopyWeb.AgentsLiveTest do
              )
 
       assert has_element?(view, "#agents-team-#{team.id}", "@other")
+      # the same LEAD chip as on the Teams page, beside the lead only
+      team = Canopy.Teams.get!(team.id)
+      assert has_element?(view, "#agents-team-#{team.id}-member-#{team.lead_agent_id}", "lead")
+
+      for member <- team.members, member.id != team.lead_agent_id do
+        refute has_element?(view, "#agents-team-#{team.id}-member-#{member.id}", "lead")
+      end
 
       {:ok, view, _html} = live(conn, ~p"/agents/#{lead.id}")
       assert has_element?(view, "#agent-team-#{team.id}", "lead")

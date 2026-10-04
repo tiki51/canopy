@@ -23,7 +23,7 @@ test.describe("model routing", () => {
     await expect(page.locator("#agent-routing")).toContainText("off");
     await page.locator('[id^="edit-agent-"]').click();
     await expect(page.locator("#agent-routing-fields")).toContainText("experimental");
-    await expect(page.locator("#routing-experimental-note")).toContainText("Unverified until the Phase 0 spike");
+    await expect(page.locator("#routing-experimental-note")).toContainText("Experimental: not yet checked against the real engines.");
     await expect(page.locator("#agent-routing-enabled")).not.toBeChecked();
   });
 
@@ -75,6 +75,7 @@ test.describe("model routing", () => {
         await page.locator("#agent-routing-enabled").uncheck();
         await page.locator("#save-agent").click();
         await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+        await page.locator("#agent-menu-toggle").click();
         await page.locator(`#deactivate-agent-${id}`).click();
         await expect(page.locator("#canopy-confirm")).toBeVisible();
         await page.locator("#canopy-confirm-ok").click();

@@ -224,7 +224,7 @@ test.describe("stills for canopy_site", () => {
     // -- F-2: @backend asks a question before building ------------------------------------
     await bottom(page);
     await send(page, "Go ahead with the claim approach. Keep the PR small.");
-    const question = page.locator('section[id^="question-"]').first();
+    const question = page.locator('[id^="question-"][data-detached]').first();
     await expect(question).toContainText("attempt number", { timeout: 60_000 });
     await question.scrollIntoViewIfNeeded();
     await park(page);

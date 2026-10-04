@@ -218,7 +218,7 @@ defmodule CanopyWeb.ThreadsLive do
       </ul>
 
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <span :if={@participants != []} class="flex -space-x-1.5">
+        <span :if={@participants != []} class="flex -space-x-1">
           <.mini_avatar :for={p <- @participants} participant={p} user_name={@user_name} />
         </span>
         <span class="font-semibold text-primary">

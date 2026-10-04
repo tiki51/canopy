@@ -110,7 +110,13 @@ defmodule Canopy.Runtime.ChannelServerSteeringTest do
     assert_receive {:steer, ^agent_id, %{pending: 1, held: 0, message_id: ^message_id}}, 2_000
 
     assert Runtime.steers(ctx.channel.id) == %{
-             agent_id => %{pending: 1, held: 0, message_id: message_id}
+             agent_id => %{
+               pending: 1,
+               held: 0,
+               message_id: message_id,
+               # the message the view marks Queued until the turn ends
+               queued: %{message_id => false}
+             }
            }
 
     state = :sys.get_state(ctx.pid)

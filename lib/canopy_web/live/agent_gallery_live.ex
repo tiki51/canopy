@@ -138,22 +138,18 @@ defmodule CanopyWeb.AgentGalleryLive do
                   class="size-2.5 shrink-0 rounded-full"
                   style={card.template.color && "background-color: #{card.template.color}"}
                 />
-                <span class="truncate text-sm font-semibold">
+                <%!-- the name alone (the handle shows on hover and once added); the
+                     permission only when it is not the usual "edits" --%>
+                <span class="truncate text-sm font-semibold" title={"@" <> card.name}>
                   {card.template.display_name || card.name}
                 </span>
-                <span class="truncate font-mono text-xs text-base-content/60">@{card.name}</span>
                 <span
-                  class={[
-                    "badge badge-sm badge-soft ml-auto shrink-0",
-                    if(card.template.mode == "plan", do: "badge-info", else: "badge-ghost")
-                  ]}
-                  title={
-                    if card.template.mode == "plan",
-                      do: "Read-only: reviews and plans, never edits",
-                      else: "Edits files"
-                  }
+                  :if={card.template.mode == "plan"}
+                  id={"gallery-#{card.name}-read-only"}
+                  class="badge badge-sm badge-soft badge-info ml-auto shrink-0"
+                  title="Read-only: reviews and plans, never edits"
                 >
-                  {if card.template.mode == "plan", do: "read-only", else: "edits"}
+                  read-only
                 </span>
               </div>
               <p class="text-xs text-base-content/80">{card.template.role}</p>

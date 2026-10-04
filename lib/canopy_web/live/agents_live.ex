@@ -992,17 +992,18 @@ defmodule CanopyWeb.AgentsLive do
             <span class="flex min-w-0 flex-wrap gap-1">
               <span
                 :for={member <- team.members}
+                id={"agents-team-#{team.id}-member-#{member.id}"}
                 class={[
-                  "rounded-full border px-1.5 font-mono text-[11px]",
-                  cond do
-                    member.id == team.lead_agent_id -> "border-primary/40 text-primary"
-                    member.active -> "border-base-300"
-                    true -> "border-dashed border-base-300 text-base-content/40"
-                  end
+                  "flex items-center gap-1 rounded-full border px-1.5 font-mono text-[11px]",
+                  if(member.active,
+                    do: "border-base-300",
+                    else: "border-dashed border-base-300 text-base-content/40"
+                  )
                 ]}
-                title={if member.id == team.lead_agent_id, do: "Lead", else: member.role}
+                title={member.role}
               >
                 @{member.name}
+                <.lead_badge :if={member.id == team.lead_agent_id} />
               </span>
             </span>
           </li>
@@ -1238,37 +1239,6 @@ defmodule CanopyWeb.AgentsLive do
         >
           <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
         </.link>
-        <details id="export-agent" class="dropdown dropdown-end">
-          <summary class="btn btn-sm" id={"export-agent-#{@agent.id}"}>
-            <.icon name="hero-arrow-down-tray" class="size-4" /> Export
-          </summary>
-          <div class="dropdown-content z-30 mt-1 flex w-64 flex-col gap-3 rounded-xl border border-base-300 bg-base-100 p-3 shadow-lg">
-            <p class="text-xs text-base-content/70">
-              A Markdown file with @{@agent.name}'s role, prompt and engine settings, to import on
-              another machine. Never its channels, schedules or costs.
-            </p>
-            <%!-- a plain GET form: the download needs no round trip through the LiveView --%>
-            <form
-              id="export-agent-form"
-              action={~p"/agents/#{@agent.id}/export"}
-              method="get"
-              class="flex flex-col gap-3"
-            >
-              <label class="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  id="export-agent-memory"
-                  name="memory"
-                  value="1"
-                  class="checkbox checkbox-sm"
-                /> Include memory
-              </label>
-              <button type="submit" id="export-agent-download" class="btn btn-primary btn-sm">
-                Download {@agent.name}.md
-              </button>
-            </form>
-          </div>
-        </details>
         <.link
           navigate={~p"/agents/#{@agent.id}/edit"}
           id={"edit-agent-#{@agent.id}"}
@@ -1276,20 +1246,54 @@ defmodule CanopyWeb.AgentsLive do
         >
           <.icon name="hero-pencil-square" class="size-4" /> Edit
         </.link>
-        <button
-          :if={@agent.active}
-          type="button"
-          id={"deactivate-agent-#{@agent.id}"}
-          class="btn btn-ghost btn-sm text-error"
-          phx-click="deactivate"
-          phx-value-id={@agent.id}
-          data-canopy-confirm="It stops appearing in channels and mentions and its schedules pause; its history is kept."
-          data-canopy-confirm-title={"Deactivate @#{@agent.name}?"}
-          data-canopy-confirm-label="Deactivate"
-          title="Deactivate"
-        >
-          <.icon name="hero-power" class="size-4" />
-        </button>
+        <.row_menu id="agent-menu" label={"More for @#{@agent.name}"} size="sm" width="w-72">
+          <li role="none">
+            <details id="export-agent" phx-mounted={JS.ignore_attributes("open")}>
+              <summary id={"export-agent-#{@agent.id}"} role="menuitem">
+                <.icon name="hero-arrow-down-tray-mini" class="size-4" /> Export…
+              </summary>
+              <div class="mt-1 flex flex-col gap-3 rounded-md bg-base-200/60 p-2 before:hidden">
+                <p class="text-xs text-base-content/70">
+                  A Markdown file with @{@agent.name}'s role, prompt and engine settings, to import
+                  on another machine. Never its channels, schedules or costs.
+                </p>
+                <%!-- a plain GET form: the download needs no round trip through the LiveView --%>
+                <form
+                  id="export-agent-form"
+                  action={~p"/agents/#{@agent.id}/export"}
+                  method="get"
+                  class="flex flex-col gap-3"
+                >
+                  <label class="flex cursor-pointer items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      id="export-agent-memory"
+                      name="memory"
+                      value="1"
+                      class="checkbox checkbox-sm"
+                    /> Include memory
+                  </label>
+                  <button type="submit" id="export-agent-download" class="btn btn-primary btn-sm">
+                    Download {@agent.name}.md
+                  </button>
+                </form>
+              </div>
+            </details>
+          </li>
+          <.row_menu_item
+            :if={@agent.active}
+            id={"deactivate-agent-#{@agent.id}"}
+            icon="hero-power-mini"
+            danger
+            phx-click="deactivate"
+            phx-value-id={@agent.id}
+            data-canopy-confirm="It stops appearing in channels and mentions and its schedules pause; its history is kept."
+            data-canopy-confirm-title={"Deactivate @#{@agent.name}?"}
+            data-canopy-confirm-label="Deactivate"
+          >
+            Deactivate
+          </.row_menu_item>
+        </.row_menu>
         <button
           :if={!@agent.active}
           type="button"
@@ -1373,7 +1377,7 @@ defmodule CanopyWeb.AgentsLive do
                   <span
                     :if={@agent.routing_enabled}
                     class="ml-1 badge badge-warning badge-soft badge-xs"
-                    title="Unverified until the Phase 0 spike; see the user guide"
+                    title="Experimental: not yet checked against the real engines."
                   >
                     experimental
                   </span>
@@ -1401,8 +1405,13 @@ defmodule CanopyWeb.AgentsLive do
             :if={@agent.routing_enabled or @routing_pauses != [] or @rule_stats != []}
             id="agent-routing-panel"
             title="Model routing"
-            description="Experimental, unverified until the Phase 0 spike. A rule pauses when at least 10 of its last 20 light turns exist and 35% or more escalated."
+            description="Experimental: not yet checked against the real engines."
           >
+            <.more id="agent-routing-more" class="-mt-1 mb-3">
+              <p>
+                A rule pauses when at least 10 of its last 20 light turns exist and 35% or more escalated.
+              </p>
+            </.more>
             <ul :if={@routing_pauses != []} class="mb-3 flex flex-col gap-2">
               <li
                 :for={pause <- @routing_pauses}
@@ -1510,12 +1519,7 @@ defmodule CanopyWeb.AgentsLive do
                 <.link navigate={~p"/teams/#{team.id}/edit"} class="font-mono text-xs hover:underline">
                   @{team.name}
                 </.link>
-                <span
-                  :if={team.lead_agent_id == @agent.id}
-                  class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
-                >
-                  lead
-                </span>
+                <.lead_badge :if={team.lead_agent_id == @agent.id} />
                 <span class="ml-auto truncate text-xs text-base-content/60">
                   {length(team.members)} {if length(team.members) == 1, do: "member", else: "members"}
                 </span>
@@ -1843,15 +1847,30 @@ defmodule CanopyWeb.AgentsLive do
       <legend class="flex items-center gap-2 px-1 text-sm font-medium">
         Model routing <span class="badge badge-warning badge-soft badge-xs">experimental</span>
       </legend>
-      <p id="routing-experimental-note" class="text-xs text-warning">
-        Unverified until the Phase 0 spike — see docs. Leave it off unless you are testing it.
+      <p id="routing-experimental-note" class="text-sm text-warning">
+        Experimental: not yet checked against the real engines.
       </p>
       <.input
         field={@form[:routing_enabled]}
         type="checkbox"
         id="agent-routing-enabled"
         label="Run cheap wakes on a light model"
-      />
+      >
+        <:help>Does nothing until a light model is set here or in Settings.</:help>
+        <:more>
+          <p>
+            With routing on, scheduled checks, delegation reports, accepted handoffs, unaddressed
+            agent posts reaching this agent as owner, and agent acknowledgements run on the light
+            model; the agent can call <code class="font-mono">canopy_escalate</code>
+            to re-run the wake on its main model.
+          </p>
+          <p>
+            Your own messages, delegated tasks, playbook steps, and watches always use the main
+            model, and so does any wake while its main cache is still warm. Leave it off unless
+            you are testing it.
+          </p>
+        </:more>
+      </.input>
       <%= if @engine == "claude_code" do %>
         <div class="grid gap-3 sm:grid-cols-2">
           <.input
@@ -1926,14 +1945,6 @@ defmodule CanopyWeb.AgentsLive do
           <% end %>
         </div>
       <% end %>
-      <p class="text-xs text-base-content/60">
-        With routing on, scheduled checks, delegation reports, accepted handoffs, unaddressed
-        agent posts reaching this agent as owner, and agent acknowledgements run on the light
-        model; the agent can call <code class="font-mono">canopy_escalate</code>
-        to re-run the wake on its main model. Your own messages, delegated tasks, playbook steps,
-        and watches always use the main model, and so does any wake while its main cache is still
-        warm. Routing does nothing until a light model is set here or in Settings.
-      </p>
     </fieldset>
     """
   end

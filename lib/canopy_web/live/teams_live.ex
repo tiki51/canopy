@@ -227,7 +227,7 @@ defmodule CanopyWeb.TeamsLive do
       <Layouts.panel
         :if={@teams != []}
         id="teams-panel"
-        title="Teams"
+        title={ngettext("1 team", "%{count} teams", length(@teams))}
         description="Adding a team copies its active members into the channel; later edits to the team leave existing channels alone."
       >
         <ul id="teams" class="divide-y divide-base-300">
@@ -246,42 +246,6 @@ defmodule CanopyWeb.TeamsLive do
                 >
                   <.icon name="hero-hashtag-mini" class="size-3.5" /> New channel
                 </.link>
-                <details id={"export-team-#{team.id}"} class="dropdown dropdown-end">
-                  <summary class="btn btn-ghost btn-xs" id={"export-team-button-#{team.id}"}>
-                    <.icon name="hero-arrow-down-tray-mini" class="size-3.5" /> Export
-                  </summary>
-                  <%!-- a plain GET form: the checkboxes stay in the browser --%>
-                  <form
-                    id={"export-team-form-#{team.id}"}
-                    action={~p"/teams/#{team.id}/export"}
-                    method="get"
-                    class="dropdown-content z-30 mt-1 flex w-64 flex-col gap-2 rounded-xl border border-base-300 bg-base-100 p-3 shadow-lg"
-                  >
-                    <p class="text-xs text-base-content/70">
-                      A zip of @{team.name} and its members, to import on another machine.
-                    </p>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        name="playbooks"
-                        value="1"
-                        checked
-                        class="checkbox checkbox-sm"
-                      /> Include this team's playbooks
-                    </label>
-                    <label class="flex cursor-pointer items-center gap-2 text-sm">
-                      <input type="checkbox" name="memory" value="1" class="checkbox checkbox-sm" />
-                      Include members' memory
-                    </label>
-                    <button
-                      type="submit"
-                      id={"export-team-download-#{team.id}"}
-                      class="btn btn-primary btn-sm"
-                    >
-                      Download {team.name}.canopy.zip
-                    </button>
-                  </form>
-                </details>
                 <.link
                   navigate={~p"/teams/#{team.id}/edit"}
                   id={"edit-team-#{team.id}"}
@@ -289,19 +253,58 @@ defmodule CanopyWeb.TeamsLive do
                 >
                   <.icon name="hero-pencil-square-mini" class="size-3.5" /> Edit
                 </.link>
-                <button
-                  type="button"
-                  id={"delete-team-#{team.id}"}
-                  class="btn btn-ghost btn-xs text-error"
-                  phx-click="delete"
-                  phx-value-id={team.id}
-                  data-canopy-confirm="Channels keep the members it added; @mentions of it stop working."
-                  data-canopy-confirm-title={"Delete @#{team.name}?"}
-                  data-canopy-confirm-label="Delete"
-                  title="Delete"
-                >
-                  <.icon name="hero-trash-mini" class="size-3.5" />
-                </button>
+                <.row_menu id={"team-menu-#{team.id}"} label={"More for @#{team.name}"} width="w-72">
+                  <li role="none">
+                    <details id={"export-team-#{team.id}"} phx-mounted={JS.ignore_attributes("open")}>
+                      <summary id={"export-team-button-#{team.id}"} role="menuitem">
+                        <.icon name="hero-arrow-down-tray-mini" class="size-4" /> Export…
+                      </summary>
+                      <%!-- a plain GET form: the checkboxes stay in the browser --%>
+                      <form
+                        id={"export-team-form-#{team.id}"}
+                        action={~p"/teams/#{team.id}/export"}
+                        method="get"
+                        class="mt-1 flex flex-col gap-2 rounded-md bg-base-200/60 p-2 before:hidden"
+                      >
+                        <p class="text-xs text-base-content/70">
+                          A zip of @{team.name} and its members, to import on another machine.
+                        </p>
+                        <label class="flex cursor-pointer items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            name="playbooks"
+                            value="1"
+                            checked
+                            class="checkbox checkbox-sm"
+                          /> Include this team's playbooks
+                        </label>
+                        <label class="flex cursor-pointer items-center gap-2 text-sm">
+                          <input type="checkbox" name="memory" value="1" class="checkbox checkbox-sm" />
+                          Include members' memory
+                        </label>
+                        <button
+                          type="submit"
+                          id={"export-team-download-#{team.id}"}
+                          class="btn btn-primary btn-sm"
+                        >
+                          Download {team.name}.canopy.zip
+                        </button>
+                      </form>
+                    </details>
+                  </li>
+                  <.row_menu_item
+                    id={"delete-team-#{team.id}"}
+                    icon="hero-trash-mini"
+                    danger
+                    phx-click="delete"
+                    phx-value-id={team.id}
+                    data-canopy-confirm="Channels keep the members it added; @mentions of it stop working."
+                    data-canopy-confirm-title={"Delete @#{team.name}?"}
+                    data-canopy-confirm-label="Delete"
+                  >
+                    Delete
+                  </.row_menu_item>
+                </.row_menu>
               </div>
             </div>
             <p :if={team.description} class="text-xs text-base-content/70">{team.description}</p>
@@ -343,12 +346,7 @@ defmodule CanopyWeb.TeamsLive do
       >
         · {@role}
       </span>
-      <span
-        :if={@lead?}
-        class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
-      >
-        lead
-      </span>
+      <.lead_badge :if={@lead?} />
     </span>
     """
   end

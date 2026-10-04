@@ -98,13 +98,20 @@ defmodule CanopyWeb.PlaybookComponents do
           The playbook was edited since this run started; the run keeps the text it started with.
         </p>
 
-        <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-base-content/70">
-          <span id="playbook-roster">
-            Roster: <span :if={@run.roster == %{}}>the coordinator only</span>
-            <span :for={{role, id} <- Enum.sort(@run.roster)} class="mr-2">
-              {role} <span class="font-mono">{agent_name(@names, id)}</span>
+        <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-base-content/70">
+          <div id="playbook-roster" class="flex flex-wrap items-center gap-1.5">
+            <span class="font-medium text-base-content/60">Roster</span>
+            <span :if={@run.roster == %{}}>the coordinator only</span>
+            <span
+              :for={{role, id} <- Enum.sort(@run.roster)}
+              id={"playbook-roster-#{role}"}
+              class="inline-flex items-center gap-1 rounded-full border border-base-300 bg-base-100 px-2 py-0.5"
+            >
+              <span>{role}</span>
+              <span class="text-base-content/40" aria-label="filled by">→</span>
+              <span class="font-mono text-base-content/80">{agent_name(@names, id)}</span>
             </span>
-          </span>
+          </div>
           <.form
             for={%{}}
             as={:reassign}
@@ -113,6 +120,9 @@ defmodule CanopyWeb.PlaybookComponents do
             class="flex items-center gap-1.5"
           >
             <input type="hidden" name="run_id" value={@run.id} />
+            <label for="reassign-coordinator" class="font-medium text-base-content/60">
+              Coordinator
+            </label>
             <select
               id="reassign-coordinator"
               name="agent_id"
@@ -185,7 +195,14 @@ defmodule CanopyWeb.PlaybookComponents do
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span class="font-medium">{step.position}. {step.title}</span>
-            <span class="font-mono text-xs text-base-content/50">{step.step_id}</span>
+            <%!-- the id is shown unless a marker already says it (a step
+                 named "sign-off" with its sign-off marker) --%>
+            <span
+              :if={step.step_id not in step_markers(step)}
+              class="font-mono text-xs text-base-content/50"
+            >
+              {step.step_id}
+            </span>
             <span :if={step.round > 1} class="badge badge-ghost badge-xs">round {step.round}</span>
             <span :if={step.approval} class="badge badge-ghost badge-xs" title="Needs your approval">
               sign-off
@@ -372,6 +389,10 @@ defmodule CanopyWeb.PlaybookComponents do
   end
 
   # -- Helpers ------------------------------------------------------------------------
+
+  defp step_markers(step) do
+    [step.approval && "sign-off", step.optional && "optional"] |> Enum.filter(& &1)
+  end
 
   def status_label("active"), do: "in progress"
   def status_label("awaiting_approval"), do: "waiting for you"

@@ -9,7 +9,8 @@ import { notes, open, setVisible, stubNotifications, turnOn, waiting } from "./n
 // check (3 s outside the test environment). Earlier specs leave cards
 // pending in their channels, so counts of what waits are relative.
 
-const card = (page: Page) => page.locator('section[id^="question-"]').first();
+// a standalone question card, or one folded into the waiting turn's live card
+const card = (page: Page) => page.locator('[id^="question-"][data-detached]').first();
 
 const ofKind = async (page: Page, pattern: RegExp) => (await notes(page)).filter(n => pattern.test(n.title));
 

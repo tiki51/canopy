@@ -385,3 +385,12 @@
   top: var(--channel-more-top, 3.5rem); right: var(--channel-more-right, 1rem);
   max-height: calc(100dvh - var(--channel-more-top, 3.5rem) - 1rem); overflow-y: auto;
 }
+
+/* One focus ring for every field, the composer's: a soft primary ring and a
+   primary border (focus:outline-none focus:ring-2 focus:ring-primary/40
+   focus:border-primary), never daisyUI's offset outline. */
+:is(.input, .textarea, .select):is(:focus, :focus-within) {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 40%, transparent);
+}

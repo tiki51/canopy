@@ -160,6 +160,7 @@ const Composer = {
   // then teams (data-teams), which share the @ namespace.
   candidates(trigger) {
     if (trigger === "#") return this.list("channels")
+    if (trigger === "/") return this.list("slash").map(c => c.name)
     return this.list("agents").concat(this.list("teams"))
   },
 
@@ -214,6 +215,9 @@ const Composer = {
   currentMention() {
     const caret = this.el.selectionStart
     const before = this.el.value.slice(0, caret)
+    // `/` opening the draft offers the commands (the palette's catalog)
+    const slash = before.match(/^\/(\w*)$/)
+    if (slash) return {trigger: "/", start: 0, query: slash[1].toLowerCase(), caret}
     const match = before.match(/(?:^|[^\w@#])([@#])([a-z0-9_-]*)$/i)
     if (!match) return null
     return {trigger: match[1], start: caret - match[2].length - 1, query: match[2].toLowerCase(), caret}
@@ -229,6 +233,8 @@ const Composer = {
       .slice(0, MAX_SUGGESTIONS)
     this.index = Math.min(this.index, Math.max(this.matches.length - 1, 0))
 
+    // a command typed in full has nothing left to complete: Enter sends it
+    if (mention.trigger === "/" && this.matches.includes(mention.query)) return this.hide()
     if (this.matches.length === 0) return this.hide()
     this.renderPopup()
   },
@@ -243,7 +249,20 @@ const Composer = {
       button.className =
         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm " +
         (i === this.index ? "bg-primary text-primary-content" : "hover:bg-base-200")
-      button.textContent = (this.mention ? this.mention.trigger : "@") + name
+      const trigger = this.mention ? this.mention.trigger : "@"
+      if (trigger === "/") {
+        const entry = this.list("slash").find(c => c.name === name)
+        const label = document.createElement("span")
+        label.textContent = "/" + name
+        label.className = "shrink-0 font-mono"
+        const summary = document.createElement("span")
+        summary.className = "min-w-0 truncate text-xs opacity-70"
+        summary.textContent = entry ? entry.summary : ""
+        if (entry) button.title = entry.usage
+        button.append(label, summary)
+      } else {
+        button.textContent = trigger + name
+      }
       this.popup.appendChild(button)
     })
     this.popup.classList.remove("hidden")

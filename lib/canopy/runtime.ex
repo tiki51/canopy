@@ -246,16 +246,12 @@ defmodule Canopy.Runtime do
 
   # The user asks an agent for a bounded subtask. The current owner stays
   # responsible and is notified when it completes; with no owner, only the timeline is.
+  # The `delegation_created` line (marked `by: :user`) is the one record of it:
+  # no separate note, so the timeline reports the delegation once.
   defp user_delegation(channel_id, target_name, description) do
     channel = Channels.get!(channel_id)
 
-    with {:ok, target} <- member_named(channel, target_name),
-         {:ok, _} <-
-           Messages.post_user_note(
-             channel_id,
-             Users.local().id,
-             "Delegated to @#{target.name}: #{description}"
-           ) do
+    with {:ok, target} <- member_named(channel, target_name) do
       task = Tasks.for_channel(channel.id)
 
       attrs = %{
@@ -266,7 +262,7 @@ defmodule Canopy.Runtime do
         description: description
       }
 
-      case Delegations.create(attrs) do
+      case Delegations.create(attrs, by: :user) do
         {:ok, delegation} -> {:ok, {:delegation, delegation}}
         {:error, changeset} -> {:error, "could not delegate: " <> changeset_reason(changeset)}
       end

@@ -77,7 +77,7 @@ defmodule Canopy.Runtime.UserCommandsTest do
     assert Canopy.Channels.get!(ctx.channel.id).owner_agent_id == ctx.reviewer.id
   end
 
-  test "/delegate posts a note, creates a delegation from the owner, and wakes the delegate's own session",
+  test "/delegate records one delegation line (by the user, for the owner) and wakes the delegate's own session",
        ctx do
     test_pid = self()
 
@@ -99,6 +99,12 @@ defmodule Canopy.Runtime.UserCommandsTest do
 
     assert delegation.from_agent_id == ctx.agent.id
     assert delegation.description == "trace every enqueue path"
+
+    # one record of it: the delegation line, marked as the user's; no separate note
+    assert_receive {:timeline, %{event_type: "delegation_created", payload: %{"by" => "user"}}},
+                   1_000
+
+    refute_received {:timeline, %{event_type: "message", message: %{kind: "system"}}}
     assert_receive {:prompted, "ses_rev", %{parts: [%{text: text}]}}, 2_000
     assert text =~ "Delegation ID: #{delegation.id}"
     delegation = Delegations.get!(delegation.id)

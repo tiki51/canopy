@@ -45,7 +45,7 @@ defmodule CanopyWeb.RoutingLiveTest do
       assert has_element?(
                view,
                "#routing-experimental-note",
-               "Unverified until the Phase 0 spike"
+               "Experimental: not yet checked against the real engines."
              )
 
       refute has_element?(view, "#agent-routing-enabled[checked]")
@@ -167,7 +167,13 @@ defmodule CanopyWeb.RoutingLiveTest do
       turn(ctx, %{"trigger" => "scheduled", "passed" => true})
 
       {:ok, view, _html} = live(conn, ~p"/costs")
-      assert has_element?(view, "#routing", "Experimental, unverified until the Phase 0 spike")
+
+      assert has_element?(
+               view,
+               "#routing",
+               "Experimental: not yet checked against the real engines."
+             )
+
       assert has_element?(view, "#routing-off", "Off for every agent")
       assert has_element?(view, "#candidate-scheduled")
     end

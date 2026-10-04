@@ -75,12 +75,22 @@ test.describe("playbooks", () => {
     await expect(chip).toHaveAttribute("data-status", "awaiting_approval");
     await expect(chip).toContainText(`${name} · 3/3 Sign-off`);
 
-    // the panel shows every step and the gate's controls
-    await chip.click();
+    // the first time this browser sees the run, its panel opens by itself:
+    // every step and the gate's controls
     await expect(page.locator("#playbook-panel")).toBeVisible();
+    await expect(page.locator("#playbook-roster")).toContainText("Roster");
+    await expect(page.locator("#reassign-coordinator-form")).toContainText("Coordinator");
     await expect(page.locator("#playbook-step-plan")).toHaveAttribute("data-status", "done");
     await expect(page.locator("#playbook-step-build-result")).toContainText("Built: README.md updated.");
     await expect(page.locator("#playbook-step-sign-off")).toHaveAttribute("data-status", "awaiting_approval");
+
+    // seen once: after a reload the panel starts collapsed, and the chip toggles it
+    await page.reload();
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await expect(chip).toBeVisible();
+    await expect(page.locator("#playbook-panel")).toBeHidden();
+    await chip.click();
+    await expect(page.locator("#playbook-panel")).toBeVisible();
 
     // Approve completes the run and wakes the coordinator
     await page.locator("#approve-playbook-step").click();

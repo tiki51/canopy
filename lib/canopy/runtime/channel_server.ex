@@ -246,7 +246,7 @@ defmodule Canopy.Runtime.ChannelServer do
   """
   def interrupt_now(server, agent_id), do: GenServer.call(server, {:interrupt_now, agent_id})
 
-  @doc "`%{agent_id => %{pending, held, message_id}}` for every turn messages were steered into."
+  @doc "`%{agent_id => %{pending, held, message_id, queued}}` for every turn messages were steered into (`queued`: message id => held?)."
   def steers(server), do: GenServer.call(server, :steers)
 
   @doc """
@@ -1601,7 +1601,9 @@ defmodule Canopy.Runtime.ChannelServer do
     %{
       pending: length(steers),
       held: Enum.count(steers, & &1.held?),
-      message_id: steers |> List.last() |> then(&(&1 && &1.message_id))
+      message_id: steers |> List.last() |> then(&(&1 && &1.message_id)),
+      # each steered message still waiting to be read, and whether a card holds it
+      queued: for(%{message_id: id} = s <- steers, is_binary(id), into: %{}, do: {id, s.held?})
     }
   end
 

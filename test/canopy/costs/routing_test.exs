@@ -206,7 +206,7 @@ defmodule Canopy.Costs.RoutingTest do
       text = Report.render(:week)
 
       assert text =~
-               "Model routing (experimental, unverified until the Phase 0 spike): off for every agent"
+               "Model routing (experimental: not yet checked against the real engines): off for every agent"
 
       assert text =~ "Routing candidates"
       assert text =~ "- scheduled (may go light): 1 turns"

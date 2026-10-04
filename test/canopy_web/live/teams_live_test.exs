@@ -118,6 +118,20 @@ defmodule CanopyWeb.TeamsLiveTest do
     team = Fixtures.team_fixture([ctx.backend], name: "solo")
     {:ok, view, _html} = live(ctx.conn, ~p"/teams")
 
+    # the labelled actions first; Export and Delete in the ⋯ menu, delete last
+    assert has_element?(view, "#new-channel-team-#{team.id}", "New channel")
+    assert has_element?(view, "#edit-team-#{team.id}", "Edit")
+    assert has_element?(view, "#team-menu-#{team.id} #export-team-button-#{team.id}")
+
+    assert has_element?(
+             view,
+             "#team-menu-#{team.id} li:last-child #delete-team-#{team.id}",
+             "Delete"
+           )
+
+    # the panel names the count, not "Teams" again under the page's title
+    assert has_element?(view, "#teams-panel h2", "1 team")
+
     assert has_element?(view, "#delete-team-#{team.id}[data-canopy-confirm]")
     view |> element("#delete-team-#{team.id}") |> render_click()
     refute has_element?(view, "#team-#{team.id}")

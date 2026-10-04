@@ -266,7 +266,7 @@ defmodule CanopyWeb.CostsLive do
             />
             <.metric
               id="eff-passed"
-              label="Passed turns"
+              label="Nothing to add"
               value={@efficiency.passed.turns}
               hint={Costs.money(@efficiency.passed.cost) <> " for no reply"}
             />
@@ -369,7 +369,7 @@ defmodule CanopyWeb.CostsLive do
                       <td class="whitespace-nowrap">{when_local(t.at)}</td>
                       <td>
                         {t.trigger || "—"}
-                        <span :if={t.passed} class="badge badge-xs badge-ghost">passed</span>
+                        <span :if={t.passed} class="badge badge-xs badge-ghost">nothing to add</span>
                         <span
                           :if={t.profile == "light"}
                           class="badge badge-xs badge-info badge-soft"
@@ -533,8 +533,14 @@ defmodule CanopyWeb.CostsLive do
     <Layouts.panel
       id="routing"
       title="Model routing"
-      description="Experimental, unverified until the Phase 0 spike. Routed agents run cheap wakes on a light model and escalate real work to their main one. Savings are estimates."
+      description="Experimental: not yet checked against the real engines."
     >
+      <.more id="routing-more" class="-mt-1 mb-3">
+        <p>
+          Routed agents run cheap wakes on a light model and escalate real work to their main one.
+          Savings are estimates.
+        </p>
+      </.more>
       <dl :if={@agents != []} class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
         <.metric
           id="routing-agents"

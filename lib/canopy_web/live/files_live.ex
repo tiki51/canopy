@@ -245,18 +245,21 @@ defmodule CanopyWeb.FilesLive do
                 </select>
                 <button type="submit" class="btn btn-xs btn-ghost">Go</button>
               </form>
-              <button
-                type="button"
-                id={"delete-file-#{row.document.id}"}
-                class="btn btn-ghost btn-xs btn-square text-error"
-                phx-click="delete"
-                phx-value-id={row.document.id}
-                data-confirm={"Delete #{row.document.filename}? It disappears from every message it is attached to."}
-                title="Delete"
-                aria-label={"Delete #{row.document.filename}"}
+              <.row_menu
+                id={"file-menu-#{row.document.id}"}
+                label={"More for #{row.document.filename}"}
               >
-                <.icon name="hero-trash-mini" class="size-4" />
-              </button>
+                <.row_menu_item
+                  id={"delete-file-#{row.document.id}"}
+                  icon="hero-trash-mini"
+                  danger
+                  phx-click="delete"
+                  phx-value-id={row.document.id}
+                  data-confirm={"Delete #{row.document.filename}? It disappears from every message it is attached to."}
+                >
+                  Delete
+                </.row_menu_item>
+              </.row_menu>
             </li>
           </ul>
         </Layouts.panel>

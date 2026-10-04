@@ -27,8 +27,17 @@ test.describe("question cards", () => {
     await createChannel(page);
     await send(page, `@${name} ask me what to call the release`);
 
-    const card = page.locator('section[id^="question-"]').first();
+    // the question is folded into the live turn's card: one card, not two
+    const card = page.locator('[id^="question-"][data-detached]').first();
     await expect(card).toContainText("What should the release be called?");
+    const live = page.locator('section[id^="telemetry-"]').first();
+    await expect(live).toContainText("needs a decision to carry on");
+    await expect(live.locator('[id^="question-"][data-detached]')).toHaveCount(1);
+    await expect(page.locator('section[id^="question-"]')).toHaveCount(0);
+    // Send waits for an answer; Dismiss is a neutral button
+    await expect(card.locator('[id$="-send"]')).toBeDisabled();
+    await expect(card.locator('[id$="-dismiss"]')).toHaveClass(/btn-ghost/);
+    await expect(card.locator('[id$="-dismiss"]')).not.toHaveClass(/text-error/);
     await expect(page.locator("#awaiting-bar")).toContainText(`@${name} is waiting on your answer`);
     await expect(page.locator(`#members [data-status="awaiting_user"]`)).toHaveCount(1);
 
@@ -40,6 +49,7 @@ test.describe("question cards", () => {
     await expect(page.locator("#composer-awaiting-hint")).toBeHidden();
 
     await card.getByPlaceholder("Your answer").fill("Maple");
+    await expect(card.locator('[id$="-send"]')).toBeEnabled();
     await card.locator('[id$="-send"]').click();
 
     await expect(card).toBeHidden();
@@ -53,7 +63,7 @@ test.describe("question cards", () => {
     await createChannel(page);
     await send(page, `@${name} ask me which colour`);
 
-    const card = page.locator('section[id^="question-"]').first();
+    const card = page.locator('[id^="question-"][data-detached]').first();
     await expect(card).toContainText("Which colour should the banner be?");
 
     // the turn prints nothing while the user decides; it is not killed for it
@@ -62,7 +72,9 @@ test.describe("question cards", () => {
     await expect(card).toBeVisible();
     await expect(card).not.toContainText("stopped waiting");
 
+    await expect(card.locator('[id$="-send"]')).toBeDisabled();
     await card.getByLabel("Orange").check();
+    await expect(card.locator('[id$="-send"]')).toBeEnabled();
     await card.locator('[id$="-send"]').click();
 
     await expect(card).toBeHidden();

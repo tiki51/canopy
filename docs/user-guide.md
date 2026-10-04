@@ -304,6 +304,9 @@ Settings is where Canopy meets OpenCode. Open it from the gear in the rail. **Ru
 again**, top right, reopens [first-run setup](#first-run-setup) with your current choices
 filled in.
 
+Each control carries one sentence of help right under it; where there is more to say, a
+**More** disclosure under that sentence opens the rest.
+
 ![Settings, light](user-guide/images/settings-light.png)
 
 ![Settings, dark](user-guide/images/settings-dark.png)
@@ -626,10 +629,10 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   always allowed. Each turn runs `claude -p` on this machine in the repository, resuming
   the agent's own session, and the agent's questions arrive as question cards.
 
-- **Model routing (experimental)**: off for every agent, and labelled *unverified until the
-  Phase 0 spike*: the engine behaviour it relies on (switching models inside one session,
-  and what that does to the prompt cache) has not been checked against the real Claude
-  Code and OpenCode yet. See [Model routing](#model-routing-experimental) before you turn
+- **Model routing (experimental)**: off for every agent, and labelled *Experimental: not
+  yet checked against the real engines*: the engine behaviour it relies on (switching
+  models inside one session, and what that does to the prompt cache) has not been checked
+  against the real Claude Code and OpenCode yet. See [Model routing](#model-routing-experimental) before you turn
   it on.
 
 #### Model routing (experimental)
@@ -694,15 +697,18 @@ list) opens the Teams page, where you create, edit, and delete them.
 - Only you create and edit teams. Agents can use them wherever they name agents: mentions,
   `canopy_channel_create`, `canopy_channel_add_members`, `canopy_dm_start`.
 
-An agent's page lists the teams it is on, leads marked. **Export** on a team's row downloads
-it as a bundle; see below.
+An agent's page lists the teams it is on, and the team chips on the Agents page mark the
+lead with the same `LEAD` chip as the Teams page. A team's row on the Teams page labels
+**New channel** and **Edit**; **Export…** (a bundle, see below) and **Delete** are in its
+`⋯` menu.
 
 ### Sharing agents: export, import, and the gallery
 
 An agent you tuned on one machine can move to another as a file, and so can a whole team
 with its playbooks. Canopy also ships a **gallery** of starter agents.
 
-**Export.** **Export** on an agent's page downloads `<name>.md`: Markdown with YAML
+**Export.** **Export…** in the `⋯` menu on an agent's page (beside **Message** and
+**Edit**; **Deactivate** is last in the same menu) downloads `<name>.md`: Markdown with YAML
 frontmatter for the agent's fields and the system prompt as the body.
 
 ```markdown
@@ -757,8 +763,9 @@ The preview has a row per agent, team, and playbook:
   bypass permissions.
 - Amber notices for anything changed to fit this machine, and a **Changes** disclosure with
   the field differences and a line diff of the prompt.
-- A choice for a taken name: **Import as** a new name (the default, `<name>-2`, editable),
-  **Replace** the one here, or **Skip**. Replace works like saving the edit form: the agent
+- A choice for a taken name: **Import as** a new name (the default, `<name>-2`; the name
+  box sits right after it and takes input only while *Import as* is picked), **Replace**
+  the one here, or **Skip**. Replace works like saving the edit form: the agent
   keeps its id, channels, sessions, schedules, and memory (pick *Replace* or *Append* in the
   memory box to change it), and a deactivated agent stays deactivated. A skipped agent stays
   as it is, and a team or playbook in the same bundle uses it.
@@ -790,7 +797,9 @@ enabled and yours; they bring no GitHub watches.
 seeded ones plus a security reviewer, release manager, dependency updater, performance
 engineer, accessibility reviewer, migration reviewer, and incident investigator. Gallery
 agents name no engine or model, so each follows this machine's default engine and model;
-their `mode` keeps reviewers read-only. **Add** opens the import preview. A card for an
+their `mode` keeps reviewers read-only, and their cards badge only that (`read-only`); an
+agent that edits files, the usual case, carries no badge. **Add** opens the import
+preview. A card for an
 agent you already have says **Added**, or **Differs** when you changed its role, prompt, or
 mode, with **Compare** opening the preview set to replace it. The **Bug-fix team and
 playbook** bundle restores `@bugfix-team` and the bug-fix playbook as the seed step made
@@ -896,8 +905,8 @@ accept a handoff, so say it in a message when you want something done. System no
 archived channels take no reactions.
 
 Further down, the same channel after the fix: `@backend` handed the task to `@reviewer`,
-the reviewer accepted (the owner badge changed), reviewed, and finally *passed* on Priya's
-thank-you because there was nothing to add.
+the reviewer accepted (the owner badge changed), reviewed, and finally had nothing to add
+to Priya's thank-you ("@reviewer had nothing to add").
 
 ![Channel, light](user-guide/images/channel-light.png)
 
@@ -905,7 +914,9 @@ thank-you because there was nothing to add.
 
 ### The composer
 
-Type at the bottom. **Enter** sends, **Shift+Enter** adds a line. Typing `@` suggests every
+Type at the bottom. **Enter** sends, **Shift+Enter** adds a line, and `/` at the start of
+the box suggests the slash commands with their usage (the same list as the command
+palette's). The hint under the box says just that. Typing `@` suggests every
 active agent, member or not, then the teams; a mention of an agent that is not in the
 channel wakes nobody, and Canopy says so and points you at `/i` (at `/i @team` when the
 missing agents all came from one team mention). Typing `#` suggests channel names;
@@ -944,7 +955,7 @@ Five slash commands are built in. They can also be started from the
 While an agent is working, a second message from you queues and runs when the turn ends.
 With the experimental interrupt setting on, a message that mentions the working agent
 reaches it after its current step instead; **Alt+Enter** (or *Send without interrupting*
-in the menu beside Send) sends one the old way. See
+in the menu joined to Send) sends one the old way. See
 [Redirecting a working agent](#redirecting-a-working-agent-experimental).
 
 ### Compact timeline and the Activity view
@@ -958,7 +969,10 @@ and scheduled fires. Errors, passes with a note, and anything you can act on alw
 ![Channel with Activity on, dark](user-guide/images/channel-activity-dark.png)
 
 Each finished turn is a card in the same box the live card was in, headed
-`@agent finished · N tools · $cost · duration` (a failed command is quoted next to it).
+`@agent finished · N tools · $cost · duration`. A turn that ended in an error quotes its
+first failed command in red; one that finished well never shows red: if commands failed on
+the way, the header shows the closing note (or, without one, the last failed command)
+muted, with an *N errors* chip.
 Click it to open what the agent did: every call, the files it changed, and its closing
 note (see [Watching an agent work](#8-watching-an-agent-work)). A turn that spoke through
 the tools keeps its closing text on this card instead of posting it twice; a turn that
@@ -1175,7 +1189,8 @@ reading or searching, *building* while editing, *testing* on a test command, *wr
 while posting. While it is closed the card's header still says what is running now (the
 command or the file), how long the turn has run, how many calls of each kind it made
 (`7 cmds · 5 reads · 2 edits · 1 failed`), the tokens so far, and the model. A turn waiting
-on a permission or question card says *is waiting for you*. **Abort** next to the agent's
+on a permission card says *is waiting for you*; one waiting on a question becomes the
+question card itself (see [Questions](#questions)). **Abort** next to the agent's
 pill ends the turn; the dot goes red until its next prompt.
 
 Click the header to open the card:
@@ -1282,8 +1297,9 @@ With it on, an @mention of an agent that is working, from you, in the channel (o
 thread the agent is working in), goes into the turn it is running. The agent finishes the
 command or tool call it is on, a long test run included, then reads your message before
 its next step, and carries on, changes course, or answers. Its live card shows a chip,
-*Interrupting after current step*, with the call running now and how long it has run, and
-its pill shows *1 waiting*. With Activity on, the feed says "@agent will read your message
+*Interrupting after current step*, with the call running now, and its pill shows
+*1 waiting*. Your message shows *Queued · delivered after the current step* under it
+(*… once the card is answered* while the agent waits on a card) until the turn ends. With Activity on, the feed says "@agent will read your message
 after its current step". The finished line then reads "@agent finished · took 1 message
 mid-turn · …".
 
@@ -1291,7 +1307,7 @@ mid-turn · …".
   (the running command too) and starts a new one with your message at once. The feed says
   "<you> interrupted @agent", then "@agent was interrupted by <you>" and a new "started
   working" line.
-- **Alt+Enter**, or *Send without interrupting* in the menu beside Send, sends one message
+- **Alt+Enter**, or *Send without interrupting* in the menu joined to Send, sends one message
   the old way: it waits for the turn to end. While your draft mentions a working agent, a
   hint above the box says which way it will go.
 - Only a mention from you interrupts. An unaddressed message to the owner, a message
@@ -1335,9 +1351,12 @@ only clears it.
 
 An agent that needs a decision asks with its engine's question tool (`question` in
 OpenCode, `AskUserQuestion` in Claude Code). A question card appears at the bottom of the
-channel with the question, its options, and a box to answer in your own words. Every
-question takes a typed answer, with or without its options; a question with no options
-has only the box. **Send** answers, **Dismiss** declines.
+channel with the question, its options, and a box to answer in your own words. While the
+agent's turn waits on it, the card is the agent's live card: its header says "@agent needs
+a decision to carry on" with the turn's calls, tokens and time, and it opens to the
+activity like any live card. Every question takes a typed answer, with or without its
+options; a question with no options has only the box. **Send** answers; it stays disabled
+until an option is picked or something is typed. **Dismiss** declines.
 
 While the agent waits, its pill shows "waiting on you", a bar above the composer says
 "@agent is waiting on your answer" with a **Show** button that scrolls to the card, and
@@ -1371,7 +1390,9 @@ still works there.
 ### Passing
 
 An agent woken for something that needs no answer, such as "thanks, all good", calls
-`canopy_pass`. The turn ends with no reply message and the timeline says it passed.
+`canopy_pass`. The turn ends with no reply message, and the timeline says so in words,
+with a grey check: "@agent had nothing to add", or the agent's own note as the sentence
+("@test is holding the lock").
 Acknowledgements do not bounce between agents. When the sender is waiting to know the
 message was seen, the agent may first react to it (`canopy_react`, ✅ or 👍) and then pass.
 
@@ -1441,7 +1462,9 @@ agent decide: `@backend` in the Acme conversation did it through `canopy_delegat
 
 ![Delegation, dark](user-guide/images/delegation-dark.png)
 
-The timeline shows a "delegated to" line. The delegate works in **its own channel
+The timeline shows one "delegated to" line: "@backend delegated to @researcher: …" when an
+agent delegates, or "Priya delegated to @researcher for @backend: …" when you type
+`/delegate` (the owner stays responsible and hears the result). The delegate works in **its own channel
 session**, the same one that answers its messages (each agent has exactly one session per
 channel), while the delegator stays idle. If the delegate is busy, the delegation waits
 for its current turn to end; two delegations that arrive meanwhile reach it together, with
@@ -1638,8 +1661,9 @@ run by `@project-manager` with `@bugfix-team` in a new channel.
 
 **Playbooks** in the rail lists every playbook with its description, where it came from
 (*starter*, *yours*, or *draft by @agent*), an **enabled** toggle, how many runs are in
-progress, and **Start…**, **Edit**, **Duplicate**, the download icon (the playbook as a file,
-to [import elsewhere](#sharing-agents-export-import-and-the-gallery)), and **Delete**. Enabled playbooks are
+progress, **Start…** and **Edit**, and a `⋯` menu with **Duplicate**, **Export** (the
+playbook as a file, to [import elsewhere](#sharing-agents-export-import-and-the-gallery)),
+and **Delete**, last. Enabled playbooks are
 listed in every agent's prompt, so agents know they exist; a disabled one cannot be
 started. Delete is refused while a run is in progress (disable it instead); finished runs
 keep their own copy of the text.
@@ -1718,9 +1742,12 @@ that resets the channel's chatter budget like any message from you.
 ### Following a run
 
 While a run is in progress the header shows its chip, and the channel's row in the
-sidebar shows a small book. Click the chip for the run panel: the brief, the roster, every
-step with its owners, status, round (a step entered again counts up), the coordinator's
-result, and the delegations made for it. You can **Reassign** the coordinator (the new one
+sidebar shows a small book. The first time this browser sees a run, its panel opens by
+itself; after that it starts collapsed, and the chip opens and closes it. The panel shows
+the brief, the roster as `role → @agent` chips, every step with its owners, status, round
+(a step entered again counts up), the coordinator's result, and the delegations made for
+it; a step held for you carries one *sign-off* marker. Under **Coordinator** you can
+**Reassign** it (the new one
 is woken with the current step) or **Cancel run** (with a confirmation). Changes are
 checked against what was read: an agent acting on a run that changed meanwhile (you
 reassigned or cancelled it) is told so instead of overwriting it.
@@ -1837,7 +1864,8 @@ From the top:
 - **Last 14 days**: a bar per day in your local time.
 - **Where the tokens go**, for the period chosen in the top-right buttons: model calls,
   cost per turn, context per call (with the compaction cap), cache hit rate, prompt and
-  output tokens, and the turns that bought nothing because they passed or errored.
+  output tokens, and the turns that bought nothing because they had nothing to add or
+  errored.
 - **By agent, by channel, by model, by trigger**: the breakdowns, with channels linked.
   *Trigger* is what woke the agent: your messages, agent messages, delegations, handoffs,
   or scheduled tasks. Long lists show six rows with a toggle for the rest.
@@ -1929,8 +1957,8 @@ scheduled checks or owner-fallback wakes mostly pass (the Routing candidates sec
 the Costs page says which) can run them on a light model. It pays when the agent's main
 cache is cold anyway (a check that fires after minutes of quiet, a delegation report after
 long delegate work) and does nothing in a busy channel, where the main cache stays warm and
-Canopy keeps the wake on the main model. It is unverified until the engines' behaviour on a
-model switch has been measured, so watch its escalation rate and net saving on the Costs
+Canopy keeps the wake on the main model. It is experimental, not yet checked against the
+real engines (the behaviour on a model switch has not been measured), so watch its escalation rate and net saving on the Costs
 page; a rule whose light turns keep escalating pauses on its own.
 
 ---
@@ -2039,7 +2067,7 @@ Reactions leave no line: they show as chips under the message.
 |---|---|
 | `@agent started working` | A turn began (Activity view only) |
 | `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
-| `@agent passed: note` | The agent chose not to reply |
+| `@agent had nothing to add` / `@agent is holding the lock` | The agent chose not to reply; its note, when it gave one, is the sentence |
 | `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
 | `@agent will read your message after its current step` | Experimental: your mention went into its running turn (Activity view only) |
 | `<you> interrupted @agent` / `@agent was interrupted by <you>` | Experimental: you pressed Interrupt now; a new turn starts with your message |
@@ -2048,7 +2076,7 @@ Reactions leave no line: they show as chips under the message.
 | *light model* badge on a turn | Experimental: the turn ran on the agent's light model ([model routing](#model-routing-experimental)) |
 | `@agent escalated to its main model` | Experimental: the light turn handed the wake to the main model; the next turn runs it |
 | `@agent hit an error on its light model` | Experimental: the light turn failed; the wake runs again once on the main model |
-| `@a delegated to @b: …` / `completed the delegation` | A delegation and its result |
+| `@a delegated to @b: …` / `<you> delegated to @b for @a: …` / `completed the delegation` | A delegation (one line, whoever asked) and its result |
 | `handed this task to` / `accepted the handoff` / `ownership moved` | A handoff |
 | `updated the task · status → working` | A task change |
 | `@team joined: @a, @b` | A team was invited (or `… (added by @agent)`) |

@@ -378,6 +378,7 @@ defmodule Canopy.Transcripts do
         duration_ms: p["duration_ms"],
         outcome: p["outcome"],
         passed?: p["passed"] == true,
+        pass_note: p["note"],
         steered: length(List.wrap(p["interrupted_by"])),
         # model routing: a light turn, and one that escalated
         light?: p["profile"] == "light",

@@ -27,7 +27,9 @@ defmodule CanopyWeb.AgentGalleryLiveTest do
            )
 
     assert has_element?(view, "#gallery-security-reviewer", "read-only")
-    assert has_element?(view, "#gallery-release-manager", "edits")
+    # the usual "edits" is not badged, and the card carries no truncating handle
+    refute has_element?(view, "#gallery-release-manager .badge")
+    refute has_element?(view, "#gallery-release-manager span.font-mono", "@release-manager")
     assert has_element?(view, "#gallery-bundle-bug-fix", "Bug-fix team and playbook")
   end
 

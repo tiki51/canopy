@@ -25,6 +25,13 @@ defmodule CanopyWeb.PlaybooksLiveTest do
              view,
              "#export-playbook-#{playbook.id}[href='/playbooks/#{playbook.id}/export']"
            )
+
+    # Start and Edit are labelled; the rest sit in the ⋯ menu, labelled, delete last
+    assert has_element?(view, "#edit-playbook-#{playbook.id}", "Edit")
+    menu = "#playbook-menu-#{playbook.id}"
+    assert has_element?(view, "#{menu} #duplicate-playbook-#{playbook.id}", "Duplicate")
+    assert has_element?(view, "#{menu} #export-playbook-#{playbook.id}", "Export")
+    assert has_element?(view, "#{menu} li:last-child #delete-playbook-#{playbook.id}", "Delete")
   end
 
   test "create: the text is checked as you type and its steps are previewed", %{conn: conn} do

@@ -132,6 +132,89 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert turn.("error") =~ "stopped with an error"
   end
 
+  test "a pass reads as a sentence, not as the internal pass verb" do
+    names = %{"agt_1" => "researcher", "agt_2" => "test"}
+
+    turn = fn agent_id, note ->
+      TimelineComponents.event_text(
+        %{
+          event_type: "agent_turn_completed",
+          agent_id: agent_id,
+          payload: %{"outcome" => "ok", "passed" => true, "note" => note}
+        },
+        names,
+        "Priya"
+      )
+    end
+
+    assert turn.("agt_1", "nothing to add") == "@researcher had nothing to add"
+    assert turn.("agt_1", nil) == "@researcher had nothing to add"
+    assert turn.("agt_2", "holding the lock") == "@test is holding the lock"
+    assert turn.("agt_2", "Waiting on @backend.") == "@test is waiting on @backend"
+
+    assert turn.("agt_1", "already answered above") ==
+             "@researcher had nothing to add: already answered above"
+
+    refute turn.("agt_1", "nothing to add") =~ "passed"
+    assert TimelineComponents.pass_phrase("holding the lock") == "holding the lock"
+    assert TimelineComponents.pass_phrase(nil) == "nothing to add"
+  end
+
+  test "a pass keeps its grey check in the finished card" do
+    event = %{
+      id: "evt_pass",
+      channel_id: "chn_1",
+      event_type: "agent_turn_completed",
+      agent_id: "agt_1",
+      inserted_at: ~U[2026-09-29 10:00:00Z],
+      payload: %{"outcome" => "ok", "passed" => true, "note" => "nothing to add", "tools" => 1}
+    }
+
+    # a plain line when nothing was recorded
+    html = render_turn(event)
+    assert html =~ "@backend had nothing to add"
+    assert html =~ "hero-check-circle-mini"
+    refute html =~ "passed"
+
+    # the card, when its call was recorded
+    activity = [
+      %{
+        "key" => "c1",
+        "kind" => "tool",
+        "status" => "ok",
+        "category" => "other",
+        "step" => 0,
+        "label" => "canopy_pass"
+      }
+    ]
+
+    html = render_turn(put_in(event, [:payload, "activity"], activity))
+    doc = LazyHTML.from_fragment(html)
+    assert text_of(doc, "#turn-toggle-evt_pass") =~ "@backend had nothing to add"
+    assert html =~ ~r/hero-check-circle-mini[^"]*text-base-content\/50/
+  end
+
+  test "a delegation the user asked for names the user, once, for the owner" do
+    text = fn payload ->
+      TimelineComponents.event_text(
+        %{event_type: "delegation_created", agent_id: "agt_1", payload: payload},
+        %{"agt_1" => "backend", "agt_2" => "researcher"},
+        "Priya"
+      )
+    end
+
+    base = %{"to_agent_id" => "agt_2", "description" => "list every handler"}
+
+    assert text.(Map.put(base, "from_agent_id", "agt_1")) ==
+             "@backend delegated to @researcher: list every handler"
+
+    assert text.(base |> Map.put("from_agent_id", "agt_1") |> Map.put("by", "user")) ==
+             "Priya delegated to @researcher for @backend: list every handler"
+
+    assert text.(Map.put(base, "by", "user")) ==
+             "Priya delegated to @researcher: list every handler"
+  end
+
   test "a session reset says who reset it, or that the agent's engine changed" do
     text = fn payload ->
       TimelineComponents.event_text(
@@ -544,8 +627,35 @@ defmodule CanopyWeb.TimelineComponentsTest do
     assert text_of(doc, "#turn-evt_4-filter-errors") =~ "2"
     assert text_of(doc, "#turn-evt_4-filter-shell") =~ "2"
 
-    # the header quotes the first failure
-    assert text_of(doc, "#turn-evt_4-first-error") =~ "exit 1: mix test test/billing"
+    # the turn ended well: no red quote in the header, the last failed call
+    # muted with a count of the failures
+    assert LazyHTML.query(doc, "#turn-evt_4-first-error") |> Enum.empty?()
+    assert text_of(doc, "#turn-evt_4-last-error") =~ "rm -rf build"
+    assert [last] = LazyHTML.query(doc, "#turn-evt_4-last-error") |> Enum.to_list()
+    assert hd(LazyHTML.attribute(last, "class")) =~ "text-base-content/60"
+    refute hd(LazyHTML.attribute(last, "class")) =~ "text-error"
+    assert text_of(doc, "#turn-evt_4-errors") =~ "2 errors"
+
+    # with a closing note, the header shows the note instead
+    noted =
+      event
+      |> put_in([:payload, "final_text"], "Fixed it; the **billing** tests pass.")
+      |> render_turn(root: root)
+      |> LazyHTML.from_fragment()
+
+    assert text_of(noted, "#turn-evt_4-note") =~ "Fixed it; the billing tests pass."
+    assert text_of(noted, "#turn-evt_4-errors") =~ "2 errors"
+    assert LazyHTML.query(noted, "#turn-evt_4-last-error") |> Enum.empty?()
+
+    # a turn that ended in an error still quotes its first failure in red
+    failed =
+      event
+      |> put_in([:payload, "outcome"], "error")
+      |> render_turn(root: root)
+      |> LazyHTML.from_fragment()
+
+    assert text_of(failed, "#turn-evt_4-first-error") =~ "exit 1: mix test test/billing"
+    assert LazyHTML.query(failed, "#turn-evt_4-errors") |> Enum.empty?()
 
     # an opened row shows its detail; a turn from before details were kept says so
     open =

@@ -430,37 +430,36 @@ defmodule CanopyWeb.PlaybooksLive do
                 >
                   <.icon name="hero-pencil-square-mini" class="size-3.5" /> Edit
                 </.link>
-                <button
-                  type="button"
-                  id={"duplicate-playbook-#{playbook.id}"}
-                  class="btn btn-ghost btn-xs"
-                  phx-click="duplicate"
-                  phx-value-id={playbook.id}
-                  title="Duplicate"
-                >
-                  <.icon name="hero-document-duplicate-mini" class="size-3.5" />
-                </button>
-                <a
-                  href={~p"/playbooks/#{playbook.id}/export"}
-                  id={"export-playbook-#{playbook.id}"}
-                  class="btn btn-ghost btn-xs"
-                  title="Export as a file, to import on another machine"
-                >
-                  <.icon name="hero-arrow-down-tray-mini" class="size-3.5" />
-                </a>
-                <button
-                  type="button"
-                  id={"delete-playbook-#{playbook.id}"}
-                  class="btn btn-ghost btn-xs text-error"
-                  phx-click="delete"
-                  phx-value-id={playbook.id}
-                  data-canopy-confirm="Finished runs keep their own copy of the text."
-                  data-canopy-confirm-title={"Delete #{playbook.name}?"}
-                  data-canopy-confirm-label="Delete"
-                  title="Delete"
-                >
-                  <.icon name="hero-trash-mini" class="size-3.5" />
-                </button>
+                <.row_menu id={"playbook-menu-#{playbook.id}"} label={"More for #{playbook.name}"}>
+                  <.row_menu_item
+                    id={"duplicate-playbook-#{playbook.id}"}
+                    icon="hero-document-duplicate-mini"
+                    phx-click="duplicate"
+                    phx-value-id={playbook.id}
+                  >
+                    Duplicate
+                  </.row_menu_item>
+                  <.row_menu_item
+                    id={"export-playbook-#{playbook.id}"}
+                    icon="hero-arrow-down-tray-mini"
+                    href={~p"/playbooks/#{playbook.id}/export"}
+                    title="Export as a file, to import on another machine"
+                  >
+                    Export
+                  </.row_menu_item>
+                  <.row_menu_item
+                    id={"delete-playbook-#{playbook.id}"}
+                    icon="hero-trash-mini"
+                    danger
+                    phx-click="delete"
+                    phx-value-id={playbook.id}
+                    data-canopy-confirm="Finished runs keep their own copy of the text."
+                    data-canopy-confirm-title={"Delete #{playbook.name}?"}
+                    data-canopy-confirm-label="Delete"
+                  >
+                    Delete
+                  </.row_menu_item>
+                </.row_menu>
               </div>
             </div>
             <p class="text-xs text-base-content/75">{playbook.description}</p>

@@ -90,7 +90,7 @@ defmodule Canopy.Costs.Report do
     case Routing.routed_agents() do
       [] ->
         [
-          "Model routing (experimental, unverified until the Phase 0 spike): off for every agent. An agent can run cheap wakes on a light model; see Routing candidates for what it might save.",
+          "Model routing (experimental: not yet checked against the real engines): off for every agent. An agent can run cheap wakes on a light model; see Routing candidates for what it might save.",
           ""
         ]
 
@@ -119,7 +119,7 @@ defmodule Canopy.Costs.Report do
           end
 
         [
-          "Model routing (experimental, unverified until the Phase 0 spike):",
+          "Model routing (experimental: not yet checked against the real engines):",
           "- routed agents: #{Enum.map_join(agents, ", ", &("@" <> &1.name))}",
           "- #{s.light_turns} light turns; escalated per wake kind: #{rates}",
           "- estimated net saving #{Costs.money(s.net)} = #{Costs.money(s.gross)} saved on light turns − #{Costs.money(s.waste)} paid for escalated ones − #{Costs.money(s.penalty)} cache re-reads after a switch (estimates against each agent's main turns of the same kind)"

@@ -78,8 +78,9 @@ test.describe("reactions", () => {
     await expect(chip).not.toHaveAttribute("data-mine", "true");
     await expect(working(page)).toHaveCount(0);
 
-    // it passed: nothing was posted for the turn
-    await expect(timeline(page)).toContainText(/passed/);
+    // it passed: nothing was posted for the turn, and the line says so in words
+    await expect(timeline(page)).toContainText("@backend had nothing to add");
+    await expect(timeline(page)).not.toContainText("passed");
     await expect(timeline(page).locator("article")).toHaveCount(1);
     await expect(timeline(page)).not.toContainText("Reacted instead of replying.");
   });

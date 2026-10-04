@@ -383,6 +383,7 @@ defmodule CanopyWeb.SearchLive do
               aria-controls="search-results"
               class={[
                 "input input-lg w-full pl-11 pr-11",
+                "focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary",
                 "[&::-webkit-search-cancel-button]:appearance-none",
                 "[&::-webkit-search-decoration]:appearance-none"
               ]}
@@ -505,7 +506,8 @@ defmodule CanopyWeb.SearchLive do
                   class="select select-sm w-full"
                 />
               </div>
-              <div class="pb-1.5">
+              <%!-- on the selects' centre line: the checkbox row is shorter than a select --%>
+              <div class="self-end">
                 <.input field={@filters[:archived]} type="checkbox" label="Archived" />
               </div>
             </.form>

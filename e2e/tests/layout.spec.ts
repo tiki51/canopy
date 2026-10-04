@@ -35,6 +35,13 @@ async function expectHeaderFits(page: Page) {
       if (el.scrollWidth > el.clientWidth + 1) out.push(`${el.id} clips its own label`);
     }
     if (!shown.some((el) => el.id === "stop-all")) out.push("Stop is not showing");
+    // the topic is whole, or keeps room for a few words, or gives way: never a
+    // stray letter beside the name
+    const topic = document.getElementById("channel-topic");
+    if (topic && topic.getClientRects().length > 0) {
+      const width = topic.getBoundingClientRect().width;
+      if (width + 1 < Math.min(topic.scrollWidth, 90)) out.push(`the topic is squeezed to ${Math.round(width)}px`);
+    }
     if (!shown.some((el) => el.id === "channel-more")) out.push("the ⋯ button is not showing");
     return out;
   });

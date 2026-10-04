@@ -386,31 +386,33 @@ defmodule CanopyWeb.AgentImportLive do
       </ul>
 
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-        <label
-          :for={action <- Item.actions(@item)}
-          class="flex cursor-pointer items-center gap-1.5"
-        >
+        <%!-- The new name sits right after "Import as", and only takes
+             input while that is picked. --%>
+        <div :for={action <- Item.actions(@item)} class="flex items-center gap-1.5">
+          <label class="flex cursor-pointer items-center gap-1.5">
+            <input
+              type="radio"
+              id={"import-#{@item.id}-#{action}"}
+              name={"choices[#{@item.id}][action]"}
+              value={action}
+              checked={@item.choice.action == action}
+              class="radio radio-xs"
+            />
+            {action_text(@item, action)}
+          </label>
           <input
-            type="radio"
-            id={"import-#{@item.id}-#{action}"}
-            name={"choices[#{@item.id}][action]"}
-            value={action}
-            checked={@item.choice.action == action}
-            class="radio radio-xs"
+            :if={action == :rename}
+            type="text"
+            id={"import-#{@item.id}-name"}
+            name={"choices[#{@item.id}][name]"}
+            value={@item.choice.name || @item.picked[:name]}
+            placeholder="new name"
+            disabled={@item.choice.action != :rename}
+            phx-debounce="300"
+            aria-label="New name"
+            class="input input-bordered input-xs w-48 font-mono focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary disabled:opacity-50"
           />
-          {action_text(@item, action)}
-        </label>
-
-        <input
-          :if={@item.choice.action == :rename}
-          type="text"
-          id={"import-#{@item.id}-name"}
-          name={"choices[#{@item.id}][name]"}
-          value={@item.choice.name}
-          phx-debounce="300"
-          aria-label="New name"
-          class="input input-bordered input-xs w-48 font-mono"
-        />
+        </div>
 
         <select
           :if={@item.kind == :agent and @item.status != :invalid and Item.writes?(@item)}

@@ -14,8 +14,12 @@ defmodule Canopy.Delegations do
   def get!(id), do: Delegation |> Repo.get!(id) |> Repo.preload(@preloads)
   def get(id), do: Delegation |> Repo.get(id) |> Repo.preload(@preloads)
 
-  @doc "Creates a delegation (status `requested`) and records `delegation_created`."
-  def create(attrs) do
+  @doc """
+  Creates a delegation (status `requested`) and records `delegation_created`.
+  `by: :user` marks one the user asked for (`/delegate`) on the owner's
+  behalf, so the timeline names the user rather than the owner.
+  """
+  def create(attrs, opts \\ []) do
     Multi.new()
     |> Multi.insert(:delegation, Delegation.changeset(%Delegation{}, attrs))
     |> Timeline.multi_record(:event, fn %{delegation: d} ->
@@ -30,11 +34,15 @@ defmodule Canopy.Delegations do
             "to_agent_id" => d.to_agent_id,
             "description" => d.description
           }
+          |> put_by(opts[:by])
           |> put_playbook(d)
       }
     end)
     |> commit()
   end
+
+  defp put_by(payload, :user), do: Map.put(payload, "by", "user")
+  defp put_by(payload, _by), do: payload
 
   # A delegation made for a playbook step carries which, for the delegate's wake.
   defp put_playbook(payload, %Delegation{playbook_step_id: step_id}) when is_binary(step_id) do

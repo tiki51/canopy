@@ -276,7 +276,16 @@ defmodule CanopyWeb.SettingsLiveTest do
              "#chatter-form input[name='setting[interrupt_on_mention]'][checked]"
            )
 
-    assert has_element?(view, "#interrupt-help", "Experimental")
+    # one sentence under the control, the rest behind More
+    assert has_element?(view, "#chatter-interrupt-help", "after its current step")
+
+    assert has_element?(
+             view,
+             "#chatter-interrupt-more #interrupt-experimental",
+             "Experimental: not yet checked against the real engines."
+           )
+
+    refute render(view) =~ "Phase 0"
 
     view
     |> form("#chatter-form",

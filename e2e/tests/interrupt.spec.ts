@@ -45,10 +45,17 @@ test.describe("interrupting a working agent", () => {
     await page.locator("#composer-input").press("Enter");
 
     await expect(card.locator('[id^="steer-chip-"]')).toContainText("Interrupting after current step");
+    // no step timer left dangling on the chip
+    await expect(card.locator('[id^="steer-elapsed-"]')).toHaveCount(0);
     await expect(page.locator('[id$="-steers"]')).toContainText("1 waiting");
+    // the message itself says it has not been read yet
+    const nudge = timeline(page).locator("article", { hasText: NUDGE }).first();
+    await expect(nudge.locator('[id^="message-queued-"]')).toHaveText("Queued · delivered after the current step");
 
     // the agent quotes it in the reply of the turn it was working on
     await expect(timeline(page)).toContainText(`Re your message: “${NUDGE}”`);
+    // the turn is over: no longer queued
+    await expect(nudge.locator('[id^="message-queued-"]')).toHaveCount(0);
     await clickHeader(page, "toggle-activity");
     await expect(timeline(page)).toContainText("will read your message after its current step");
     await expect(timeline(page)).toContainText("took 1 message mid-turn");

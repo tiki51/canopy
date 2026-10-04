@@ -48,7 +48,8 @@ test.describe("channel collaboration", () => {
     await createChannel(page);
     await send(page, "Pick a retry key for enqueue_charge, but ask me first.");
 
-    const card = page.locator('section[id^="question-"]').first();
+    // a standalone card, or folded into the waiting turn's live card
+    const card = page.locator('[id^="question-"][data-detached]').first();
     await expect(card).toContainText("Should the retry key include the attempt number?");
     await expect(card).toContainText("Invoice only");
     await expect(card).toContainText("Invoice + attempt");
@@ -65,7 +66,10 @@ test.describe("channel collaboration", () => {
     await createChannel(page, name);
     await send(page, "/delegate @researcher list every enqueue path");
 
-    await expect(timeline(page)).toContainText(/delegat/i);
+    // reported once: one line, by the user, for the owner
+    await expect(timeline(page)).toContainText(`delegated to @researcher for @backend: list every enqueue path`);
+    await expect(timeline(page).getByText(/delegated to @researcher/)).toHaveCount(1);
+    await expect(timeline(page)).not.toContainText("Delegated to @researcher");
     // the delegate (fake) completes through canopy_task_update, then the owner is woken
     await expect(timeline(page)).toContainText("Delegated work finished.");
     await expect(timeline(page)).toContainText("Found two enqueue paths.");

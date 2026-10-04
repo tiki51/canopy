@@ -57,6 +57,10 @@ defmodule CanopyWeb.TimelineComponents do
   attr :activity, :map, default: %{}
   attr :receipt, :map, default: nil
 
+  attr :queued, :atom,
+    default: nil,
+    doc: "a message steered into a working turn, not yet read: `:next_step` or `:held`"
+
   attr :reactable, :boolean,
     default: false,
     doc: "the user may react (not in an archived channel)"
@@ -78,6 +82,7 @@ defmodule CanopyWeb.TimelineComponents do
         highlight={@thread[:highlight] == true}
         target={@thread[:target] == true}
         receipt={@receipt}
+        queued={@queued}
         reactable={@reactable}
       />
       <div
@@ -205,6 +210,7 @@ defmodule CanopyWeb.TimelineComponents do
     doc: "`%{event_id, tools, duration_ms}` of the turn that posted it"
 
   attr :reactable, :boolean, default: false, doc: "show React and make the chips toggle"
+  attr :queued, :atom, default: nil, doc: "`:next_step` or `:held` while it waits to be read"
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -332,6 +338,16 @@ defmodule CanopyWeb.TimelineComponents do
           />
           <.attachments message={@message} dom_prefix={attachment_prefix(@dom_prefix)} />
         </div>
+        <p
+          :if={@queued}
+          id={"#{@dom_prefix}-queued-#{@message.id}"}
+          class="mt-0.5 flex items-center gap-1 text-xs text-warning"
+        >
+          <.icon name="hero-clock-mini" class="size-3.5 shrink-0" />
+          {if @queued == :held,
+            do: "Queued · delivered once the card is answered",
+            else: "Queued · delivered after the current step"}
+        </p>
 
         <.reactions
           message={@message}
@@ -478,7 +494,7 @@ defmodule CanopyWeb.TimelineComponents do
       data-open={@summary.open? && "true"}
       title="Open the thread"
     >
-      <span class="flex shrink-0 -space-x-1.5">
+      <span class="flex shrink-0 -space-x-1">
         <.mini_avatar :for={p <- @shown} participant={p} user_name={@user_name} />
         <span
           :if={@more > 0}
@@ -800,12 +816,18 @@ defmodule CanopyWeb.TimelineComponents do
   attr :highlight, :boolean, default: false, doc: "the card is open in the side panel"
   attr :auto_open?, :boolean, default: false, doc: "the browser opens live cards by itself"
 
+  attr :question, :map,
+    default: nil,
+    doc: "the question the turn is blocked on: the card becomes the question card"
+
+  attr :draft, :map, default: %{}, doc: "the question form's current params"
+
   def telemetry_card(assigns) do
     card = assigns.card
 
     assigns =
       assigns
-      |> assign(:waiting?, assigns.status == :awaiting_user)
+      |> assign(:waiting?, assigns.status == :awaiting_user or assigns.question != nil)
       |> assign(:verb, Activity.verb(card))
       |> assign(:current, Activity.current(card))
 
@@ -839,10 +861,13 @@ defmodule CanopyWeb.TimelineComponents do
               !@waiting? && "text-secondary",
               @waiting? && "text-info"
             ]}>
-              <%= if @waiting? do %>
-                @{@name} is waiting for you
-              <% else %>
-                @{@name} is {@verb}…
+              <%= cond do %>
+                <% @question -> %>
+                  @{@name} needs a decision to carry on
+                <% @waiting? -> %>
+                  @{@name} is waiting for you
+                <% true -> %>
+                  @{@name} is {@verb}…
               <% end %>
             </span>
             <span
@@ -897,6 +922,14 @@ defmodule CanopyWeb.TimelineComponents do
         {if @waiting?, do: "@#{@name} is waiting for you", else: "@#{@name} is #{@verb}"}
       </span>
       <div
+        :if={@question}
+        id={"question-#{@question.id}"}
+        data-detached="false"
+        class="border-t border-info/20"
+      >
+        <.question_form request={@question} draft={@draft} />
+      </div>
+      <div
         :if={@steer}
         id={"steer-chip-#{@agent_id}"}
         class="flex items-center gap-2 border-t border-secondary/20 px-4 py-1.5 text-xs text-base-content/70"
@@ -909,14 +942,6 @@ defmodule CanopyWeb.TimelineComponents do
             <% @current -> %>
               Interrupting after current step:
               <span class="font-mono">{relative_paths(@current.label, @root)}</span>
-              <span
-                :if={@current[:started_at]}
-                id={"steer-elapsed-#{@agent_id}"}
-                class="tabular-nums"
-                phx-hook=".Elapsed"
-                phx-update="ignore"
-                data-started-at={@current[:started_at]}
-              />
             <% true -> %>
               Interrupting after current step
           <% end %>
@@ -1014,7 +1039,10 @@ defmodule CanopyWeb.TimelineComponents do
       assigns
       |> assign(:tone, event_tone(assigns.event))
       |> assign(:open?, open?)
-      |> assign(:first_error, first_error(assigns.card))
+      |> assign(
+        :header_note,
+        header_note(assigns.event.payload, assigns.card, assigns.final_text)
+      )
       |> assign(:text, event_text(assigns.event, assigns.names, assigns.user_name))
 
     ~H"""
@@ -1060,13 +1088,32 @@ defmodule CanopyWeb.TimelineComponents do
           >
             light model
           </span>
-          <span
-            :if={@first_error}
-            id={"turn-#{@event.id}-first-error"}
-            class="min-w-0 truncate font-mono text-[11px] text-error max-md:hidden"
-          >
-            “{@first_error}”
-          </span>
+          <%= case @header_note do %>
+            <% {:error, quote} -> %>
+              <span
+                id={"turn-#{@event.id}-first-error"}
+                class="min-w-0 truncate font-mono text-[11px] text-error max-md:hidden"
+              >
+                “{quote}”
+              </span>
+            <% {:note, note, errors} -> %>
+              <span
+                id={"turn-#{@event.id}-note"}
+                class="min-w-0 truncate text-[11px] text-base-content/60 max-md:hidden"
+              >
+                {note}
+              </span>
+              <.error_count_chip :if={errors > 0} id={"turn-#{@event.id}-errors"} count={errors} />
+            <% {:last_error, quote, errors} -> %>
+              <span
+                id={"turn-#{@event.id}-last-error"}
+                class="min-w-0 truncate font-mono text-[11px] text-base-content/60 max-md:hidden"
+              >
+                {quote}
+              </span>
+              <.error_count_chip id={"turn-#{@event.id}-errors"} count={errors} />
+            <% nil -> %>
+          <% end %>
           <span class="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-base-content/55">
             <time title={DateTime.to_iso8601(@event.inserted_at)}>
               {short_time(@event.inserted_at)}
@@ -1940,25 +1987,72 @@ defmodule CanopyWeb.TimelineComponents do
     |> Calendar.strftime("%H:%M:%S")
   end
 
-  # What a finished card's header quotes when the turn had a failed call.
-  defp first_error(card) do
-    case Enum.find(card.entries, &(&1.kind == :tool and &1.status == :error)) do
-      nil -> nil
-      %{fact: "exit " <> _ = fact, label: label} -> "#{fact}: #{truncate(label, 60)}"
-      %{label: label} -> truncate(label, 60)
+  # What a finished card's header adds after its summary. A turn that ended
+  # in an error quotes its first failed call in red. A turn that ended well
+  # never shows red: when some calls failed on the way it shows the closing
+  # note, or failing that the last failed call, muted, with a count chip.
+  defp header_note(payload, card, final_text) do
+    failed = Enum.filter(card.entries, &(&1.kind == :tool and &1.status == :error))
+
+    cond do
+      failed == [] ->
+        nil
+
+      payload["outcome"] == "error" ->
+        {:error, error_quote(hd(failed))}
+
+      payload["outcome"] != "ok" ->
+        nil
+
+      (note = closing_note(final_text)) != nil ->
+        {:note, note, length(failed)}
+
+      true ->
+        {:last_error, error_quote(List.last(failed)), length(failed)}
     end
+  end
+
+  defp error_quote(%{fact: "exit " <> _ = fact, label: label}),
+    do: "#{fact}: #{truncate(label, 60)}"
+
+  defp error_quote(%{label: label}), do: truncate(label, 60)
+
+  defp closing_note(text) when is_binary(text) do
+    case text |> CanopyWeb.Markdown.plain() |> String.trim() do
+      "" -> nil
+      plain -> truncate(plain, 120)
+    end
+  end
+
+  defp closing_note(_text), do: nil
+
+  attr :id, :string, required: true
+  attr :count, :integer, required: true
+
+  defp error_count_chip(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      class="badge badge-ghost badge-xs shrink-0 text-base-content/60"
+      title="Calls that failed along the way; the turn still finished"
+    >
+      {ngettext("1 error", "%{count} errors", @count)}
+    </span>
+    """
   end
 
   defp outcome_icon(%{"outcome" => "error"}), do: "hero-x-circle-mini"
   defp outcome_icon(%{"outcome" => "stopped"}), do: "hero-stop-circle-mini"
   defp outcome_icon(%{"outcome" => "interrupted"}), do: "hero-forward-mini"
-  defp outcome_icon(%{"passed" => true}), do: "hero-forward-mini"
   defp outcome_icon(_payload), do: "hero-check-circle-mini"
 
   defp outcome_class(%{"outcome" => "error"}), do: "text-error"
 
   defp outcome_class(%{"outcome" => outcome}) when outcome in ["stopped", "interrupted"],
     do: "text-base-content/50"
+
+  # a pass keeps the check, in grey: nothing went wrong, nothing was said
+  defp outcome_class(%{"passed" => true}), do: "text-base-content/50"
 
   defp outcome_class(_payload), do: "text-success/70"
 
@@ -2482,7 +2576,7 @@ defmodule CanopyWeb.TimelineComponents do
             p["escalated"] -> "escalated to its main model"
             p["outcome"] != "ok" and p["profile"] == "light" -> "hit an error on its light model"
             p["outcome"] != "ok" -> "stopped with an error"
-            p["passed"] -> "passed" <> suffix(p["note"])
+            p["passed"] -> pass_verb(p["note"])
             true -> "finished"
           end
 
@@ -2499,7 +2593,11 @@ defmodule CanopyWeb.TimelineComponents do
         "#{agent} hit an error: #{p["reason"]}"
 
       "delegation_created" ->
-        "#{from} delegated to #{to}: #{p["description"]}"
+        cond do
+          p["by"] != "user" -> "#{from} delegated to #{to}: #{p["description"]}"
+          is_nil(p["from_agent_id"]) -> "#{user} delegated to #{to}: #{p["description"]}"
+          true -> "#{user} delegated to #{to} for #{from}: #{p["description"]}"
+        end
 
       "delegation_completed" ->
         "#{to} completed the delegation for #{from}" <> suffix(p["result"])
@@ -2825,6 +2923,8 @@ defmodule CanopyWeb.TimelineComponents do
   attr :request, :map, required: true
   attr :names, :map, required: true
 
+  attr :draft, :map, default: %{}, doc: "the form's current params (`question_draft`)"
+
   def question_card(assigns) do
     ~H"""
     <section
@@ -2835,90 +2935,143 @@ defmodule CanopyWeb.TimelineComponents do
         stale?(@request) && "opacity-70"
       ]}
     >
-      <form id={"question-#{@request.id}-form"} phx-submit="answer_question">
-        <input type="hidden" name="request_id" value={@request.id} />
-
-        <div class="flex items-center gap-2 border-b border-info/20 px-4 py-2.5 text-sm">
-          <.icon name="hero-question-mark-circle" class="size-5 text-info" />
-          <div class="min-w-0 flex-1">
-            <span class="font-medium">@{requester_name(@request, @names)}</span>
-            <span :if={!@request.detached_at}>needs a decision to carry on</span>
-            <span :if={@request.detached_at} id={"question-#{@request.id}-detached"}>
-              stopped waiting. Your answer will be sent to it as a message.
-            </span>
-          </div>
+      <div class="flex items-center gap-2 border-b border-info/20 px-4 py-2.5 text-sm">
+        <.icon name="hero-question-mark-circle" class="size-5 text-info" />
+        <div class="min-w-0 flex-1">
+          <span class="font-medium">@{requester_name(@request, @names)}</span>
+          <span :if={!@request.detached_at}>needs a decision to carry on</span>
+          <span :if={@request.detached_at} id={"question-#{@request.id}-detached"}>
+            stopped waiting. Your answer will be sent to it as a message.
+          </span>
         </div>
-
-        <div
-          :for={{question, index} <- Enum.with_index(@request.questions)}
-          class="border-b border-info/10 px-4 py-3"
-        >
-          <p class="text-sm font-medium">{question["question"]}</p>
-          <p :if={question["header"]} class="mt-0.5 text-xs text-base-content/60">
-            {question["header"]}
-          </p>
-
-          <div :if={List.wrap(question["options"]) != []} class="mt-2 space-y-1.5">
-            <label
-              :for={option <- List.wrap(question["options"])}
-              class="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-info/10"
-            >
-              <input
-                type={if question["multiple"], do: "checkbox", else: "radio"}
-                name={"answers[#{index}][]"}
-                value={option["label"]}
-                class={[
-                  "mt-0.5 shrink-0",
-                  if(question["multiple"], do: "checkbox checkbox-xs", else: "radio radio-xs")
-                ]}
-              />
-              <span class="min-w-0 text-sm">
-                <span class="font-medium">{option["label"]}</span>
-                <span :if={option["description"]} class="block text-xs text-base-content/60">
-                  {option["description"]}
-                </span>
-              </span>
-            </label>
-          </div>
-
-          <%!-- Every question takes an answer in the user's own words; with no
-               options it is the only answer, so it is required. --%>
-          <input
-            type="text"
-            id={"question-#{@request.id}-custom-#{index}"}
-            name={"custom[#{index}]"}
-            placeholder={
-              if List.wrap(question["options"]) == [],
-                do: "Your answer",
-                else: "Or answer in your own words…"
-            }
-            aria-label={
-              if List.wrap(question["options"]) == [],
-                do: "Your answer",
-                else: "Or answer in your own words"
-            }
-            required={List.wrap(question["options"]) == []}
-            autocomplete="off"
-            class="mt-2 input input-sm input-bordered w-full"
-          />
-        </div>
-
-        <div class="flex items-center justify-end gap-1.5 px-4 py-2.5">
-          <button
-            type="button"
-            id={"question-#{@request.id}-dismiss"}
-            class="btn btn-xs btn-ghost text-error"
-            phx-click="reject_question"
-            phx-value-id={@request.id}
-          >
-            Dismiss
-          </button>
-          <button type="submit" id={"question-#{@request.id}-send"} class="btn btn-xs btn-primary">
-            Send
-          </button>
-        </div>
-      </form>
+      </div>
+      <.question_form request={@request} draft={@draft} />
     </section>
+    """
+  end
+
+  @doc """
+  The answers a question form's params make, one list of strings per
+  question in order (the options picked, then the user's own words), or
+  `:incomplete` while a question has none.
+  """
+  def question_answers(request, params) do
+    chosen = Map.get(params, "answers", %{})
+    custom = Map.get(params, "custom", %{})
+
+    answers =
+      request.questions
+      |> Enum.with_index()
+      |> Enum.map(fn {_question, index} ->
+        key = Integer.to_string(index)
+        picked = chosen |> Map.get(key, []) |> List.wrap() |> Enum.reject(&(&1 == ""))
+
+        case custom |> Map.get(key, "") |> to_string() |> String.trim() do
+          "" -> picked
+          text -> picked ++ [text]
+        end
+      end)
+
+    if Enum.any?(answers, &(&1 == [])), do: :incomplete, else: answers
+  end
+
+  # The form inside a question card (standalone, or folded into the live
+  # turn's card). It reports every change (`question_draft`), so Send stays
+  # disabled until each question has an option picked or words typed.
+  attr :request, :map, required: true
+  attr :draft, :map, default: %{}
+
+  defp question_form(assigns) do
+    draft = assigns.draft || %{}
+
+    assigns =
+      assigns
+      |> assign(:chosen, Map.get(draft, "answers", %{}))
+      |> assign(:custom, Map.get(draft, "custom", %{}))
+      |> assign(:ready?, question_answers(assigns.request, draft) != :incomplete)
+
+    ~H"""
+    <form
+      id={"question-#{@request.id}-form"}
+      phx-submit="answer_question"
+      phx-change="question_draft"
+    >
+      <input type="hidden" name="request_id" value={@request.id} />
+
+      <div
+        :for={{question, index} <- Enum.with_index(@request.questions)}
+        class="border-b border-info/10 px-4 py-3"
+      >
+        <p class="text-sm font-medium">{question["question"]}</p>
+
+        <div :if={List.wrap(question["options"]) != []} class="mt-2 space-y-1.5">
+          <label
+            :for={option <- List.wrap(question["options"])}
+            class="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-info/10"
+          >
+            <input
+              type={if question["multiple"], do: "checkbox", else: "radio"}
+              name={"answers[#{index}][]"}
+              value={option["label"]}
+              checked={option["label"] in List.wrap(Map.get(@chosen, to_string(index)))}
+              class={[
+                "mt-0.5 shrink-0",
+                if(question["multiple"], do: "checkbox checkbox-xs", else: "radio radio-xs")
+              ]}
+            />
+            <span class="min-w-0 text-sm">
+              <span class="font-medium">{option["label"]}</span>
+              <span :if={option["description"]} class="block text-xs text-base-content/60">
+                {option["description"]}
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <%!-- Every question takes an answer in the user's own words; with no
+             options it is the only answer, so it is required. --%>
+        <input
+          type="text"
+          id={"question-#{@request.id}-custom-#{index}"}
+          name={"custom[#{index}]"}
+          value={Map.get(@custom, to_string(index), "")}
+          placeholder={
+            if List.wrap(question["options"]) == [],
+              do: "Your answer",
+              else: "Or answer in your own words…"
+          }
+          aria-label={
+            if List.wrap(question["options"]) == [],
+              do: "Your answer",
+              else: "Or answer in your own words"
+          }
+          required={List.wrap(question["options"]) == []}
+          autocomplete="off"
+          class="mt-2 input input-sm input-bordered w-full focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
+        />
+      </div>
+
+      <div class="flex items-center justify-end gap-1.5 px-4 py-2.5">
+        <button
+          type="button"
+          id={"question-#{@request.id}-dismiss"}
+          class="btn btn-ghost btn-sm"
+          phx-click="reject_question"
+          phx-value-id={@request.id}
+        >
+          Dismiss
+        </button>
+        <button
+          type="submit"
+          id={"question-#{@request.id}-send"}
+          class="btn btn-sm btn-primary"
+          disabled={!@ready?}
+          title={if !@ready?, do: "Pick an option or type an answer first"}
+        >
+          Send
+        </button>
+      </div>
+    </form>
     """
   end
 
@@ -2970,6 +3123,50 @@ defmodule CanopyWeb.TimelineComponents do
   defp count(n, _noun) when not is_integer(n) or n == 0, do: nil
   defp count(1, noun), do: "1 #{noun}"
   defp count(n, noun), do: "#{n} #{noun}s"
+
+  @doc """
+  How a pass reads after the agent's name: the agent's note becomes the
+  sentence ("had nothing to add", "is holding the lock") rather than the
+  internal `canopy_pass` verb. A note that is not a phrase of its own is kept
+  after "had nothing to add".
+  """
+  def pass_verb(note) do
+    note = if is_binary(note), do: note |> String.trim() |> String.trim_trailing("."), else: ""
+    lower = String.downcase(note)
+    [first | _] = String.split(lower, ~r/\s+/, parts: 2) ++ [""]
+
+    cond do
+      note == "" ->
+        "had nothing to add"
+
+      lower =~
+          ~r/^(nothing (more |else |new )?(to add|to say|needed|to do)|no reply needed|n\/a)$/ ->
+        "had nothing to add"
+
+      String.ends_with?(first, "ing") and String.length(first) > 4 ->
+        "is " <> lower_first(note)
+
+      true ->
+        "had nothing to add: " <> truncate(lower_first(note), 160)
+    end
+  end
+
+  @doc """
+  A pass without its subject, for a column or a divider: "nothing to add",
+  "holding the lock".
+  """
+  def pass_phrase(note) do
+    case pass_verb(note) do
+      "is " <> phrase -> phrase
+      "had " <> phrase -> phrase
+    end
+  end
+
+  defp lower_first(<<c::utf8, rest::binary>> = text) do
+    if String.upcase(rest) == rest, do: text, else: String.downcase(<<c::utf8>>) <> rest
+  end
+
+  defp lower_first(text), do: text
 
   defp suffix(nil), do: ""
   defp suffix(""), do: ""

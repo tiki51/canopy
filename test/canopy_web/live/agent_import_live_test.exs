@@ -89,6 +89,7 @@ defmodule CanopyWeb.AgentImportLiveTest do
 
     assert has_element?(view, "#import-item-1[data-status=conflict][data-action=rename]")
     assert has_element?(view, "#import-item-1-name[value=taken-2]")
+    refute has_element?(view, "#import-item-1-name[disabled]")
     assert has_element?(view, "#import-item-1-changes", "Changes from @taken here")
 
     # skip everything: nothing to import
@@ -103,7 +104,8 @@ defmodule CanopyWeb.AgentImportLiveTest do
     |> render_change()
 
     assert has_element?(view, "#import-item-1[data-action=replace]")
-    refute has_element?(view, "#import-item-1-name")
+    # the name field sits right after "Import as" and takes input only while it is picked
+    assert has_element?(view, "#import-item-1-name[disabled]")
 
     view |> form("#import-choices") |> render_submit()
     {_path, flash} = assert_redirect(view)

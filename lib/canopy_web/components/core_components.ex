@@ -188,9 +188,14 @@ defmodule CanopyWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
 
+  attr :suffix, :string, default: nil, doc: "a unit shown after the input (\"min\")"
+
   attr :rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
                 multiple pattern placeholder readonly required rows size step)
+
+  slot :help, doc: "one sentence directly under the control (under a checkbox's label text)"
+  slot :more, doc: "the rest of the explanation, behind a More disclosure"
 
   def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
     errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
@@ -225,7 +230,7 @@ defmodule CanopyWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
+        <span class={["label", @help != [] && "text-sm text-base-content"]}>
           <input
             type="checkbox"
             id={@id}
@@ -237,6 +242,7 @@ defmodule CanopyWeb.CoreComponents do
           />{@label}
         </span>
       </label>
+      <.input_help help={@help} more={@more} id={@id} class="ml-6" />
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
     """
@@ -292,8 +298,14 @@ defmodule CanopyWeb.CoreComponents do
     ~H"""
     <div class="fieldset mb-2 min-w-0">
       <label for={@id} class="min-w-0">
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span
+          :if={@label}
+          class={["label mb-1", @help != [] && "text-sm text-base-content"]}
+        >
+          {@label}
+        </span>
         <input
+          :if={!@suffix}
           type={@type}
           name={@name}
           id={@id}
@@ -304,9 +316,162 @@ defmodule CanopyWeb.CoreComponents do
           ]}
           {@rest}
         />
+        <span :if={@suffix} class="flex items-center gap-2">
+          <input
+            type={@type}
+            name={@name}
+            id={@id}
+            value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+            class={[
+              @class || "w-full input",
+              @errors != [] && (@error_class || "input-error")
+            ]}
+            {@rest}
+          />
+          <span class="text-sm text-base-content/70">{@suffix}</span>
+        </span>
       </label>
+      <.input_help help={@help} more={@more} id={@id} />
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
+    """
+  end
+
+  attr :help, :list, default: []
+  attr :more, :list, default: []
+  attr :id, :any, default: nil
+  attr :class, :string, default: nil
+
+  # A control's help: one sentence right under it, the rest behind More.
+  defp input_help(assigns) do
+    ~H"""
+    <%!-- the fieldset's own row gap already separates it: pulled up to sit
+         right under the label --%>
+    <p
+      :if={@help != []}
+      id={@id && "#{@id}-help"}
+      class={["-mt-0.5 text-sm text-base-content/70", @class]}
+    >
+      {render_slot(@help)}
+    </p>
+    <.more :if={@more != []} id={@id && "#{@id}-more"} class={["-mt-1", @class]}>
+      {render_slot(@more)}
+    </.more>
+    """
+  end
+
+  @doc "The `LEAD` chip beside a team's lead, the same on the Teams and Agents pages."
+  attr :id, :string, default: nil
+
+  def lead_badge(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      class="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+      title="The team's lead"
+    >
+      lead
+    </span>
+    """
+  end
+
+  @doc """
+  A row's `⋯` menu: the actions after the one or two labelled ones, each a
+  labelled `<li>` from the caller (`row_menu_item/1`), with delete last.
+  Opens on click or focus and closes when focus leaves.
+  """
+  attr :id, :string, required: true
+  attr :label, :string, default: "More actions"
+  attr :class, :any, default: nil
+  attr :size, :string, default: "xs", values: ~w(xs sm), doc: "the button's size"
+  attr :width, :string, default: "w-52", doc: "the menu's width class (wider for a form inside)"
+  slot :inner_block, required: true
+
+  def row_menu(assigns) do
+    ~H"""
+    <div id={@id} class={["dropdown dropdown-end", @class]}>
+      <button
+        type="button"
+        tabindex="0"
+        id={"#{@id}-toggle"}
+        class={["btn btn-ghost btn-square", if(@size == "sm", do: "btn-sm", else: "btn-xs")]}
+        title={@label}
+        aria-label={@label}
+        aria-haspopup="menu"
+      >
+        <.icon name="hero-ellipsis-horizontal-mini" class="size-4" />
+      </button>
+      <ul
+        tabindex="0"
+        role="menu"
+        class={[
+          "dropdown-content menu menu-sm z-30 mt-1 rounded-lg border border-base-300 bg-base-100 p-1 shadow-lg",
+          @width
+        ]}
+      >
+        {render_slot(@inner_block)}
+      </ul>
+    </div>
+    """
+  end
+
+  @doc """
+  An entry in a `row_menu/1`: an icon and a label, as a button (with
+  `phx-click` and friends in `rest`) or, with `href`, a plain link. `danger`
+  marks the destructive one, which goes last under a rule.
+  """
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  attr :href, :string, default: nil
+  attr :danger, :boolean, default: false
+
+  attr :rest, :global,
+    include: ~w(phx-click phx-value-id phx-value-version data-confirm data-canopy-confirm
+                data-canopy-confirm-title data-canopy-confirm-label title download)
+
+  slot :inner_block, required: true
+
+  def row_menu_item(assigns) do
+    ~H"""
+    <li :if={@danger} role="separator" class="my-1 h-px bg-base-300"></li>
+    <li role="none">
+      <a :if={@href} id={@id} href={@href} role="menuitem" {@rest}>
+        <.icon name={@icon} class="size-4" /> {render_slot(@inner_block)}
+      </a>
+      <button
+        :if={!@href}
+        type="button"
+        id={@id}
+        role="menuitem"
+        class={@danger && "text-error"}
+        {@rest}
+      >
+        <.icon name={@icon} class="size-4" /> {render_slot(@inner_block)}
+      </button>
+    </li>
+    """
+  end
+
+  @doc """
+  A "More" disclosure for the long part of a help text, closed by default.
+  Its open state is the browser's: re-renders leave it as the user left it.
+  """
+  attr :id, :string, default: nil
+  attr :class, :any, default: nil
+  slot :inner_block, required: true
+
+  def more(assigns) do
+    ~H"""
+    <details
+      id={@id}
+      class={["group mt-0.5 text-sm text-base-content/70", @class]}
+      phx-mounted={JS.ignore_attributes("open")}
+    >
+      <summary class="inline-flex cursor-pointer list-none items-center gap-0.5 text-xs font-medium text-base-content/55 transition hover:text-base-content/80 [&::-webkit-details-marker]:hidden">
+        More <.icon name="hero-chevron-down-mini" class="size-3.5 transition group-open:rotate-180" />
+      </summary>
+      <div class="mt-1 space-y-1">{render_slot(@inner_block)}</div>
+    </details>
     """
   end
 

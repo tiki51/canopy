@@ -666,6 +666,17 @@ defmodule CanopyWeb.ChannelLiveTest do
       {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
       assert has_element?(view, "#composer-send-menu #composer-send-no-interrupt")
       assert has_element?(view, "#composer-form[data-interrupt=true]")
+      # Send and its menu are one joined control
+      assert has_element?(view, "#composer-send-group.join > #composer-send.join-item")
+      assert has_element?(view, "#composer-send-group.join > #composer-send-menu.join-item")
+      # the hint is one short line; `/` offers the palette's commands
+      assert has_element?(
+               view,
+               "#composer-hint",
+               "Enter to send · Shift+Enter new line · / for commands"
+             )
+
+      assert has_element?(view, ~s(#composer-form[data-slash*="Delegate a subtask to a member"]))
 
       view
       |> form("#composer-form", message: %{body: "@#{ctx.agent.name} look"})
@@ -707,7 +718,16 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert_receive {:timeline, %{event_type: "agent_interrupted"}}, 2_000
       assert_receive {:steer, _, %{pending: 1}}, 2_000
       assert has_element?(view, "#steer-chip-#{agent.id}", "Interrupting after current step")
+      # no step timer dangling on the chip
+      refute has_element?(view, "#steer-elapsed-#{agent.id}")
       assert has_element?(view, "#member-#{agent.id}-steers", "1 waiting")
+
+      # the steered message says it has not been read yet
+      assert has_element?(
+               view,
+               "#timeline [id^=message-queued-]",
+               "Queued · delivered after the current step"
+             )
 
       expect(OC, :abort, fn _dir, ^sid, _opts -> {:ok, true} end)
       view |> element("#interrupt-now-#{agent.id}") |> render_click()
@@ -719,6 +739,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       broadcast_status(channel.id, agent.id, :idle)
       refute has_element?(view, "#steer-chip-#{agent.id}")
       refute has_element?(view, "#member-#{agent.id}-steers")
+      refute has_element?(view, "#timeline [id^=message-queued-]")
     end
   end
 
@@ -1701,6 +1722,57 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert html =~ "Answer every question before sending"
       assert has_element?(view, "#question-#{request.id}")
       assert QuestionRequests.get!(request.id).status == "pending"
+    end
+
+    test "Send stays disabled until an option is picked or words are typed", ctx do
+      {:ok, request} = ask_question(ctx, custom: true)
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      assert has_element?(view, "#question-#{request.id}-send[disabled]")
+      # Dismiss is a neutral ghost button, not a red one
+      assert has_element?(view, "#question-#{request.id}-dismiss.btn-ghost")
+      refute has_element?(view, "#question-#{request.id}-dismiss.text-error")
+      # no grey subtitle repeating the heading
+      refute has_element?(view, "#question-#{request.id}", "Mobile screenshots")
+
+      view
+      |> form("#question-#{request.id} form", %{"answers" => %{"0" => ["Keep as is"]}})
+      |> render_change()
+
+      refute has_element?(view, "#question-#{request.id}-send[disabled]")
+      # the pick survives a re-render
+      assert has_element?(view, ~s(#question-#{request.id} input[value="Keep as is"][checked]))
+
+      # cleared again (only blanks): disabled again
+      render_change(view, "question_draft", %{
+        "request_id" => request.id,
+        "custom" => %{"0" => " "}
+      })
+
+      assert has_element?(view, "#question-#{request.id}-send[disabled]")
+
+      view
+      |> form("#question-#{request.id} form", %{"custom" => %{"0" => "crop them"}})
+      |> render_change()
+
+      refute has_element?(view, "#question-#{request.id}-send[disabled]")
+    end
+
+    test "while the turn waits on the question, its live card and the question are one card",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, request} = ask_question(ctx)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      broadcast_telemetry(channel.id, agent.id, :tool_started, tool_data())
+      broadcast_status(channel.id, agent.id, :awaiting_user)
+
+      # the question's form lives inside the live card, whose header asks
+      assert has_element?(view, "#telemetry-#{agent.id} #question-#{request.id} form")
+      assert has_element?(view, "#telemetry-toggle-#{agent.id}", "needs a decision to carry on")
+      refute has_element?(view, "#timeline-scroll > #question-#{request.id}")
+      feed = view |> element("#timeline-scroll") |> render()
+      assert length(Regex.scan(~r/needs a decision/, feed)) == 1
     end
 
     test "Dismiss rejects the question", ctx do

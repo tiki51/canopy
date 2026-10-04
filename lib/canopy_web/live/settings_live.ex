@@ -947,19 +947,27 @@ defmodule CanopyWeb.SettingsLive do
               </button>
               <.claude_check_result check={@claude_check} />
             </div>
-            <p class="text-xs text-base-content/60">
-              Agents without a model or effort of their own use the defaults, from their next
-              turn; set one per agent on its edit form to override. The light model is used
-              only by agents with model routing turned on (experimental, unverified until the
-              Phase 0 spike; every agent starts with it off).
-              Leave the config directory empty to use your own Claude Code login and settings
-              (your personal MCP servers are still kept out of agent sessions; the repository's
-              <code class="font-mono">.mcp.json</code>
-              servers are loaded). Point it at a
-              directory of its own to isolate agents; run <code class="font-mono">claude</code>
-              once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
-              set to log in there.
-            </p>
+            <div id="claude-help" class="text-sm text-base-content/70">
+              <p>
+                Agents without a model or effort of their own use these defaults from their next turn.
+              </p>
+              <.more id="claude-help-more">
+                <p>Set a model or effort per agent on its edit form to override them.</p>
+                <p id="claude-light-experimental">
+                  The light model is used only by agents with model routing turned on, and every
+                  agent starts with it off. Experimental: not yet checked against the real engines.
+                </p>
+                <p>
+                  Leave the config directory empty to use your own Claude Code login and settings
+                  (your personal MCP servers are still kept out of agent sessions; the
+                  repository's <code class="font-mono">.mcp.json</code>
+                  servers are loaded). Point it at a directory of its own to isolate agents; run
+                  <code class="font-mono">claude</code>
+                  once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
+                  set to log in there.
+                </p>
+              </.more>
+            </div>
           </.form>
         </Layouts.panel>
 
@@ -1062,61 +1070,93 @@ defmodule CanopyWeb.SettingsLive do
               field={@chatter_form[:serialize_turns]}
               type="checkbox"
               label="One agent at a time per channel (others wait their turn)"
-            />
-            <p class="-mt-1 text-xs text-base-content/60">
-              Off, agents woken together all run at once. They get in each other's way and
-              every one of them spends tokens; keep this on unless you want the swarm. An agent
-              waiting on your answer to a question or permission card does not hold the channel:
-              the next one starts, and when you answer, the waiting agent carries on alongside it.
-              What agents really contend for (the test suite, e2e ports, screenshot runs) is
-              guarded by locks either way: they take turns on those, whatever this says.
-            </p>
+            >
+              <:help>Off, agents woken together all run at once and every one spends tokens.</:help>
+              <:more>
+                <p>
+                  They get in each other's way; keep this on unless you want the swarm. An agent
+                  waiting on your answer to a question or permission card does not hold the
+                  channel: the next one starts, and when you answer, the waiting agent carries on
+                  alongside it.
+                </p>
+                <p>
+                  What agents really contend for (the test suite, e2e ports, screenshot runs) is
+                  guarded by locks either way: they take turns on those, whatever this says.
+                </p>
+              </:more>
+            </.input>
             <.input
               field={@chatter_form[:interrupt_on_mention]}
               type="checkbox"
+              id="chatter-interrupt"
               label="Mentioning a working agent interrupts it (experimental)"
-            />
-            <p id="interrupt-help" class="-mt-1 text-xs text-base-content/60">
-              When you @mention an agent that's working, it reads your message after its current
-              step instead of after its turn; a running command is allowed to finish. Alt+Enter, or
-              the menu beside Send, sends one message without interrupting. Experimental and off
-              by default: how Claude Code and OpenCode take a message mid-turn has not been checked
-              against the real engines yet. Off, your message waits until the agent's turn ends.
-            </p>
-            <div class="max-w-xs">
-              <.input
-                field={@chatter_form[:question_wait_minutes]}
-                type="number"
-                min="1"
-                max={Canopy.Settings.Setting.max_question_wait_minutes()}
-                label="Minutes a Claude Code question waits for you"
-              />
-            </div>
-            <p class="-mt-1 text-xs text-base-content/60">
-              After that the agent ends its turn instead of sitting on the question. The card stays
-              open, and your answer reaches the agent as a message whenever you give it. At most {Canopy.Settings.Setting.max_question_wait_minutes()} minutes: Claude Code gives up
-              on a waiting tool call after 30.
-            </p>
-            <div class="max-w-xs">
-              <.input
-                field={@chatter_form[:lock_hold_minutes]}
-                type="number"
-                min="1"
-                max={Canopy.Settings.Setting.max_lock_hold_minutes()}
-                label="Minutes an agent may keep a lock across turns"
-              />
-            </div>
-            <p class="-mt-1 text-xs text-base-content/60">
-              A lock is released when its holder's turn ends. An agent can ask to keep one across
-              turns; after this long Canopy frees it anyway, and the next in line is woken.
-            </p>
+            >
+              <:help>
+                A working agent you @mention reads your message after its current step, not after its turn.
+              </:help>
+              <:more>
+                <p>
+                  A running command is allowed to finish. Alt+Enter, or the menu beside Send, sends
+                  one message without interrupting. Off, your message waits until the agent's turn
+                  ends.
+                </p>
+                <p id="interrupt-experimental">
+                  Experimental: not yet checked against the real engines. Off by default.
+                </p>
+              </:more>
+            </.input>
+            <.input
+              field={@chatter_form[:question_wait_minutes]}
+              type="number"
+              min="1"
+              max={Canopy.Settings.Setting.max_question_wait_minutes()}
+              label="Minutes a Claude Code question waits for you"
+              class="input w-24"
+              suffix="min"
+            >
+              <:help>
+                After that the agent ends its turn; your answer still reaches it as a message.
+              </:help>
+              <:more>
+                <p>
+                  The card stays open, and your answer reaches the agent whenever you give it. At
+                  most {Canopy.Settings.Setting.max_question_wait_minutes()} minutes: Claude Code
+                  gives up on a waiting tool call after 30.
+                </p>
+              </:more>
+            </.input>
+            <.input
+              field={@chatter_form[:lock_hold_minutes]}
+              type="number"
+              min="1"
+              max={Canopy.Settings.Setting.max_lock_hold_minutes()}
+              label="Minutes an agent may keep a lock across turns"
+              class="input w-24"
+              suffix="min"
+            >
+              <:help>After this long Canopy frees a kept lock and wakes the next in line.</:help>
+              <:more>
+                <p>
+                  A lock is released when its holder's turn ends. An agent can ask to keep one
+                  across turns; this is the longest it may.
+                </p>
+              </:more>
+            </.input>
             <.input
               field={@chatter_form[:chatter_pause]}
               type="checkbox"
               label="Pause a channel after agents have taken turns without me"
-            />
+            >
+              <:help>A paused channel holds further wakeups and shows a Continue button.</:help>
+              <:more>
+                <p>
+                  Your next message also resets it. Turn this off for long-running work you want to
+                  leave alone, and watch the cost.
+                </p>
+              </:more>
+            </.input>
             <div class={[
-              "max-w-xs transition",
+              "ml-7 transition",
               !Phoenix.HTML.Form.normalize_value("checkbox", @chatter_form[:chatter_pause].value) &&
                 "opacity-50"
             ]}>
@@ -1126,13 +1166,10 @@ defmodule CanopyWeb.SettingsLive do
                 min="1"
                 max="1000"
                 label="Turns before pausing"
+                class="input w-24"
+                suffix="turns"
               />
             </div>
-            <p class="text-xs text-base-content/60">
-              A paused channel holds further wakeups and shows a Continue button; your next
-              message also resets it. Turn this off for long-running work you want to leave
-              alone, and watch the cost.
-            </p>
             <div>
               <.button type="submit" variant="primary" id="save-chatter">Save</.button>
             </div>

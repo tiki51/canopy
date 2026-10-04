@@ -310,17 +310,21 @@ defmodule CanopyWeb.RepositoriesLive do
               >
                 <.icon name="hero-plus" class="size-4" /> Channel
               </.link>
-              <button
-                type="button"
-                id={"delete-repository-#{row.repository.id}"}
-                class="btn btn-ghost btn-xs text-error opacity-60 transition group-hover:opacity-100"
-                phx-click="delete"
-                phx-value-id={row.repository.id}
-                data-canopy-confirm={"Remove #{row.repository.name} from Canopy? Its #{row.channel_count} channel(s) and their history are deleted. Files on disk are not touched."}
-                title="Remove repository"
+              <.row_menu
+                id={"repository-menu-#{row.repository.id}"}
+                label={"More for #{row.repository.name}"}
               >
-                <.icon name="hero-trash" class="size-4" />
-              </button>
+                <.row_menu_item
+                  id={"delete-repository-#{row.repository.id}"}
+                  icon="hero-trash-mini"
+                  danger
+                  phx-click="delete"
+                  phx-value-id={row.repository.id}
+                  data-canopy-confirm={"Remove #{row.repository.name} from Canopy? Its #{row.channel_count} channel(s) and their history are deleted. Files on disk are not touched."}
+                >
+                  Remove repository
+                </.row_menu_item>
+              </.row_menu>
             </li>
           </ul>
         </Layouts.panel>
@@ -693,7 +697,8 @@ defmodule CanopyWeb.RepositoriesLive do
               </div>
             </td>
             <td>
-              <span class="badge badge-ghost badge-sm whitespace-nowrap" title={server.source.path}>
+              <%!-- plain text: the pills in a row are its status only --%>
+              <span class="whitespace-nowrap text-xs text-base-content/70" title={server.source.path}>
                 {source_text(server.source)}
               </span>
             </td>
@@ -732,6 +737,7 @@ defmodule CanopyWeb.RepositoriesLive do
     do: "badge-error badge-soft"
 
   defp status_class(:disabled), do: "badge-neutral badge-soft"
+  # unknown: the neutral badge, apart from the coloured states
   defp status_class(_), do: "badge-ghost"
 
   defp status_title(%{observed_at: %DateTime{} = at}),

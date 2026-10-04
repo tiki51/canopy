@@ -13,6 +13,8 @@ async function agentIdByName(page: Page, name: string): Promise<string> {
 async function deactivate(page: Page, name: string) {
   const id = await agentIdByName(page, name);
   await page.goto(`/agents/${id}`);
+  // Deactivate sits last in the page's ⋯ menu
+  await page.locator("#agent-menu-toggle").click();
   await page.locator(`#deactivate-agent-${id}`).click();
   await expect(page.locator("#canopy-confirm")).toBeVisible();
   await page.locator("#canopy-confirm-ok").click();
@@ -24,6 +26,7 @@ test.describe("agent templates", () => {
     // export @reviewer from its page
     const reviewerId = await agentIdByName(page, "reviewer");
     await page.goto(`/agents/${reviewerId}`);
+    await page.locator("#agent-menu-toggle").click();
     await page.locator(`#export-agent-${reviewerId}`).click();
     await expect(page.locator("#export-agent-download")).toBeVisible();
     const [download] = await Promise.all([
@@ -44,7 +47,10 @@ test.describe("agent templates", () => {
     await expect(item).toContainText("already here");
     await expect(page.locator("#import-apply")).toBeDisabled();
 
+    // the name field sits right after "Import as", disabled until it is picked
+    await expect(page.locator("#import-item-1-name")).toBeDisabled();
     await page.locator("#import-item-1-rename").check();
+    await expect(page.locator("#import-item-1-name")).toBeEnabled();
     await expect(page.locator("#import-item-1-name")).toHaveValue("reviewer-2");
     await expect(page.locator("#import-apply")).toBeEnabled();
     await page.locator("#import-apply").click();
@@ -55,6 +61,8 @@ test.describe("agent templates", () => {
     // add @security-reviewer from the gallery, through the same preview
     await page.locator("#agents-gallery").click();
     await expect(page).toHaveURL(/\/agents\/gallery$/);
+    // only the unusual permission is badged
+    await expect(page.locator("#gallery-security-reviewer-read-only")).toHaveText("read-only");
     await page.locator("#gallery-add-security-reviewer").click();
     await expect(page.locator("#import-item-1")).toHaveAttribute("data-status", "new");
     await expect(page.locator("#import-item-1-permission")).toContainText("agent plan");

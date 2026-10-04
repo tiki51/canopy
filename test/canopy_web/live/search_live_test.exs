@@ -237,5 +237,8 @@ defmodule CanopyWeb.SearchLiveTest do
     assert has_element?(view, "#search-clear")
     # the magnifier paints above the input's background
     assert has_element?(view, "#search-form > .hero-magnifying-glass.z-10")
+    # the composer's focus ring, like every field
+    assert input =~ "focus:ring-primary/40"
+    assert input =~ "focus:border-primary"
   end
 end

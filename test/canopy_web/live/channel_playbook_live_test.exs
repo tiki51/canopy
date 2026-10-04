@@ -150,6 +150,38 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     assert_receive {:timeline, %{event_type: "playbook_cancelled"}}
   end
 
+  test "the run panel opens once, the first time this browser sees the run; then the chip toggles it",
+       %{conn: conn} = ctx do
+    run = start_run(ctx)
+
+    # nothing stored in this browser: the panel opens, and the run is remembered
+    {:ok, view, _html} = open(conn, ctx.channel)
+    refute has_element?(view, "#playbook-panel")
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
+    assert has_element?(view, "#playbook-panel")
+    assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
+    assert value == run.id
+
+    # the panel: role → @agent chips, the coordinator labelled, one sign-off marker
+    assert has_element?(view, "#playbook-roster-dev", "dev")
+    assert has_element?(view, "#playbook-roster-dev", "@#{ctx.dev.name}")
+    assert render(view) =~ ~s(aria-label="filled by">→</span>)
+    assert has_element?(view, "#reassign-coordinator-form label", "Coordinator")
+    sign_off = view |> element("#playbook-step-sign-off") |> render()
+    assert length(Regex.scan(~r/>\s*sign-off\s*</, sign_off)) == 1
+
+    # the chip closes it
+    view |> element("#playbook-chip") |> render_click()
+    refute has_element?(view, "#playbook-panel")
+
+    # a browser that has seen the run: collapsed, the chip opens it
+    {:ok, view, _html} = open(conn, ctx.channel)
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => "#{run.id},run_old"})
+    refute has_element?(view, "#playbook-panel")
+    view |> element("#playbook-chip") |> render_click()
+    assert has_element?(view, "#playbook-panel")
+  end
+
   test "the coordinator can be reassigned from the panel", %{conn: conn} = ctx do
     run = start_run(ctx)
     {:ok, view, _html} = open(conn, ctx.channel)

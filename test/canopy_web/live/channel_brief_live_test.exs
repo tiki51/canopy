@@ -34,6 +34,8 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
 
     view |> element("#edit-brief") |> render_click()
     assert has_element?(view, "#brief-form")
+    # the composer's focus ring
+    assert has_element?(view, "#brief-form textarea.focus\\:ring-primary\\/40")
     assert has_element?(view, "#brief-chars", "0 / 4,000 chars")
     # two members (the owner and the reviewer) each get it
     assert has_element?(view, "#brief-tokens", "≈ 0 tokens × 2 agents")
