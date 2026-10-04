@@ -1506,11 +1506,12 @@ defmodule CanopyWeb.ChannelLive do
 
   @excerpt_chars 80
 
-  defp excerpt(%{body: body}) when is_binary(body) and body != "" do
-    body
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> String.slice(0, @excerpt_chars)
+  # The quoted parent of a reply sent to the channel: one line, Markdown stripped.
+  defp excerpt(%{body: body}) when is_binary(body) do
+    case CanopyWeb.Markdown.plain(body) do
+      "" -> "(no text)"
+      text -> String.slice(text, 0, @excerpt_chars)
+    end
   end
 
   defp excerpt(_message), do: "(no text)"
@@ -2454,7 +2455,7 @@ defmodule CanopyWeb.ChannelLive do
 
           <div
             id="timeline-scroll"
-            class="flex-1 overflow-y-auto scroll-smooth"
+            class="relative flex-1 overflow-y-auto scroll-smooth"
             phx-hook="TimelineScroll"
             data-feed="#timeline"
             data-highlights
@@ -2775,13 +2776,83 @@ defmodule CanopyWeb.ChannelLive do
   defp repo_root(%{repository: %{path: path}}), do: path
   defp repo_root(_channel), do: nil
 
+  defp activity_title(true), do: "Show routine activity (started, finished, scheduled runs)"
+  defp activity_title(false), do: "Hide routine activity"
+
+  defp brief_title(%{brief: nil}),
+    do: "Add a brief: standing context every agent here gets in its instructions"
+
+  defp brief_title(_channel), do: "Edit the channel brief"
+
+  defp playbook_chip_title(%{status: "awaiting_approval"} = run),
+    do: "#{run.playbook_name} is waiting for your sign-off"
+
+  defp playbook_chip_title(_run), do: "Playbook run in progress"
+
+  defp playbook_chip_icon(%{status: "awaiting_approval"}), do: "hero-hand-raised-mini"
+  defp playbook_chip_icon(_run), do: "hero-book-open-mini"
+
+  defp schedules_label(0), do: "Scheduled"
+  defp schedules_label(count), do: "Scheduled: #{count}"
+
+  defp spend_text(channel, spent) do
+    Costs.money(spent) <>
+      if channel.spend_limit, do: " / " <> Costs.money(channel.spend_limit), else: ""
+  end
+
+  attr :id, :string, required: true
+  attr :rank, :string, required: true, doc: "the data-fit token that moves this into the menu"
+  attr :icon, :string, required: true
+  attr :click, :string, default: nil
+  attr :navigate, :string, default: nil
+  attr :active, :boolean, default: false
+  slot :inner_block, required: true
+
+  # One entry of the header's ⋯ menu: the copy of an inline control that shows
+  # once HeaderFit has moved that control out of the row.
+  defp more_item(%{navigate: nil} = assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      data-hdr-menu={@rank}
+      class={[more_item_class(), @active && "bg-base-200 font-medium"]}
+      phx-click={@click}
+    >
+      <.icon name={@icon} class="size-4 shrink-0" />
+      {render_slot(@inner_block)}
+    </button>
+    """
+  end
+
+  defp more_item(assigns) do
+    ~H"""
+    <.link id={@id} data-hdr-menu={@rank} class={more_item_class()} navigate={@navigate}>
+      <.icon name={@icon} class="size-4 shrink-0" />
+      {render_slot(@inner_block)}
+    </.link>
+    """
+  end
+
+  defp more_item_class,
+    do:
+      "w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-base-content/80 hover:bg-base-200 focus-visible:bg-base-200 focus-visible:outline-none"
+
   defp channel_header(assigns) do
     ~H"""
+    <%!-- The HeaderFit hook (assets/js/hooks/header_fit.js) fits the controls
+         to the header's own width by setting data-fit, and the rules under
+         "Channel header" in app.css act on it: first the rest drop their
+         labels, then move into the ⋯ menu one by one, then the state chips do
+         the same, and Stop drops its label last. Archive always lives in the
+         menu. The server's data-fit is what shows before the hook runs. --%>
     <header
       id="channel-header"
+      phx-hook="HeaderFit"
+      data-fit="rest-icons"
       class="flex shrink-0 flex-col gap-1.5 border-b border-base-300 px-3 py-2 sm:px-6 sm:py-3"
     >
-      <div class="flex min-w-0 items-center gap-2 sm:gap-3">
+      <div id="channel-header-row" class="flex min-w-0 items-center gap-2 sm:gap-3">
         <Layouts.menu_button />
         <h1
           id="channel-name"
@@ -2806,20 +2877,25 @@ defmodule CanopyWeb.ChannelLive do
         >
           {@channel.topic}
         </p>
-        <div class="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+        <div id="channel-header-actions" class="ml-auto flex shrink-0 items-center gap-1">
           <span
             :if={Channels.archived?(@channel)}
             id="archived-badge"
+            data-hdr="state"
             class="badge badge-sm badge-ghost gap-1"
             title="No one can post here until it is reopened"
           >
-            <.icon name="hero-archive-box-mini" class="size-3" /> archived
+            <.icon name="hero-archive-box-mini" class="size-3" />
+            <span data-hdr-label>archived</span>
           </span>
           <.link
             navigate={~p"/search?#{[channel: @channel.id]}"}
             id="search-channel"
+            data-hdr="rest"
+            data-hdr-rank="m1"
             class="btn btn-xs btn-ghost"
             title="Search this channel"
+            aria-label="Search this channel"
           >
             <.icon name="hero-magnifying-glass-mini" class="size-4" />
           </.link>
@@ -2827,46 +2903,52 @@ defmodule CanopyWeb.ChannelLive do
             :if={!Channels.dm?(@channel)}
             type="button"
             id="edit-members"
+            data-hdr="rest"
+            data-hdr-rank="m7"
             class={["btn btn-xs btn-ghost", @editing_members? && "btn-active"]}
             phx-click="toggle_members"
             title="Add or remove agents"
+            aria-label="Members"
           >
             <.icon name="hero-users-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Members</span>
+            <span data-hdr-label>Members</span>
           </button>
           <button
             type="button"
             id="toggle-activity"
+            data-hdr="rest"
+            data-hdr-rank="m8"
             class={["btn btn-xs btn-ghost", !@compact? && "btn-active"]}
             phx-click="toggle_activity"
             phx-hook="Pref"
             data-pref="timeline-activity"
-            title={
-              if @compact?,
-                do: "Show routine activity (started, finished, scheduled runs)",
-                else: "Hide routine activity"
-            }
+            title={activity_title(@compact?)}
+            aria-label="Activity"
+            aria-pressed={to_string(!@compact?)}
           >
             <.icon
               name={if @compact?, do: "hero-eye-slash-mini", else: "hero-eye-mini"}
               class="size-4"
             />
-            <span class="hidden @4xl/main:inline">Activity</span>
+            <span data-hdr-label>Activity</span>
           </button>
           <button
             :for={lock <- @locks}
             type="button"
             id={"lock-chip-#{lock_dom_id(lock.name)}"}
+            data-hdr="state"
+            data-hdr-rank="s4"
             class={[
               "btn btn-xs btn-ghost max-w-72 gap-1 font-normal",
               @editing_locks? && "btn-active"
             ]}
             phx-click="toggle_locks"
             title={lock_title(lock, @now)}
+            aria-label={"Lock " <> lock.name}
           >
             <.icon name="hero-lock-closed-mini" class="size-4 shrink-0 text-warning" />
-            <span class="font-mono font-medium">{lock.name}</span>
-            <span class="hidden min-w-0 truncate text-base-content/70 @4xl/main:inline">
+            <span data-hdr-label class="font-mono font-medium">{lock.name}</span>
+            <span data-hdr-detail class="min-w-0 truncate text-base-content/70">
               {lock_summary(lock, @now)}
             </span>
             <span
@@ -2880,39 +2962,34 @@ defmodule CanopyWeb.ChannelLive do
             :if={@locks == []}
             type="button"
             id="edit-locks"
+            data-hdr="rest"
+            data-hdr-rank="m6"
             class={["btn btn-xs btn-ghost", @editing_locks? && "btn-active"]}
             phx-click="toggle_locks"
             title="Locks on this repository's shared resources"
+            aria-label="Locks"
           >
             <.icon name="hero-lock-open-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Locks</span>
+            <span data-hdr-label>Locks</span>
           </button>
           <button
             :if={@run}
             type="button"
             id="playbook-chip"
             data-status={@run.status}
+            data-hdr="state"
+            data-hdr-rank="s3"
             class={[
               "btn btn-xs btn-ghost max-w-80 gap-1 font-normal",
               @editing_playbook? && "btn-active",
               @run.status == "awaiting_approval" && "text-warning"
             ]}
             phx-click="toggle_playbook"
-            title={
-              if @run.status == "awaiting_approval",
-                do: "#{@run.playbook_name} is waiting for your sign-off",
-                else: "Playbook run in progress"
-            }
+            title={playbook_chip_title(@run)}
+            aria-label={"Playbook: " <> PlaybookComponents.chip_text(@run, @names)}
           >
-            <.icon
-              name={
-                if @run.status == "awaiting_approval",
-                  do: "hero-hand-raised-mini",
-                  else: "hero-book-open-mini"
-              }
-              class="size-4 shrink-0"
-            />
-            <span class="hidden min-w-0 truncate @3xl/main:inline">
+            <.icon name={playbook_chip_icon(@run)} class="size-4 shrink-0" />
+            <span data-hdr-label class="min-w-0 truncate">
               {PlaybookComponents.chip_text(@run, @names)}
             </span>
           </button>
@@ -2920,22 +2997,28 @@ defmodule CanopyWeb.ChannelLive do
             :if={!@run and !Channels.dm?(@channel)}
             type="button"
             id="edit-playbook"
+            data-hdr="rest"
+            data-hdr-rank="m5"
             class={["btn btn-xs btn-ghost", @editing_playbook? && "btn-active"]}
             phx-click="toggle_playbook"
             title="Run a playbook in this channel"
+            aria-label="Playbook"
           >
             <.icon name="hero-book-open-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Playbook</span>
+            <span data-hdr-label>Playbook</span>
           </button>
           <button
             type="button"
             id="edit-schedules"
+            data-hdr="state"
+            data-hdr-rank="s2"
             class={["btn btn-xs btn-ghost", @editing_schedules? && "btn-active"]}
             phx-click="toggle_schedules"
             title="Scheduled tasks in this channel"
+            aria-label={schedules_label(@schedule_count)}
           >
             <.icon name="hero-clock-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Scheduled</span>
+            <span data-hdr-label>Scheduled</span>
             <span :if={@schedule_count > 0} id="schedule-count" class="badge badge-xs badge-primary">
               {@schedule_count}
             </span>
@@ -2943,6 +3026,8 @@ defmodule CanopyWeb.ChannelLive do
           <button
             type="button"
             id="edit-budget"
+            data-hdr="state"
+            data-hdr-rank="s1"
             class={[
               "btn btn-xs btn-ghost",
               @editing_budget? && "btn-active",
@@ -2950,27 +3035,23 @@ defmodule CanopyWeb.ChannelLive do
             ]}
             phx-click="toggle_budget"
             title="What this channel has spent, and its limit"
+            aria-label={"Spend " <> spend_text(@channel, @spent)}
           >
             <.icon name="hero-banknotes-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">
-              {Costs.money(@spent)}{if @channel.spend_limit,
-                do: " / " <> Costs.money(@channel.spend_limit),
-                else: ""}
-            </span>
+            <span data-hdr-label>{spend_text(@channel, @spent)}</span>
           </button>
           <button
             type="button"
             id="edit-brief"
+            data-hdr="rest"
+            data-hdr-rank="m4"
             class={["btn btn-xs btn-ghost gap-1", @editing_brief? && "btn-active"]}
             phx-click="toggle_brief_form"
-            title={
-              if @channel.brief,
-                do: "Edit the channel brief",
-                else: "Add a brief: standing context every agent here gets in its instructions"
-            }
+            title={brief_title(@channel)}
+            aria-label="Brief"
           >
             <.icon name="hero-document-text-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Brief</span>
+            <span data-hdr-label>Brief</span>
             <span
               :if={@channel.brief}
               id="brief-dot"
@@ -2981,57 +3062,218 @@ defmodule CanopyWeb.ChannelLive do
           <button
             type="button"
             id="edit-task"
+            data-hdr="rest"
+            data-hdr-rank="m3"
             class={["btn btn-xs btn-ghost", @editing_task? && "btn-active"]}
             phx-click="toggle_task_form"
+            title="The channel's task"
+            aria-label="Task"
           >
             <.icon name="hero-clipboard-document-list-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Task</span>
+            <span data-hdr-label>Task</span>
           </button>
           <button
             type="button"
             id="open-changes"
+            data-hdr="rest"
+            data-hdr-rank="m2"
             class="btn btn-xs btn-ghost"
             phx-click="open_changes"
+            title="Changes in the working tree"
+            aria-label="Changes"
           >
             <.icon name="hero-document-plus-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Changes</span>
+            <span data-hdr-label>Changes</span>
           </button>
           <button
             :if={!Channels.archived?(@channel)}
             type="button"
             id="stop-all"
+            data-hdr="stop"
             class="btn btn-xs btn-ghost text-error"
             phx-click="stop_all"
             title="Stop all: abort every running turn, drop queued wakes, and hold the channel until you reply"
+            aria-label="Stop all"
           >
             <.icon name="hero-stop-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Stop</span>
-          </button>
-          <button
-            :if={!Channels.archived?(@channel)}
-            type="button"
-            id="archive-channel"
-            class="btn btn-xs btn-ghost text-base-content/60"
-            phx-click="archive_channel"
-            data-canopy-confirm={"Nobody can post in ##{@channel.name} until it is reopened."}
-            data-canopy-confirm-title={"Archive ##{@channel.name}?"}
-            data-canopy-confirm-label="Archive"
-            title="Archive this channel"
-          >
-            <.icon name="hero-archive-box-arrow-down-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Archive</span>
+            <span data-hdr-label>Stop</span>
           </button>
           <button
             :if={Channels.archived?(@channel)}
             type="button"
             id="reopen-channel"
+            data-hdr="stop"
             class="btn btn-xs btn-ghost"
             phx-click="reopen_channel"
             title="Reopen this channel"
+            aria-label="Reopen"
           >
             <.icon name="hero-archive-box-x-mark-mini" class="size-4" />
-            <span class="hidden @4xl/main:inline">Reopen</span>
+            <span data-hdr-label>Reopen</span>
           </button>
+          <button
+            type="button"
+            id="channel-more"
+            data-optional={Channels.archived?(@channel)}
+            popovertarget="channel-more-menu"
+            class="btn btn-xs btn-ghost btn-square"
+            title="More"
+            aria-label="More channel actions"
+          >
+            <.icon name="hero-ellipsis-horizontal-mini" class="size-4" />
+          </button>
+          <%!-- A popover: the top layer, so the column's overflow never clips
+               it; Esc and a click outside close it. HeaderFit places it under
+               the button. --%>
+          <div
+            id="channel-more-menu"
+            popover
+            class="w-60 rounded-lg border border-base-300 bg-base-100 p-1 text-base-content shadow-lg"
+          >
+            <div class="flex flex-col">
+              <.more_item
+                id="more-search-channel"
+                rank="m1"
+                icon="hero-magnifying-glass-mini"
+                navigate={~p"/search?#{[channel: @channel.id]}"}
+              >
+                Search this channel
+              </.more_item>
+              <.more_item
+                id="more-open-changes"
+                rank="m2"
+                icon="hero-document-plus-mini"
+                click="open_changes"
+              >
+                Changes
+              </.more_item>
+              <.more_item
+                id="more-edit-task"
+                rank="m3"
+                icon="hero-clipboard-document-list-mini"
+                click="toggle_task_form"
+                active={@editing_task?}
+              >
+                Task
+              </.more_item>
+              <.more_item
+                id="more-edit-brief"
+                rank="m4"
+                icon="hero-document-text-mini"
+                click="toggle_brief_form"
+                active={@editing_brief?}
+              >
+                Brief
+                <span
+                  :if={@channel.brief}
+                  class="size-1.5 rounded-full bg-primary"
+                  aria-label="a brief is set"
+                />
+              </.more_item>
+              <.more_item
+                :if={!@run and !Channels.dm?(@channel)}
+                id="more-edit-playbook"
+                rank="m5"
+                icon="hero-book-open-mini"
+                click="toggle_playbook"
+                active={@editing_playbook?}
+              >
+                Playbook
+              </.more_item>
+              <.more_item
+                :if={@locks == []}
+                id="more-edit-locks"
+                rank="m6"
+                icon="hero-lock-open-mini"
+                click="toggle_locks"
+                active={@editing_locks?}
+              >
+                Locks
+              </.more_item>
+              <.more_item
+                :if={!Channels.dm?(@channel)}
+                id="more-edit-members"
+                rank="m7"
+                icon="hero-users-mini"
+                click="toggle_members"
+                active={@editing_members?}
+              >
+                Members
+              </.more_item>
+              <.more_item
+                id="more-toggle-activity"
+                rank="m8"
+                icon={if @compact?, do: "hero-eye-slash-mini", else: "hero-eye-mini"}
+                click="toggle_activity"
+                active={!@compact?}
+              >
+                {if @compact?, do: "Show routine activity", else: "Hide routine activity"}
+              </.more_item>
+              <.more_item
+                id="more-edit-budget"
+                rank="s1"
+                icon="hero-banknotes-mini"
+                click="toggle_budget"
+                active={@editing_budget?}
+              >
+                Spend {spend_text(@channel, @spent)}
+              </.more_item>
+              <.more_item
+                id="more-edit-schedules"
+                rank="s2"
+                icon="hero-clock-mini"
+                click="toggle_schedules"
+                active={@editing_schedules?}
+              >
+                Scheduled
+                <span :if={@schedule_count > 0} class="badge badge-xs badge-primary">
+                  {@schedule_count}
+                </span>
+              </.more_item>
+              <.more_item
+                :if={@run}
+                id="more-playbook-chip"
+                rank="s3"
+                icon={playbook_chip_icon(@run)}
+                click="toggle_playbook"
+                active={@editing_playbook?}
+              >
+                <span class="min-w-0 truncate">{PlaybookComponents.chip_text(@run, @names)}</span>
+              </.more_item>
+              <.more_item
+                :for={lock <- @locks}
+                id={"more-lock-chip-#{lock_dom_id(lock.name)}"}
+                rank="s4"
+                icon="hero-lock-closed-mini"
+                click="toggle_locks"
+                active={@editing_locks?}
+              >
+                <span class="font-mono">{lock.name}</span>
+                <span class="min-w-0 truncate text-xs text-base-content/60">
+                  {lock_summary(lock, @now)}
+                </span>
+              </.more_item>
+              <div
+                :if={!Channels.archived?(@channel)}
+                data-hdr-sep
+                class="my-1 border-t border-base-300"
+                role="separator"
+              />
+              <button
+                :if={!Channels.archived?(@channel)}
+                type="button"
+                id="archive-channel"
+                class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-base-content/80 hover:bg-base-200 focus-visible:bg-base-200 focus-visible:outline-none"
+                phx-click="archive_channel"
+                data-canopy-confirm={"Nobody can post in ##{@channel.name} until it is reopened."}
+                data-canopy-confirm-title={"Archive ##{@channel.name}?"}
+                data-canopy-confirm-label="Archive"
+                title="Archive this channel"
+              >
+                <.icon name="hero-archive-box-arrow-down-mini" class="size-4 shrink-0" /> Archive
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -4011,7 +4253,7 @@ defmodule CanopyWeb.ChannelLive do
 
       <div
         id="thread-scroll"
-        class="min-h-0 flex-1 overflow-y-auto"
+        class="relative min-h-0 flex-1 overflow-y-auto"
         phx-hook="TimelineScroll"
         data-feed="#thread-replies"
         data-scope={@thread.root.id}
@@ -4147,7 +4389,7 @@ defmodule CanopyWeb.ChannelLive do
         </button>
       </:actions>
 
-      <div id="activity-panel-scroll" class="min-h-0 flex-1 overflow-y-auto">
+      <div id="activity-panel-scroll" class="relative min-h-0 flex-1 overflow-y-auto">
         <p
           id="activity-panel-summary"
           class="flex items-center gap-2 border-b border-base-300/70 px-4 py-2 text-xs text-base-content/70"

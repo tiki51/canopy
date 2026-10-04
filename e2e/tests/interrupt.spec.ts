@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, clickHeader } from "./helpers";
 
 // Agent Interrupt (experimental, off by default): with "Mentioning a working
 // agent interrupts it" on, a mention of @backend while it runs the slow
@@ -49,7 +49,7 @@ test.describe("interrupting a working agent", () => {
 
     // the agent quotes it in the reply of the turn it was working on
     await expect(timeline(page)).toContainText(`Re your message: “${NUDGE}”`);
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     await expect(timeline(page)).toContainText("will read your message after its current step");
     await expect(timeline(page)).toContainText("took 1 message mid-turn");
     await expect(timeline(page).getByText("@backend started working")).toHaveCount(1);

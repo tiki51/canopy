@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
 
 const layer = (page: Page) => page.locator("#composer-highlight");
 const chips = (page: Page, kind: string) => layer(page).locator(`[data-kind="${kind}"]`);
@@ -12,7 +12,7 @@ test.describe("composer highlight", () => {
     const input = page.locator("#composer-input");
 
     // take @reviewer out of the channel: its mention would wake nobody
-    await page.locator("#edit-members").click();
+    await clickHeader(page, "edit-members");
     const reviewerRow = page
       .locator('[id^="member-row-"]')
       .filter({ has: page.getByText("@reviewer", { exact: true }) });

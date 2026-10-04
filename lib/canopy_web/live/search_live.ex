@@ -251,23 +251,24 @@ defmodule CanopyWeb.SearchLive do
   def result_link(%{source: "document", record: document}), do: Documents.url_path(document)
 
   @doc """
-  A snippet as safe HTML: escaped, with the match markers turned into
-  `<mark>` and whitespace collapsed. Bodies are raw Markdown that may hold
-  HTML; only the markers ever become markup.
+  A snippet as safe HTML, on one line: Markdown stripped (unless
+  `markdown?` is false), everything escaped,
+  inline code as `<code>` and the match markers as `<mark>`
+  (`CanopyWeb.Markdown.preview_html/2`). Bodies are raw Markdown that may hold
+  HTML; only those two tags ever become markup.
   """
-  def snippet(text) when is_binary(text) do
-    {open, close} = Search.marks()
+  def snippet(text, markdown? \\ true)
 
-    text
-    |> Format.single_line()
-    |> Phoenix.HTML.html_escape()
-    |> Phoenix.HTML.safe_to_string()
-    |> String.replace(open, "<mark>")
-    |> String.replace(close, "</mark>")
-    |> Phoenix.HTML.raw()
-  end
+  def snippet(text, markdown?) when is_binary(text),
+    do: CanopyWeb.Markdown.preview_html(text, Search.marks(), markdown: markdown?)
 
-  def snippet(_text), do: ""
+  def snippet(_text, _markdown?), do: ""
+
+  # Only Markdown files lose their syntax; other text (code, logs) stays as written.
+  defp markdown_file?(%{filename: name}) when is_binary(name),
+    do: Path.extname(name) |> String.downcase() |> Kernel.in([".md", ".markdown"])
+
+  defp markdown_file?(_document), do: false
 
   defp channel_label(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
   defp channel_label(channel), do: "#" <> channel.name
@@ -364,7 +365,7 @@ defmodule CanopyWeb.SearchLive do
           >
             <.icon
               name="hero-magnifying-glass"
-              class="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-base-content/40"
+              class="pointer-events-none absolute left-3 top-1/2 z-10 size-5 -translate-y-1/2 text-base-content/40"
             />
             <input
               type="search"
@@ -380,7 +381,11 @@ defmodule CanopyWeb.SearchLive do
               data-results="#search-results"
               aria-label="Search"
               aria-controls="search-results"
-              class="input input-lg w-full pl-11 pr-11"
+              class={[
+                "input input-lg w-full pl-11 pr-11",
+                "[&::-webkit-search-cancel-button]:appearance-none",
+                "[&::-webkit-search-decoration]:appearance-none"
+              ]}
             />
             <button
               :if={@state.q != ""}
@@ -637,8 +642,8 @@ defmodule CanopyWeb.SearchLive do
         </span>
         <.ago at={@result.inserted_at} />
       </div>
-      <p class="line-clamp-2 text-sm text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content">
-        {snippet(@result.snippet)}
+      <p class="line-clamp-2 text-sm text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content [&_code]:rounded [&_code]:bg-base-300/60 [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.9em]">
+        {snippet(@result.snippet, markdown_file?(@result.record))}
       </p>
     </a>
     <.link
@@ -669,8 +674,8 @@ defmodule CanopyWeb.SearchLive do
         <span :if={@result.thread_id} class="badge badge-xs badge-ghost">thread</span>
         <.ago at={@result.inserted_at} />
       </div>
-      <p class="line-clamp-2 font-mono text-xs text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content">
-        {snippet(@result.snippet)}
+      <p class="line-clamp-2 font-mono text-xs text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content [&_code]:rounded [&_code]:bg-base-300/60 [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.9em]">
+        {snippet(@result.snippet, false)}
       </p>
     </.link>
     """
@@ -694,7 +699,7 @@ defmodule CanopyWeb.SearchLive do
         <span :if={@result.thread_id} class="badge badge-xs badge-ghost">in a thread</span>
         <.ago at={@result.inserted_at} />
       </div>
-      <p class="line-clamp-2 text-sm text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content">
+      <p class="line-clamp-2 text-sm text-base-content/75 [&_mark]:rounded-sm [&_mark]:bg-warning/30 [&_mark]:px-0.5 [&_mark]:text-base-content [&_code]:rounded [&_code]:bg-base-300/60 [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.9em]">
         {snippet(@result.snippet)}
       </p>
     </.link>

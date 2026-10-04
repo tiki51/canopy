@@ -10,6 +10,7 @@
 // OpenCode (e2e/fake-opencode.mjs), so every card, line and diff is the app's
 // own rendering of a real turn. playwright.config.ts moves the server's clock
 // to mid-morning so the timestamps read like a workday.
+import { clickHeader } from "./helpers";
 import { test, expect, Locator, Page } from "@playwright/test";
 import {
   around,
@@ -252,7 +253,7 @@ test.describe("stills for canopy_site", () => {
     // -- ST-6: the review, the receipt, and the diff -------------------------------------
     await expect(timeline(page)).toContainText("Approving with two small notes", { timeout: 120_000 });
     await expect(page.locator(`#telemetry-${reviewer}`)).toBeHidden({ timeout: 60_000 });
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     // @reviewer's review; @backend's pass on the handoff-accepted note comes after it.
     const lastTurn = page.locator('#timeline section[id^="turn-"]', { hasText: /reviewer.*finished/ }).last();
     await expect(lastTurn).toContainText(/finished/);
@@ -269,9 +270,9 @@ test.describe("stills for canopy_site", () => {
       const y = Math.ceil(Math.max(header.y + header.height + 1, top.y - 16));
       return { x: pane.x, y, width: narrow.width - pane.x, height: Math.min(900, Math.ceil(box.y + box.height + 16)) - y };
     });
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
 
-    await page.locator("#open-changes").click();
+    await clickHeader(page, "open-changes");
     await expect(page.locator("#changes-modal")).toBeVisible();
     await page.locator('[id^="changed-file-"]', { hasText: "payments.py" }).first().click();
     await expect(page.locator("#file-diff")).toContainText("claim_charge");
@@ -297,12 +298,12 @@ test.describe("stills for canopy_site", () => {
     // -- F-6: a weekday schedule -----------------------------------------------------------
     await send(page, "@backend every weekday at 09:00, check the failed-charge queue depth and post here if it is above 50.");
     await expect(timeline(page)).toContainText("Scheduled: every weekday at 09:00", { timeout: 60_000 });
-    await page.locator("#edit-schedules").click();
+    await clickHeader(page, "edit-schedules");
     const schedules = page.locator("#schedules-panel");
     await expect(schedules).toContainText("failed-charge queue");
     await park(page);
     await shot(page, "schedule-weekday", () => around(schedules, 0));
-    await page.locator("#edit-schedules").click();
+    await clickHeader(page, "edit-schedules");
 
     // -- ST-7: the next morning ---------------------------------------------------------------
     // Fast-forward the schedule's Oban job to now, let @backend post, then

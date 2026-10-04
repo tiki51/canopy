@@ -836,14 +836,19 @@ sidebar with the agent as owner. The tool takes a `brief` as well.
 
 ### Anatomy of the channel header
 
-From left to right on the top row: the channel name and topic, then the buttons
+From left to right on the top row: the channel name and topic, then search, the buttons
 **Members**, **Activity**, one chip per [lock](#locks) held on the repository (or a plain
 **Locks** button when there are none), **Playbook** (or, while a run is in progress, a chip
 such as `bug-fix · 3/6 Fix · @backend @frontend`; see [Playbooks](#12-playbooks)),
 **Scheduled** (with a count), the **budget** (spent so far, and the limit when there is
-one), **Brief** (with a dot when the channel has one), **Task**, **Changes**, and
-**Archive**. When the side panel or a narrow window leaves less room, the buttons keep only
-their icons.
+one), **Brief** (with a dot when the channel has one), **Task**, **Changes**, **Stop**, and
+a **⋯** menu that holds **Archive**.
+
+The header fits its buttons to the room it has, so none is ever cut off. On a laptop-width
+window the plain buttons (Members, Activity, Brief, Task, Changes) show only their icons;
+hover one for its name. With less room (a side panel open, a narrow window) they move into
+the **⋯** menu one by one, then the lock, playbook, schedule and budget chips do the same,
+and **Stop** keeps its label longest. Everything that leaves the row is in the **⋯** menu.
 
 The second row shows the owner badge, the task status pill, the task title, the git
 branch, and one pill per member. A member's dot is grey when idle, green while working,
@@ -1055,7 +1060,7 @@ raise, or remove the limit.
 
 ### Archiving
 
-**Archive** (with a confirmation) closes the channel: an *archived* badge appears, the
+**Archive**, in the header's **⋯** menu (with a confirmation), closes the channel: an *archived* badge appears, the
 composer becomes a notice with a **Reopen** button, and the sidebar folds the channel
 under an "archived" toggle. Agents see it as archived in `canopy_channels_list`.
 

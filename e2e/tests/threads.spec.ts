@@ -76,6 +76,11 @@ test.describe("threads", () => {
     await expect(page).toHaveURL(url);
     await expect(panel(page)).toBeVisible();
     await expect(panel(page)).toContainText("Does the reload keep the thread?");
+    // The panel is already in the server's first (static) render, so it shows
+    // before the LiveView connects and its Esc hook mounts; a key pressed
+    // before then goes nowhere. Wait for the connection, as a person would
+    // wait for the page to finish loading.
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
 
     // Esc with a draft keeps the panel; with an empty box it closes it
     const input = page.locator("#thread-composer-input");

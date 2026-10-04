@@ -49,6 +49,98 @@ defmodule CanopyWeb.Markdown do
   def to_html(_, _opts), do: ""
 
   @doc """
+  Markdown as one line of plain text, for previews (a quoted parent, a thread
+  row, a notification): code fences, emphasis, links, images, headings,
+  quotes, list markers and task boxes are stripped and whitespace collapsed.
+  Inline code keeps its text without the backticks. Works on fragments too
+  (a search snippet cut mid-sentence): unmatched markers are dropped.
+  """
+  @spec plain(term) :: String.t()
+  def plain(text) when is_binary(text) do
+    text |> preview_segments() |> Enum.map_join(&elem(&1, 1)) |> collapse()
+  end
+
+  def plain(_text), do: ""
+
+  @doc """
+  A one-line preview as safe HTML: `plain/1`'s stripping, everything escaped,
+  inline code as `<code>`, and text between the `{open, close}` match markers
+  (`Canopy.Search.marks/0`) as `<mark>`. Markers never pair across a code
+  boundary, so the markup is always balanced. `markdown: false` keeps the
+  text as it is (a command's output, a source file), only collapsing
+  whitespace.
+  """
+  @spec preview_html(term, {String.t(), String.t()}, keyword) :: Phoenix.HTML.safe()
+  def preview_html(text, marks, opts \\ [])
+
+  def preview_html(text, {open, close}, opts) when is_binary(text) do
+    pair = Regex.compile!(Regex.escape(open) <> "(.*?)" <> Regex.escape(close), "su")
+    strip = Regex.compile!(Regex.escape(open) <> "|" <> Regex.escape(close), "u")
+
+    if(Keyword.get(opts, :markdown, true), do: preview_segments(text), else: [{:text, text}])
+    |> Enum.map(fn {kind, part} -> {kind, collapse_inner(part)} end)
+    |> trim_ends()
+    |> Enum.map_join(fn {kind, part} ->
+      html =
+        part
+        |> Phoenix.HTML.html_escape()
+        |> Phoenix.HTML.safe_to_string()
+        |> then(&Regex.replace(pair, &1, "<mark>\\1</mark>"))
+        |> then(&Regex.replace(strip, &1, ""))
+
+      if kind == :code, do: "<code>" <> html <> "</code>", else: html
+    end)
+    |> Phoenix.HTML.raw()
+  end
+
+  def preview_html(_text, _marks, _opts), do: Phoenix.HTML.raw("")
+
+  # `[{:text | :code, string}]`, Markdown syntax removed, whitespace not yet collapsed.
+  defp preview_segments(text) do
+    text
+    # fences and horizontal rules, then line-start markers: headings, quotes,
+    # list bullets and numbers, and a task box after them
+    |> String.replace(~r/^[ \t]{0,3}(```|~~~)[^\n]*$/m, " ")
+    |> String.replace(~r/^[ \t]{0,3}([-*_])([ \t]*\1){2,}[ \t]*$/m, " ")
+    |> String.replace(
+      ~r/^[ \t]{0,3}(?:>[ \t]?)*(?:\#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)?(?:\[[ xX]\][ \t]+)?/m,
+      ""
+    )
+    # images keep their alt text, links their label, autolinks their address
+    |> String.replace(~r/!\[([^\]]*)\]\([^)]*\)/, "\\1")
+    |> String.replace(~r/\[([^\]]+)\]\([^)]*\)/, "\\1")
+    |> String.replace(~r/<((?:https?|mailto):[^>\s]+)>/, "\\1")
+    |> then(&Regex.split(~r/(`+)([^`]+?)\1/, &1, include_captures: true))
+    |> Enum.flat_map(fn part ->
+      case Regex.run(~r/\A(`+)([^`]+?)\1\z/, part) do
+        [_, _, code] -> [{:code, String.trim(code)}]
+        nil -> [{:text, strip_inline(part)}]
+      end
+    end)
+    |> Enum.reject(fn {_kind, part} -> part == "" end)
+  end
+
+  defp strip_inline(text) do
+    text
+    |> String.replace(~r/(\*\*|__|~~|`)/, "")
+    |> String.replace(~r/(?<![\w*])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?![\w*])/u, "\\1")
+    |> String.replace(~r/(?<![\w_])_(?![\s_])([^_\n]+?)(?<!\s)_(?![\w_])/u, "\\1")
+  end
+
+  defp collapse(text), do: text |> collapse_inner() |> String.trim()
+
+  defp collapse_inner(text), do: String.replace(text, ~r/\s+/u, " ")
+
+  defp trim_ends([]), do: []
+
+  defp trim_ends(segments) do
+    {first_kind, first} = hd(segments)
+    segments = [{first_kind, String.trim_leading(first)} | tl(segments)]
+    {last_kind, last} = List.last(segments)
+    List.replace_at(segments, -1, {last_kind, String.trim_trailing(last)})
+  end
+
+  @doc """
   Splits plain text into `{:mention, "@name"}` and `{:plain, text}` parts; only
   the `names` given (as for `to_html/2`'s `:mentions`) count as mentions.
   """

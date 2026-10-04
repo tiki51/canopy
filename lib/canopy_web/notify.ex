@@ -223,19 +223,11 @@ defmodule CanopyWeb.Notify do
   defp channel_path(channel), do: "/channels/" <> channel.id
 
   @doc """
-  Markdown as one line of plain text, at most #{@body_max} characters: code
-  fences, emphasis, links and list markers are stripped, whitespace collapsed.
+  Markdown as one line of plain text (`CanopyWeb.Markdown.plain/1`), at most
+  #{@body_max} characters.
   """
   def plain(text) when is_binary(text) do
-    text
-    |> String.replace(~r/```[^\n]*\n?/, "")
-    |> String.replace(~r/!?\[([^\]]*)\]\([^)]*\)/, "\\1")
-    |> String.replace(~r/^\s{0,3}(?:[#>]+|[-*+]|\d+[.)])\s+/m, "")
-    |> String.replace(~r/(\*\*|__|~~|`)/, "")
-    |> String.replace(~r/(?<![\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/, "\\1")
-    |> String.replace(~r/\s+/u, " ")
-    |> String.trim()
-    |> truncate()
+    text |> CanopyWeb.Markdown.plain() |> truncate()
   end
 
   defp truncate(text) do

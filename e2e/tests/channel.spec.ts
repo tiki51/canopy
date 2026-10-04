@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
 
 test.describe("channel collaboration", () => {
   test("a user message wakes the owner: telemetry, an agent post via MCP, the reply, and a turn summary", async ({ page }) => {
@@ -22,7 +22,7 @@ test.describe("channel collaboration", () => {
     await expect(card).toBeHidden();
     // the finished turn (hidden in the compact timeline) opens to what it ran,
     // and keeps its closing text instead of posting it as a second message
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     const turn = timeline(page).locator('section[id^="turn-"]').last();
     await turn.locator('[id^="turn-toggle-"]').click();
     await expect(turn).toContainText("README.md");
@@ -97,7 +97,7 @@ test.describe("channel collaboration", () => {
     // the "created" toast covers the header buttons until dismissed
     await page.locator("#flash-info").click();
     await expect(page.locator("#flash-info")).toBeHidden();
-    await page.locator("#edit-schedules").click();
+    await clickHeader(page, "edit-schedules");
     const row = page.locator('[id^="channel-schedules-sch_"]').first();
     await expect(row).toContainText("Run the scheduled check and report.");
 

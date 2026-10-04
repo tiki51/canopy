@@ -69,7 +69,12 @@ defmodule CanopyWeb.Layouts do
   # main column. Every LiveView renders inside it; sidebar data comes from CanopyWeb.Nav.
   def app(assigns) do
     ~H"""
-    <div class="flex h-dvh overflow-hidden bg-base-100 text-base-content">
+    <%!-- Exactly the viewport; the page itself never scrolls, only the
+         columns inside do. Positioned and clipped, so an absolutely
+         positioned helper deep inside (an sr-only live region in a scrolled
+         feed, whose containing block would otherwise be the page) can't make
+         the document taller than the window. --%>
+    <div id="app-shell" class="relative flex h-dvh overflow-clip bg-base-100 text-base-content">
       <%!-- Below lg the rail and sidebar slide in over the page; this checkbox
       is their open state, toggled by <.menu_button> and the overlay. --%>
       <input id="app-drawer" type="checkbox" class="peer sr-only" aria-hidden="true" tabindex="-1" />
@@ -163,7 +168,7 @@ defmodule CanopyWeb.Layouts do
 
         <aside
           id="sidebar"
-          class="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
+          class="relative flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
           aria-label="Channels and agents"
           phx-hook="SidebarScroll"
         >
@@ -638,7 +643,7 @@ defmodule CanopyWeb.Layouts do
         {render_slot(@actions)}
       </div>
     </header>
-    <div class="flex-1 overflow-y-auto">
+    <div class="relative flex-1 overflow-y-auto">
       <div class={["mx-auto flex flex-col gap-6 px-3 py-4 sm:px-6 sm:py-6", @max_width]}>
         {render_slot(@inner_block)}
       </div>

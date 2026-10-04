@@ -70,6 +70,28 @@ defmodule CanopyWeb.ThreadsLiveTest do
     refute has_element?(view, "#rail-threads-badge")
   end
 
+  test "a row's root and replies are one line of plain text, not Markdown", ctx do
+    %{channel: channel, agent: agent, user: user} = ctx
+
+    {:ok, root} =
+      Messages.post_user_message(channel.id, user.id, "## Why is `checkout` **slow**?")
+
+    {:ok, _} =
+      Messages.thread_reply(
+        root.id,
+        {:agent, agent.id},
+        "- **Root cause.** see [the PR](https://x.test/1)"
+      )
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/threads")
+
+    row = element(view, "#thread-row-#{root.id}")
+    assert render(row) =~ "Why is checkout slow?"
+    assert render(row) =~ "Root cause. see the PR"
+    refute render(row) =~ "**"
+    refute render(row) =~ "](https"
+  end
+
   test "All active lists every thread with a recent reply; an empty tab says so", ctx do
     %{channel: channel, agent: agent} = ctx
 

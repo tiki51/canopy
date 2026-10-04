@@ -1,7 +1,7 @@
 // Captures the screenshots used by docs/manual-testing.md. Only runs when
 // SCREENSHOTS=1 so the normal suite stays fast:  SCREENSHOTS=1 npx playwright test screenshots
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, clickHeader } from "./helpers";
 
 const enabled = process.env.SCREENSHOTS === "1";
 const dir = "../docs/screenshots";
@@ -71,7 +71,7 @@ test.describe("screenshots for the manual testing guide", () => {
     await timeline(page).getByText("Accepted the handoff.").scrollIntoViewIfNeeded();
     await shot(page, "10-handoff");
 
-    await page.locator("#open-changes").click();
+    await clickHeader(page, "open-changes");
     await expect(page.locator("#changes-modal")).toBeVisible();
     await shot(page, "11-changes-modal");
     await page.locator("#close-changes").click();

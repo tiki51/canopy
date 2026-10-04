@@ -368,12 +368,25 @@ defmodule Canopy.Costs do
     end)
   end
 
-  @doc "Dollars with two decimals, or four when under a cent matters."
+  @doc """
+  Dollars with two decimals, or four when under a cent matters. A negative
+  amount (an estimated saving that turned out a loss) reads `−$0.01`, with a
+  minus sign before the dollar; one that rounds to nothing is `$0.00`, never a
+  negative zero.
+  """
   def money(cost) when is_number(cost) do
-    if cost > 0 and cost < 0.01,
-      do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 4),
-      else: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
+    size = abs(cost)
+    decimals = if size > 0 and size < 0.01, do: 4, else: 2
+    digits = :erlang.float_to_binary(size / 1, decimals: decimals)
+
+    cond do
+      cost >= 0 -> "$" <> digits
+      zero_digits?(digits) -> "$0.00"
+      true -> "−$" <> digits
+    end
   end
 
   def money(_), do: "$0.00"
+
+  defp zero_digits?(digits), do: String.trim(digits, "0") in [".", ""]
 end

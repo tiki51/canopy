@@ -809,8 +809,11 @@ defmodule CanopyWeb.AgentsLive do
         description="Mention an agent with @name in a channel to wake it. Open one for its channels, schedules, and settings."
       >
         <.export_bar :if={MapSet.size(@selected) > 0} selected={@selected} />
-        <div class="-mx-2 hidden grid-cols-[1rem_2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid">
-          <span class="sr-only">Select</span>
+        <div
+          id="agents-table-head"
+          class="-mx-2 hidden grid-cols-[1rem_2.25rem_minmax(0,1.2fr)_minmax(0,2fr)_10rem_14rem_3.5rem_1.25rem] items-center gap-4 px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60 md:grid"
+        >
+          <span><span class="sr-only">Select</span></span>
           <span />
           <span>Agent</span>
           <span>Role</span>

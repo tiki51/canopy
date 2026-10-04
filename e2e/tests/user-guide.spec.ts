@@ -7,7 +7,7 @@
 // interactions (an agent working, a permission card, a delegation) run
 // against the fake OpenCode, so that text is placeholder.
 import { test, expect, Page } from "@playwright/test";
-import { send, timeline } from "./helpers";
+import { send, timeline, clickHeader } from "./helpers";
 
 const enabled = process.env.USER_GUIDE === "1" && process.env.CANOPY_SEED !== undefined;
 const dir = "../docs/user-guide/images";
@@ -117,37 +117,37 @@ test.describe("screenshots for the user guide", () => {
     await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = el.scrollHeight));
 
     // Activity on, with the last turn's card open
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     await expect(timeline(page)).toContainText(/finished/);
     const cards = page.locator("#timeline details");
     const last = cards.last();
     await last.locator("summary").click();
     await last.scrollIntoViewIfNeeded();
     await shot(page, "channel-activity");
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
 
     // header panels
-    await page.locator("#edit-task").click();
+    await clickHeader(page, "edit-task");
     await expect(page.locator("#task-panel")).toBeVisible();
     await shot(page, "task-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await page.locator("#edit-task").click();
+    await clickHeader(page, "edit-task");
 
-    await page.locator("#edit-members").click();
+    await clickHeader(page, "edit-members");
     await expect(page.locator("#members-panel")).toBeVisible();
     await shot(page, "members-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await page.locator("#edit-members").click();
+    await clickHeader(page, "edit-members");
 
-    await page.locator("#edit-schedules").click();
+    await clickHeader(page, "edit-schedules");
     await expect(page.locator("#schedules-panel")).toBeVisible();
     await shot(page, "schedules-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await page.locator("#edit-schedules").click();
+    await clickHeader(page, "edit-schedules");
 
-    await page.locator("#edit-budget").click();
+    await clickHeader(page, "edit-budget");
     await expect(page.locator("#budget-panel")).toBeVisible();
     await shot(page, "budget-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await page.locator("#edit-budget").click();
+    await clickHeader(page, "edit-budget");
 
-    await page.locator("#open-changes").click();
+    await clickHeader(page, "open-changes");
     await expect(page.locator("#changes-modal")).toBeVisible();
     await page.locator('[id^="changed-file-"]', { hasText: "payments.py" }).first().click();
     await expect(page.locator("#file-diff")).toContainText("claim_charge");
@@ -280,7 +280,7 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("#lock-chip-tests")).toContainText("@test", { timeout: 30_000 });
     await send(page, "@researcher take the tests lock");
     await expect(page.locator("#lock-chip-tests")).toContainText("next: @researcher", { timeout: 30_000 });
-    await page.locator("#lock-chip-tests").click();
+    await clickHeader(page, "lock-chip-tests");
     await expect(page.locator("#lock-tests-queue")).toContainText("@researcher");
     await shot(page, "locks-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
   });

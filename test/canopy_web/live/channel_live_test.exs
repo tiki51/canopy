@@ -2344,6 +2344,84 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert render(view) =~ "reopened this channel"
     end
 
+    test "Archive lives in the header's ⋯ menu, and every other control has a copy there", ctx do
+      %{channel: channel} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      assert has_element?(view, "#channel-header[phx-hook=HeaderFit]")
+      assert has_element?(view, "#channel-more[popovertarget=channel-more-menu]")
+      refute has_element?(view, "#channel-more[data-optional]")
+      assert has_element?(view, "#channel-more-menu[popover] #archive-channel")
+      refute has_element?(view, "#channel-header-actions > #archive-channel")
+
+      # the inline controls keep their ids; the menu's copies carry the same rank
+      for {inline, rank} <- [
+            {"search-channel", "m1"},
+            {"open-changes", "m2"},
+            {"edit-task", "m3"},
+            {"edit-brief", "m4"},
+            {"edit-playbook", "m5"},
+            {"edit-locks", "m6"},
+            {"edit-members", "m7"},
+            {"toggle-activity", "m8"},
+            {"edit-budget", "s1"},
+            {"edit-schedules", "s2"}
+          ] do
+        assert has_element?(view, "#channel-header-actions > ##{inline}[data-hdr-rank=#{rank}]")
+        assert has_element?(view, "#channel-more-menu #more-#{inline}[data-hdr-menu=#{rank}]")
+      end
+
+      # Stop keeps its label longest and never moves into the menu
+      assert has_element?(view, "#stop-all[data-hdr=stop]:not([data-hdr-rank])")
+
+      # icon-only controls still have a name and a tooltip
+      for id <- ~w(edit-members toggle-activity edit-brief edit-task open-changes stop-all) do
+        assert has_element?(view, "##{id}[aria-label][title]")
+      end
+
+      # an entry in the menu does what its inline control does
+      view |> element("#more-edit-task") |> render_click()
+      assert has_element?(view, "#edit-task.btn-active")
+      assert has_element?(view, "#more-edit-task.bg-base-200")
+    end
+
+    test "an archived channel's ⋯ menu has no Archive and shows only when something moves in",
+         ctx do
+      %{channel: channel} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      view |> element("#archive-channel") |> render_click()
+      refute has_element?(view, "#channel-more-menu #archive-channel")
+      assert has_element?(view, "#channel-more[data-optional]")
+      assert has_element?(view, "#channel-header-actions > #reopen-channel[data-hdr=stop]")
+    end
+
+    test "a reply sent to the channel quotes its parent as plain text", ctx do
+      %{channel: channel, agent: agent} = ctx
+
+      {:ok, root} =
+        Messages.post_agent_message(
+          channel.id,
+          agent.id,
+          "**Root cause.** The `claim` step:\n\n- runs late"
+        )
+
+      {:ok, view, _html} = open_thread(conn_of(ctx), channel, root.id)
+
+      view
+      |> form("#thread-composer-form", %{
+        "message" => %{"body" => "Agreed"},
+        "also_send" => "true"
+      })
+      |> render_submit()
+
+      assert [_, reply] = Messages.list_thread(root.id)
+      parent = element(view, "#message-parent-#{reply.id}")
+      assert render(parent) =~ "Root cause. The claim step: runs late"
+      refute render(parent) =~ "**"
+      refute render(parent) =~ "`"
+    end
+
     test "a DM's header switches its repository and the timeline says so", ctx do
       %{agent: agent, repository: repository} = ctx
       other = Fixtures.repository_fixture(%{name: "calc"})

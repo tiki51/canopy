@@ -49,6 +49,24 @@ defmodule CanopyWeb.AgentsLiveTest do
       refute has_element?(view, "#agent-form")
     end
 
+    test "the table header has one cell per column, in the rows' order", %{conn: conn} do
+      Fixtures.agent_fixture(%{name: "listed", role: "Lists things"})
+      {:ok, view, _html} = live(conn, ~p"/agents")
+
+      cells =
+        view
+        |> element("#agents-table-head")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#agents-table-head > *")
+        |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
+      # the sr-only "Select" label sits inside its own cell, so it can't drop
+      # out of the grid and shift every heading one column left
+      assert cells == ["Select", "", "Agent", "Role", "Engine", "Model", "Sched.", ""]
+      assert has_element?(view, "#agents-table-head > span > .sr-only", "Select")
+    end
+
     test "lists active agents as links to their pages, and deactivated ones behind a toggle", %{
       conn: conn
     } do

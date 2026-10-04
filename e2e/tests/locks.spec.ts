@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, clickHeader } from "./helpers";
 
 // Locks on a repository's shared resources. The fake OpenCode asks for a lock
 // when a message says "take the <name> lock" (and holds it across turns with
@@ -50,7 +50,7 @@ test.describe("locks", () => {
   test("a lock the user holds by hand makes agents wait until it is released", async ({ page }) => {
     await createChannel(page);
 
-    await page.locator("#edit-locks").click();
+    await clickHeader(page, "edit-locks");
     await page.locator("#take-lock-reason").fill("testing by hand");
     await page.locator("#take-lock").click();
     await expect(chip(page)).toBeVisible();

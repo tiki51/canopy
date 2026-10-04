@@ -68,6 +68,24 @@ defmodule Canopy.CostsTest do
     assert Costs.money(0.0042) == "$0.0042"
     assert Costs.money(nil) == "$0.00"
   end
+
+  test "money puts a minus sign before the dollar and never shows a negative zero" do
+    assert Costs.money(-0.01) == "−$0.01"
+    assert Costs.money(-1.234) == "−$1.23"
+    assert Costs.money(-0.0042) == "−$0.0042"
+    assert Costs.money(-0.0) == "$0.00"
+    assert Costs.money(-0.000001) == "$0.00"
+    assert Costs.money(-0.004) == "−$0.0040"
+    assert Costs.money(0) == "$0.00"
+    assert Costs.money(12) == "$12.00"
+    refute Costs.money(-0.001) =~ "$-"
+  end
+
+  test "an activity cost reads −$ when negative and never $-0.0000" do
+    assert Canopy.Runtime.Activity.format_cost(0.0123) == "$0.0123"
+    assert Canopy.Runtime.Activity.format_cost(-0.0123) == "−$0.0123"
+    assert Canopy.Runtime.Activity.format_cost(-0.00001) == "$0.0000"
+  end
 end
 
 defmodule Canopy.CostsDetailTest do

@@ -208,4 +208,34 @@ defmodule CanopyWeb.SearchLiveTest do
 
     assert html == "&lt;script&gt;alert(1)&lt;/script&gt; a <mark>hit</mark>"
   end
+
+  test "a snippet drops Markdown but keeps inline code, safely" do
+    {open, close} = Canopy.Search.marks()
+
+    html =
+      "- **Root cause.** the `#{open}claim#{close}` step <b>x</b>"
+      |> SearchLive.snippet()
+      |> Phoenix.HTML.safe_to_string()
+
+    assert html ==
+             "Root cause. the <code><mark>claim</mark></code> step &lt;b&gt;x&lt;/b&gt;"
+
+    # a turn's output or a source file keeps its text as written
+    raw =
+      "def __init__(self): **kwargs #{open}hit#{close}"
+      |> SearchLive.snippet(false)
+      |> Phoenix.HTML.safe_to_string()
+
+    assert raw == "def __init__(self): **kwargs <mark>hit</mark>"
+  end
+
+  test "the search box has one clear button: the browser's own is hidden", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/search?#{[q: "ibis"]}")
+
+    input = view |> element("#search-input") |> render()
+    assert input =~ "[&amp;::-webkit-search-cancel-button]:appearance-none"
+    assert has_element?(view, "#search-clear")
+    # the magnifier paints above the input's background
+    assert has_element?(view, "#search-form > .hero-magnifying-glass.z-10")
+  end
 end

@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, clickHeader } from "./helpers";
 
 // The fake agent's "activity demo" turn (e2e/fake-opencode.mjs): narration,
 // two steps, a failing `mix test` (exit 1), an edit to activity-demo.txt with
@@ -10,7 +10,7 @@ const lastTurn = (page: Page) => timeline(page).locator('section[id^="turn-"]').
 
 /** Shows the finished turns (the compact timeline hides clean ones) and opens the last. */
 async function openLastTurn(page: Page) {
-  await page.locator("#toggle-activity").click();
+  await clickHeader(page, "toggle-activity");
   const turn = lastTurn(page);
   await turn.locator('[id^="turn-toggle-"]').click();
   await expect(turn).toHaveAttribute("data-open", "true");
@@ -179,7 +179,7 @@ test.describe("activity cards", () => {
     await send(page, "Run the activity demo.");
     await expect(timeline(page)).toContainText("Fixed the double charge");
 
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     const turn = lastTurn(page);
     await turn.locator('[id^="turn-toggle-"]').click();
     await expect(turn).toHaveAttribute("data-open", "true");

@@ -945,9 +945,14 @@ defmodule Canopy.Runtime.Activity do
 
   defp token_total(_), do: 0
 
-  @doc "A dollar amount with four decimals."
-  def format_cost(cost) when is_number(cost),
-    do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 4)
+  @doc "A dollar amount with four decimals; a negative one reads `−$0.0100`, never `$-0.0000`."
+  def format_cost(cost) when is_number(cost) do
+    digits = :erlang.float_to_binary(abs(cost) / 1, decimals: 4)
+
+    if cost < 0 and String.trim(digits, "0") != ".",
+      do: "−$" <> digits,
+      else: "$" <> digits
+  end
 
   def format_cost(_), do: "$0.0000"
 

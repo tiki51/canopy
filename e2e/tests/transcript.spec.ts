@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, send, timeline, clickHeader } from "./helpers";
 
 // The session transcript: the fake OpenCode keeps each session's history
 // (every prompt with its system text, every part it emitted) and serves it
@@ -55,7 +55,7 @@ test.describe("session transcript", () => {
     await turn(page, "First question for the transcript.");
     await turn(page, "Second question for the transcript.");
 
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     const card = timeline(page).locator('section[id^="turn-"]').last();
     await card.locator('[id^="turn-toggle-"]').click();
     const eventId = (await card.getAttribute("id"))!.replace(/^turn-/, "");
@@ -73,7 +73,7 @@ test.describe("session transcript", () => {
     await createChannel(page);
     // the fake reports a model call past the cap; Canopy compacts after the turn
     await turn(page, "Please read everything, big context.");
-    await page.locator("#toggle-activity").click();
+    await clickHeader(page, "toggle-activity");
     await expect(timeline(page)).toContainText("session was compacted");
 
     await openFromPill(page);

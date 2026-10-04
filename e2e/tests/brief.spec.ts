@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
 
 const fake = `http://127.0.0.1:${process.env.FAKE_OPENCODE_PORT || 4396}`;
 const working = (page: Page) => page.locator('section[id^="telemetry-"]');
@@ -14,7 +14,7 @@ async function backendSession(page: Page, name: string): Promise<FakeSession | u
 }
 
 async function saveBrief(page: Page, text: string) {
-  await page.locator("#edit-brief").click();
+  await clickHeader(page, "edit-brief");
   const box = page.locator("#brief-form textarea");
   await expect(box).toBeVisible();
   await box.fill(text);

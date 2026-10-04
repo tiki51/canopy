@@ -65,4 +65,79 @@ defmodule CanopyWeb.MarkdownTest do
     html = Markdown.to_html("[#payments](https://x.example/)", channels: channels)
     assert Regex.scan(~r/<a /, html) |> length() == 1
   end
+
+  describe "previews" do
+    test "plain/1 strips Markdown to one line of text" do
+      body = """
+      # Root cause
+
+      **Root cause.** The `claim` step runs _after_ the charge:
+
+      - first, see [the PR](https://x.test/1)
+      - [x] then ![shot](/files/a.png)
+      > quoted
+      1. numbered
+
+      ```elixir
+      Payments.claim(invoice)
+      ```
+      ---
+      """
+
+      assert Markdown.plain(body) ==
+               "Root cause Root cause. The claim step runs after the charge: first, see the PR " <>
+                 "then shot quoted numbered Payments.claim(invoice)"
+    end
+
+    test "plain/1 keeps what only looks like Markdown" do
+      assert Markdown.plain("rm *.ex *.exs in #billing, snake_case_name and @backend") ==
+               "rm *.ex *.exs in #billing, snake_case_name and @backend"
+
+      assert Markdown.plain("2 * 3 = 6") == "2 * 3 = 6"
+    end
+
+    test "plain/1 drops the unmatched markers of a cut fragment" do
+      assert Markdown.plain("…the **Root cause is `claim") == "…the Root cause is claim"
+      assert Markdown.plain(nil) == ""
+      assert Markdown.plain("  \n ") == ""
+    end
+
+    test "preview_html/2 escapes everything but <code> and the match marks" do
+      marks = {"\u0002", "\u0003"}
+
+      html =
+        "**\u0002Root\u0003 cause.** is `\u0002claim\u0003()` <b>x</b>\n- next"
+        |> Markdown.preview_html(marks)
+        |> Phoenix.HTML.safe_to_string()
+
+      assert html ==
+               "<mark>Root</mark> cause. is <code><mark>claim</mark>()</code> &lt;b&gt;x&lt;/b&gt; next"
+    end
+
+    test "preview_html/2 never leaves an unbalanced mark or a raw tag" do
+      marks = {"\u0002", "\u0003"}
+
+      html =
+        "\u0002open `code\u0003 here` <script>alert(1)</script>"
+        |> Markdown.preview_html(marks)
+        |> Phoenix.HTML.safe_to_string()
+
+      refute html =~ "<script"
+      refute html =~ "\u0002"
+      refute html =~ "\u0003"
+
+      assert length(String.split(html, "<mark>")) == length(String.split(html, "</mark>"))
+    end
+
+    test "preview_html/3 with markdown: false keeps the text as written" do
+      marks = {"\u0002", "\u0003"}
+
+      html =
+        "def __init__(self):\n    **kwargs \u0002hit\u0003"
+        |> Markdown.preview_html(marks, markdown: false)
+        |> Phoenix.HTML.safe_to_string()
+
+      assert html == "def __init__(self): **kwargs <mark>hit</mark>"
+    end
+  end
 end

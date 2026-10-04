@@ -275,7 +275,7 @@ defmodule CanopyWeb.ThreadsLive do
   defp sender(_message, user_name), do: user_name
 
   defp excerpt(body) do
-    case Format.single_line(body) do
+    case CanopyWeb.Markdown.plain(body) do
       "" -> "(files)"
       text -> Format.truncate(text, 140)
     end

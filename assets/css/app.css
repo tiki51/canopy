@@ -335,3 +335,53 @@
 .transcript-list.hide-tool [data-kind="tool"],
 .transcript-list.hide-tool [data-kind="step"],
 .transcript-list.hide-note [data-kind="engine_note"] { display: none; }
+
+/* Channel header (CanopyWeb.ChannelLive): the HeaderFit hook
+   (assets/js/hooks/header_fit.js) sets data-fit to the collapse steps the
+   header needs at its width. Controls carry data-hdr (their group: rest,
+   state, stop), and data-hdr-rank when they can move into the ⋯ menu, where
+   a copy with the same data-hdr-menu rank stands in for them. */
+#channel-header [data-hdr-menu] { display: none; }
+#channel-header[data-fit~="rest-icons"] [data-hdr-detail],
+#channel-header[data-fit~="rest-icons"] [data-hdr="rest"] [data-hdr-label],
+#channel-header[data-fit~="state-icons"] [data-hdr="state"] [data-hdr-label],
+#channel-header[data-fit~="stop-icon"] [data-hdr="stop"] [data-hdr-label] { display: none; }
+#channel-header[data-fit~="m1"] [data-hdr-rank="m1"],
+#channel-header[data-fit~="m2"] [data-hdr-rank="m2"],
+#channel-header[data-fit~="m3"] [data-hdr-rank="m3"],
+#channel-header[data-fit~="m4"] [data-hdr-rank="m4"],
+#channel-header[data-fit~="m5"] [data-hdr-rank="m5"],
+#channel-header[data-fit~="m6"] [data-hdr-rank="m6"],
+#channel-header[data-fit~="m7"] [data-hdr-rank="m7"],
+#channel-header[data-fit~="m8"] [data-hdr-rank="m8"],
+#channel-header[data-fit~="s1"] [data-hdr-rank="s1"],
+#channel-header[data-fit~="s2"] [data-hdr-rank="s2"],
+#channel-header[data-fit~="s3"] [data-hdr-rank="s3"],
+#channel-header[data-fit~="s4"] [data-hdr-rank="s4"] { display: none; }
+#channel-header[data-fit~="m1"] [data-hdr-menu="m1"],
+#channel-header[data-fit~="m2"] [data-hdr-menu="m2"],
+#channel-header[data-fit~="m3"] [data-hdr-menu="m3"],
+#channel-header[data-fit~="m4"] [data-hdr-menu="m4"],
+#channel-header[data-fit~="m5"] [data-hdr-menu="m5"],
+#channel-header[data-fit~="m6"] [data-hdr-menu="m6"],
+#channel-header[data-fit~="m7"] [data-hdr-menu="m7"],
+#channel-header[data-fit~="m8"] [data-hdr-menu="m8"],
+#channel-header[data-fit~="s1"] [data-hdr-menu="s1"],
+#channel-header[data-fit~="s2"] [data-hdr-menu="s2"],
+#channel-header[data-fit~="s3"] [data-hdr-menu="s3"],
+#channel-header[data-fit~="s4"] [data-hdr-menu="s4"] { display: flex; }
+/* In an archived channel the menu has no Archive; it shows once something moves in. */
+#channel-more[data-optional] { display: none; }
+#channel-header[data-fit~="m1"] #channel-more[data-optional] { display: inline-flex; }
+/* Once the state chips collapse, the topic gives way and a long name may truncate. */
+#channel-header[data-fit~="state-icons"] #channel-topic { display: none; }
+#channel-header[data-fit~="state-icons"] #channel-name { flex-shrink: 1; }
+/* Archive sits under a rule once other entries are in the menu. */
+#channel-header [data-hdr-sep] { display: none; }
+#channel-header[data-fit~="m1"] [data-hdr-sep] { display: block; }
+/* The ⋯ menu is a popover; HeaderFit sets where its button is. */
+#channel-more-menu {
+  inset: auto; margin: 0;
+  top: var(--channel-more-top, 3.5rem); right: var(--channel-more-right, 1rem);
+  max-height: calc(100dvh - var(--channel-more-top, 3.5rem) - 1rem); overflow-y: auto;
+}

@@ -25,3 +25,21 @@ export async function send(page: Page, text: string) {
 }
 
 export const timeline = (page: Page) => page.locator("#timeline");
+
+/**
+ * Clicks a channel header control (`edit-task`, `toggle-activity`, `lock-chip-tests`, …):
+ * the inline one, or its copy in the ⋯ menu when the header has moved it there
+ * for lack of room (the HeaderFit hook). The header refits a frame after its
+ * width changes (a side panel just closed), so this retries until one of the
+ * two takes the click.
+ */
+export async function clickHeader(page: Page, id: string) {
+  const inline = page.locator(`#${id}`);
+  const copy = page.locator(`#more-${id}`);
+  await expect(async () => {
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    if (await inline.isVisible()) return await inline.click({ timeout: 2_000 });
+    if (!(await page.locator("#channel-more-menu").isVisible())) await page.locator("#channel-more").click({ timeout: 2_000 });
+    await copy.click({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
+}

@@ -319,7 +319,7 @@ to: researcher …" as in the README demo prompt.
       marked and has no remove button. Pick an agent in the dropdown and **Add** → it appears
       in the header and the timeline says it joined. Click the × on another member → it is
       gone and the timeline says so. `@` in the composer only suggests current members.
-- [ ] **Archive** (confirm the prompt) → an **archived** badge, the composer is replaced by a
+- [ ] **⋯** → **Archive** (confirm the prompt) → an **archived** badge, the composer is replaced by a
       notice with a **Reopen** button, the sidebar entry is dimmed with a box icon, and
       agents' `channels_list` shows it as archived. **Reopen** brings the composer back.
 

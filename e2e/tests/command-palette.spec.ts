@@ -3,7 +3,7 @@
 // leak to the page underneath.
 import { test, expect, Page } from "@playwright/test";
 import path from "node:path";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
 
 const dialog = (page: Page) => page.locator("#cmdk-dialog");
 const input = (page: Page) => page.locator("#cmdk-input");
@@ -121,7 +121,7 @@ test.describe("command palette", () => {
     await expect(page.locator("#thread-panel")).toBeHidden();
 
     // nor the brief editor's
-    await page.locator("#edit-brief").click();
+    await clickHeader(page, "edit-brief");
     await page.locator("#brief-form textarea").fill("Goal: keep the palette out of the way");
     await openPalette(page);
     await page.keyboard.press("Escape");

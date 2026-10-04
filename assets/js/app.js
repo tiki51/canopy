@@ -34,6 +34,7 @@ import CopyLink from "./hooks/copy_link"
 import CommandPalette from "./hooks/command_palette"
 import SearchNav from "./hooks/search_nav"
 import Notifier from "./hooks/notifier"
+import HeaderFit from "./hooks/header_fit"
 import notifier from "./notify"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
@@ -52,6 +53,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     CommandPalette,
     SearchNav,
     Notifier,
+    HeaderFit,
   },
 })
 
