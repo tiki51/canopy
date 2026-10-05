@@ -150,7 +150,7 @@ defmodule CanopyWeb.CommandPalette do
         class={[
           "inset-x-0 top-0 mx-auto mt-[12vh] mb-auto h-fit max-h-[80dvh] w-[calc(100%-2rem)] max-w-xl",
           "flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-200 p-0 text-base-content shadow-2xl",
-          "backdrop:bg-base-content/40 open:flex",
+          "backdrop:bg-black/40 dark:backdrop:bg-black/50 open:flex",
           "max-sm:mt-0 max-sm:max-h-[70dvh] max-sm:w-full max-sm:max-w-none max-sm:rounded-t-none max-sm:border-x-0 max-sm:border-t-0"
         ]}
       >

@@ -5393,7 +5393,7 @@ defmodule CanopyWeb.ChannelLive do
     ~H"""
     <div
       id="library-picker"
-      class="fixed inset-0 z-40 flex items-center justify-center bg-base-content/40 p-4"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-black/40 dark:bg-black/50 p-4"
       phx-window-keydown="close_library"
       phx-key="Escape"
     >
@@ -5499,7 +5499,7 @@ defmodule CanopyWeb.ChannelLive do
     ~H"""
     <div
       id="changes-modal"
-      class="fixed inset-0 z-40 flex items-center justify-center bg-base-content/40 p-6"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-black/40 dark:bg-black/50 p-6"
       phx-window-keydown="close_changes"
       phx-key="Escape"
     >

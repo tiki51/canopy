@@ -35,9 +35,11 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 
 # Setup counts as done, so `/` behaves as on an existing install; the
-# onboarding spec clears it to open the setup modal.
+# onboarding spec clears it to open the setup modal. OpenCode is the chosen
+# default engine: with both fakes ready, setup would otherwise pick Claude Code
+# for every agent on the default as soon as a spec opens it.
 mix run -e "
-  {:ok, _} = Canopy.Settings.update(%{opencode_url: \"$FAKE_URL\"})
+  {:ok, _} = Canopy.Settings.update(%{opencode_url: \"$FAKE_URL\", default_engine: \"opencode\"})
   {:ok, _} = Canopy.Settings.mark_onboarded()
   Canopy.Repositories.get_by_path(\"$REPO\") ||
     ({:ok, _} = Canopy.Repositories.create(%{name: \"e2e-repo\", path: \"$REPO\"}))

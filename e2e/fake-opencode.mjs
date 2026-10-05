@@ -569,18 +569,24 @@ async function runTurn(sessionID, text, cwd) {
   // Playbooks (e2e/tests/playbooks.spec.ts): "run the <name> playbook" starts
   // it as the coordinator and advances through to the step held for the
   // user's sign-off; the user's Approve wakes it again to close.
-  const playbookAsk = (text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "").match(/run the (\S+) playbook/i);
+  // "…playbook: <brief>" passes the brief on; the user guide's one
+  // (e2e/tests/user-guide.spec.ts) is about the priceCart cache.
+  const playbookAsk = (text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "").match(/run the (\S+?) playbook(?::\s*(.+))?/i);
   if (playbookAsk && /new Canopy message/.test(text)) {
-    const started = await mcpCall("playbook_start", { canopy_session_id: sessionID, name: playbookAsk[1], brief: "Make the e2e button green." });
+    const brief = playbookAsk[2]?.trim() || "Make the e2e button green.";
+    const steps = /priceCart/.test(brief)
+      ? { file: "src/checkout/session.ts", plan: "Plan: cache in session.ts, test in cart.test.ts.", built: "Built: cache behind checkout_cache; p95 390 ms in the load test.", ready: "Ready for your sign-off: `priceCart` is cached behind `checkout_cache`, and p95 is 390 ms in the load test." }
+      : { file: "README.md", plan: "Planned: one file, README.md.", built: "Built: README.md updated.", ready: "Ready for your sign-off: README.md updated." };
+    const started = await mcpCall("playbook_start", { canopy_session_id: sessionID, name: playbookAsk[1], brief });
     if (!/^started/.test(started)) {
       await mcpCall("message_send", { canopy_session_id: sessionID, text: `Could not start it: ${started}` });
       return finishTurn(sessionID, messageID, part, "Could not start the playbook.", 0.0004);
     }
-    await tool("read", { filePath: "README.md" }, "README.md");
-    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Planned: one file, README.md." });
-    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Built: README.md updated." });
+    await tool("read", { filePath: steps.file }, steps.file);
+    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: steps.plan });
+    await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: steps.built });
     await mcpCall("playbook_advance", { canopy_session_id: sessionID, result: "Summary posted for sign-off." });
-    await mcpCall("message_send", { canopy_session_id: sessionID, text: "Ready for your sign-off: README.md updated." });
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: steps.ready });
     return finishTurn(sessionID, messageID, part, "Waiting for sign-off.", 0.0008);
   }
   if (/^The user approved "/m.test(text)) {
@@ -610,6 +616,9 @@ async function runTurn(sessionID, text, cwd) {
     await mcpCall("message_send", { canopy_session_id: sessionID, text: "Ran precommit with the lock." });
     return finishTurn(sessionID, messageID, part, "Ran precommit.", 0.0005);
   }
+
+  // The user guide's #refund-webhooks story (e2e/tests/user-guide.spec.ts).
+  if (/#refund-webhooks\b/.test(text)) return refundTurn(sessionID, messageID, text, tool, part);
 
   const inline = text;
   // Site "Stop all" shot: a long turn that keeps calling tools until aborted
@@ -769,6 +778,71 @@ async function runTurn(sessionID, text, cwd) {
   finishTurn(sessionID, messageID, part, reply, 0.0012);
 }
 
+// ---- the #refund-webhooks story (e2e/tests/user-guide.spec.ts) ------------------
+// @test reads webhooks.py and posts a plan, edits it behind a permission card
+// on the go-ahead, and folds in @researcher's handler list; the handoff goes
+// to @reviewer. Anything else in the channel is a pass.
+const REFUND_PLAN = `Plan:
+1. Read \`webhooks.py\`: \`on_refund_created\` calls \`gateway.refund\` with no timeout and swallows \`GatewayTimeout\`, so a slow gateway leaves the refund pending with no error.
+2. Pass a timeout and raise \`RefundTimeout\`, so the worker retries it with backoff.
+3. Add a test that times out the fake gateway.
+
+I'll wait for a go-ahead before changing anything.`;
+const REFUND_DIFF = `--- acme/billing/webhooks.py
++++ acme/billing/webhooks.py
+@@ -12,3 +12,5 @@ def on_refund_created(event: dict) -> None:
+     refund = refunds.get(event["refund_id"])
+-    resp = gateway.refund(refund.charge_id)
++    resp = gateway.refund(refund.charge_id, timeout=10)
++    if resp.timed_out:
++        raise RefundTimeout(refund.id)
+     refunds.mark_sent(refund.id, resp.reference)
+`;
+
+async function refundTurn(sessionID, messageID, text, tool, part) {
+  const done = (reply, cost) => finishTurn(sessionID, messageID, part, reply, cost);
+  const say = (words) => mcpCall("message_send", { canopy_session_id: sessionID, text: words });
+  const body = messageText(text);
+  const file = "acme/billing/webhooks.py";
+  const threadRoot = text.match(/^Thread: (msg_\S+)/m)?.[1];
+
+  // a question in a thread: a long read (the Threads inbox shows it working), then the answer there
+  if (threadRoot) {
+    await tool("read", { filePath: file }, file, "", TURN_DELAY * 4);
+    await mcpCall("thread_reply", { canopy_session_id: sessionID, message_id: threadRoot, text: "Yes: `refund_failed` goes through the same `gateway.refund` call, so it gets the same timeout and the same retry." });
+    return done("Answered in the thread.", 0.0021);
+  }
+  if (/Delegation ID: dl_/.test(text)) {
+    await tool("grep", { pattern: "gateway.refund" }, "gateway.refund");
+    await tool("read", { filePath: file }, file);
+    await mcpCall("task_update", { canopy_session_id: sessionID, status: "completed", result: "Found two handlers: refund_created and refund_failed, both in webhooks.py, and both call gateway.refund with no timeout." });
+    return done("Reported the two refund handlers.", 0.0011);
+  }
+  if (/delegated subtask .* was completed/i.test(text)) {
+    await say("Found two handlers: `refund_created` and `refund_failed`. Both call `gateway.refund` without a timeout, so the fix covers both.");
+    return done("Folded in the handler list.", 0.0014);
+  }
+  if (/\bgo ahead\b/i.test(body)) {
+    await tool("read", { filePath: file }, file);
+    await new Promise((resume) => {
+      const id = nextId("per");
+      pendingPermissions.set(id, resume);
+      emit("permission.asked", { id, sessionID, permission: "edit", patterns: [file], metadata: { filepath: file, diff: REFUND_DIFF }, always: ["*"], tool: { messageID, callID: nextId("call") } });
+    });
+    emit("file.edited", { file });
+    await say("Added the timeout to `webhooks.py`: a slow gateway now raises `RefundTimeout`, and the worker retries it with backoff.");
+    return done("Added the refund timeout.", 0.0062);
+  }
+  if (/webhooks\.py/.test(body)) {
+    await tool("read", { filePath: file }, file, "", TURN_DELAY * 2);
+    await tool("grep", { pattern: "gateway.refund" }, "gateway.refund");
+    await say(REFUND_PLAN);
+    return done("Posted a plan for the refund timeout.", 0.0047);
+  }
+  await mcpCall("pass", { canopy_session_id: sessionID, reason: "nothing to add" });
+  return done("Nothing to add.", 0.0003);
+}
+
 // The body of the message a wake prompt carries inline.
 const messageText = (text) => text.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
 
@@ -788,8 +862,24 @@ function finishTurn(sessionID, messageID, part, reply, cost) {
   emit("message.part.delta", { sessionID, messageID, partID: textID, field: "text", delta: reply });
   emit("message.part.updated", { sessionID, part: part({ id: textID, type: "text", text: reply, time: { start: Date.now() - 10, end: Date.now() } }) });
   emit("message.updated", { info: { id: messageID, sessionID, role: "assistant", cost, tokens: { input: 100, output: 20 }, finish: "stop", time: { created: Date.now(), completed: Date.now() } } });
+  if (folded.length) storeAfterSteered(sessionID, messageID, textID);
   emit("session.status", { sessionID, status: { type: "idle" } });
   emit("session.idle", { sessionID });
+}
+
+// OpenCode answers a steered message in a new assistant message after it, so
+// history (and the transcript page) reads prompt, steps, steered message,
+// reply. The live stream keeps one message id; only the stored copy moves.
+function storeAfterSteered(sessionID, messageID, textID) {
+  const log = historyOf(sessionID);
+  const message = log.find((m) => m.info.id === messageID);
+  const i = message?.parts.findIndex((x) => x.id === textID) ?? -1;
+  if (i < 0) return;
+  const [text] = message.parts.splice(i, 1);
+  const steered = [...log].reverse().find((m) => m.info.role === "user");
+  const id = nextId("msg");
+  const { cost, tokens, ...info } = message.info;
+  log.push({ info: { ...info, id, parentID: steered?.info.id }, parts: [{ ...text, messageID: id }] });
 }
 
 // ---- HTTP surface ---------------------------------------------------------------
@@ -797,7 +887,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
   try {
-    if (req.method === "GET" && (p === "/global/health" || p === "/api/health")) return json(res, 200, { healthy: true, version: "fake-1.0" });
+    if (req.method === "GET" && (p === "/global/health" || p === "/api/health")) return json(res, 200, { healthy: true, version: process.env.FAKE_OPENCODE_VERSION || "fake-1.0" });
     if (req.method === "GET" && p === "/config/providers")
       return json(res, 200, { providers: [{ id: "opencode", name: "OpenCode Zen", models: { "gpt-5-nano": { cost: { input: 0.05, output: 0.4, cache: { read: 0.005, write: 0 } } }, "claude-haiku-4-5": { cost: { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } } }, "claude-sonnet-5": { cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } }, "claude-opus-5-5": { cost: { input: 5, output: 25, cache: { read: 0.5, write: 6.25 } } } } }], default: { opencode: "gpt-5-nano" } });
     if (req.method === "GET" && p === "/agent") return json(res, 200, [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }]);

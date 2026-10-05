@@ -8,7 +8,7 @@ import { stubNotifications } from "./notify-helpers";
 // these specs clear `onboarded_at` straight in the e2e database (the server
 // keeps running; SQLite is in WAL mode) to start from a fresh install, where
 // setup is a modal over whatever page opens.
-const fresh = () => sql("UPDATE settings SET onboarded_at = NULL");
+const fresh = () => sql("UPDATE settings SET onboarded_at = NULL, default_engine = NULL");
 const onboarded = () => sql(`UPDATE settings SET onboarded_at = '${iso(new Date())}'`);
 
 const dialog = (page: Page) => page.locator("#setup-dialog");
@@ -141,12 +141,16 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#welcome-opencode")).toHaveAttribute("data-state", "ready");
     await expect(page.locator("#welcome-opencode-status")).toContainText("fake-1.0");
     await expect(page.locator("#welcome-opencode-default-provider")).toBeEnabled();
-    // default engine: both ready, so OpenCode until the user picks; a pick saves at once
+    // default engine: both ready, so Claude Code, saved at once; a pick saves too
     const opencodeCard = page.locator("#welcome-engine-choice-opencode");
     const claudeCard = page.locator("#welcome-engine-choice-claude_code");
-    await expect(opencodeCard).toHaveAttribute("aria-checked", "true");
-    await expect(opencodeCard).toHaveAttribute("data-ready", "ready");
+    await expect(claudeCard).toHaveAttribute("aria-checked", "true");
     await expect(claudeCard).toHaveAttribute("data-ready", "ready");
+    await expect(opencodeCard).toHaveAttribute("data-ready", "ready");
+    await expect.poll(() => sql("SELECT default_engine FROM settings")).toBe("claude_code");
+    await opencodeCard.click();
+    await expect(opencodeCard).toHaveAttribute("aria-checked", "true");
+    await expect.poll(() => sql("SELECT default_engine FROM settings")).toBe("opencode");
     await claudeCard.click();
     await expect(claudeCard).toHaveAttribute("aria-checked", "true");
     await expect(page.locator("#welcome-engines-saved")).toBeVisible();

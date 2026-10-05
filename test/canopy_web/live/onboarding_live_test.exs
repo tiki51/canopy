@@ -623,41 +623,45 @@ defmodule CanopyWeb.OnboardingLiveTest do
       assert Settings.default_engine() == "opencode"
     end
 
-    test "both ready: OpenCode unless the user picks; a pick saves and outlasts Check again",
+    test "both ready: Claude Code unless the user picks; a pick saves and outlasts Check again",
          %{conn: conn} do
       opencode_running()
       view = open_at(conn, "engines")
 
-      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
-      assert Settings.get().default_engine == nil
-      # the default engine's model controls come first
-      html = view |> element("#welcome-default-model") |> render()
-      assert at(html, "welcome-opencode-defaults") < at(html, "welcome-claude-defaults")
-
-      view |> element("#welcome-engine-choice-claude_code") |> render_click()
-
-      assert Settings.get().default_engine == "claude_code"
       assert has_element?(view, "#welcome-engine-choice-claude_code[aria-checked=true]")
-      assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=false]")
-      assert has_element?(view, "#welcome-engines-saved")
+      assert Settings.get().default_engine == "claude_code"
+      # the default engine's model controls come first
       html = view |> element("#welcome-default-model") |> render()
       assert at(html, "welcome-claude-defaults") < at(html, "welcome-opencode-defaults")
 
-      view |> element("#welcome-check-engines") |> render_click()
-      render_async(view)
-      assert Settings.get().default_engine == "claude_code"
-    end
-
-    test "until the user picks, Check again re-applies the rule", %{conn: conn} do
-      view = open_at(conn, "engines")
-      assert Settings.get().default_engine == "claude_code"
-
-      opencode_running()
-      view |> element("#welcome-check-engines") |> render_click()
-      render_async(view)
+      view |> element("#welcome-engine-choice-opencode") |> render_click()
 
       assert Settings.get().default_engine == "opencode"
       assert has_element?(view, "#welcome-engine-choice-opencode[aria-checked=true]")
+      assert has_element?(view, "#welcome-engine-choice-claude_code[aria-checked=false]")
+      assert has_element?(view, "#welcome-engines-saved")
+      html = view |> element("#welcome-default-model") |> render()
+      assert at(html, "welcome-opencode-defaults") < at(html, "welcome-claude-defaults")
+
+      view |> element("#welcome-check-engines") |> render_click()
+      render_async(view)
+      assert Settings.get().default_engine == "opencode"
+    end
+
+    test "until the user picks, Check again re-applies the rule", %{conn: conn} do
+      binary = fake_claude()
+      claude_missing()
+      opencode_running()
+      view = open_at(conn, "engines")
+      assert Settings.default_engine() == "opencode"
+
+      config = Application.get_env(:canopy, :claude_code)
+      Application.put_env(:canopy, :claude_code, Keyword.put(config, :binary, binary))
+      view |> element("#welcome-check-engines") |> render_click()
+      render_async(view)
+
+      assert Settings.get().default_engine == "claude_code"
+      assert has_element?(view, "#welcome-engine-choice-claude_code[aria-checked=true]")
     end
 
     test "a default engine chosen before is kept, whatever the checks say", %{conn: conn} do

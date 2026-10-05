@@ -112,8 +112,8 @@ test.describe("settings", () => {
       const backend = page.locator('#active-agents [id^="engine-"]', { hasText: "Claude Code" });
       await expect(backend.first().locator("[data-default-engine]")).toBeVisible();
     } finally {
-      // back to no choice (OpenCode) for the specs that follow
-      sql("UPDATE settings SET default_engine = NULL");
+      // back to OpenCode (bin/server.sh) for the specs that follow
+      sql("UPDATE settings SET default_engine = 'opencode'");
     }
   });
 

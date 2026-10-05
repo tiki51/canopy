@@ -139,7 +139,7 @@ defmodule CanopyWeb.DmPicker do
       <div
         :if={@open?}
         id="dm-picker"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-base-content/40 p-4"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/50 p-4"
         phx-window-keydown="close_picker"
         phx-key="Escape"
         phx-target={@myself}
