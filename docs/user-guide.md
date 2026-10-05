@@ -11,9 +11,10 @@ whose billing team is chasing an invoice that gets charged twice. Every screen i
 light mode and then in dark mode. The theme follows your system by default; the three
 buttons at the bottom of the left rail switch between system, light, and dark.
 
-> The screenshots come from Canopy's browser test suite running against a scripted
-> stand-in for OpenCode. Everything on screen is real Canopy; the handful of live agent
-> replies in the "Watching an agent work" section are placeholder text from that stand-in.
+> The screenshots come from Canopy's browser test suite running against scripted
+> stand-ins for OpenCode and Claude Code. Everything on screen is real Canopy; the handful
+> of live agent replies in the "Watching an agent work" section are placeholder text from
+> those stand-ins.
 
 ## Contents
 
@@ -51,10 +52,10 @@ Four ideas explain almost everything on screen.
   and events such as "started working", "delegated", "handed off", or "spend limit reached".
 
 ```text
-OpenCode session  = what an agent privately knows and works through
-Canopy MCP tools  = how agents communicate and coordinate
-Canopy database   = what the team knows
-The browser       = what you see
+Claude Code / OpenCode session = what an agent privately knows and works through
+Canopy MCP tools               = how agents communicate and coordinate
+Canopy database                = what the team knows
+The browser                    = what you see
 ```
 
 Agents never see the whole channel dumped into their context. A wake-up prompt tells an
@@ -153,7 +154,7 @@ in a field (in the name field it saves the name and moves on):
   version and the account it is logged in as; OpenCode shows its version and URL. Below
   them, the **default engine**: the engine agents without one of their own run on, the
   thirteen starter agents among them. It is picked for you from what is ready (Claude Code
-  when only Claude Code works, OpenCode when only OpenCode does, OpenCode when both do)
+  when only Claude Code works, OpenCode when only OpenCode does, Claude Code when both do)
   and saved at once, so the starter agents can answer; click the other card to change it.
   Once you pick, *Check again* leaves your choice alone. Then pick the **default model**
   for each engine that answered (and Claude Code's default effort), the default engine's
@@ -182,6 +183,10 @@ once; **Esc** never closes the window by itself, it asks "Skip setup?" first (*K
 or Esc again takes the question back). Either way setup does not come back by itself.
 **Settings → Run setup again** reopens it over Settings, prefilled with your current
 choices. On a phone the window fills the screen, with Back and Next at the foot.
+
+![First-run setup, light](user-guide/images/setup-modal-light.png)
+
+![First-run setup, dark](user-guide/images/setup-modal-dark.png)
 
 If setup says an engine isn't ready:
 
@@ -235,6 +240,10 @@ match, and several words narrow it down (`acme pay` finds `#payment-retries` in 
 nothing typed it shows where you have been recently, the channels that need you, and the
 pages.
 
+![Command palette, light](user-guide/images/command-palette-light.png)
+
+![Command palette, dark](user-guide/images/command-palette-dark.png)
+
 A first character narrows the search: `#` channels, `@` agents, teams and DMs, `>` commands
 (pages, *New channel in* a repository, *New direct message*, *Import agents…*, *Agent
 gallery*, *Start playbook*, the theme,
@@ -269,6 +278,10 @@ every channel, in one ranked list:
   its final text when it posted through the tools. Its narration between calls is left out.
 - **Files**: shared documents by filename and caption, and text files by their contents
   (the first megabyte). Images and PDFs are found by name and caption only.
+
+![Search, light](user-guide/images/search-light.png)
+
+![Search, dark](user-guide/images/search-dark.png)
 
 Results appear as you type. Words match whole words, in any case and without accents
 (`cafe` finds `café`), and the last word you are typing also matches as the start of one
@@ -309,7 +322,8 @@ A result opens the exact place it came from:
 
 ## 3. Settings
 
-Settings is where Canopy meets OpenCode. Open it from the gear in the rail. **Run setup
+Settings is where Canopy meets its engines, Claude Code and OpenCode, and where the
+workspace-wide defaults live. Open it from the gear in the rail. **Run setup
 again**, top right, reopens [first-run setup](#first-run-setup) over the page, with your
 current choices filled in.
 
@@ -397,7 +411,7 @@ Each control carries one sentence of help right under it; where there is more to
 
 ![Settings, Appearance, dark](user-guide/images/settings-appearance-dark.png)
 
-- **Mode**: System, Light or Dark. It is the same setting as the sun and moon switch at
+- **Mode**: System, Light or Dark. It is the same setting as the three theme buttons at
   the bottom of the rail; change either and the other follows.
 - **Palette**: four colour schemes, each with a light and a dark variant. *Blue Hour
   Jungle* is the default; *Moss & Paper* is warmer and easier on the eyes for long
@@ -414,6 +428,10 @@ same in every palette.
 Desktop notifications tell you when something needs you while you are looking at another
 app or another tab. They come from the open Canopy tab, through the browser: nothing is
 sent anywhere, no push service is involved, and with no Canopy tab open there are none.
+
+![Settings, Notifications, light](user-guide/images/settings-notifications-light.png)
+
+![Settings, Notifications, dark](user-guide/images/settings-notifications-dark.png)
 
 - **Desktop notifications: On / Off**, at the top, is the master switch. It is off until
   you turn it on. The first time, turning it on is what makes the browser ask to allow
@@ -465,15 +483,18 @@ Scroll down for the MCP bridge.
   rotating needs nothing else, Canopy re-registers on the next prompt), and the source of
   the identity plugin with a copy button and the path to put it at. Canopy also drops the
   plugin into every registered repository under `.opencode/plugins/`, excluded from git, so
-  the global copy is a convenience. Which MCP servers agents get in a particular
+  the global copy is a convenience. Claude Code agents need nothing here: each turn
+  gets Canopy's endpoint with a token of its own session. Which MCP servers agents get in a particular
   repository, and whether they work, is on that repository's page (see
   [MCP servers](#mcp-servers) in §4).
 
 ### The billing hold
 
-When OpenCode reports an exhausted balance or quota, Canopy stops spending on your behalf:
-every schedule pauses, wake-ups are dropped with one note per channel, and a red banner
-appears on every page until you release it.
+When an engine reports an exhausted balance, quota, or credits, Canopy stops spending on
+your behalf: every schedule pauses, wake-ups are dropped with one note per channel, and a
+red banner appears on every page until you release it. On Claude Code that includes a
+subscription usage limit (the 5-hour or the weekly one): the hold stays on after the limit
+resets, so release it yourself once you can work again.
 
 ![Billing hold banner, light](user-guide/images/hold-banner-light.png)
 
@@ -514,6 +535,10 @@ that only point at a secret (`{env:API_KEY}`, `${GITHUB_TOKEN}`) are shown as wr
 Canopy's own token shows only its last 4 characters, with a link to Settings to reveal
 or rotate it. The page asks the engines when it opens and when you press *Refresh*
 (and again after a token rotation); it does not poll.
+
+![A repository's MCP servers, light](user-guide/images/repository-mcp-light.png)
+
+![A repository's MCP servers, dark](user-guide/images/repository-mcp-dark.png)
 
 **What each engine loads.**
 
@@ -596,9 +621,12 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 
 ![Agent page, dark](user-guide/images/agent-page-dark.png)
 
-- **About**: status, role, OpenCode agent, model with its price per million tokens (from
-  OpenCode's provider list; an inherited model reads `sonnet (default)`, linking to
-  Settings), spend today, this week, and all time, and the system prompt.
+- **About**: status, role, engine (`(default)` when it follows the default engine),
+  permissions and effort for a Claude Code agent or the OpenCode agent for an OpenCode one,
+  model (an inherited one reads `sonnet (default)`, linking to Settings; an OpenCode model
+  also shows its price per million tokens from OpenCode's provider list), whether
+  [model routing](#model-routing-experimental) is on, spend today, this week, and all
+  time, and the system prompt.
 - **Memory**: what the agent carries across every repository and channel. See
   [Agent memory](#13-agent-memory).
 - **Scheduled**: the agent's schedules across all channels, each with a link and a cancel
@@ -617,7 +645,8 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **Name** is the slug used for `@name`. **Display name** is what the list shows.
 - **Role** is one line that other agents and the sidebar see.
 - **System prompt** is the agent's personality and standing instructions. It is sent with
-  every prompt on top of OpenCode's own agent prompt.
+  every prompt, after Canopy's collaboration prompt and on top of the engine's own system
+  prompt (Claude Code's, or the OpenCode agent's).
 - **Engine**: *Default (Claude Code)* (whichever engine Settings names), OpenCode, or
   Claude Code. A new agent starts on *Default*: it follows the default engine, so changing
   the default in Settings moves it too. The fields below change with the engine the agent
@@ -650,6 +679,10 @@ With **Run cheap wakes on a light model** ticked, the agent runs some wakes on i
 model** (and, on Claude Code, **light effort**) instead of its main one. *Default (…)*
 follows the light model in Settings; with none there and none here, routing does nothing
 and the agent page says *Routing is on but no light model is set*.
+
+![Model routing on the agent form, light](user-guide/images/agent-routing-light.png)
+
+![Model routing on the agent form, dark](user-guide/images/agent-routing-dark.png)
 
 What goes light: scheduled checks, delegation reports coming back, accepted handoffs,
 unaddressed agent posts that reach the agent as channel owner, and short agent
@@ -689,6 +722,10 @@ A **team** is a named crew of agents you bring into a channel in one step and ad
 one `@name`. The seed step creates `@bugfix-team`: `@frontend`, `@backend`, `@test`, and
 `@reviewer`, led by `@backend`. **Teams** on the Agents page (or the *Teams* panel under the
 list) opens the Teams page, where you create, edit, and delete them.
+
+![Teams, light](user-guide/images/teams-light.png)
+
+![Teams, dark](user-guide/images/teams-dark.png)
 
 - A team is not a group. A group is one label per agent that sorts your lists; an agent can
   be on several teams, and a team usually crosses groups.
@@ -782,6 +819,10 @@ The preview has a row per agent, team, and playbook:
 - An engine box for each agent: *Default (…)* to follow this machine's default engine (what
   a file that names no engine gets), or a named engine.
 
+![Import preview, light](user-guide/images/agent-import-light.png)
+
+![Import preview, dark](user-guide/images/agent-import-dark.png)
+
 **Import** writes everything at once, or nothing. If something changed in the meantime (an
 agent with that name appeared), the preview is worked out again for you to check.
 
@@ -814,6 +855,10 @@ agent you already have says **Added**, or **Differs** when you changed its role,
 mode, with **Compare** opening the preview set to replace it. The **Bug-fix team and
 playbook** bundle restores `@bugfix-team` and the bug-fix playbook as the seed step made
 them.
+
+![Agent gallery, light](user-guide/images/agent-gallery-light.png)
+
+![Agent gallery, dark](user-guide/images/agent-gallery-dark.png)
 
 Agents can't export or import agents: there is no tool for it, because importing an agent
 changes what agents may do.
@@ -881,10 +926,10 @@ a dot on its button says something in it wants a look: an agent in line for a lo
 active schedules.
 
 From a laptop-width window up, Details sits beside the feed, and the browser remembers
-whether you left it open or closed. Only opening or closing it yourself counts (**Details**,
-a chip, **×** or **Esc**), not a thread that took its place or a window that narrowed. Below that width it covers the channel, with **Back** to
-return, and never opens by itself. Closing Details closes any form open in it, so it
-reopens collapsed.
+whether you left it open or closed. Only opening or closing it yourself counts
+(**Details**, a chip, **×** or **Esc**), not a thread that took its place or a window that
+narrowed. Below that width it covers the channel, with **Back** to return, and never opens
+by itself. Closing Details closes any form open in it, so it reopens collapsed.
 
 Its sections, top to bottom:
 
@@ -903,15 +948,20 @@ Its sections, top to bottom:
   (see [Agents](#agents-in-a-channel)).
 - **Locks**: the repository's [locks](#locks), shared by every channel on it, and
   **Take a lock**.
-- **Automation**: **Playbook** (the run, or **Run…** to start one), **Scheduled** (with the
-  number active) and **Spend** (spent, and the limit). Each opens in place.
+- **Automation**: **Playbook** (the run, or **Run…** to start one), **Scheduled** (with
+  the number active) and **Spend** (spent, and the limit). Each opens in place.
 - **View**: the **Routine activity** switch (see
   [Compact timeline](#compact-timeline-and-the-activity-view)), **Search this channel**, and
   **Archive channel…**.
 
+![Channel details beside the feed, light](user-guide/images/channel-details-light.png)
+
+![Channel details beside the feed, dark](user-guide/images/channel-details-dark.png)
+
 When the channel has a [brief](#brief-panel), a one-line **BRIEF** strip is pinned under
-the header, showing its first line. Click it to open the whole brief; the strip remembers,
-in this browser, whether you left it open.
+the header, showing its first line as plain text (headings, list markers, emphasis and
+link targets stripped). Click it to open the whole brief; the strip remembers, in this
+browser, whether you left it open.
 
 ### The conversation
 
@@ -943,6 +993,10 @@ in either direction. Agents see reactions when they next read the channel, so a 
 you without posting. A reaction is never an instruction: it does not complete a task or
 accept a handoff, so say it in a message when you want something done. System notes and
 archived channels take no reactions.
+
+![Reactions on a message, light](user-guide/images/reactions-light.png)
+
+![Reactions on a message, dark](user-guide/images/reactions-dark.png)
 
 Further down, the same channel after the fix: `@backend` handed the task to `@reviewer`,
 the reviewer accepted (the owner badge changed), reviewed, and finally had nothing to add
@@ -1005,9 +1059,9 @@ and scheduled fires. Errors, passes with a note, and anything you can act on alw
 **Routine activity**, under **View** in the channel's details, shows everything, and the
 browser remembers your choice.
 
-![Channel with Activity on, light](user-guide/images/channel-activity-light.png)
+![Channel with Routine activity on, light](user-guide/images/channel-activity-light.png)
 
-![Channel with Activity on, dark](user-guide/images/channel-activity-dark.png)
+![Channel with Routine activity on, dark](user-guide/images/channel-activity-dark.png)
 
 Each finished turn is a card in the same box the live card was in, headed
 `@agent finished · N tools · $cost · duration`. A turn that ended in an error quotes its
@@ -1046,15 +1100,20 @@ away. The rule of thumb:
 - **Topic**: the one line in the sidebar and header.
 
 **Brief › Add** (or **Edit**) in the channel's details opens the editor; on a narrow
-window, where Details covers the channel, Details closes so the editor shows. Type Markdown and **Save brief**. The counter
-under the box shows the characters (4,000 at most; the brief is never cut short) and a
-rough token estimate times the agents in the channel; from 2,000 characters it warns that
-long briefs cost on every prompt. Put long reference material in the repository notes or
-a shared document and link it. An `@name` in a brief is highlighted but wakes nobody.
+window, where Details covers the channel, Details closes so the editor shows. Type
+Markdown and **Save brief**. The counter under the box shows the characters (4,000 at
+most; the brief is never cut short) and a rough token estimate times the agents in the
+channel; from 2,000 characters it warns that long briefs cost on every prompt. Put long
+reference material in the repository notes or a shared document and link it. An `@name` in
+a brief is highlighted but wakes nobody.
 
 Once saved, the brief is pinned as a strip under the header. Open it to read it rendered,
 with who set it and when, and the token cost per prompt. **Edit** reopens the editor;
 **Clear** (in the editor, after a confirmation) removes it.
+
+![Brief strip and panel, light](user-guide/images/brief-light.png)
+
+![Brief strip and panel, dark](user-guide/images/brief-dark.png)
 
 Who can change it: you, always (in any channel or DM, open or archived), and the
 channel's owner agent, with `canopy_channel_brief_set`. Other members cannot, and no
@@ -1102,8 +1161,8 @@ checked, how many times it fired, and the error while its check fails. See
 ### Budget panel
 
 The spend in the header shows what the channel has spent and its limit. It opens
-**Spend**, under **Automation** in the channel's details, where you set, raise, or remove the
-limit.
+**Spend**, under **Automation** in the channel's details, where you set, raise, or remove
+the limit.
 
 ![Budget panel, light](user-guide/images/budget-panel-light.png)
 
@@ -1120,10 +1179,11 @@ limit.
 
 ### Archiving
 
-**Archive channel…**, under **View** in the channel's details (with a confirmation), closes
-the channel: an *archived* badge appears, the composer becomes a notice with a **Reopen**
-button (the header's **Stop** becomes **Reopen** too), and the sidebar folds the channel
-under an "archived" toggle. Agents see it as archived in `canopy_channels_list`.
+**Archive channel…**, under **View** in the channel's details (with a confirmation),
+closes the channel: an *archived* badge appears, the composer becomes a notice with a
+**Reopen** button (the header's **Stop** becomes **Reopen** too), and the sidebar folds
+the channel under an "archived" toggle. Agents see it as archived in
+`canopy_channels_list`.
 
 ![Archived channel, light](user-guide/images/archived-channel-light.png)
 
@@ -1252,7 +1312,8 @@ limit, and the total. `CANOPY_FILES_DIR` moves the folder.
 ## 8. Watching an agent work
 
 Post a message. If it mentions nobody, the owner wakes; a "started working" line appears
-(with Activity on), the owner's dot turns green, and a live card shows what it is doing.
+(with Routine activity on), the owner's dot turns green, and a live card shows what it is
+doing.
 
 ![Agent working, light](user-guide/images/agent-working-light.png)
 
@@ -1264,8 +1325,8 @@ while posting. While it is closed the card's header still says what is running n
 command or the file), how long the turn has run, how many calls of each kind it made
 (`7 cmds · 5 reads · 2 edits · 1 failed`), the tokens so far, and the model. A turn waiting
 on a permission card says *is waiting for you*; one waiting on a question becomes the
-question card itself (see [Questions](#questions)). **Abort** next to the agent's
-pill ends the turn; the dot goes red until its next prompt.
+question card itself (see [Questions](#questions)). **Abort** on the agent's row
+in the channel's details ends the turn; the dot goes red until its next prompt.
 
 Click the header to open the card:
 
@@ -1316,10 +1377,15 @@ The channel shows what an agent chose to post. Its **transcript** shows why: the
 whole engine session in the channel, read back from the engine (Claude Code's session
 file, or OpenCode's history over its API). Canopy keeps no copy.
 
-Open it from the document icon on the agent's member pill, from **Transcript** next to the
-channel on the agent's page, from **View in transcript →** at the bottom of an opened turn
-card (or the transcript icon in the activity side panel), or from **earlier transcript** on
-a *reset @agent's session* line. Reading never blocks the agent; it works while it is busy.
+Open it from the document icon on the agent's row in the channel's details, from
+**Transcript** next to the channel on the agent's page, from **View in transcript →** at
+the bottom of an opened turn card (or the transcript icon in the activity side panel), or
+from **earlier transcript** on a *reset @agent's session* line. Reading never blocks the
+agent; it works while it is busy.
+
+![Session transcript, light](user-guide/images/transcript-light.png)
+
+![Session transcript, dark](user-guide/images/transcript-dark.png)
 
 What it shows, oldest first, 50 entries at a time (**Load older** / **Load newer**):
 
@@ -1371,11 +1437,16 @@ With it on, an @mention of an agent that is working, from you, in the channel (o
 thread the agent is working in), goes into the turn it is running. The agent finishes the
 command or tool call it is on, a long test run included, then reads your message before
 its next step, and carries on, changes course, or answers. Its live card shows a chip,
-*Interrupting after current step*, with the call running now, and its row in the
-channel's details shows *1 waiting*. Your message shows *Queued · delivered after the current step* under it
-(*… once the card is answered* while the agent waits on a card) until the turn ends. With Activity on, the feed says "@agent will read your message
-after its current step". The finished line then reads "@agent finished · took 1 message
-mid-turn · …".
+*Interrupting after current step*, with the call running now, and its row in the channel's
+details shows *1 waiting*. Your message shows *Queued · delivered after the current step*
+under it (*… once the card is answered* while the agent waits on a card) until the turn
+ends. With Routine activity on, the feed says "@agent will read your message after its
+current step". The finished line then reads "@agent finished · took 1 message mid-turn ·
+…".
+
+![Interrupt chip on a working agent, light](user-guide/images/interrupt-light.png)
+
+![Interrupt chip on a working agent, dark](user-guide/images/interrupt-dark.png)
 
 - **Interrupt now**, on the chip, does not wait for the current step: it stops the turn
   (the running command too) and starts a new one with your message at once. The feed says
@@ -1408,14 +1479,16 @@ appears in the channel with the permission, the file pattern, and the diff.
 **Once** allows this action, **Always** allows it for the rest of the session, **Reject**
 refuses and the agent reports that it could not proceed. For OpenCode agents, answering from the OpenCode
 terminal instead also clears the card. Which actions ask is up to each agent's configuration:
-for Claude Code agents, the allowlist in Settings; for OpenCode agents, the configuration in
+for Claude Code agents, the permissions and the tools that run without asking on the
+agent's edit form; for OpenCode agents, the configuration in
 the repository's `.opencode/opencode.json` (for example, `{ "permission": { "edit": "ask" } }`).
 
 A waiting card can also raise a [desktop notification](#notifications) when you are
 looking elsewhere.
 
-If the agent stops waiting before you answer (its turn ended, was stopped, or a Claude
-Code prompt waited 30 minutes), the card stays and says so. Approving it then posts a
+If the agent stops waiting before you answer (its turn ended or was stopped, or a Claude
+Code agent's permission request waited 30 minutes, a fixed limit separate from the
+question wait in Settings), the card stays and says so. Approving it then posts a
 message from you in the channel, for example `@backend Approved: Bash make test (once).
 You can do it now.`, which wakes the agent like any message; the original call is gone,
 so the agent does the action again. On such a card, **Reject** becomes **Dismiss** and
@@ -1432,13 +1505,16 @@ activity like any live card. Every question takes a typed answer, with or withou
 options; a question with no options has only the box. **Send** answers; it stays disabled
 until an option is picked or something is typed. **Dismiss** declines.
 
-While the agent waits, the header's agents button and its row in the channel's details show
-"waiting on you", a bar above the composer says
-"@agent is waiting on your answer" with a **Show** button that scrolls to the card, and
-the sidebar badges the channel. Under *One agent at a time*, an agent waiting on you does
-not hold the channel: the next agent in line starts, and when you answer, the waiting
-agent carries on alongside it. It does hold its own sessions, so a message to the same
-agent waits until its turn ends.
+![Question card, light](user-guide/images/question-card-light.png)
+
+![Question card, dark](user-guide/images/question-card-dark.png)
+
+While the agent waits, the header's agents button and its row in the channel's details
+show "waiting on you", a bar above the composer says "@agent is waiting on your answer"
+with a **Show** button that scrolls to the card, and the sidebar badges the channel. Under
+*One agent at a time*, an agent waiting on you does not hold the channel: the next agent
+in line starts, and when you answer, the waiting agent carries on alongside it. It does
+hold its own sessions, so a message to the same agent waits until its turn ends.
 
 A message in the composer is never taken as the card's answer. If your draft mentions an
 agent that is waiting on a card, a hint above the message box says so; answer on the card.
@@ -1530,16 +1606,18 @@ the shipped text now tells agents how teams work, and a custom preamble keeps it
 ### Delegation
 
 Delegation gives a member a subtask without changing who owns the channel. Type
-`/delegate @researcher list every code path that can call enqueue_charge`, or let an
-agent decide: `@backend` in the Acme conversation did it through `canopy_delegate_task`.
+`/delegate @researcher list every webhook handler that can reach the refund endpoint`, as
+Priya does below in `#refund-webhooks` (owned by `@test`), or let an agent decide: an
+agent delegates through `canopy_delegate_task`.
 
 ![Delegation, light](user-guide/images/delegation-light.png)
 
 ![Delegation, dark](user-guide/images/delegation-dark.png)
 
 The timeline shows one "delegated to" line: "@backend delegated to @researcher: …" when an
-agent delegates, or "Priya delegated to @researcher for @backend: …" when you type
-`/delegate` (the owner stays responsible and hears the result). The delegate works in **its own channel
+agent delegates, or "Priya delegated to @researcher for @test: …" when you type
+`/delegate` (the owner stays responsible and hears the result: above, `@test` folds the
+two handlers into its fix). The delegate works in **its own channel
 session**, the same one that answers its messages (each agent has exactly one session per
 channel), while the delegator stays idle. If the delegate is busy, the delegation waits
 for its current turn to end; two delegations that arrive meanwhile reach it together, with
@@ -1608,7 +1686,13 @@ Here `@backend` and Priya talk about `@researcher`'s finding in `#checkout-laten
 - **The Threads page** (the rail's **Threads** icon) lists threads across every channel:
   **Following**, **All active** (a reply in the last week), and **Agents working** (an
   agent's turn is working in it now). Each row shows the root, the last two replies, who is
-  in it, and what is new; **Open thread** takes you there.
+  in it, and what is new. **Open thread**, or a click anywhere on the row that is not a
+  button or link, takes you there; ⌘-, Ctrl- or Shift-click (or a middle click) opens it
+  in a new tab. Selecting text in a row doesn't open it.
+
+![The Threads page, light](user-guide/images/threads-inbox-light.png)
+
+![The Threads page, dark](user-guide/images/threads-inbox-dark.png)
 
 ### Locks
 
@@ -1644,14 +1728,14 @@ the port. A **lock** is how agents take turns on those, and Canopy keeps it, not
   agent in another channel lets go.
 
 Each lock shows as a chip in the channel header: `tests · @backend · 6m · next:
-@fullstack, @frontend`. Click it for **Locks** in the channel's details: the holder (and the channel it holds the
-lock from, if not this one), its reason and age, the line behind it, and **Force release**,
-which (after a confirmation) takes the lock from its holder and wakes the next in line.
-Use it when a holder is stuck.
+@fullstack, @frontend`. Click it for **Locks** in the channel's details: the holder (and
+the channel it holds the lock from, if not this one), its reason and age, the line behind
+it, and **Force release**, which (after a confirmation) takes the lock from its holder and
+wakes the next in line. Use it when a holder is stuck.
 
 You can hold a lock yourself, for "don't touch the tree, I'm testing by hand": press
-**Take a lock**, type its name and a reason, and press **Take lock**. Agents that ask for it wait until
-you press **Release**; a lock you hold never frees itself.
+**Take a lock**, type its name and a reason, and press **Take lock**. Agents that ask for
+it wait until you press **Release**; a lock you hold never frees itself.
 
 Agents learn all this from the collaboration preamble. If you have edited it in Settings,
 compare it with the default: the shipped text now tells agents to take locks and never
@@ -1687,10 +1771,10 @@ on an agent's page is the shortcut for the one-to-one case.
 ![Direct message, dark](user-guide/images/dm-dark.png)
 
 A DM shows a **DM** pill instead of a topic and, with more than one repository registered,
-a **repository switcher** under **Task** in its details. Switching moves the conversation: the timeline
-records the move, the agents' old sessions are dropped once idle, and their next turn runs
-in the new repository. Your message history and their memory carry over. An agent can do
-the same when you ask it to "work in acme-storefront from now on"
+a **repository switcher** under **Task** in its details. Switching moves the conversation:
+the timeline records the move, the agents' old sessions are dropped once idle, and their
+next turn runs in the new repository. Your message history and their memory carry over. An
+agent can do the same when you ask it to "work in acme-storefront from now on"
 (`canopy_dm_switch_repository`).
 
 Agents can also open DMs with `canopy_dm_start`, for example "start a DM with me and
@@ -1733,20 +1817,109 @@ happens in a channel, so it works in that channel's repository. The seed step ad
 **bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your sign-off,
 run by `@project-manager` with `@bugfix-team` in a new channel.
 
-### The library and the editor
+### The library and the builder
 
-**Playbooks** in the rail lists every playbook with its description, where it came from
-(*starter*, *yours*, or *draft by @agent*), an **enabled** toggle, how many runs are in
-progress, **Start…** and **Edit**, and a `⋯` menu with **Duplicate**, **Export** (the
-playbook as a file, to [import elsewhere](#sharing-agents-export-import-and-the-gallery)),
-and **Delete**, last. Enabled playbooks are
-listed in every agent's prompt, so agents know they exist; a disabled one cannot be
-started. Delete is refused while a run is in progress (disable it instead); finished runs
-keep their own copy of the text.
+**Playbooks** in the rail lists every playbook as a card: its title and short name, where
+it came from (*starter*, *yours*, *draft by @agent*, or *by @agent* once enabled), *N
+running* while runs are in progress, the description, and the steps as a strip (↩︎ can
+send work back, ✓ waits for you, ⤼ can be skipped). A line under it says who leads a run,
+the team, where it runs, and when it last ran; on an agent's draft it says instead who
+drafted it, and that agents can't use it until you enable it. On the right are the **Enabled** toggle,
+**Start** (on a disabled playbook, **Edit**, or **Review draft** for an agent's draft), and
+a `⋯` menu with **Duplicate** (a disabled copy, opened in the builder), **Export file**
+(the playbook as a file, to [import elsewhere](#sharing-agents-export-import-and-the-gallery)),
+and **Delete**, last. **All**, **Enabled** and **Drafts** (every disabled playbook) filter
+the list. A click anywhere on a card that is not one of its controls opens it in the
+builder; ⌘-, Ctrl- or Shift-click (or a middle click) opens it in a new tab.
 
-A playbook is one Markdown text: YAML frontmatter between `---` lines, then guidance for
-the whole run and a `## <step id>` section per step. The editor checks the text as you
-type, lists what is wrong under it, and previews the steps on the right.
+Enabled playbooks are listed in every agent's prompt, so agents know they exist; a
+disabled one cannot be started. Delete is refused while a run is in progress (disable it
+instead, or cancel the run); finished runs keep their own copy of the text.
+
+![Playbooks, light](user-guide/images/playbooks-light.png)
+
+![Playbooks, dark](user-guide/images/playbooks-dark.png)
+
+**+ New playbook** asks how you want to start:
+
+- **Copy a playbook**: pick one and copy it; a disabled copy named `<name>-copy` opens in
+  the builder.
+- **Start blank**: one empty step and default settings.
+- **Describe it to an agent**: say how the work should go, pick who drafts it
+  (`@project-manager` by default), and press **Ask @agent**. Canopy posts your request in
+  your DM with that agent and opens it; the agent saves a disabled draft, which shows up
+  under **Drafts** for you to review (see [Agent-written playbooks](#agent-written-playbooks)).
+
+**Import file** brings in a playbook file or a bundle.
+
+The builder shows a whole playbook on one page. The **About** card at the top holds the
+title (on a new playbook, the short name agents know it by is made from the title until
+you first save; it shows under the title, and a click on it lets you choose your own), one
+sentence on when to use it (200 characters at most), and the
+settings:
+
+- **Led by**: the agent that coordinates a run you start, or *Choose when starting*. An
+  agent that starts a run always leads it. The screens call the coordinator the *lead*.
+- **Team**: a team whose members fill the roles.
+- **Runs in**: *A new channel* for each run, or *The channel it's started from*.
+- **Nudge the lead**: how long a step may go quiet before Canopy nudges the lead (30
+  minutes by default, *Never* for no nudges; see [Stalled runs](#stalled-runs)).
+- **Ask when starting**: a hint shown on the start page under "What's this run about?".
+- **Roles**: a chip per role, with the agent who fills it when no team member does. Roles
+  are added as you choose who does each step.
+
+When most settings are at their defaults, the rows left at a default fold behind **More
+settings**.
+
+**Steps** come next, up to 20. Click a step to open it:
+
+- **Who does it**: one or more roles or agents (two or more work on the step in parallel),
+  or **The lead does it**. Picking an agent that fills no role yet adds a role for it.
+- **What should happen**: Markdown the lead reads when the run reaches the step.
+- **Done when**: how the lead can tell the step is finished.
+- Three switches: *If changes are requested, send it back to* an earlier step, *Wait for my
+  approval before moving on*, and *The lead may skip this step*.
+- The step's `⋯` menu moves it or changes its key (the id agents use to send work back),
+  and the card has **Duplicate** and **Delete step**. **Undo** brings a deleted step back
+  for ten seconds.
+
+**+ Add step** (or **+ Add step here**, between two steps) offers ready-made kinds: *Task
+for an agent*, *Parallel work*, *Review* (it sends work back to the step above), *Your
+sign-off*, and *Lead's step*. Drag a step by its ⋮⋮ grip to reorder, or focus the grip,
+press Space, move it with ↑ and ↓, and press Space again (Esc puts it back). Send-backs
+follow their steps through moves and renames, and show as rails beside the list.
+**Ground rules for every step**, at the bottom, is optional guidance the lead keeps to for
+the whole run.
+
+Problems show as you go: a red banner counts them ("2 things to fix before you can save"),
+each links to its step (or, for a role with no agent, to the role's chip), and the step
+gets a red border. **Save** (⌘S or Ctrl+S) stays disabled until there are none. A new
+playbook is expected to be incomplete at first, so its banner lists only a broken send-back
+or a short name that can't be used; **Create playbook** stays disabled until the rest is
+filled in, and its tooltip says what it needs ("Name the playbook and give each step a
+title and someone to do it"). A playbook you
+create is enabled as soon as it is saved, so agents see it from their next turn; copies
+and agents' drafts start disabled.
+
+The header says when you have unsaved changes; on a saved playbook **Discard** drops them,
+and on a new one **Cancel** goes back to the library. Leaving the page asks first. The
+**Enabled** toggle and **Start a run** wait until you have saved. Changing the short name
+asks first, since agents will know the playbook by the new name; runs in progress are not
+affected. If the playbook is saved somewhere else while you edit (by an agent, or in
+another tab), a bar offers **Load their version** or **Save mine as a copy**; if it was
+deleted, the choices are **Discard mine** or **Save mine as a new playbook**.
+
+![Playbook builder, light](user-guide/images/playbook-builder-light.png)
+
+![Playbook builder, dark](user-guide/images/playbook-builder-dark.png)
+
+Underneath, a playbook is still one Markdown file: YAML frontmatter between `---` lines,
+then a `# Title` heading, the ground rules, and a `## <step id>` section per step. Export and import use this
+file. **Edit file text**, in the builder's `⋯` menu, opens it for hand editing (**Save file
+text**, then **Back to the builder**). A playbook the builder cannot read opens on a notice
+with **Edit file text** and an offer to ask an agent to fix it. In the file, the lead is
+`coordinator`, *Nudge the lead* is `stall_after`, and *Ask when starting* is `inputs`.
+An excerpt from the starter:
 
 ```markdown
 ---
@@ -1777,6 +1950,8 @@ steps:
     approval: user
 ---
 
+# Bug fix
+
 Ground rules for the whole run …
 
 ## reproduce
@@ -1794,16 +1969,23 @@ Done when: a named test fails for the reported reason.
 | `team` | A team whose members fill the roles: a member whose team role label is the role, else one named like it |
 | `coordinator` | Who coordinates when *you* start a run (an agent that starts one always coordinates it) |
 | `channel` | `current` (default) or `new`: each run gets a new channel, owned by the coordinator, with the roster |
-| `inputs` | What the brief should say; the start form uses it as the placeholder |
+| `inputs` | What the brief should say: a hint on the start page, and the brief's placeholder in a channel's start form |
 | `stall_after` | How long a step may go quiet before Canopy nudges the coordinator (`30m` by default, `2h`, or `off`) |
 
 ### Starting a run
 
 - **Ask an agent**: "@project-manager run the bug-fix playbook: checkout button does
   nothing on Safari". It calls `canopy_playbook_start` and coordinates the run.
-- **The start form**: **Start…** on the Playbooks page (pick a channel), or **Playbook**
-  under **Automation** in a channel's details. Pick the coordinator (the playbook's own by default, else the
-  channel's owner), write the brief, and optionally override roles (`fix=@fullstack`).
+- **The start page**: **Start** on a playbook's card, or **Start a run** in the builder.
+  Say what the run is about, where it runs (a new channel, named from the playbook and the
+  first words of the brief, or a channel that exists; a `channel: new` playbook always gets
+  a new one), who leads it (the playbook's lead by default), and **Who does what**: a row
+  per role, filled from the team or the playbook's defaults, which you can change. **What
+  will happen** previews the steps. **Start run** starts it and opens the channel.
+- **In a channel**: **Playbook** under **Automation** in the channel's details (*none
+  running · Run…*). Pick the playbook and who leads it (the playbook's lead by default,
+  else the channel's owner), write the brief, and optionally override roles
+  (`fix=@fullstack`).
 - **The composer**: `/playbook bug-fix [@coordinator] the brief`.
 
 Canopy fills the roles (your overrides first, then the team, then `roles`), and refuses
@@ -1817,18 +1999,21 @@ that resets the channel's chatter budget like any message from you.
 
 ### Following a run
 
-While a run is in progress the header shows its chip, and the channel's row in the
-sidebar shows a small book. The first time this browser sees a run, the channel's details
-open on it by itself (from a laptop-width window up, with no thread or activity open; until
-then the run counts as unseen); after that it starts collapsed, and the chip opens
-Details on it. The panel shows
-the brief, the roster as `role → @agent` chips, every step with its owners, status, round
-(a step entered again counts up), the coordinator's result, and the delegations made for
-it; a step held for you carries one *sign-off* marker. Under **Coordinator** you can
-**Reassign** it (the new one
-is woken with the current step) or **Cancel run** (with a confirmation). Changes are
-checked against what was read: an agent acting on a run that changed meanwhile (you
-reassigned or cancelled it) is told so instead of overwriting it.
+While a run is in progress the header shows its chip, and the channel's row in the sidebar
+shows a small book. The first time this browser sees a run, the channel's details open on
+it by itself (from a laptop-width window up, with no thread or activity open; until then
+the run counts as unseen); after that it starts collapsed, and the chip opens Details on
+it. The panel shows the brief, the roster as `role → @agent` chips, every step with its
+owners, status, round (a step entered again counts up), the coordinator's result, and the
+delegations made for it; a step held for you carries one *sign-off* marker. Next to
+**Lead** you can **Reassign** the coordinator (the new one is woken with the current
+step), and **Cancel run** (with a confirmation) stops the run. Changes are checked against
+what was read: an agent acting on a run that changed meanwhile (you reassigned or
+cancelled it) is told so instead of overwriting it.
+
+![A playbook run in progress, light](user-guide/images/playbook-run-light.png)
+
+![A playbook run in progress, dark](user-guide/images/playbook-run-dark.png)
 
 Only the coordinator advances a run (`canopy_playbook_advance`, with its evidence in the
 step's result); a step's owners report through their delegations. A delegation the
@@ -1867,7 +2052,11 @@ waits for your sign-off, and it counts against the chatter budget like any agent
 
 An agent can draft a playbook with `canopy_playbook_save`. It is saved **disabled** and
 marked *draft by @agent*: an enabled playbook instructs every agent, so you read it, edit
-it if you like, and enable it yourself.
+it if you like, and enable it yourself. **Review draft** on its card opens it in the
+builder under a banner with **Delete draft** and **Enable playbook**. Saving a change to
+a draft makes it yours: the agent can no longer replace it, the banner goes, the card says
+*yours*, and you enable it with the **Enabled** toggle when it's ready. To ask for one from
+the library, use **+ New playbook › Describe it to an agent**.
 
 ### Watching GitHub
 
@@ -1975,7 +2164,7 @@ corrects past Claude Code turns from the totals they recorded, once.
 Context is most of the bill. Canopy keeps it small in four ways:
 
 - Each engine compacts an agent's session once a turn's model calls pass 40k tokens of
-  context (a "session was compacted" line appears with Activity on).
+  context (a "session was compacted" line appears with Routine activity on).
 - `canopy_messages_read` returns only what is new since the agent last read the channel,
   with long bodies shortened and `canopy_message_get` for the full text.
 - Short messages ride along in the wake-up prompt, so simple turns need no read at all.
@@ -2005,7 +2194,7 @@ uses `@finops`, an agent whose only job is to read the report. Any agent will do
 
 ## 15. Keeping spend under control
 
-Canopy has four brakes, from gentlest to firmest.
+Canopy has five brakes, from gentlest to firmest.
 
 1. **Model choice** (Settings, then the Agents page). The cheapest lever: most agents
    spend their turns reading and acknowledging. Change the default model first, since it
@@ -2016,7 +2205,10 @@ Canopy has four brakes, from gentlest to firmest.
    take turns, and a channel can optionally be paused after a set number of agent turns
    without you. Off by choice, agents keep working on their own for as long as the task
    takes.
-3. **Channel spend limits**. A total in dollars per channel, set on the new-channel form
+3. **A spend cap per turn** (Settings → Claude Code, Claude Code agents only). Canopy
+   passes it to Claude Code as `--max-budget-usd`, and Claude Code stops a turn that
+   reaches it. Empty means no cap.
+4. **Channel spend limits**. A total in dollars per channel, set on the new-channel form
    or in the Budget panel. An agent may propose one when it creates a channel; only you
    can change or remove one afterwards, and there is no tool for it. Once a channel has
    spent its limit, wake-ups there are dropped: a red line lands on the timeline once, a
@@ -2027,10 +2219,10 @@ Canopy has four brakes, from gentlest to firmest.
 
    ![Spend limit reached, dark](user-guide/images/spend-limit-reached-dark.png)
 
-4. **The billing hold**, which Canopy engages itself when an engine reports an empty
-   balance or quota. See [Settings](#the-billing-hold).
+5. **The billing hold**, which Canopy engages itself when an engine reports an empty
+   balance, quota, or usage limit. See [Settings](#the-billing-hold).
 
-**Model routing (experimental)** is a fifth lever, off until you try it: an agent whose
+**Model routing (experimental)** is one more lever, off until you try it: an agent whose
 scheduled checks or owner-fallback wakes mostly pass (the Routing candidates section on
 the Costs page says which) can run them on a light model. It pays when the agent's main
 cache is cold anyway (a check that fires after minutes of quiet, a delegation report after
@@ -2045,7 +2237,7 @@ page; a rule whose light turns keep escalating pauses on its own.
 
 ### Tools agents can call
 
-Canopy provides the same tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
+Canopy provides the same 45 tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
 
 | Area | Tools |
 |---|---|
@@ -2134,8 +2326,17 @@ In the file viewer:
 | Key | Effect |
 |---|---|
 | ← / → | The previous or next file in the message (a long unwrapped line scrolls sideways instead) |
-| `+` / `-` / `0` | Zoom an image in, out, or back to fit |
+| `+` (or `=`) / `-` / `0` | Zoom an image in, out, or back to fit; a double-click switches between fit and 100% |
 | Esc | Close the viewer |
+
+In the playbook builder:
+
+| Key | Effect |
+|---|---|
+| ⌘S / Ctrl+S | Save (or create) the playbook |
+| Space or Enter, on a step's ⋮⋮ grip | Pick the step up; press again to drop it |
+| ↑ / ↓ | Move the picked-up step |
+| Esc | Put a picked-up step back, or close an open menu |
 
 On the Search page, from the search box:
 
@@ -2151,14 +2352,14 @@ Reactions leave no line: they show as chips under the message.
 
 | Line | Meaning |
 |---|---|
-| `@agent started working` | A turn began (Activity view only) |
+| `@agent started working` | A turn began (with Routine activity on) |
 | `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
 | `@agent had nothing to add` / `@agent is holding the lock` | The agent chose not to reply; its note, when it gave one, is the sentence |
 | `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
-| `@agent will read your message after its current step` | Experimental: your mention went into its running turn (Activity view only) |
+| `@agent will read your message after its current step` | Experimental: your mention went into its running turn (with Routine activity on) |
 | `<you> interrupted @agent` / `@agent was interrupted by <you>` | Experimental: you pressed Interrupt now; a new turn starts with your message |
 | `@agent finished · took 1 message mid-turn · …` | Experimental: the turn read your message mid-turn |
-| `@agent stopped with an error` | The turn failed; the pill's dot is red |
+| `@agent stopped with an error` | The turn failed; the agent's dot in the channel's details is red |
 | *light model* badge on a turn | Experimental: the turn ran on the agent's light model ([model routing](#model-routing-experimental)) |
 | `@agent escalated to its main model` | Experimental: the light turn handed the wake to the main model; the next turn runs it |
 | `@agent hit an error on its light model` | Experimental: the light turn failed; the wake runs again once on the main model |
@@ -2175,7 +2376,7 @@ Reactions leave no line: they show as chips under the message.
 | `@agent updated the channel brief` / `<you> cleared the channel brief` | A brief change; "Show the brief" opens the new text |
 | `@agent is waiting for the tests lock held by @other (1st in line)` | An agent queued for a lock and ended its turn |
 | `the tests lock passed to @agent` | The lock freed and the next in line was woken |
-| `@agent took the tests lock` / `@agent's turn ended, releasing the tests lock` | Locks taken and freed without a wait (Activity view only) |
+| `@agent took the tests lock` / `@agent's turn ended, releasing the tests lock` | Locks taken and freed without a wait (with Routine activity on) |
 | `<you> took the tests lock back from @agent` / `… was taken back from @agent: not used within 3 minutes` | A Force release, or the lease passing an unused or overlong lock on |
 | `@agent started the bug-fix playbook · 6 steps` | A playbook run began |
 | `bug-fix: Reproduce done → Fix (@backend, @frontend)` / `bug-fix: skipped …` | The coordinator advanced the run |
@@ -2209,11 +2410,13 @@ service started by `brew services` uses the defaults.
 
 | Symptom | Likely cause |
 |---|---|
-| Agent replies but never posts through Canopy tools; tool errors mention "unknown Canopy session" | Identity plugin not installed for that repository, or OpenCode not restarted after installing it |
+| Agent replies but never posts through Canopy tools; tool errors mention "unknown Canopy session" | OpenCode agents: the identity plugin is not installed for that repository, or OpenCode was not restarted after installing it (*Reinstall plugin* on the repository's MCP page) |
 | No agent wakes | The channel has no owner and the message mentions nobody, or the mentioned agent is not a member |
 | A message wakes nobody and the timeline says "on hold" | The billing hold is engaged; release it from the banner |
 | A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
 | `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
+| *Check Claude Code* fails, or says "not logged in" | "not found on PATH": install Claude Code or enter the full path to `claude` in Settings. "not logged in": run `claude` once in a terminal and log in, then check again. A custom config directory in Settings must be the one you logged in with |
+| A Claude Code agent can't reach Canopy's tools (`/mcp` connection refused) | From source, the MCP address is built from `PORT`: restart Canopy after changing it. In a release (Homebrew), it is `CANOPY_URL`, which defaults to `http://127.0.0.1:$PORT`; if you set it by hand, make it agree with `PORT` and restart Canopy |
 | An agent lacks a tool from my repository's MCP server | Open the repository's page (Repositories → *MCP*): the server may be failed, need OAuth, or be disabled. Claude Code agents load only the repository's `.mcp.json`, never your personal `~/.claude.json` servers |
 | OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
@@ -2221,13 +2424,19 @@ service started by `brew services` uses the defaults.
 | The agent page says "Routing paused for scheduled wakes: 8 of 20 escalated" | Model routing (experimental) stopped sending that kind of wake to the light model because most of them needed the main one anyway. Leave it paused, or press **Resume** to try again from now; "every wake" means the light model itself failed (check its name in Settings or on the edit form) |
 | An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its row in the channel's details: every prompt, tool call and result |
 | The transcript says Claude Code no longer has the session | Claude Code deletes session files after `cleanupPeriodDays` (30 by default, in its `settings.json`); Canopy keeps no copy |
-| The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
+| The permission card never appears | The agent is allowed the action already. Claude Code: the tool matches a pattern under *tools that run without asking*, or the permission mode approves edits; change it on the agent's edit form. OpenCode: set the permission to `ask` in the repository's OpenCode config |
+| My mention doesn't reach a working agent until its turn ends | Expected unless *Mentioning a working agent interrupts it (experimental)* is on in Settings → Conversation. With it on, Alt+Enter and messages to an agent on a light turn still wait |
+| The timeline says "@agent started a fresh session: its engine changed from Claude Code to OpenCode" (or the reverse) | The default engine changed (or the agent's own engine did): a session belongs to one engine. Memory and channel history carry over |
+| The setup window opens every time | Setup comes back until you finish or skip it. *Skip setup* (top right) ends it; Settings → *Run setup again* reopens it |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |
 | A question card says the agent stopped waiting | Answer it anyway: the answer is posted as your message and wakes the agent. Dismiss it if it no longer matters |
 | A watch shows "gh is not installed" or "not logged in" | Install the GitHub CLI and run `gh auth login`, or point Settings → GitHub at the binary; *Check gh* confirms |
 | A watch paused after three failures | Read its reason in the Scheduled panel (often a 404: a repository or workflow `gh` cannot see), fix it, then ask the agent for a new watch |
-| A playbook won't start: "nobody fills role …" | Give the role an agent with `assign` (`fix=@fullstack`) or role overrides in the start form, or add a role label on the team |
+| A playbook won't start: "nobody fills role …" (or "pick who does …" on the start page) | Pick an agent for the role under **Who does what** on the start page, or override it (`fix=@fullstack`) in a channel's start form or an agent's `assign`. For good, give the role an agent in the builder (**Roles**), or a role label on the team |
 | "already has a playbook run in progress" | One run per channel: finish or cancel it, or use a playbook with `channel: new` |
+| The builder's **Save** stays greyed out | Something needs fixing: the red banner lists it and links to the step; hovering **Save** says how many problems are left. On a new playbook, name it and give each step a title and someone to do it |
+| The builder says "This playbook has problems the editor can't show yet" | The file text no longer parses (often after an import or a hand edit). **Edit file text** to fix it by hand, or ask the offered agent to fix it |
+| **Start a run** or **Enabled** is greyed out in the builder | Save your changes first; a disabled playbook must be enabled before it can start |
 | Slow first request after editing Canopy's code | Development mode recompiles on the next request |
 | `brew services start` says started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; another process on the port or a non-loopback `CANOPY_URL` stops the release at boot |
 | `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
