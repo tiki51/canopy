@@ -736,7 +736,7 @@ defmodule CanopyWeb.ChannelLive do
     put_flash(
       socket,
       :info,
-      "Started #{run.playbook_name}#{where}; @#{run.coordinator.name} coordinates it."
+      "Started #{run.playbook_name}#{where}; @#{run.coordinator.name} leads it."
     )
   end
 
@@ -2006,11 +2006,14 @@ defmodule CanopyWeb.ChannelLive do
          |> assign_run()
          |> put_flash(
            :info,
-           "Started #{run.playbook_name}; @#{run.coordinator.name} coordinates it."
+           "Started #{run.playbook_name}; @#{run.coordinator.name} leads it."
          )}
 
       {:error, reason} ->
-        {:noreply, socket |> assign_run(params) |> put_flash(:error, reason)}
+        {:noreply,
+         socket
+         |> assign_run(params)
+         |> put_flash(:error, CanopyWeb.PlaybookBuilder.plain_words(reason))}
     end
   end
 

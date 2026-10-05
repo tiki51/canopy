@@ -166,7 +166,7 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     assert has_element?(view, "#playbook-roster-dev", "dev")
     assert has_element?(view, "#playbook-roster-dev", "@#{ctx.dev.name}")
     assert render(view) =~ ~s(aria-label="filled by">→</span>)
-    assert has_element?(view, "#reassign-coordinator-form label", "Coordinator")
+    assert has_element?(view, "#reassign-coordinator-form label", "Lead")
     sign_off = view |> element("#playbook-step-sign-off") |> render()
     assert length(Regex.scan(~r/>\s*sign-off\s*</, sign_off)) == 1
 
@@ -192,7 +192,7 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     |> render_submit()
 
     assert Runs.get!(run.id).coordinator_agent_id == ctx.dev.id
-    assert render(view) =~ "coordinated by @#{ctx.dev.name}"
+    assert render(view) =~ "led by @#{ctx.dev.name}"
   end
 
   test "a watch shows in the Scheduled panel with what it watches and how it is doing",

@@ -129,12 +129,14 @@ defmodule Canopy.Frontmatter do
 
   defp item(value), do: "  - " <> scalar(value) <> "\n"
 
-  defp scalar(value) when is_integer(value) or is_boolean(value), do: to_string(value)
-  defp scalar(value) when is_atom(value), do: scalar(Atom.to_string(value))
+  @doc """
+  One YAML scalar: plain when it cannot be read as anything but this text,
+  otherwise a JSON string, which is a valid YAML double-quoted scalar.
+  """
+  def scalar(value) when is_integer(value) or is_boolean(value), do: to_string(value)
+  def scalar(value) when is_atom(value), do: scalar(Atom.to_string(value))
 
-  # Plain when it cannot be read as anything but this text; otherwise a JSON
-  # string, which is a valid YAML double-quoted scalar.
-  defp scalar(value) when is_binary(value) do
+  def scalar(value) when is_binary(value) do
     if plain?(value), do: value, else: Jason.encode!(value)
   end
 

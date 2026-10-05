@@ -58,6 +58,17 @@ defmodule Canopy.Playbooks do
     |> Map.new()
   end
 
+  @doc "When each playbook last started a run, per playbook id, for the library page."
+  def last_run_at do
+    Repo.all(
+      from r in Run,
+        where: not is_nil(r.playbook_id),
+        group_by: r.playbook_id,
+        select: {r.playbook_id, max(r.inserted_at)}
+    )
+    |> Map.new()
+  end
+
   # -- Writing ------------------------------------------------------------------
 
   @doc "Creates a playbook from its text (`:body`), plus `:enabled`, `:source`."
@@ -144,21 +155,28 @@ defmodule Canopy.Playbooks do
   the copy instructs no agent until the user has edited and enabled it.
   """
   def duplicate(%Playbook{} = playbook) do
-    name = free_name(playbook.name <> "-copy")
+    name = copy_name(playbook.name)
     body = String.replace(playbook.body, ~r/^name:.*$/m, "name: " <> name, global: false)
     create(%{body: body, enabled: false, source: "user"})
   end
 
-  defp free_name(base) do
+  @doc """
+  A free name for a copy of `name`: `<name>-copy`, `<name>-copy-2`, …, with
+  `name` shortened so the whole stays within 40 characters.
+  """
+  def copy_name(name) do
     taken = MapSet.new(Repo.all(from p in Playbook, select: p.name))
 
     Stream.iterate(1, &(&1 + 1))
     |> Stream.map(fn
-      1 -> base
-      n -> "#{base}-#{n}"
+      1 -> "-copy"
+      n -> "-copy-#{n}"
+    end)
+    |> Stream.map(fn suffix ->
+      (name |> String.slice(0, 40 - String.length(suffix)) |> String.trim_trailing("-")) <>
+        suffix
     end)
     |> Enum.find(&(not MapSet.member?(taken, &1)))
-    |> String.slice(0, 40)
   end
 
   @doc """

@@ -45,30 +45,169 @@ defmodule CanopyWeb.PlaybookStart do
     )
   end
 
-  @doc "Starts the run the form describes. `{:ok, run}` or `{:error, reason}`."
-  def start(params, channel \\ nil) do
-    channel = channel || (present?(params["channel_id"]) && Channels.get(params["channel_id"]))
+  @doc """
+  Starts the run the form describes. `{:ok, run}` or `{:error, reason}`.
 
+  From the Start page, `runs_in: "new"` runs it in a new channel on
+  `repository_id`, named `channel_name` when given (Canopy picks a free name
+  otherwise), and `roles` (`%{role => agent name}`) overrides the roster
+  where it differs from who would fill the role anyway.
+  """
+  def start(params, channel \\ nil)
+
+  def start(%{"runs_in" => "new"} = params, nil) do
+    case present?(params["repository_id"]) &&
+           Enum.find(Canopy.Repositories.list(), &(&1.id == params["repository_id"])) do
+      %{} = repository ->
+        # a name is always given, so the run gets a new channel even when the
+        # playbook itself runs where it's started
+        name =
+          blank_to_nil(params["channel_name"]) ||
+            channel_name(playbook_name(params["playbook_id"]), params["brief"], repository.id)
+
+        params
+        |> Map.delete("runs_in")
+        |> Map.put("channel_name", name)
+        |> do_start(%Canopy.Channels.Channel{repository_id: repository.id})
+
+      _ ->
+        {:error, "pick a repository"}
+    end
+  end
+
+  def start(params, channel) do
+    channel = channel || (present?(params["channel_id"]) && Channels.get(params["channel_id"]))
+    do_start(params, channel && Channels.get!(channel.id))
+  end
+
+  defp do_start(params, channel) do
     with {:playbook, %{} = playbook} <- {:playbook, Playbooks.get(params["playbook_id"] || "")},
          {:channel, %{} = channel} <- {:channel, channel},
          {:coordinator, %{} = coordinator} <-
            {:coordinator, Agents.get(params["coordinator_id"] || "")},
+         :ok <- roles_filled(params, playbook),
          {:ok, run, _new?} <-
            Runs.start(%{
              playbook: playbook,
-             channel: Channels.get!(channel.id),
+             channel: channel,
+             channel_name: params["channel_name"],
              coordinator: coordinator,
              started_by_agent_id: nil,
              brief: params["brief"],
-             assign: params["assign"]
+             assign: assign(params, playbook)
            }) do
       {:ok, run}
     else
       {:playbook, _} -> {:error, "pick a playbook"}
       {:channel, _} -> {:error, "pick a channel"}
-      {:coordinator, _} -> {:error, "pick a coordinator"}
+      {:coordinator, _} -> {:error, "pick a lead"}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # role overrides: the free-text `assign` (the run panel), or the Start
+  # page's role selects where they differ from who fills the role anyway
+  defp assign(%{"roles" => %{} = roles}, playbook) do
+    defaults =
+      case definition(playbook) do
+        nil -> %{}
+        definition -> Map.new(roster_rows(definition), &{&1.role, &1.agent && &1.agent.name})
+      end
+
+    roles
+    |> Enum.reject(fn {role, name} -> name in [nil, ""] or Map.get(defaults, role) == name end)
+    |> Map.new()
+  end
+
+  defp assign(params, _playbook), do: params["assign"]
+
+  # the Start page names every role; one nobody fills is said here, in its
+  # words, before `Runs.start` refuses it in its own
+  defp roles_filled(%{"roles" => %{} = roles}, playbook) do
+    rows =
+      case definition(playbook) do
+        nil -> []
+        definition -> roster_rows(definition)
+      end
+
+    unfilled =
+      for row <- rows,
+          is_nil(row.agent) and Map.get(roles, row.role) in [nil, ""],
+          do: CanopyWeb.PlaybookBuilder.humanize(row.role)
+
+    case unfilled do
+      [] -> :ok
+      roles -> {:error, "pick who does #{Enum.join(roles, ", ")}"}
+    end
+  end
+
+  defp roles_filled(_params, _playbook), do: :ok
+
+  @doc """
+  Who fills each role of a definition when a run starts, the way
+  `Runs.resolve_roster/3` decides it: `[%{role, agent, source}]`, where
+  `source` says why ("from @team", "playbook default") and `agent` is nil
+  when nobody does.
+  """
+  def roster_rows(definition) do
+    team = definition.team && Canopy.Teams.get_by_name(definition.team)
+    members = if team, do: Canopy.Teams.active_members(team), else: []
+    labels = if team, do: Canopy.Teams.member_roles(team), else: %{}
+
+    definition
+    |> Canopy.Playbooks.Definition.owner_roles()
+    |> Enum.map(fn role ->
+      cond do
+        agent = Enum.find(members, &(labels[&1.id] == role)) ->
+          %{role: role, agent: agent, source: "from @#{team.name}"}
+
+        agent = Enum.find(members, &(&1.name == role)) ->
+          %{role: role, agent: agent, source: "from @#{team.name}"}
+
+        name = definition.roles[role] ->
+          case Agents.get_by_name(name) do
+            %{active: true} = agent -> %{role: role, agent: agent, source: "playbook default"}
+            _ -> %{role: role, agent: nil, source: "@#{name} isn't available"}
+          end
+
+        true ->
+          %{role: role, agent: nil, source: "nobody fills it yet"}
+      end
+    end)
+  end
+
+  @doc "The channel name a new run's channel gets unless one is given: the playbook plus the brief's first words."
+  def channel_name(playbook_name, brief, repository_id) do
+    words =
+      (brief || "")
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, " ")
+      |> String.split()
+      |> Enum.take(4)
+
+    base = [playbook_name | words] |> Enum.join("-") |> String.slice(0, 50) |> String.trim("-")
+
+    if repository_id do
+      Stream.iterate(1, &(&1 + 1))
+      |> Stream.map(fn
+        1 -> base
+        n -> "#{base}-#{n}"
+      end)
+      |> Enum.find(&is_nil(Channels.get_by_name(repository_id, &1)))
+    else
+      base
+    end
+  end
+
+  defp playbook_name(id) do
+    case present?(id) && Playbooks.get(id) do
+      %{name: name} -> name
+      _ -> "run"
+    end
+  end
+
+  defp blank_to_nil(value) do
+    if present?(value) and String.trim(value) != "", do: String.trim(value), else: nil
   end
 
   defp definition(playbook) do
@@ -91,10 +230,10 @@ defmodule CanopyWeb.PlaybookStart do
     where =
       cond do
         definition.channel == "new" and channel ->
-          "Runs in a new channel on #{channel_repository(channel)}, owned by the coordinator."
+          "Runs in a new channel on #{channel_repository(channel)}, owned by the lead."
 
         definition.channel == "new" ->
-          "Runs in a new channel on the chosen channel's repository, owned by the coordinator."
+          "Runs in a new channel on the chosen channel's repository, owned by the lead."
 
         true ->
           "Runs in this channel."

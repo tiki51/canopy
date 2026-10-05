@@ -33,13 +33,20 @@ defmodule CanopyWeb.Markdown do
       outside code when the name is one of them, the same names the composer
       highlights; any other `@word` is left as text. Without it nothing is
       highlighted.
+    * `hardbreaks: false` joins soft-wrapped lines, as a Markdown file
+      means them (a playbook's text); messages keep the default, `true`.
   """
   @spec to_html(term, keyword) :: String.t()
   def to_html(body, opts \\ [])
 
   def to_html(body, opts) when is_binary(body) do
+    mdex_opts =
+      if Keyword.get(opts, :hardbreaks, true),
+        do: @mdex_opts,
+        else: put_in(@mdex_opts, [:render, :hardbreaks], false)
+
     body
-    |> MDEx.to_html!(@mdex_opts)
+    |> MDEx.to_html!(mdex_opts)
     |> highlight_mentions(known(Keyword.get(opts, :mentions, [])))
     |> restrict_images()
     |> open_links_in_new_tab()
