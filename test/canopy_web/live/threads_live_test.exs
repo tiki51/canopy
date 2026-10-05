@@ -70,6 +70,23 @@ defmodule CanopyWeb.ThreadsLiveTest do
     refute has_element?(view, "#rail-threads-badge")
   end
 
+  test "a thread row is a card that opens the thread: Open thread is its link", ctx do
+    %{channel: channel, agent: agent, user: user} = ctx
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "Why is checkout slow?")
+    {:ok, _} = Messages.thread_reply(root.id, {:agent, agent.id}, "The pricing call runs twice.")
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/threads")
+
+    card = "#thread-row-#{root.id}[data-card]"
+    assert has_element?(view, "#{card} #thread-row-#{root.id}-open[data-card-link]")
+    refute has_element?(view, "#{card} [data-card-link]:not(#thread-row-#{root.id}-open)")
+
+    assert {:error, {:live_redirect, %{to: to}}} =
+             view |> element("#{card} [data-card-link]") |> render_click()
+
+    assert to == ChannelLive.thread_path(channel.id, root.id)
+  end
+
   test "a row's root and replies are one line of plain text, not Markdown", ctx do
     %{channel: channel, agent: agent, user: user} = ctx
 

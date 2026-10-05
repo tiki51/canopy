@@ -3,8 +3,9 @@ defmodule CanopyWeb.ThreadsLive do
   The Threads inbox: threads across every channel, newest activity first, in
   three tabs: the ones you follow, every thread active in the last week, and
   the ones an agent is working in right now. Each row shows the root, the
-  last two replies, who is in it, and what you have not read; Open thread
-  goes to the channel with the thread in its side panel.
+  last two replies, who is in it, and what you have not read; Open thread, or
+  a click anywhere on the row (a `data-card`), goes to the channel with the
+  thread in its side panel.
 
   The rows are a stream, reloaded when a thread gets a reply, an agent's turn
   moves, or a thread is read or followed elsewhere (`Canopy.Threads`). Which
@@ -158,8 +159,9 @@ defmodule CanopyWeb.ThreadsLive do
           <li
             :for={{id, row} <- @streams.threads}
             id={id}
+            data-card
             class={[
-              "rounded-xl border bg-base-200 shadow-xs transition hover:border-primary/40",
+              "cursor-pointer rounded-xl border bg-base-200 shadow-xs transition hover:border-primary/40 hover:bg-base-300/40",
               row.unread > 0 && "border-primary/40",
               row.unread == 0 && "border-base-300"
             ]}
@@ -249,6 +251,7 @@ defmodule CanopyWeb.ThreadsLive do
         <.link
           navigate={@href}
           id={"thread-row-#{@row.id}-open"}
+          data-card-link
           class="btn btn-xs btn-ghost ml-auto gap-0.5"
         >
           Open thread <.icon name="hero-chevron-right-mini" class="size-3.5" />

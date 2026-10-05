@@ -157,6 +157,21 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     assert Playbooks.get!(draft.id).enabled
   end
 
+  test "a playbook card opens its editor: Edit is the card's link", %{conn: conn} do
+    {:ok, playbook} = Playbooks.create(%{body: Playbooks.bug_fix_text()})
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+
+    card = "#playbook-#{playbook.id}[data-card]"
+    assert has_element?(view, "#{card} #edit-playbook-#{playbook.id}[data-card-link]")
+    # only Edit: Start, the toggle and the menu stay controls of their own
+    refute has_element?(view, "#{card} [data-card-link]:not(#edit-playbook-#{playbook.id})")
+
+    assert {:error, {:live_redirect, %{to: to}}} =
+             view |> element("#{card} [data-card-link]") |> render_click()
+
+    assert to == ~p"/playbooks/#{playbook.id}/edit"
+  end
+
   test "an agent's draft is labelled and starts disabled", %{conn: conn} do
     agent = Fixtures.agent_fixture(name: "drafter")
 

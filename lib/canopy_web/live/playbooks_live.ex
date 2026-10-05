@@ -595,16 +595,20 @@ defmodule CanopyWeb.PlaybooksLive do
         >
           {if @show == "drafts", do: "No drafts.", else: "No enabled playbooks."}
         </li>
+        <%!-- A card (assets/js/card_links.js): a click on it opens the editor,
+             through its title link; the controls on the right keep their own. --%>
         <li
           :for={playbook <- @shown}
           id={"playbook-#{playbook.id}"}
           data-enabled={to_string(playbook.enabled)}
-          class="rounded-box border border-base-300 bg-base-200 p-4 transition-colors hover:border-base-content/25"
+          data-card
+          class="cursor-pointer rounded-box border border-base-300 bg-base-200 p-4 transition-colors hover:border-base-content/25 hover:bg-base-300/40"
         >
           <div class="flex flex-wrap items-center gap-2">
             <.link
               navigate={~p"/playbooks/#{playbook.id}/edit"}
               id={"edit-playbook-#{playbook.id}"}
+              data-card-link
               class="text-[15px] font-semibold hover:underline"
             >
               {title_of(@titles, playbook)}
@@ -626,7 +630,7 @@ defmodule CanopyWeb.PlaybooksLive do
             >
               {Map.get(@run_counts, playbook.id)} running
             </span>
-            <div class="ml-auto flex items-center gap-1">
+            <div data-card-ignore class="ml-auto flex cursor-auto items-center gap-1">
               <label class="flex cursor-pointer items-center gap-1.5 text-xs text-base-content/70">
                 <input
                   type="checkbox"
