@@ -386,9 +386,10 @@ defmodule CanopyWeb.ChannelLive do
   defp panel_open?(%{assigns: assigns}), do: assigns.thread != nil or assigns.activity != nil
 
   # The side panel holds one thing: a thread or an activity closes Details,
-  # and closing them later leaves the slot empty (it is not restored).
+  # and closing them later leaves the slot empty (it is not restored). The
+  # user didn't close Details, so this browser still remembers it open.
   defp yield_to_panel(%{assigns: %{details?: true}} = socket) do
-    if panel_open?(socket), do: hide_details(socket), else: socket
+    if panel_open?(socket), do: stow_details(socket), else: socket
   end
 
   defp yield_to_panel(socket), do: socket
@@ -402,11 +403,20 @@ defmodule CanopyWeb.ChannelLive do
     |> push_event("pref", %{key: "channel-details", value: "open"})
   end
 
-  # Closing Details closes what was open in it, so it reopens collapsed.
+  # The user closing Details: this browser remembers it closed.
   defp hide_details(socket) do
     socket
-    |> assign(:details?, false)
-    |> assign(
+    |> stow_details()
+    |> push_event("pref", %{key: "channel-details", value: "closed"})
+  end
+
+  # Details closed by something else (a thread or an activity taking the
+  # slot, the window narrowing, the brief editor below lg): the saved
+  # open/closed stays as the user left it. Either way, what was open in it
+  # closes, so it reopens collapsed.
+  defp stow_details(socket) do
+    assign(socket,
+      details?: false,
       editing_task?: false,
       editing_members?: false,
       editing_playbook?: false,
@@ -414,7 +424,6 @@ defmodule CanopyWeb.ChannelLive do
       editing_budget?: false,
       taking_lock?: false
     )
-    |> push_event("pref", %{key: "channel-details", value: "closed"})
   end
 
   # A toggle in Details flips its part while Details is showing; from
@@ -637,7 +646,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:editing_budget?, false)
     |> assign(:spent, Costs.channel_total(id))
     |> assign(:editing_schedules?, false)
-    |> assign(:schedules, Schedules.list_for_channel(id))
+    |> assign_schedules(id)
     |> assign(:taking_lock?, false)
     |> assign(:editing_playbook?, false)
     |> assign_run()
@@ -674,30 +683,36 @@ defmodule CanopyWeb.ChannelLive do
   # sees a run (the Pref hook reports the runs seen, `seen_runs`); after that
   # it starts collapsed and the header chip opens it. Until the browser has
   # reported, nothing opens; below lg (Details is an overlay there) or with
-  # a thread or activity in the side panel, Details stays as it is.
+  # a thread or activity in the side panel, Details stays as it is and the
+  # run stays unseen, so it opens the next time Details can.
   defp first_view_of_run(%{assigns: %{run: %{id: id}, seen_runs: seen}} = socket)
        when is_list(seen) do
-    if id in seen do
+    if id in seen or not socket.assigns.details_wide? or panel_open?(socket) do
       socket
     else
       seen = Enum.take([id | seen], 50)
 
       socket
       |> assign(:seen_runs, seen)
+      |> assign(:details?, true)
       |> assign(:editing_playbook?, true)
       |> push_event("pref", %{key: "playbook-seen", value: Enum.join(seen, ",")})
-      |> then(fn socket ->
-        if socket.assigns.details_wide? and not panel_open?(socket),
-          do:
-            socket
-            |> assign(:details?, true)
-            |> push_event("details:focus", %{section: "playbook"}),
-          else: socket
-      end)
+      |> push_event("details:focus", %{section: "playbook"})
     end
   end
 
   defp first_view_of_run(socket), do: socket
+
+  # The channel's schedules, and how many are active (the header's Details
+  # dot and Details › Automation both show it).
+  defp assign_schedules(socket, channel_id) do
+    schedules = Schedules.list_for_channel(channel_id)
+
+    assign(socket,
+      schedules: schedules,
+      schedule_count: Enum.count(schedules, &(&1.status == "active"))
+    )
+  end
 
   defp leave_channel(%{assigns: %{channel: nil}} = socket), do: socket
 
@@ -1087,7 +1102,7 @@ defmodule CanopyWeb.ChannelLive do
 
   def handle_info({:schedules, :changed, cid}, socket) do
     if cid == socket.assigns.channel.id,
-      do: {:noreply, assign(socket, :schedules, Schedules.list_for_channel(cid))},
+      do: {:noreply, assign_schedules(socket, cid)},
       else: {:noreply, socket}
   end
 
@@ -1913,16 +1928,20 @@ defmodule CanopyWeb.ChannelLive do
     do: {:noreply, assign(socket, :brief_expanded?, value == "expanded")}
 
   # Details as this browser left it, from lg up (`media` is false below). A
-  # thread or activity open on arrival wins, and Details stays closed.
+  # thread or activity open on arrival wins, and Details stays closed. Also
+  # sent when the window crosses lg: Details closing then closes its forms,
+  # and neither changes what this browser remembers. Once Details can show,
+  # a run not seen yet gets its one-time look.
   def handle_event("pref", %{"key" => "channel-details", "value" => value} = params, socket) do
     wide? = params["media"] != false
     socket = assign(socket, :details_wide?, wide?)
 
-    cond do
-      not wide? or value != "open" -> {:noreply, assign(socket, :details?, false)}
-      panel_open?(socket) -> {:noreply, hide_details(socket)}
-      true -> {:noreply, assign(socket, :details?, true)}
-    end
+    socket =
+      if wide? and value == "open" and not panel_open?(socket),
+        do: assign(socket, :details?, true),
+        else: stow_details(socket)
+
+    {:noreply, first_view_of_run(socket)}
   end
 
   def handle_event("toggle_brief", _params, socket) do
@@ -1937,10 +1956,20 @@ defmodule CanopyWeb.ChannelLive do
      })}
   end
 
+  # The editor opens over the feed. Below lg, Details (where Brief › Edit
+  # lives) is a full-screen overlay that would hide it, so it closes; what
+  # this browser remembers for lg up stays as it is.
   def handle_event("toggle_brief_form", _params, socket) do
-    if socket.assigns.editing_brief?,
-      do: {:noreply, close_brief_form(socket)},
-      else: {:noreply, open_brief_form(socket, socket.assigns.channel.brief || "")}
+    if socket.assigns.editing_brief? do
+      {:noreply, close_brief_form(socket)}
+    else
+      socket =
+        if socket.assigns.details? and not socket.assigns.details_wide?,
+          do: stow_details(socket),
+          else: socket
+
+      {:noreply, open_brief_form(socket, socket.assigns.channel.brief || "")}
+    end
   end
 
   def handle_event("validate_brief", %{"brief" => %{"brief" => text}}, socket),
@@ -2288,7 +2317,7 @@ defmodule CanopyWeb.ChannelLive do
 
       schedule ->
         {:ok, _} = Schedules.cancel(schedule, "cancelled by #{socket.assigns.user.display_name}")
-        {:noreply, assign(socket, :schedules, Schedules.list_for_channel(cid(socket)))}
+        {:noreply, assign_schedules(socket, cid(socket))}
     end
   end
 
@@ -2633,7 +2662,7 @@ defmodule CanopyWeb.ChannelLive do
             channel={@channel}
             members={@members}
             agent_statuses={@agent_statuses}
-            schedule_count={Enum.count(@schedules, &(&1.status == "active"))}
+            schedule_count={@schedule_count}
             spent={@spent}
             locks={@locks}
             now={@now}
@@ -2925,6 +2954,7 @@ defmodule CanopyWeb.ChannelLive do
           run_agents={@run_agents}
           recent_runs={@recent_runs}
           schedules={@schedules}
+          schedule_count={@schedule_count}
           editing_schedules?={@editing_schedules?}
           spent={@spent}
           editing_budget?={@editing_budget?}
@@ -3087,12 +3117,11 @@ defmodule CanopyWeb.ChannelLive do
   defp status_word(:error), do: "error"
   defp status_word(_status), do: "idle"
 
-  # "4 agents: @frontend working, @designer waiting on you"
-  defp agents_title(members, statuses) do
+  # "4 agents: @frontend working, @designer waiting on you", from the
+  # members already sorted `by_status`
+  defp agents_title(sorted, statuses) do
     active =
-      members
-      |> by_status(statuses)
-      |> Enum.flat_map(fn member ->
+      Enum.flat_map(sorted, fn member ->
         case Map.get(statuses, member.id, :idle) do
           :idle -> []
           status -> ["@#{member.name} #{status_word(status)}"]
@@ -3100,8 +3129,8 @@ defmodule CanopyWeb.ChannelLive do
       end)
 
     case active do
-      [] -> agents_label(length(members)) <> ", all idle"
-      _ -> agents_label(length(members)) <> ": " <> Enum.join(active, ", ")
+      [] -> agents_label(length(sorted)) <> ", all idle"
+      _ -> agents_label(length(sorted)) <> ": " <> Enum.join(active, ", ")
     end
   end
 
@@ -3164,12 +3193,14 @@ defmodule CanopyWeb.ChannelLive do
 
   defp channel_header(assigns) do
     %{members: members, agent_statuses: statuses} = assigns
+    sorted = by_status(members, statuses)
 
     assigns =
       assigns
       |> assign(:dm?, Channels.dm?(assigns.channel))
       |> assign(:archived?, Channels.archived?(assigns.channel))
-      |> assign(:dots, members |> by_status(statuses) |> Enum.take(5))
+      |> assign(:dots, Enum.take(sorted, 5))
+      |> assign(:agents_title, agents_title(sorted, statuses))
       |> assign(:waiting, Enum.count(members, &(Map.get(statuses, &1.id) == :awaiting_user)))
       |> assign(:dot, details_dot(assigns.locks, assigns.schedule_count))
 
@@ -3269,8 +3300,8 @@ defmodule CanopyWeb.ChannelLive do
             class="btn btn-sm btn-ghost gap-2 px-2 font-normal"
             phx-click="open_details"
             phx-value-section="agents"
-            title={agents_title(@members, @agent_statuses)}
-            aria-label={agents_title(@members, @agent_statuses)}
+            title={@agents_title}
+            aria-label={@agents_title}
           >
             <span :if={@members != []} data-hdr-dots class="flex items-center gap-1">
               <Layouts.status_dot
@@ -3486,6 +3517,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :run_agents, :list, default: []
   attr :recent_runs, :list, default: []
   attr :schedules, :list, default: []
+  attr :schedule_count, :integer, default: 0, doc: "how many of `schedules` are active"
   attr :editing_schedules?, :boolean, default: false
   attr :spent, :float, default: 0.0
   attr :editing_budget?, :boolean, default: false
@@ -3500,7 +3532,6 @@ defmodule CanopyWeb.ChannelLive do
       assigns
       |> assign(:dm?, Channels.dm?(assigns.channel))
       |> assign(:archived?, Channels.archived?(assigns.channel))
-      |> assign(:schedule_count, Enum.count(assigns.schedules, &(&1.status == "active")))
 
     ~H"""
     <.side_panel id="details-panel" label="Channel details" close_click="close_panel">

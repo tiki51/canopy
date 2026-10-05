@@ -1034,7 +1034,9 @@ defmodule CanopyWeb.TimelineComponents do
     <script :type={Phoenix.LiveView.ColocatedHook} name=".Elapsed">
       // Ticks a live duration from data-started-at (wall-clock ms) once a
       // second; with data-coarse, in whole minutes (`<1m`, `4m`, `1h 5m`)
-      // every 15 seconds (see `elapsed/1`).
+      // every 15 seconds (see `elapsed/1`). `coarse` mirrors
+      // Canopy.Elapsed.coarse/1, which renders the first value and lock
+      // ages: change them together.
       const format = ms => {
         const s = Math.max(0, Math.floor(ms / 1000))
         return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
@@ -2967,9 +2969,10 @@ defmodule CanopyWeb.TimelineComponents do
 
   @doc """
   A duration that ticks in the browser from `started_at` (wall-clock ms), by
-  the `.Elapsed` hook. `coarse` counts whole minutes (`<1m`, `4m`, `1h 5m`)
-  and updates every 15 seconds; the server renders the first value. The id
-  must change when `started_at` does: the hook owns the text.
+  the `.Elapsed` hook. `coarse` counts whole minutes (`<1m`, `4m`, `1h 5m`,
+  as `Canopy.Elapsed.coarse/1` says them) and updates every 15 seconds; the
+  server renders the first value. The id must change when `started_at`
+  does: the hook owns the text.
   """
   attr :id, :string, required: true
   attr :started_at, :integer, required: true
@@ -2985,17 +2988,8 @@ defmodule CanopyWeb.TimelineComponents do
       data-started-at={@started_at}
       data-coarse={@coarse && "true"}
       {@rest}
-    >{if @coarse, do: coarse_elapsed(System.os_time(:millisecond) - @started_at)}</span>
+    >{if @coarse, do: Canopy.Elapsed.coarse(System.os_time(:millisecond) - @started_at)}</span>
     """
-  end
-
-  @doc "`<1m`, `4m`, `1h 5m`: a duration in ms, in whole minutes."
-  def coarse_elapsed(ms) do
-    case max(0, div(ms, 60_000)) do
-      0 -> "<1m"
-      m when m < 60 -> "#{m}m"
-      m -> "#{div(m, 60)}h #{rem(m, 60)}m"
-    end
   end
 
   @doc "Who sent a message: `@agent`, a user's display name, or else `user_name` (the local user)."

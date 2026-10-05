@@ -83,6 +83,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       assert has_element?(view, "#channel-name", channel.name)
       assert has_element?(view, "#agents-button", "2 agents")
+      assert has_element?(view, "#agents-button[title='2 agents, all idle']")
       refute has_element?(view, "#details-panel")
       details(view)
       assert has_element?(view, "#owner-badge", "@#{agent.name}")
@@ -2622,7 +2623,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#thread-panel")
       refute has_element?(view, "#details-panel")
       refute has_element?(view, "#toggle-details.btn-active")
-      assert_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+      # the thread took the slot; the user didn't close Details, so it stays remembered open
+      refute_push_event(view, "pref", %{key: "channel-details"})
 
       view |> element("#thread-panel-close") |> render_click()
       refute has_element?(view, "#thread-panel")
@@ -2668,13 +2670,109 @@ defmodule CanopyWeb.ChannelLiveTest do
       pref.(view, "open", true)
       assert has_element?(view, "#thread-panel")
       refute has_element?(view, "#details-panel")
-      assert_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+      # ...without forgetting that Details was left open
+      refute_push_event(view, "pref", %{key: "channel-details"})
 
       # the palette's Show and Hide
       render_hook(view, "toggle_details", %{"open" => true})
       assert has_element?(view, "#details-panel")
       render_hook(view, "toggle_details", %{"open" => false})
       refute has_element?(view, "#details-panel")
+    end
+
+    test "only the user closing it is remembered: a thread, an activity or a narrower window is not",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      pref = fn value, media ->
+        view
+        |> element("#channel-details-pref")
+        |> render_hook("pref", %{"key" => "channel-details", "value" => value, "media" => media})
+      end
+
+      pref.("open", true)
+      assert has_element?(view, "#details-panel")
+
+      # a thread opens over it, then the window crosses lg both ways
+      view |> element("#reply-#{root.id}") |> render_click()
+      refute has_element?(view, "#details-panel")
+      pref.("open", false)
+      pref.("open", true)
+      assert has_element?(view, "#thread-panel")
+      refute has_element?(view, "#details-panel")
+
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # an activity panel takes the slot the same way
+      details(view)
+      assert_push_event(view, "pref", %{key: "channel-details", value: "open"})
+      turn = record_turn(ctx, %{})
+      render_patch(view, ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel")
+      refute has_element?(view, "#details-panel")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # the user's own close is the one that sticks
+      details(view)
+      assert has_element?(view, "#details-panel")
+      details(view)
+      assert_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+    end
+
+    test "narrowing the window below lg closes its forms too, so it reopens collapsed", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      pref = fn value, media ->
+        view
+        |> element("#channel-details-pref")
+        |> render_hook("pref", %{"key" => "channel-details", "value" => value, "media" => media})
+      end
+
+      pref.("open", true)
+      render_hook(view, "open_details", %{"section" => "spend"})
+      view |> element("#take-lock-toggle") |> render_click()
+      assert has_element?(view, "#budget-panel")
+      assert has_element?(view, "#take-lock-form")
+
+      pref.("open", false)
+      refute has_element?(view, "#details-panel")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # back above lg it opens as remembered, with nothing half-filled
+      pref.("open", true)
+      assert has_element?(view, "#details-panel")
+      refute has_element?(view, "#budget-panel")
+      refute has_element?(view, "#take-lock-form")
+    end
+
+    test "below lg, Brief › Add closes the Details overlay so the editor shows", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      view
+      |> element("#channel-details-pref")
+      |> render_hook("pref", %{"key" => "channel-details", "value" => "", "media" => false})
+
+      details(view)
+      assert has_element?(view, "#details-panel")
+      view |> element("#edit-brief") |> render_click()
+      refute has_element?(view, "#details-panel")
+      assert has_element?(view, "#brief-form")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # from lg up Details is beside the feed, and stays
+      render_hook(view, "toggle_brief_form", %{})
+      refute has_element?(view, "#brief-form")
+
+      view
+      |> element("#channel-details-pref")
+      |> render_hook("pref", %{"key" => "channel-details", "value" => "open", "media" => true})
+
+      assert has_element?(view, "#details-panel")
+      view |> element("#edit-brief") |> render_click()
+      assert has_element?(view, "#details-panel")
+      assert has_element?(view, "#brief-form")
     end
 
     test "each header chip opens it at its section", ctx do

@@ -620,16 +620,8 @@ defmodule Canopy.Locks do
   def holder_name(_claim), do: "an agent"
 
   @doc "How long a holder has had the lock (or a waiter has waited): `<1m`, `6m`, `2h 5m`."
-  def age(%Claim{} = claim, now \\ DateTime.utc_now()) do
-    minutes =
-      max(DateTime.diff(now, claim.granted_at || claim.inserted_at, :second), 0) |> div(60)
-
-    cond do
-      minutes < 1 -> "<1m"
-      minutes < 60 -> "#{minutes}m"
-      true -> "#{div(minutes, 60)}h #{rem(minutes, 60)}m"
-    end
-  end
+  def age(%Claim{} = claim, now \\ DateTime.utc_now()),
+    do: Canopy.Elapsed.since(claim.granted_at || claim.inserted_at, now)
 
   # sessions with a card still waiting on the user (not detached)
   defp awaiting_user([]), do: MapSet.new()

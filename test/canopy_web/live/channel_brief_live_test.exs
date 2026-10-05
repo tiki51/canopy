@@ -29,6 +29,11 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
   test "Details › Task's Brief Add opens the editor; the counter follows the text; Save pins it",
        %{conn: conn} = ctx do
     {:ok, view, _html} = open(conn, ctx.channel)
+    # a window from lg up, where Details sits beside the editor (below lg it closes for it)
+    view
+    |> element("#channel-details-pref")
+    |> render_hook("pref", %{"key" => "channel-details", "value" => "", "media" => true})
+
     details(view)
 
     refute has_element?(view, "#channel-brief")

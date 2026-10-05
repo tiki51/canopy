@@ -290,8 +290,8 @@ bookmarked, or shared. On a phone the filters fold behind a **Filters** button.
 Thirty results show at first; **Show more** adds thirty more, up to 200 (refine the search
 to see beyond). The list is a snapshot: new messages don't move it under you; **Refresh**
 runs the search again. From the search box, **↑**/**↓** pick a result, **Enter** opens it,
-and **Esc** clears the box. The magnifier in a channel's header opens Search narrowed to
-that channel.
+and **Esc** clears the box. **Search this channel**, under **View** in a channel's
+[details](#channel-details), opens Search narrowed to that channel.
 
 A result opens the exact place it came from:
 
@@ -676,8 +676,9 @@ session belongs to one engine, so each agent that follows the default starts a f
 session on the new engine at its next turn in each channel, with a line saying so (see
 [Settings](#3-settings)). A model it chose for the old engine is passed over for the new
 engine's default meanwhile, and dropped the next time you save the agent.
-If an existing session has talked itself into a corner, reset it from the channel header
-(the arrow on the agent's pill), and the next turn starts fresh with the new settings.
+If an existing session has talked itself into a corner, reset it from the channel's
+details (the arrow on the agent's row under **Agents**), and the next turn starts fresh
+with the new settings.
 
 Set a cheap default model, and give the expensive one only to the agent that edits code.
 The Costs page will tell you whether that split holds.
@@ -854,29 +855,59 @@ sidebar with the agent as owner. The tool takes a `brief` as well.
 
 ### Anatomy of the channel header
 
-From left to right on the top row: the channel name and topic, then search, the buttons
-**Members**, **Activity**, one chip per [lock](#locks) held on the repository (or a plain
-**Locks** button when there are none), **Playbook** (or, while a run is in progress, a chip
-such as `bug-fix · 3/6 Fix · @backend @frontend`; see [Playbooks](#12-playbooks)),
-**Scheduled** (with a count), the **budget** (spent so far, and the limit when there is
-one), **Brief** (with a dot when the channel has one), **Task**, **Changes**, **Stop**, and
-a **⋯** menu that holds **Archive**.
+The header is one row. From left to right: the channel name and topic, an *archived* badge
+on an archived channel, one chip per [lock](#locks) held on the repository (such as
+`tests · @backend · 6m`), the playbook chip while a run is in progress (such as
+`bug-fix · 3/6 Fix · @backend @frontend`; see [Playbooks](#12-playbooks)), the **agents**
+button, the **spend** (spent so far, and the limit when there is one), **Changes**,
+**Stop** (**Reopen** on an archived channel), and **Details**.
 
-The header fits its buttons to the room it has, so none is ever cut off. On a laptop-width
-window the plain buttons (Members, Activity, Brief, Task, Changes) show only their icons;
-hover one for its name. With less room (a side panel open, a narrow window) they move into
-the **⋯** menu one by one, then the lock, playbook, schedule and budget chips do the same,
-and **Stop** keeps its label longest. Everything that leaves the row is in the **⋯** menu.
+The agents button shows a dot per agent (up to five, the ones that need you first), the
+count, and *N waiting on you* while an agent is blocked on a question or permission card.
+Hover it to see who is doing what. A DM has no agents button.
 
-The second row shows the owner badge, the task status pill, the task title, the git
-branch, and one pill per member. A member's dot is grey when idle, green while working,
-amber while waiting for its turn, blue with "waiting on you" while it is blocked on a
-question or permission card, and red after an error. A small padlock on a pill means the
-agent holds a lock; a clock means it is waiting for one. A working or waiting agent's pill
-has an **Abort** button; an idle agent's pill has a small reset arrow that drops its engine
-session (OpenCode or Claude Code) in this channel, with a confirmation, so its next turn
-starts with a clean context. Every pill also has a document icon that opens the agent's
-[session transcript](#the-session-transcript).
+The header fits itself to the room it has, so nothing is ever cut off. With less room (a
+side panel open, a narrow window) the topic goes first, then the labels shorten, the spend
+and **Changes** buttons leave the row (both are in Details), and **Stop** drops its label.
+On a phone the chips shrink to icons and counts and the name truncates.
+
+### Channel details
+
+**Details** opens the channel's details in the side panel, the same slot a thread or an
+activity opens in, one at a time: opening a thread closes Details, and closing the thread
+leaves the slot empty. Each header chip opens Details at its own section (a lock chip at
+**Locks**, the playbook chip at the run, the spend at **Spend**). While Details is closed,
+a dot on its button says something in it wants a look: an agent in line for a lock, or
+active schedules.
+
+From a laptop-width window up, Details sits beside the feed, and the browser remembers
+whether you left it open or closed. Only opening or closing it yourself counts (**Details**,
+a chip, **×** or **Esc**), not a thread that took its place or a window that narrowed. Below that width it covers the channel, with **Back** to
+return, and never opens by itself. Closing Details closes any form open in it, so it
+reopens collapsed.
+
+Its sections, top to bottom:
+
+- **Task**: the task's status and title, with **Edit** (see [Task panel](#task-panel));
+  the owner, the git branch, the repository (in a DM, a switcher), the **Brief** with who
+  set it and **Add** or **Edit** (see [Brief panel](#brief-panel)), and **Changes…**.
+- **Agents**: a row per member. Its dot is grey when idle, green while working, amber
+  while waiting for its turn, blue with "waiting on you" while it is blocked on a question
+  or permission card, and red after an error; a working agent's row counts the minutes
+  since its turn began, and a waiting one since it asked. A small padlock means the agent
+  holds a lock; a clock means it is waiting for one. A working or waiting agent's row has
+  an **Abort** button; an idle agent's row has a small reset arrow that drops its engine
+  session (OpenCode or Claude Code) in this channel, with a confirmation, so its next turn
+  starts with a clean context. Every row also has a document icon that opens the agent's
+  [session transcript](#the-session-transcript). **Add or remove** manages the members
+  (see [Agents](#agents-in-a-channel)).
+- **Locks**: the repository's [locks](#locks), shared by every channel on it, and
+  **Take a lock**.
+- **Automation**: **Playbook** (the run, or **Run…** to start one), **Scheduled** (with the
+  number active) and **Spend** (spent, and the limit). Each opens in place.
+- **View**: the **Routine activity** switch (see
+  [Compact timeline](#compact-timeline-and-the-activity-view)), **Search this channel**, and
+  **Archive channel…**.
 
 When the channel has a [brief](#brief-panel), a one-line **BRIEF** strip is pinned under
 the header, showing its first line. Click it to open the whole brief; the strip remembers,
@@ -971,7 +1002,8 @@ in the menu joined to Send) sends one the old way. See
 
 By default the timeline hides routine lines: "started working", clean "finished" lines,
 and scheduled fires. Errors, passes with a note, and anything you can act on always show.
-**Activity** in the header shows everything, and the browser remembers your choice.
+**Routine activity**, under **View** in the channel's details, shows everything, and the
+browser remembers your choice.
 
 ![Channel with Activity on, light](user-guide/images/channel-activity-light.png)
 
@@ -993,8 +1025,9 @@ activity in the side panel.
 
 ### Task panel
 
-**Task** opens the channel's task: a title, a status (`open`, `working`, `blocked`, or
-`completed`), and a description. Agents update it through `canopy_task_update`; you can edit it
+The **Task** section at the top of the channel's details shows the channel's task: a title,
+a status (`open`, `working`, `blocked`, or `completed`), and a description; **Edit** opens
+the form. Agents update it through `canopy_task_update`; you can edit it
 here. Every change lands on the timeline.
 
 ![Task panel, light](user-guide/images/task-panel-light.png)
@@ -1012,7 +1045,8 @@ away. The rule of thumb:
 - **Brief**: what is always true here. It changes rarely and is in every prompt.
 - **Topic**: the one line in the sidebar and header.
 
-**Brief** in the header opens the editor. Type Markdown and **Save brief**. The counter
+**Brief › Add** (or **Edit**) in the channel's details opens the editor; on a narrow
+window, where Details covers the channel, Details closes so the editor shows. Type Markdown and **Save brief**. The counter
 under the box shows the characters (4,000 at most; the brief is never cut short) and a
 rough token estimate times the agents in the channel; from 2,000 characters it warns that
 long briefs cost on every prompt. Put long reference material in the repository notes or
@@ -1038,23 +1072,25 @@ If you have edited the collaboration prompt in Settings, the brief still reaches
 agent (it is added after your text), but the line telling owners about
 `canopy_channel_brief_set` is in the shipped text only.
 
-### Members panel
+### Agents in a channel
 
-**Members** lists the members as pills, the owner marked and not removable. Pick an agent
-in the dropdown and *Add*, or press × on a pill to remove one. **Invite a team…** brings in
+**Add or remove**, on the **Agents** section of the channel's details, puts a × on each
+member's row (not the owner's: it cannot be removed) and shows a dropdown under the list.
+Pick an agent and *Add*, or press × on a row to remove one. **Invite a team…** brings in
 every active member of a team who is not here yet, with one `@team joined: …` line on the
 timeline; it never wakes anyone or changes the owner. Agents can do the same with
 `canopy_channel_add_members` (which takes agents or teams) and
 `canopy_channel_remove_members`; only the owner may remove someone, and never itself.
 There is no "remove team" button: members leave one by one.
 
-![Members panel, light](user-guide/images/members-panel-light.png)
+![Agents in Details, light](user-guide/images/members-panel-light.png)
 
-![Members panel, dark](user-guide/images/members-panel-dark.png)
+![Agents in Details, dark](user-guide/images/members-panel-dark.png)
 
 ### Scheduled panel
 
-**Scheduled** lists the channel's scheduled tasks with their next run and a cancel button,
+**Scheduled**, under **Automation** in the channel's details, lists the channel's scheduled
+tasks with their next run and a cancel button,
 and its [GitHub watches](#watching-github): what each one watches, how often, when it last
 checked, how many times it fired, and the error while its check fails. See
 [Scheduled tasks](#11-scheduled-tasks).
@@ -1065,8 +1101,9 @@ checked, how many times it fired, and the error while its check fails. See
 
 ### Budget panel
 
-The budget button shows what the channel has spent and its limit. Opening it lets you set,
-raise, or remove the limit.
+The spend in the header shows what the channel has spent and its limit. It opens
+**Spend**, under **Automation** in the channel's details, where you set, raise, or remove the
+limit.
 
 ![Budget panel, light](user-guide/images/budget-panel-light.png)
 
@@ -1083,8 +1120,9 @@ raise, or remove the limit.
 
 ### Archiving
 
-**Archive**, in the header's **⋯** menu (with a confirmation), closes the channel: an *archived* badge appears, the
-composer becomes a notice with a **Reopen** button, and the sidebar folds the channel
+**Archive channel…**, under **View** in the channel's details (with a confirmation), closes
+the channel: an *archived* badge appears, the composer becomes a notice with a **Reopen**
+button (the header's **Stop** becomes **Reopen** too), and the sidebar folds the channel
 under an "archived" toggle. Agents see it as archived in `canopy_channels_list`.
 
 ![Archived channel, light](user-guide/images/archived-channel-light.png)
@@ -1333,8 +1371,8 @@ With it on, an @mention of an agent that is working, from you, in the channel (o
 thread the agent is working in), goes into the turn it is running. The agent finishes the
 command or tool call it is on, a long test run included, then reads your message before
 its next step, and carries on, changes course, or answers. Its live card shows a chip,
-*Interrupting after current step*, with the call running now, and its pill shows
-*1 waiting*. Your message shows *Queued · delivered after the current step* under it
+*Interrupting after current step*, with the call running now, and its row in the
+channel's details shows *1 waiting*. Your message shows *Queued · delivered after the current step* under it
 (*… once the card is answered* while the agent waits on a card) until the turn ends. With Activity on, the feed says "@agent will read your message
 after its current step". The finished line then reads "@agent finished · took 1 message
 mid-turn · …".
@@ -1394,7 +1432,8 @@ activity like any live card. Every question takes a typed answer, with or withou
 options; a question with no options has only the box. **Send** answers; it stays disabled
 until an option is picked or something is typed. **Dismiss** declines.
 
-While the agent waits, its pill shows "waiting on you", a bar above the composer says
+While the agent waits, the header's agents button and its row in the channel's details show
+"waiting on you", a bar above the composer says
 "@agent is waiting on your answer" with a **Show** button that scrolls to the card, and
 the sidebar badges the channel. Under *One agent at a time*, an agent waiting on you does
 not hold the channel: the next agent in line starts, and when you answer, the waiting
@@ -1605,13 +1644,13 @@ the port. A **lock** is how agents take turns on those, and Canopy keeps it, not
   agent in another channel lets go.
 
 Each lock shows as a chip in the channel header: `tests · @backend · 6m · next:
-@fullstack, @frontend`. Click it for the panel: the holder (and the channel it holds the
+@fullstack, @frontend`. Click it for **Locks** in the channel's details: the holder (and the channel it holds the
 lock from, if not this one), its reason and age, the line behind it, and **Force release**,
 which (after a confirmation) takes the lock from its holder and wakes the next in line.
 Use it when a holder is stuck.
 
-You can hold a lock yourself, for "don't touch the tree, I'm testing by hand": type its
-name and a reason in the panel and press **Take lock**. Agents that ask for it wait until
+You can hold a lock yourself, for "don't touch the tree, I'm testing by hand": press
+**Take a lock**, type its name and a reason, and press **Take lock**. Agents that ask for it wait until
 you press **Release**; a lock you hold never frees itself.
 
 Agents learn all this from the collaboration preamble. If you have edited it in Settings,
@@ -1648,7 +1687,7 @@ on an agent's page is the shortcut for the one-to-one case.
 ![Direct message, dark](user-guide/images/dm-dark.png)
 
 A DM shows a **DM** pill instead of a topic and, with more than one repository registered,
-a **repository switcher** in its header. Switching moves the conversation: the timeline
+a **repository switcher** under **Task** in its details. Switching moves the conversation: the timeline
 records the move, the agents' old sessions are dropped once idle, and their next turn runs
 in the new repository. Your message history and their memory carry over. An agent can do
 the same when you ask it to "work in acme-storefront from now on"
@@ -1665,8 +1704,9 @@ Agents can schedule work for later: a one-off ("remind me in 2 hours", an ISO ti
 repeat (a cron line, interpreted in your local time). Tell an agent what you want and it
 calls `canopy_schedule_create`.
 
-- The timeline records "scheduled: every weekday at 09:00 · …", the header's
-  **Scheduled** button shows a count, and the panel lists the schedule with its next run.
+- The timeline records "scheduled: every weekday at 09:00 · …", **Scheduled** in the
+  channel's details shows the count active (and a dot on the header's **Details** button
+  says so while it is closed), and it lists the schedule with its next run.
 - When it fires, the agent takes a turn with that instruction and posts, or passes.
 - Cancel from the channel panel or the agent's page; the timeline records it.
 - Schedules survive restarts of Canopy and are paused by the billing hold.
@@ -1762,7 +1802,7 @@ Done when: a named test fails for the reported reason.
 - **Ask an agent**: "@project-manager run the bug-fix playbook: checkout button does
   nothing on Safari". It calls `canopy_playbook_start` and coordinates the run.
 - **The start form**: **Start…** on the Playbooks page (pick a channel), or **Playbook**
-  in a channel's header. Pick the coordinator (the playbook's own by default, else the
+  under **Automation** in a channel's details. Pick the coordinator (the playbook's own by default, else the
   channel's owner), write the brief, and optionally override roles (`fix=@fullstack`).
 - **The composer**: `/playbook bug-fix [@coordinator] the brief`.
 
@@ -1778,8 +1818,10 @@ that resets the channel's chatter budget like any message from you.
 ### Following a run
 
 While a run is in progress the header shows its chip, and the channel's row in the
-sidebar shows a small book. The first time this browser sees a run, its panel opens by
-itself; after that it starts collapsed, and the chip opens and closes it. The panel shows
+sidebar shows a small book. The first time this browser sees a run, the channel's details
+open on it by itself (from a laptop-width window up, with no thread or activity open; until
+then the run counts as unseen); after that it starts collapsed, and the chip opens
+Details on it. The panel shows
 the brief, the roster as `role → @agent` chips, every step with its owners, status, round
 (a step entered again counts up), the coordinator's result, and the delegations made for
 it; a step held for you carries one *sign-off* marker. Under **Coordinator** you can
@@ -2175,9 +2217,9 @@ service started by `brew services` uses the defaults.
 | An agent lacks a tool from my repository's MCP server | Open the repository's page (Repositories → *MCP*): the server may be failed, need OAuth, or be disabled. Claude Code agents load only the repository's `.mcp.json`, never your personal `~/.claude.json` servers |
 | OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
-| An agent insists its tools are missing | Reset its session from the pill in the channel header |
+| An agent insists its tools are missing | Reset its session from its row under **Agents** in the channel's details |
 | The agent page says "Routing paused for scheduled wakes: 8 of 20 escalated" | Model routing (experimental) stopped sending that kind of wake to the light model because most of them needed the main one anyway. Leave it paused, or press **Resume** to try again from now; "every wake" means the light model itself failed (check its name in Settings or on the edit form) |
-| An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its pill: every prompt, tool call and result |
+| An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its row in the channel's details: every prompt, tool call and result |
 | The transcript says Claude Code no longer has the session | Claude Code deletes session files after `cleanupPeriodDays` (30 by default, in its `settings.json`); Canopy keeps no copy |
 | The permission card never appears | OpenCode's rules allow the action; set the permission to `ask` in the repository's OpenCode config |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |

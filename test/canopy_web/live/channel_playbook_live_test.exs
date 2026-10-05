@@ -188,22 +188,56 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     assert has_element?(view, "#details-panel #playbook-panel")
     assert_push_event(view, "details:focus", %{section: "playbook"})
 
-    # below lg, where Details is an overlay, it never opens by itself
+    # below lg, where Details is an overlay, it never opens by itself, and
+    # the run isn't marked seen: its one look is still to come
     {:ok, view, _html} = open(conn, ctx.channel)
     render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => false})
     render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
     refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
     # ...and the palette's "run a playbook" then opens it on the run, not collapsed
     render_hook(view, "toggle_playbook", %{})
     assert has_element?(view, "#details-panel #playbook-panel")
     assert_push_event(view, "details:focus", %{section: "playbook"})
 
-    # a window narrowed below lg afterwards: a new run no longer opens it
+    # a window narrowed below lg afterwards: a new run no longer opens it...
     {:ok, view, _html} = open(conn, ctx.channel)
     render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
     render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => false})
     render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
     refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
+    # ...until it is wide again, when the run gets its look
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
+    assert value == run.id
+  end
+
+  test "a thread open on arrival keeps the run unseen; Details opens on it once the slot is free",
+       %{conn: conn} = ctx do
+    run = start_run(ctx)
+    {:ok, root} = Canopy.Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "A question")
+
+    {:ok, view, _html} =
+      live(conn, CanopyWeb.ChannelLive.thread_path(ctx.channel.id, root.id))
+
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "open", "media" => true})
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
+    assert has_element?(view, "#thread-panel")
+    refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
+
+    # the user opens Details: collapsed so far, as nothing marked it seen or open
+    view |> element("#toggle-details") |> render_click()
+    assert has_element?(view, "#details-panel")
+    refute has_element?(view, "#playbook-panel")
+
+    # the next time the run changes, with Details able to show it, it opens once
+    send(view.pid, {:playbook_runs, :changed, ctx.channel.id})
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
+    assert value == run.id
   end
 
   test "the coordinator can be reassigned from the panel", %{conn: conn} = ctx do

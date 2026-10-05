@@ -165,7 +165,9 @@ file edits", and save.
 
 ![Empty channel](screenshots/05-empty-channel.png)
 
-Header check: `#name`, topic, owner badge, task pill (`open`), branch, member dots (all idle).
+Header check: `#name`, topic, the agents button (a grey dot each, "all idle" on hover), the
+spend, **Changes**, **Stop**, **Details**. **Details** opens the channel details beside the
+feed: the task (`open`), owner, branch, and one row per agent, all idle.
 
 ## 5. Wake an agent and watch it work
 
@@ -183,7 +185,7 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
       its header names the call running now, ticks the elapsed time, and counts calls by
       kind. Open it: it lists calls as they run (`Read payments.py`, `$ pytest …`), each
       with its duration, and streams the agent's text.
-- [ ] Each idle member pill in the header has a small reset arrow: it drops that agent's
+- [ ] Each idle agent's row in **Details › Agents** has a small reset arrow: it drops that agent's
       OpenCode session in this channel (with confirmation), the timeline says so, and the
       agent's next turn starts with a fresh context. Use it when an agent has talked itself
       into a corner, such as insisting its tools are missing.
@@ -195,7 +197,7 @@ Post, without mentioning anyone (a mention wakes the mentioned agent instead of 
       not posted again: open the finished line and it is there as a **Closing note**. A turn
       that posts nothing through the tools still ends with a muted **REPLY** message.
 - [ ] The timeline is compact by default: "started working", clean "finished" lines, and
-      scheduled fires are hidden. The **Activity** toggle in the header shows them, and the
+      scheduled fires are hidden. The **Routine activity** switch in **Details › View** shows them, and the
       browser remembers the choice. Errors, passes with a note, and anything you can act on
       always show.
 - [ ] With the feed scrolled to the bottom, an agent's new message scrolls into view on its
@@ -322,19 +324,26 @@ to: researcher …" as in the README demo prompt.
 ![Changes modal](screenshots/11-changes-modal.png)
 
 - [ ] *Changes* lists `git status` for the repository; clicking a file shows its diff.
-- [ ] *Task* opens the task form; change status to `working` → `task updated` line and pill.
+- [ ] **Details › Task › Edit** opens the task form; change status to `working` → `task updated`
+      line and the new status in Details.
 - [ ] Ask an agent for something slow ("run the test suite 20 times") and press *Abort* next to
       it → the turn ends with an error line and the dot goes red until the next prompt.
 
 ## 9b. Members and archiving
 
-- [ ] **Members** in the channel header opens a panel: each member is a pill, the owner is
-      marked and has no remove button. Pick an agent in the dropdown and **Add** → it appears
-      in the header and the timeline says it joined. Click the × on another member → it is
-      gone and the timeline says so. `@` in the composer only suggests current members.
-- [ ] **⋯** → **Archive** (confirm the prompt) → an **archived** badge, the composer is replaced by a
-      notice with a **Reopen** button, the sidebar entry is dimmed with a box icon, and
-      agents' `channels_list` shows it as archived. **Reopen** brings the composer back.
+- [ ] The agents button in the channel header opens **Details › Agents**; **Add or remove**
+      puts a × on each row except the owner's. Pick an agent in the dropdown and **Add** → it
+      gets a row, the header's count goes up, and the timeline says it joined. Click the × on
+      another member → it is gone and the timeline says so. `@` in the composer only suggests
+      current members.
+- [ ] **Details › View › Archive channel…** (confirm the prompt) → an **archived** badge, the
+      composer is replaced by a notice with a **Reopen** button (so is the header's **Stop**),
+      the sidebar entry is dimmed with a box icon, and agents' `channels_list` shows it as
+      archived. **Reopen** brings the composer back.
+- [ ] Details remembers itself: on a wide window, close it with **×** and reload → closed;
+      open it, open a thread (Details gives way), close the thread, reload → open again.
+      Narrow the window below 1024px → Details closes; with it opened there (full screen),
+      **Brief › Add** closes it and shows the brief editor.
 
 ## 9c. Teams
 
@@ -346,7 +355,7 @@ to: researcher …" as in the README demo prompt.
 - [ ] **New channel** on the team's row → only its members are ticked and the lead is the
       owner. On the plain new-channel form, a team chip and a group heading each tick (and,
       pressed again, clear) their agents.
-- [ ] In a channel without the team, **Members → Invite a team…** → one `@qa-team joined: …`
+- [ ] In a channel without the team, **Details › Agents › Add or remove → Invite a team…** → one `@qa-team joined: …`
       line, new pills, nobody wakes, the owner is unchanged.
 - [ ] In another channel, `/i @qa-team check the login page` → the team joins, the message
       mentions it, and both members wake. `/i @qa-team` again → "everyone on @qa-team is
@@ -417,7 +426,7 @@ to: researcher …" as in the README demo prompt.
 
 ## 10a. Agents creating channels
 
-- [ ] In a DM with two repositories registered, the header shows a repository dropdown. Switch
+- [ ] In a DM with two repositories registered, **Details › Task** shows a repository dropdown. Switch
       it → "moved this conversation to …" on the timeline, the sidebar tag changes, and the
       agent's next turn runs in the new repository (its old session is dropped once idle).
       Asking the agent to "work in calculator_app from now on" does the same through
@@ -484,7 +493,8 @@ to: researcher …" as in the README demo prompt.
 
 - [ ] Tell an agent "remind me in 2 minutes to check the deploy" → it calls
       `canopy_schedule_create`; the timeline shows `@agent scheduled: once · …`, the header's
-      **Scheduled** button gets a count, and the panel lists it with "in 2m".
+      **Details** button gets a dot, and **Details › Automation › Scheduled** says "1 active"
+      and lists it with "in 2m".
 - [ ] Two minutes later: `scheduled task fired for @agent` appears and the agent takes a
       turn with that instruction (it posts, or passes).
 - [ ] Ask for a repeat ("every weekday at 9") → the panel shows `every weekday at 09:00`;
@@ -520,7 +530,7 @@ to: researcher …" as in the README demo prompt.
       with a note → the coordinator wakes with the note and goes back to a step. Later,
       **Approve** → `the bug-fix playbook is complete`, the chip goes, and the panel lists the
       run as completed. With the chatter budget used up, Approve still wakes the coordinator.
-- [ ] Start a run yourself: **Playbook** in a channel header (or **Start…** on the Playbooks
+- [ ] Start a run yourself: **Details › Automation › Playbook** (or **Start…** on the Playbooks
       page) → pick the playbook, a coordinator, a brief → the coordinator wakes with it.
       `/playbook bug-fix @backend the login form loses its input` does the same from the
       composer. A second start in the same channel is refused ("already has a playbook run in
@@ -646,7 +656,8 @@ repository you own; watches only read.
       agent; **Costliest turns** lists single turns with links to their channel.
 - [ ] **Auditor**: pick an agent, type a focus, press **Ask @agent to audit** → you land in a
       DM with it; the agent calls `canopy_costs_report` and replies with recommendations.
-- [ ] **Spend limit**: on a channel, open the Budget button (shows spent / limit), set $1
+- [ ] **Spend limit**: on a channel, click the spend in the header (shows spent / limit; it
+      opens **Details › Automation › Spend**), set $1
       → the sidebar Costs page lists it under **Channel spend limits**. Once the channel's turns
       pass $1, a red bar says the limit is reached and messages wake nobody; **Change limit**
       → raise it → the next message wakes the agent again. Ask an agent to create a channel
