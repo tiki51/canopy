@@ -355,6 +355,131 @@ defmodule Canopy.Documents do
 
   def read_text(%Document{}, _offset, _length), do: {:error, :not_text}
 
+  @doc """
+  The start of a text document for the file viewer:
+  `{:ok, text, %{lines: total, size: bytes, shown_bytes: n, truncated: cut}}`.
+  At most `:max_lines` lines (default 5,000, or `:infinity`) and `:max_bytes`
+  bytes (default 1 MB) come back, cut at a line boundary; a single line
+  longer than that is cut at a character boundary. `lines` and `size` are the
+  whole file's, `shown_bytes` how many of its bytes `text` is, and `cut` says
+  what cut it: `false`, `:lines` or `:bytes`.
+
+  Only `max_bytes + 1` bytes are read into memory; the rest of a longer file
+  is streamed past to count its lines. Invalid UTF-8 in a text document is
+  replaced. An SVG (kind `other`, so it is never served inline) reads as its
+  XML source, and any other `other` file reads as text when what is shown is
+  valid UTF-8 (`retry.ts`, stored as `video/mp2t`); otherwise, and for images
+  and PDFs, `{:error, :not_text}`.
+  """
+  def preview_text(document, opts \\ [])
+
+  def preview_text(%Document{kind: kind} = document, opts) when kind not in ["image", "pdf"] do
+    max_bytes = Keyword.get(opts, :max_bytes, 1_048_576)
+    max_lines = Keyword.get(opts, :max_lines, 5_000)
+    lenient? = kind == "text" or document.mime == "image/svg+xml"
+
+    with {:ok, head, size} <- Store.read_prefix(document.id, max_bytes + 1),
+         {shown, cut} = cut_text(head, size, max_bytes, max_lines),
+         {:ok, text} <- decode(shown, lenient?),
+         {:ok, lines} <- count_lines(document.id, head, size) do
+      {:ok, text, %{lines: lines, size: size, shown_bytes: byte_size(shown), truncated: cut}}
+    end
+  end
+
+  def preview_text(%Document{}, _opts), do: {:error, :not_text}
+
+  defp cut_text(head, size, max_bytes, max_lines) do
+    within = binary_part(head, 0, min(byte_size(head), max_bytes))
+
+    case take_lines(within, max_lines) do
+      shown when byte_size(shown) < byte_size(within) ->
+        {shown, :lines}
+
+      _ when size <= max_bytes ->
+        {within, false}
+
+      _ ->
+        case last_newline(within) do
+          nil -> {trim_partial_char(within), :bytes}
+          pos -> {binary_part(within, 0, pos + 1), :bytes}
+        end
+    end
+  end
+
+  defp decode(bytes, lenient?) do
+    cond do
+      String.valid?(bytes) -> {:ok, bytes}
+      lenient? -> {:ok, String.replace_invalid(bytes)}
+      true -> {:error, :not_text}
+    end
+  end
+
+  # The whole file's lines: the head is in memory, the rest streams past.
+  defp count_lines(_id, head, size) when byte_size(head) >= size, do: {:ok, line_count(head)}
+
+  defp count_lines(id, head, _size) do
+    acc = {count_newlines(head), :binary.last(head)}
+
+    with {:ok, {newlines, last}} <-
+           Store.reduce_from(id, byte_size(head), acc, fn chunk, {n, _last} ->
+             {n + count_newlines(chunk), :binary.last(chunk)}
+           end) do
+      {:ok, if(last == ?\n, do: newlines, else: newlines + 1)}
+    end
+  end
+
+  @doc "Lines in a text: a final newline ends the last line rather than starting one."
+  def line_count(""), do: 0
+
+  def line_count(text) do
+    newlines = count_newlines(text)
+    if :binary.last(text) == ?\n, do: newlines, else: newlines + 1
+  end
+
+  defp count_newlines(bin, from \\ 0, acc \\ 0) do
+    case :binary.match(bin, "\n", scope: {from, byte_size(bin) - from}) do
+      {pos, 1} -> count_newlines(bin, pos + 1, acc + 1)
+      :nomatch -> acc
+    end
+  end
+
+  @doc "The first `max` lines of a text (`:infinity`: all of it), each with its newline."
+  def take_lines(text, :infinity), do: text
+  def take_lines(text, max) when is_integer(max) and max > 0, do: take_lines(text, max, 0)
+
+  defp take_lines(text, left, from) do
+    case :binary.match(text, "\n", scope: {from, byte_size(text) - from}) do
+      {pos, 1} when left == 1 -> binary_part(text, 0, pos + 1)
+      {pos, 1} -> take_lines(text, left - 1, pos + 1)
+      :nomatch -> text
+    end
+  end
+
+  defp last_newline(bin, pos \\ nil)
+  defp last_newline(bin, nil), do: last_newline(bin, byte_size(bin) - 1)
+  defp last_newline(_bin, -1), do: nil
+
+  defp last_newline(bin, pos),
+    do: if(:binary.at(bin, pos) == ?\n, do: pos, else: last_newline(bin, pos - 1))
+
+  # Drops a UTF-8 sequence cut short at the end of `bin`.
+  defp trim_partial_char(bin) do
+    size = byte_size(bin)
+
+    Enum.find_value(1..min(3, size)//1, bin, fn back ->
+      byte = :binary.at(bin, size - back)
+
+      cond do
+        byte < 0x80 -> bin
+        byte >= 0xF0 and back < 4 -> binary_part(bin, 0, size - back)
+        byte >= 0xE0 and byte < 0xF0 and back < 3 -> binary_part(bin, 0, size - back)
+        byte >= 0xC0 and byte < 0xE0 and back < 2 -> binary_part(bin, 0, size - back)
+        byte >= 0xC0 -> bin
+        true -> nil
+      end
+    end)
+  end
+
   @doc "The file as a `data:` URL, the shape OpenCode wants for a prompt part."
   def data_url(%Document{} = document) do
     with {:ok, bytes} <- read(document) do

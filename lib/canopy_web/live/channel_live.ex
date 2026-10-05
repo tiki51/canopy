@@ -65,7 +65,7 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Playbooks.{Run, Runs}
   alias Canopy.Runtime.{Activity, Commands}
   alias Canopy.Timeline.ActivityDetails
-  alias CanopyWeb.{Nav, PlaybookComponents, PlaybookStart}
+  alias CanopyWeb.{FileViewer, Nav, PlaybookComponents, PlaybookStart}
   alias Canopy.Tasks.Task
 
   @page_size 100
@@ -101,6 +101,10 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:library, nil)
      |> assign(:thread, nil)
      |> assign(:activity, nil)
+     |> assign(:viewer, nil)
+     |> assign(:base_params, nil)
+     |> assign(:url_params, nil)
+     |> assign(:overlaid, nil)
      |> assign(:act, new_act(false))
      |> assign(:pending_text, %{})
      |> assign(:first_page, nil)
@@ -123,6 +127,9 @@ defmodule CanopyWeb.ChannelLive do
      |> stream(:thread, [])}
   end
 
+  # what says which file the viewer shows
+  @viewer_keys ["id", "file", "in"]
+
   @impl true
   def handle_params(%{"id" => id} = params, _uri, socket) do
     socket =
@@ -133,13 +140,91 @@ defmodule CanopyWeb.ChannelLive do
 
     params = reply_params(params)
 
-    {:noreply,
-     socket
-     |> attach_from_params(params)
-     |> panel_from_params(params)
-     |> message_from_params(params)
-     |> stream_first_page()}
+    if params == socket.assigns.overlaid do
+      # overlay/2's own patch, putting the whole URL in the address bar
+      {:noreply, assign(socket, :overlaid, nil)}
+    else
+      {params, socket} = overlay(params, socket)
+      prev = socket.assigns.url_params
+
+      # Opening, moving through or closing the file viewer changes only
+      # `file` and `in`: the panel, the composer and the feed are left as
+      # they are. Anything else (even the same URL again) has its say.
+      socket =
+        if viewer_only?(prev, params),
+          do: socket,
+          else:
+            socket
+            |> attach_from_params(params)
+            |> panel_from_params(params)
+            |> message_from_params(params)
+            |> stream_first_page()
+
+      socket =
+        if Map.take(prev || %{}, @viewer_keys) == Map.take(params, @viewer_keys),
+          do: socket,
+          else: viewer_from_params(socket, params)
+
+      {:noreply,
+       socket
+       |> assign(:url_params, params)
+       |> assign(:base_params, Map.drop(params, ["file", "in", "attach"]))}
+    end
   end
+
+  # A tile's link carries only `file` and `in` (it sits in a streamed message,
+  # which isn't re-rendered when the URL changes). Followed from a URL with
+  # more in it (an open thread, an activity panel, a pointed-at message), the
+  # viewer opens over that, and the address bar is patched to say so.
+  defp overlay(%{"id" => id, "file" => _, "in" => _} = params, socket)
+       when map_size(params) == 3 do
+    with %{"id" => ^id} = prev <- socket.assigns.url_params,
+         base when map_size(base) > 1 <- Map.drop(prev, ["file", "in", "attach"]) do
+      merged = Map.merge(base, Map.take(params, ["file", "in"]))
+
+      {merged,
+       socket
+       |> assign(:overlaid, merged)
+       |> push_patch(to: ~p"/channels/#{id}?#{Map.delete(merged, "id")}", replace: true)}
+    else
+      _ -> {params, socket}
+    end
+  end
+
+  defp overlay(params, socket), do: {params, socket}
+
+  defp viewer_only?(nil, _params), do: false
+
+  defp viewer_only?(prev, params) do
+    not Map.has_key?(params, "attach") and
+      Map.drop(prev, ["file", "in", "attach"]) == Map.drop(params, ["file", "in"]) and
+      Map.take(prev, ["file", "in"]) != Map.take(params, ["file", "in"])
+  end
+
+  # `?file=<doc id>&in=<message id>` opens the file viewer on one of a
+  # message's files; the message must be in this channel (a thread reply
+  # counts).
+  defp viewer_from_params(socket, %{"file" => doc_id, "in" => message_id})
+       when is_binary(doc_id) and is_binary(message_id) do
+    channel = socket.assigns.channel
+
+    with %{channel_id: channel_id} = message when channel_id == channel.id <-
+           Messages.get(message_id),
+         {:ok, viewer} <-
+           FileViewer.load(message, doc_id,
+             channel: channel,
+             user_name: socket.assigns.user.display_name
+           ) do
+      assign(socket, :viewer, viewer)
+    else
+      _ ->
+        socket
+        |> assign(:viewer, nil)
+        |> put_flash(:error, "That file isn't in this conversation.")
+    end
+  end
+
+  defp viewer_from_params(socket, _params), do: assign(socket, :viewer, nil)
 
   # A newly loaded channel's feed goes in once the params have had their say:
   # a link to an old message replaces the first page with history around it.
@@ -916,10 +1001,12 @@ defmodule CanopyWeb.ChannelLive do
     {:noreply, redraw_message(socket, message_id)}
   end
 
-  # A document was deleted somewhere: redraw the messages that carried it.
+  # A document was deleted somewhere: redraw the messages that carried it,
+  # and close the viewer when one of them is open in it.
   def handle_info({:document_deleted, id, message_ids}, socket) do
     socket =
       socket
+      |> close_viewer_on_delete(id, message_ids)
       |> assign(:picked, Enum.reject(socket.assigns.picked, &(&1.id == id)))
       |> assign(:thread_picked, Enum.reject(socket.assigns.thread_picked, &(&1.id == id)))
       |> then(fn socket ->
@@ -1190,6 +1277,29 @@ defmodule CanopyWeb.ChannelLive do
         following?: Threads.following?(root.id, socket.assigns.user)
     })
   end
+
+  # The open file deleted: the viewer closes. Another file of the same
+  # message deleted: the viewer reloads without it.
+  defp close_viewer_on_delete(%{assigns: %{viewer: %{} = viewer}} = socket, id, message_ids) do
+    cond do
+      viewer.doc.id == id ->
+        socket
+        |> assign(:viewer, nil)
+        |> put_flash(:error, "That file was deleted.")
+        |> push_patch(
+          to: FileViewer.viewer_path(cid(socket), socket.assigns.base_params),
+          replace: true
+        )
+
+      viewer.message.id in message_ids ->
+        viewer_from_params(socket, %{"file" => viewer.doc.id, "in" => viewer.message.id})
+
+      true ->
+        socket
+    end
+  end
+
+  defp close_viewer_on_delete(socket, _id, _message_ids), do: socket
 
   # Re-renders a message where it is loaded (the feed, the open panel, or
   # both); a message in neither is left out, never appended.
@@ -2728,6 +2838,13 @@ defmodule CanopyWeb.ChannelLive do
       <.library_picker :if={@library} library={@library} />
 
       <.changes_modal :if={@changes} changes={@changes} repository={@channel.repository} />
+
+      <FileViewer.viewer
+        :if={@viewer}
+        viewer={@viewer}
+        channel_id={@channel.id}
+        base={@base_params}
+      />
     </Layouts.app>
     """
   end
