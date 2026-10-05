@@ -1032,19 +1032,28 @@ defmodule CanopyWeb.TimelineComponents do
       />
     </section>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".Elapsed">
-      // Ticks a live duration from data-started-at (wall-clock ms) once a second.
+      // Ticks a live duration from data-started-at (wall-clock ms) once a
+      // second; with data-coarse, in whole minutes (`<1m`, `4m`, `1h 5m`)
+      // every 15 seconds (see `elapsed/1`). `coarse` mirrors
+      // Canopy.Elapsed.coarse/1, which renders the first value and lock
+      // ages: change them together.
       const format = ms => {
         const s = Math.max(0, Math.floor(ms / 1000))
         return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
       }
+      const coarse = ms => {
+        const m = Math.max(0, Math.floor(ms / 60000))
+        return m < 1 ? "<1m" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+      }
       export default {
         mounted() {
+          const fmt = this.el.dataset.coarse ? coarse : format
           this.tick = () => {
             const at = Number(this.el.dataset.startedAt)
-            if (at) this.el.textContent = format(Date.now() - at)
+            if (at) this.el.textContent = fmt(Date.now() - at)
           }
           this.tick()
-          this.timer = setInterval(this.tick, 1000)
+          this.timer = setInterval(this.tick, this.el.dataset.coarse ? 15000 : 1000)
         },
         updated() { this.tick() },
         destroyed() { clearInterval(this.timer) },
@@ -2957,6 +2966,31 @@ defmodule CanopyWeb.TimelineComponents do
     do: at |> Canopy.Schedules.When.to_local_naive() |> Calendar.strftime("%H:%M")
 
   def short_time(_), do: ""
+
+  @doc """
+  A duration that ticks in the browser from `started_at` (wall-clock ms), by
+  the `.Elapsed` hook. `coarse` counts whole minutes (`<1m`, `4m`, `1h 5m`,
+  as `Canopy.Elapsed.coarse/1` says them) and updates every 15 seconds; the
+  server renders the first value. The id must change when `started_at`
+  does: the hook owns the text.
+  """
+  attr :id, :string, required: true
+  attr :started_at, :integer, required: true
+  attr :coarse, :boolean, default: false
+  attr :rest, :global
+
+  def elapsed(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      phx-hook=".Elapsed"
+      phx-update="ignore"
+      data-started-at={@started_at}
+      data-coarse={@coarse && "true"}
+      {@rest}
+    >{if @coarse, do: Canopy.Elapsed.coarse(System.os_time(:millisecond) - @started_at)}</span>
+    """
+  end
 
   @doc "Who sent a message: `@agent`, a user's display name, or else `user_name` (the local user)."
   def sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name

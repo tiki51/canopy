@@ -24,15 +24,23 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
 
   defp open(conn, channel), do: live(conn, ~p"/channels/#{channel.id}")
 
-  test "the Brief button opens the editor; the counter follows the text; Save pins it",
+  defp details(view), do: view |> element("#toggle-details") |> render_click()
+
+  test "Details › Task's Brief Add opens the editor; the counter follows the text; Save pins it",
        %{conn: conn} = ctx do
     {:ok, view, _html} = open(conn, ctx.channel)
+    # a window from lg up, where Details sits beside the editor (below lg it closes for it)
+    view
+    |> element("#channel-details-pref")
+    |> render_hook("pref", %{"key" => "channel-details", "value" => "", "media" => true})
+
+    details(view)
 
     refute has_element?(view, "#channel-brief")
-    refute has_element?(view, "#brief-dot")
+    assert has_element?(view, "#details-brief", "none")
     refute has_element?(view, "#brief-form")
 
-    view |> element("#edit-brief") |> render_click()
+    view |> element("#edit-brief", "Add") |> render_click()
     assert has_element?(view, "#brief-form")
     # the composer's focus ring
     assert has_element?(view, "#brief-form textarea.focus\\:ring-primary\\/40")
@@ -62,7 +70,8 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
     refute has_element?(view, "#brief-form")
     assert has_element?(view, "#channel-brief")
     assert has_element?(view, "#brief-summary", "Goal: stop double charges at checkout.")
-    assert has_element?(view, "#brief-dot")
+    assert has_element?(view, "#details-brief", "set by #{Canopy.Users.local().display_name}")
+    assert has_element?(view, "#edit-brief", "Edit")
     assert Channels.get!(ctx.channel.id).brief == "Goal: stop double charges at checkout."
 
     [event] = Channels.brief_history(ctx.channel.id)
@@ -72,6 +81,7 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
 
   test "over the limit shows an error and saves nothing", %{conn: conn} = ctx do
     {:ok, view, _html} = open(conn, ctx.channel)
+    details(view)
     view |> element("#edit-brief") |> render_click()
 
     too_long = String.duplicate("x", 4_001)
@@ -165,23 +175,37 @@ defmodule CanopyWeb.ChannelBriefLiveTest do
     {:ok, _} = Channels.set_brief(ctx.channel, "Temporary.", "user")
     {:ok, view, _html} = open(conn, ctx.channel)
 
-    view |> element("#edit-brief") |> render_click()
+    view |> element("#brief-edit") |> render_click()
     view |> element("#clear-brief") |> render_click()
 
     refute has_element?(view, "#channel-brief")
-    refute has_element?(view, "#brief-dot")
+    details(view)
+    assert has_element?(view, "#details-brief", "none")
     assert Channels.get!(ctx.channel.id).brief == nil
     assert render(view) =~ "cleared the channel brief"
   end
 
-  test "a DM has the Brief button too", %{conn: conn} = ctx do
+  test "a DM has the brief too", %{conn: conn} = ctx do
     {:ok, dm} = Channels.ensure_dm(ctx.repository.id, ctx.agent)
     on_exit(fn -> Runtime.stop_channel(dm.id) end)
     {:ok, view, _html} = open(conn, dm)
+    details(view)
 
     view |> element("#edit-brief") |> render_click()
     view |> form("#brief-form", brief: %{brief: "Long-running DM context."}) |> render_submit()
     assert Channels.get!(dm.id).brief == "Long-running DM context."
     assert has_element?(view, "#channel-brief")
+  end
+
+  test "the strip's summary is the first line as plain text" do
+    line = &CanopyWeb.ChannelLive.brief_first_line/1
+
+    assert line.("\n## **Spec:** see [the plan](https://x.test/p) and `NOTES.md`") ==
+             "Spec: see the plan and NOTES.md"
+
+    assert line.("> - 1. _Goal_: ship *it*, @frontend in #toolbar") ==
+             "Goal: ship it, @frontend in #toolbar"
+
+    assert line.("---\nkeep snake_case_names") == "keep snake_case_names"
   end
 end

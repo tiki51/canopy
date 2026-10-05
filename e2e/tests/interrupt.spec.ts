@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader } from "./helpers";
+import { createChannel, send, timeline, clickHeader, openDetails } from "./helpers";
 
 // Agent Interrupt (experimental, off by default): with "Mentioning a working
 // agent interrupts it" on, a mention of @backend while it runs the slow
@@ -47,7 +47,8 @@ test.describe("interrupting a working agent", () => {
     await expect(card.locator('[id^="steer-chip-"]')).toContainText("Interrupting after current step");
     // no step timer left dangling on the chip
     await expect(card.locator('[id^="steer-elapsed-"]')).toHaveCount(0);
-    await expect(page.locator('[id$="-steers"]')).toContainText("1 waiting");
+    await openDetails(page);
+    await expect(page.locator('[id$="-steers"]')).toContainText("1 message waiting");
     // the message itself says it has not been read yet
     const nudge = timeline(page).locator("article", { hasText: NUDGE }).first();
     await expect(nudge.locator('[id^="message-queued-"]')).toHaveText("Queued · delivered after the current step");
@@ -74,6 +75,7 @@ test.describe("interrupting a working agent", () => {
     await expect(timeline(page)).not.toContainText("Re your message");
 
     // the turn ends (Abort): the message starts the next one
+    await openDetails(page);
     await page.locator('#members li:has-text("@backend") [id^="abort-"]').click();
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
   });

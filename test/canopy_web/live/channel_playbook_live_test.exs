@@ -65,8 +65,10 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
   test "start a run from the panel; the chip shows where it is", %{conn: conn} = ctx do
     {:ok, view, _html} = open(conn, ctx.channel)
     refute has_element?(view, "#playbook-chip")
+    view |> element("#toggle-details") |> render_click()
+    assert has_element?(view, "#edit-playbook", "none running")
     view |> element("#edit-playbook") |> render_click()
-    assert has_element?(view, "#playbook-panel #start-playbook-form")
+    assert has_element?(view, "#details-panel #playbook-panel #start-playbook-form")
     # the coordinator defaults to the channel owner
     assert has_element?(view, "#start-coordinator option[selected][value='#{ctx.agent.id}']")
 
@@ -150,15 +152,18 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     assert_receive {:timeline, %{event_type: "playbook_cancelled"}}
   end
 
-  test "the run panel opens once, the first time this browser sees the run; then the chip toggles it",
+  test "the run panel opens once in Details, the first time this browser sees the run; then the chip opens it",
        %{conn: conn} = ctx do
     run = start_run(ctx)
 
-    # nothing stored in this browser: the panel opens, and the run is remembered
+    # nothing stored in this browser: Details opens on the run, and the run is remembered
     {:ok, view, _html} = open(conn, ctx.channel)
     refute has_element?(view, "#playbook-panel")
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
+    refute has_element?(view, "#details-panel")
     render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
-    assert has_element?(view, "#playbook-panel")
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert has_element?(view, "#edit-playbook", "fix-it · 1/3 Plan")
     assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
     assert value == run.id
 
@@ -170,16 +175,69 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     sign_off = view |> element("#playbook-step-sign-off") |> render()
     assert length(Regex.scan(~r/>\s*sign-off\s*</, sign_off)) == 1
 
-    # the chip closes it
-    view |> element("#playbook-chip") |> render_click()
+    # its row in Details › Automation closes it
+    view |> element("#edit-playbook") |> render_click()
     refute has_element?(view, "#playbook-panel")
 
     # a browser that has seen the run: collapsed, the chip opens it
     {:ok, view, _html} = open(conn, ctx.channel)
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
     render_hook(view, "pref", %{"key" => "playbook-seen", "value" => "#{run.id},run_old"})
     refute has_element?(view, "#playbook-panel")
     view |> element("#playbook-chip") |> render_click()
-    assert has_element?(view, "#playbook-panel")
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "details:focus", %{section: "playbook"})
+
+    # below lg, where Details is an overlay, it never opens by itself, and
+    # the run isn't marked seen: its one look is still to come
+    {:ok, view, _html} = open(conn, ctx.channel)
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => false})
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
+    refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
+    # ...and the palette's "run a playbook" then opens it on the run, not collapsed
+    render_hook(view, "toggle_playbook", %{})
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "details:focus", %{section: "playbook"})
+
+    # a window narrowed below lg afterwards: a new run no longer opens it...
+    {:ok, view, _html} = open(conn, ctx.channel)
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => false})
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
+    refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
+    # ...until it is wide again, when the run gets its look
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "", "media" => true})
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
+    assert value == run.id
+  end
+
+  test "a thread open on arrival keeps the run unseen; Details opens on it once the slot is free",
+       %{conn: conn} = ctx do
+    run = start_run(ctx)
+    {:ok, root} = Canopy.Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "A question")
+
+    {:ok, view, _html} =
+      live(conn, CanopyWeb.ChannelLive.thread_path(ctx.channel.id, root.id))
+
+    render_hook(view, "pref", %{"key" => "channel-details", "value" => "open", "media" => true})
+    render_hook(view, "pref", %{"key" => "playbook-seen", "value" => ""})
+    assert has_element?(view, "#thread-panel")
+    refute has_element?(view, "#details-panel")
+    refute_push_event(view, "pref", %{key: "playbook-seen"})
+
+    # the user opens Details: collapsed so far, as nothing marked it seen or open
+    view |> element("#toggle-details") |> render_click()
+    assert has_element?(view, "#details-panel")
+    refute has_element?(view, "#playbook-panel")
+
+    # the next time the run changes, with Details able to show it, it opens once
+    send(view.pid, {:playbook_runs, :changed, ctx.channel.id})
+    assert has_element?(view, "#details-panel #playbook-panel")
+    assert_push_event(view, "pref", %{key: "playbook-seen", value: value})
+    assert value == run.id
   end
 
   test "the coordinator can be reassigned from the panel", %{conn: conn} = ctx do
@@ -215,6 +273,8 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
       })
 
     {:ok, view, _html} = open(conn, ctx.channel)
+    view |> element("#toggle-details") |> render_click()
+    assert has_element?(view, "#schedule-count", "1 active")
     view |> element("#edit-schedules") |> render_click()
     assert has_element?(view, "#watch-#{watch.id}", "watching failed CI on main in acme/app")
     assert has_element?(view, "#watch-#{watch.id}", "every 10 min")

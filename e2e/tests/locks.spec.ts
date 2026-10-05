@@ -18,20 +18,22 @@ async function clickConfirmed(page: Page, selector: string) {
 test.describe("locks", () => {
   test("a queued agent is woken when the holder's lock is force-released", async ({ page }) => {
     await createChannel(page);
-    await expect(page.locator("#edit-locks")).toBeVisible();
+    await expect(chip(page)).toBeHidden();
 
     await send(page, "@backend take the tests lock and keep it");
     await expect(chip(page)).toContainText("@backend");
-    await expect(page.locator('#members [id$="-lock"]')).toHaveCount(1);
 
     await send(page, "@frontend take the tests lock");
     await expect(chip(page)).toContainText("next: @frontend");
     await expect(timeline(page)).toContainText("@frontend is waiting for the `tests` lock held by @backend (1st in line)");
-    await expect(page.locator('#members [id$="-lock-queued"]')).toHaveCount(1);
+    // an agent in line for a lock marks the Details button
+    await expect(page.locator("#details-dot")).toBeVisible();
 
-    // the popover: holder, reason, the line, and Force release
+    // the chip opens Details › Locks: holder, reason, the line, and Force release
     await chip(page).click();
-    await expect(page.locator("#locks-panel")).toBeVisible();
+    await expect(page.locator("#details-locks #locks-panel")).toBeVisible();
+    await expect(page.locator('#members [id$="-lock"]')).toHaveCount(1);
+    await expect(page.locator('#members [id$="-lock-queued"]')).toHaveCount(1);
     await expect(page.locator("#lock-tests-holder")).toContainText("@backend");
     await expect(page.locator("#lock-tests")).toContainText("e2e run");
     await expect(page.locator("#lock-tests")).toContainText("across turns");
@@ -44,13 +46,12 @@ test.describe("locks", () => {
     await expect(timeline(page)).toContainText("Ran the suite with the tests lock: 42 tests, 0 failures.");
     await expect(chip(page)).toBeHidden();
     await expect(page.locator("#locks-empty")).toBeVisible();
-    await expect(page.locator("#edit-locks")).toBeVisible();
   });
 
   test("a lock the user holds by hand makes agents wait until it is released", async ({ page }) => {
     await createChannel(page);
 
-    await clickHeader(page, "edit-locks");
+    await clickHeader(page, "take-lock-toggle");
     await page.locator("#take-lock-reason").fill("testing by hand");
     await page.locator("#take-lock").click();
     await expect(chip(page)).toBeVisible();

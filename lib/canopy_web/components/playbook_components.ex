@@ -40,15 +40,27 @@ defmodule CanopyWeb.PlaybookComponents do
   attr :agents, :list, default: []
   attr :recent, :list, default: []
 
+  attr :bare, :boolean,
+    default: false,
+    doc: "inside another panel: no band, border or scroll of its own"
+
   def run_panel(assigns) do
     ~H"""
     <section
       id="playbook-panel"
-      class="max-h-[60vh] overflow-y-auto border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+      class={
+        if @bare,
+          do: "py-2",
+          else:
+            "max-h-[60vh] overflow-y-auto border-b border-base-300 bg-base-200/60 px-3 py-3 sm:px-6"
+      }
     >
       <%= if @run do %>
         <div class="mb-2 flex flex-wrap items-center gap-2">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
+          <span
+            :if={!@bare}
+            class="text-xs font-semibold uppercase tracking-wider text-base-content/60"
+          >
             Playbook
           </span>
           <span id="playbook-run-name" class="font-mono text-sm font-semibold">
@@ -146,7 +158,10 @@ defmodule CanopyWeb.PlaybookComponents do
         <.step_list run={@run} names={@names} />
       <% else %>
         <div class="mb-2 flex items-center gap-2">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/60">
+          <span
+            :if={!@bare}
+            class="text-xs font-semibold uppercase tracking-wider text-base-content/60"
+          >
             Playbook
           </span>
           <span class="text-xs text-base-content/60">

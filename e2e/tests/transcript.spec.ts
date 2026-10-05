@@ -1,15 +1,16 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader } from "./helpers";
+import { createChannel, send, timeline, clickHeader, openDetails } from "./helpers";
 
 // The session transcript: the fake OpenCode keeps each session's history
 // (every prompt with its system text, every part it emitted) and serves it
 // from GET /session/:id/message, as OpenCode does. Every spec works in a
 // channel of its own, so the session resets here touch nothing else.
 
-/** The owner's member pill (@backend owns the channels createChannel makes). */
+/** The owner's row in Details › Agents (@backend owns the channels createChannel makes). */
 const backendPill = (page: Page) => page.locator('#members li[id^="member-"]', { hasText: "@backend" });
 
 async function openFromPill(page: Page) {
+  await openDetails(page);
   await backendPill(page).locator('a[id^="transcript-"]').click();
   await expect(page).toHaveURL(/\/agents\/agt_[^/]+\/transcript/);
   await expect(page.locator("#transcript-summary")).toContainText("OpenCode");
@@ -87,6 +88,7 @@ test.describe("session transcript", () => {
     const channelId = await createChannel(page);
     await turn(page, "Remember the word pineapple.");
 
+    await openDetails(page);
     await backendPill(page).locator('button[id^="reset-session-"]').click();
     await expect(page.locator("#canopy-confirm")).toContainText("fresh OpenCode session");
     await page.locator("#canopy-confirm-ok").click();

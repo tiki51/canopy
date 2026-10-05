@@ -36,7 +36,7 @@ test.describe("channel brief", () => {
     await saveBrief(page, "Goal: stop double charges. Don't touch stripe_client.ex.");
     await expect(page.locator("#channel-brief")).toBeVisible();
     await expect(page.locator("#brief-summary")).toContainText("Goal: stop double charges.");
-    await expect(page.locator("#brief-dot")).toBeVisible();
+    await expect(page.locator("#details-brief")).toContainText("set by");
     await expect(timeline(page)).toContainText("updated the channel brief");
 
     await send(page, "@backend what is the goal here?");

@@ -48,6 +48,9 @@ defmodule CanopyWeb.ChannelLiveTest do
 
   defp open(conn, channel), do: live(conn, ~p"/channels/#{channel.id}")
 
+  # the Details side panel, where the channel's own controls live
+  defp details(view), do: view |> element("#toggle-details") |> render_click()
+
   describe "mount" do
     test "renders the header, members, and the existing timeline", ctx do
       %{channel: channel, agent: agent, reviewer: reviewer, user: user} = ctx
@@ -79,6 +82,10 @@ defmodule CanopyWeb.ChannelLiveTest do
       {:ok, view, _html} = open(conn_of(ctx), channel)
 
       assert has_element?(view, "#channel-name", channel.name)
+      assert has_element?(view, "#agents-button", "2 agents")
+      assert has_element?(view, "#agents-button[title='2 agents, all idle']")
+      refute has_element?(view, "#details-panel")
+      details(view)
       assert has_element?(view, "#owner-badge", "@#{agent.name}")
       assert has_element?(view, "#task-status", "open")
       assert has_element?(view, "#branch", "main")
@@ -243,7 +250,12 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#channel-name", "@" <> agent.name)
       assert has_element?(view, "#channel-name", "dm")
       refute has_element?(view, "#channel-topic")
+      refute has_element?(view, "#agents-button")
+      details(view)
       assert has_element?(view, "#owner-badge", "@" <> agent.name)
+      assert has_element?(view, "#details-agents", "Agent")
+      assert has_element?(view, "#member-#{agent.id}")
+      refute has_element?(view, "#edit-members")
 
       # The DM row is the one marked; the agent row goes to the Agents page.
       assert has_element?(view, "#sidebar-dm-#{dm.id}[data-active]")
@@ -375,6 +387,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       outsider = Fixtures.agent_fixture(%{name: "outsider#{Fixtures.unique_suffix()}"})
       Timeline.subscribe(channel.id)
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
       assert has_element?(view, "#composer-form[data-agents*='#{outsider.name}']")
 
       view
@@ -405,6 +418,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       Timeline.subscribe(channel.id)
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
       assert has_element?(view, "#composer-form[data-teams*='#{team.name}']")
 
       view
@@ -484,6 +498,9 @@ defmodule CanopyWeb.ChannelLiveTest do
                "#thread-composer-input[phx-hook=Composer][data-highlight='#thread-composer-highlight'][data-suggestions='#thread-composer-suggestions'][data-upload=thread_files]"
              )
 
+      # Details takes the side panel from the thread
+      details(view)
+      refute has_element?(view, "#thread-panel")
       view |> element("#edit-members") |> render_click()
       view |> form("#add-member-form", agent_id: outsider.id) |> render_submit()
       assert has_element?(view, "#{form}[data-members*='#{outsider.name}']")
@@ -604,6 +621,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       # the owner was woken: the runtime records agent_started and marks it busy
       assert_receive {:agent_status, agent_id, :busy}, 2_000
       assert agent_id == agent.id
+      details(view)
       assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
     end
 
@@ -720,7 +738,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#steer-chip-#{agent.id}", "Interrupting after current step")
       # no step timer dangling on the chip
       refute has_element?(view, "#steer-elapsed-#{agent.id}")
-      assert has_element?(view, "#member-#{agent.id}-steers", "1 waiting")
+      details(view)
+      assert has_element?(view, "#member-#{agent.id}-steers", "1 message waiting")
 
       # the steered message says it has not been read yet
       assert has_element?(
@@ -763,6 +782,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       # closed by default, its header naming the call running now
       assert has_element?(view, "#telemetry-#{agent.id}-current", "lib/a.ex")
       refute has_element?(view, "#telemetry-#{agent.id}-c1")
+      details(view)
       assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
 
       view |> element("#telemetry-toggle-#{agent.id}") |> render_click()
@@ -1945,6 +1965,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
     test "a member blocked on a card shows as waiting on you, and can still be aborted", ctx do
       {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      details(view)
 
       Phoenix.PubSub.broadcast(
         Canopy.PubSub,
@@ -2022,6 +2043,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       Timeline.subscribe(channel.id)
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
       assert has_element?(view, "#owner-badge", "@#{agent.name}")
       assert has_element?(view, "#handoff-#{handoff.id}", "@#{reviewer.name}")
 
@@ -2049,6 +2071,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       Timeline.subscribe(channel.id)
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       view
       |> form("#handoff-#{handoff.id}-reject-form", %{reason: "not now"})
@@ -2060,11 +2083,16 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert_receive {:agent_status, _previous_owner, :busy}, 2_000
     end
 
-    test "the task form updates the task and the header pill", ctx do
+    test "the task form in Details › Task updates the task", ctx do
       {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
       refute has_element?(view, "#task-form")
 
-      view |> element("#edit-task") |> render_click()
+      details(view)
+      view |> element("#edit-task", "Edit") |> render_click()
+      # one column in the narrow panel, with the read view and its Edit gone
+      assert has_element?(view, "#details-task #task-panel #task-form")
+      refute has_element?(view, "#task-title")
+      refute has_element?(view, "#edit-task")
 
       view
       |> form("#task-form", task: %{title: "Ship retries", status: "working"})
@@ -2087,6 +2115,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       |> render_submit()
 
       assert_receive {:agent_status, _, :busy}, 2_000
+      details(view)
       assert has_element?(view, "#member-#{agent.id} #abort-#{agent.id}")
 
       sid = session.engine_session_id
@@ -2124,7 +2153,7 @@ defmodule CanopyWeb.ChannelLiveTest do
          ctx do
       %{channel: channel, agent: agent} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
-      refute has_element?(view, "#schedule-count")
+      refute has_element?(view, "#details-dot")
 
       {:ok, once} =
         Canopy.Schedules.create(%{
@@ -2135,9 +2164,13 @@ defmodule CanopyWeb.ChannelLiveTest do
           when: "2h"
         })
 
-      assert has_element?(view, "#schedule-count", "1")
+      # the Details button carries a dot while it is closed
+      assert has_element?(view, "#details-dot.bg-primary[title='1 scheduled']")
       assert render(view) =~ "@#{agent.name} scheduled: once · Check the deploy went out."
 
+      details(view)
+      refute has_element?(view, "#details-dot")
+      assert has_element?(view, "#schedule-count", "1 active")
       view |> element("#edit-schedules") |> render_click()
       assert has_element?(view, "#channel-schedules-#{once.id}", "Check the deploy went out.")
       assert has_element?(view, "#channel-schedules-#{once.id}", "in 2h")
@@ -2146,6 +2179,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       view |> element("#cancel-schedule-#{once.id}") |> render_click()
       refute has_element?(view, "#channel-schedules-#{once.id}")
       refute has_element?(view, "#schedule-count")
+      assert has_element?(view, "#edit-schedules", "none")
       assert %{status: "cancelled"} = Canopy.Schedules.get!(once.id)
       assert render(view) =~ "cancelled a schedule for @#{agent.name}"
     end
@@ -2194,11 +2228,20 @@ defmodule CanopyWeb.ChannelLiveTest do
       refute has_element?(view, "#evt-#{passed_note.id}[data-activity]")
       refute has_element?(view, "#evt-#{errored.id}[data-activity]")
 
+      # the browser's stored choice loads with Details closed
+      assert has_element?(view, "#timeline-activity-pref[phx-hook=Pref]")
+
+      details(view)
+      assert has_element?(view, "#toggle-activity[role=switch][aria-checked=false]")
       view |> element("#toggle-activity") |> render_click()
       refute has_element?(view, "#timeline.timeline-compact")
-      assert has_element?(view, "#toggle-activity.btn-active")
+      assert has_element?(view, "#toggle-activity[aria-checked=true]")
+      assert_push_event(view, "pref", %{key: "timeline-activity", value: "full"})
 
-      render_hook(view, "pref", %{"key" => "timeline-activity", "value" => "compact"})
+      view
+      |> element("#timeline-activity-pref")
+      |> render_hook("pref", %{"key" => "timeline-activity", "value" => "compact"})
+
       assert has_element?(view, "#timeline.timeline-compact")
     end
   end
@@ -2207,6 +2250,7 @@ defmodule CanopyWeb.ChannelLiveTest do
     test "the header button resets an idle member's session and says so on the timeline", ctx do
       %{channel: channel, agent: agent, session: session} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       # the confirmation names the agent's own engine
       assert has_element?(
@@ -2244,6 +2288,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       on_exit(fn -> Runtime.stop_channel(channel.id) end)
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       assert has_element?(
                view,
@@ -2253,7 +2298,7 @@ defmodule CanopyWeb.ChannelLiveTest do
   end
 
   describe "transcript links" do
-    test "each member pill and an opened turn card link to the transcript", ctx do
+    test "each agent row and an opened turn card link to the transcript", ctx do
       %{channel: channel, agent: agent, reviewer: reviewer} = ctx
 
       {:ok, turn} =
@@ -2265,6 +2310,7 @@ defmodule CanopyWeb.ChannelLiveTest do
         })
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       assert has_element?(
                view,
@@ -2289,6 +2335,10 @@ defmodule CanopyWeb.ChannelLiveTest do
                ~s(#activity-panel-transcript[href="/channels/#{channel.id}/agents/#{agent.id}/transcript?turn=#{turn.id}"])
              )
 
+      # the activity took the side panel; Details takes it back
+      refute has_element?(view, "#details-panel")
+      details(view)
+
       {:ok, _transcript, html} =
         view
         |> element("#transcript-#{agent.id}")
@@ -2300,27 +2350,30 @@ defmodule CanopyWeb.ChannelLiveTest do
   end
 
   describe "members and archiving" do
-    test "agents can be added and removed from the members panel; the owner cannot", ctx do
+    test "agents can be added and removed in Details › Agents; the owner cannot", ctx do
       %{channel: channel, agent: owner, reviewer: reviewer} = ctx
       newcomer = Fixtures.agent_fixture(%{name: "newcomer#{Fixtures.unique_suffix()}"})
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      view |> element("#agents-button") |> render_click()
+      assert_push_event(view, "details:focus", %{section: "agents"})
+      assert has_element?(view, "#details-agents", "Agents · 2")
       refute has_element?(view, "#members-panel")
+      refute has_element?(view, "[id^=remove-member-]")
 
-      view |> element("#edit-members") |> render_click()
-      assert has_element?(view, "#member-row-#{owner.id}", "owner")
+      view |> element("#edit-members", "Add or remove") |> render_click()
+      assert has_element?(view, "#edit-members", "Done")
+      assert has_element?(view, "#member-#{owner.id}", "owner")
       refute has_element?(view, "#remove-member-#{owner.id}")
       assert has_element?(view, "#remove-member-#{reviewer.id}")
       assert has_element?(view, "#add-member-select option[value='#{newcomer.id}']")
 
       view |> form("#add-member-form", agent_id: newcomer.id) |> render_submit()
-      assert has_element?(view, "#member-row-#{newcomer.id}", "@#{newcomer.name}")
       assert has_element?(view, "#member-#{newcomer.id}", "@#{newcomer.name}")
       refute has_element?(view, "#add-member-select option[value='#{newcomer.id}']")
       assert render(view) =~ "@#{newcomer.name} joined the channel"
 
       view |> element("#remove-member-#{reviewer.id}") |> render_click()
-      refute has_element?(view, "#member-row-#{reviewer.id}")
       refute has_element?(view, "#member-#{reviewer.id}")
       assert render(view) =~ "@#{reviewer.name} was removed from the channel"
       assert has_element?(view, "#add-member-select option[value='#{reviewer.id}']")
@@ -2337,6 +2390,7 @@ defmodule CanopyWeb.ChannelLiveTest do
       Timeline.subscribe(channel.id)
 
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
       view |> element("#edit-members") |> render_click()
       assert has_element?(view, "#invite-team-select option[value='#{team.id}']", "2 members")
 
@@ -2348,7 +2402,7 @@ defmodule CanopyWeb.ChannelLiveTest do
                "Added @#{newcomer.name} (@#{reviewer.name} was already here)."
              )
 
-      assert has_element?(view, "#member-row-#{newcomer.id}")
+      assert has_element?(view, "#member-#{newcomer.id}")
       assert_receive {:timeline, %{event_type: "team_added"}}, 2_000
       assert render(view) =~ "@#{team.name} joined: @#{newcomer.name}"
       # nobody was woken, and the team is no longer offered
@@ -2357,14 +2411,17 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert Canopy.Channels.get!(channel.id).owner_agent_id == ctx.agent.id
     end
 
-    test "the budget panel sets and clears the spend limit; reaching it shows a bar", ctx do
+    test "Details › Spend sets and clears the spend limit; reaching it shows a bar", ctx do
       %{channel: channel, agent: agent} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
       assert has_element?(view, "#edit-budget", "$0.00")
       refute has_element?(view, "#budget-panel")
 
+      # the header's $ opens Details on Spend, open
       view |> element("#edit-budget") |> render_click()
-      assert has_element?(view, "#budget-spent", "no limit")
+      assert has_element?(view, "#edit-budget-row[aria-expanded=true]")
+      assert has_element?(view, "#details-panel #budget-panel #budget-form")
+      assert has_element?(view, "#budget-spent", "$0.00 · no limit")
       refute has_element?(view, "#clear-spend-limit")
 
       view |> form("#budget-form", spend_limit: "abc") |> render_submit()
@@ -2388,7 +2445,8 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#limit-bar", "Spend limit reached: $3.00 of $2.50")
 
       view |> element("#raise-limit") |> render_click()
-      assert has_element?(view, "#budget-spent", "Spent $3.00 of a $2.50 limit")
+      assert has_element?(view, "#budget-panel")
+      assert has_element?(view, "#edit-budget-row .text-error #budget-spent", "$3.00 of $2.50")
       view |> element("#clear-spend-limit") |> render_click()
       refute has_element?(view, "#limit-bar")
       assert has_element?(view, "#edit-budget", "$3.00")
@@ -2399,6 +2457,7 @@ defmodule CanopyWeb.ChannelLiveTest do
     test "archiving hides the composer, marks the sidebar, and reopening restores it", ctx do
       %{channel: channel} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       view |> element("#archive-channel") |> render_click()
       assert has_element?(view, "#archived-badge")
@@ -2416,55 +2475,51 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert render(view) =~ "reopened this channel"
     end
 
-    test "Archive lives in the header's ⋯ menu, and every other control has a copy there", ctx do
+    test "the header is one row of chips and buttons; the rest lives in Details", ctx do
       %{channel: channel} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
 
-      assert has_element?(view, "#channel-header[phx-hook=HeaderFit]")
-      assert has_element?(view, "#channel-more[popovertarget=channel-more-menu]")
-      refute has_element?(view, "#channel-more[data-optional]")
-      assert has_element?(view, "#channel-more-menu[popover] #archive-channel")
-      refute has_element?(view, "#channel-header-actions > #archive-channel")
+      assert has_element?(view, "#channel-header[phx-hook=HeaderFit][data-fit='']")
+      refute has_element?(view, "#channel-more")
+      refute has_element?(view, "#channel-header #archive-channel")
 
-      # the inline controls keep their ids; the menu's copies carry the same rank
-      for {inline, rank} <- [
-            {"search-channel", "m1"},
-            {"open-changes", "m2"},
-            {"edit-task", "m3"},
-            {"edit-brief", "m4"},
-            {"edit-playbook", "m5"},
-            {"edit-locks", "m6"},
-            {"edit-members", "m7"},
-            {"toggle-activity", "m8"},
-            {"edit-budget", "s1"},
-            {"edit-schedules", "s2"}
-          ] do
-        assert has_element?(view, "#channel-header-actions > ##{inline}[data-hdr-rank=#{rank}]")
-        assert has_element?(view, "#channel-more-menu #more-#{inline}[data-hdr-menu=#{rank}]")
+      for id <- ~w(search-channel edit-members toggle-activity edit-locks edit-playbook
+                   edit-schedules edit-brief edit-task owner-badge members) do
+        refute has_element?(view, "#channel-header ##{id}")
       end
 
-      # Stop keeps its label longest and never moves into the menu
-      assert has_element?(view, "#stop-all[data-hdr=stop]:not([data-hdr-rank])")
+      # Stop keeps its label longest; Changes and Details drop theirs first
+      assert has_element?(view, "#stop-all[data-hdr=stop]")
+      assert has_element?(view, "#open-changes[data-hdr=rest]")
 
-      # icon-only controls still have a name and a tooltip
-      for id <- ~w(edit-members toggle-activity edit-brief edit-task open-changes stop-all) do
+      assert has_element?(
+               view,
+               "#toggle-details[data-hdr=rest][aria-expanded=false][aria-controls=details-panel]"
+             )
+
+      for id <- ~w(agents-button edit-budget open-changes stop-all) do
         assert has_element?(view, "##{id}[aria-label][title]")
       end
 
-      # an entry in the menu does what its inline control does
-      view |> element("#more-edit-task") |> render_click()
-      assert has_element?(view, "#edit-task.btn-active")
-      assert has_element?(view, "#more-edit-task.bg-base-200")
+      details(view)
+      assert has_element?(view, "#toggle-details.btn-active[aria-expanded=true]")
+
+      for id <- ~w(details-task details-agents details-locks details-automation details-view) do
+        assert has_element?(view, "#details-body > ##{id}")
+      end
+
+      assert has_element?(view, "#details-view #archive-channel[data-canopy-confirm]")
+      assert has_element?(view, "#details-panel-close[phx-click=close_panel]")
     end
 
-    test "an archived channel's ⋯ menu has no Archive and shows only when something moves in",
-         ctx do
+    test "an archived channel's header offers Reopen; Details has no Archive", ctx do
       %{channel: channel} = ctx
       {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
 
       view |> element("#archive-channel") |> render_click()
-      refute has_element?(view, "#channel-more-menu #archive-channel")
-      assert has_element?(view, "#channel-more[data-optional]")
+      refute has_element?(view, "#archive-channel")
+      refute has_element?(view, "#stop-all")
       assert has_element?(view, "#channel-header-actions > #reopen-channel[data-hdr=stop]")
     end
 
@@ -2499,20 +2554,32 @@ defmodule CanopyWeb.ChannelLiveTest do
       other = Fixtures.repository_fixture(%{name: "calc"})
       {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, agent)
       {:ok, view, _html} = open(conn_of(ctx), dm)
+      details(view)
 
-      assert has_element?(view, "#dm-repository option[value='#{repository.id}'][selected]")
+      assert has_element?(
+               view,
+               "#details-task #dm-repository option[value='#{repository.id}'][selected]"
+             )
+
       view |> form("#dm-repository-form", %{"repository_id" => other.id}) |> render_change()
       assert Canopy.Channels.get!(dm.id).repository_id == other.id
       assert has_element?(view, "#dm-repository option[value='#{other.id}'][selected]")
       assert render(view) =~ "moved this conversation to calc"
       assert has_element?(view, "#sidebar-dm-#{dm.id}[title*=calc]")
+
+      # the locks shown follow it to the new repository, live
+      {:granted, _} = Canopy.Locks.acquire(ctx.session, other.id, "deploy", nil)
+      assert has_element?(view, "#lock-chip-deploy")
     end
 
-    test "a DM has no members button", ctx do
+    test "a DM has no agents button, and no Add or remove", ctx do
       %{agent: agent, repository: repository} = ctx
       {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, agent)
       {:ok, view, _html} = open(conn_of(ctx), dm)
+      refute has_element?(view, "#agents-button")
+      details(view)
       refute has_element?(view, "#edit-members")
+      refute has_element?(view, "#edit-playbook")
       assert has_element?(view, "#archive-channel")
     end
   end
@@ -2533,6 +2600,278 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       view |> element("#close-changes") |> render_click()
       refute has_element?(view, "#changes-modal")
+    end
+  end
+
+  describe "details panel" do
+    test "it shares the side panel: a thread closes it, and closing the thread leaves none",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      details(view)
+
+      assert has_element?(
+               view,
+               "#details-panel[phx-hook=SidePanel][aria-label='Channel details']"
+             )
+
+      assert_push_event(view, "pref", %{key: "channel-details", value: "open"})
+
+      view |> element("#reply-#{root.id}") |> render_click()
+      assert has_element?(view, "#thread-panel")
+      refute has_element?(view, "#details-panel")
+      refute has_element?(view, "#toggle-details.btn-active")
+      # the thread took the slot; the user didn't close Details, so it stays remembered open
+      refute_push_event(view, "pref", %{key: "channel-details"})
+
+      view |> element("#thread-panel-close") |> render_click()
+      refute has_element?(view, "#thread-panel")
+      refute has_element?(view, "#details-panel")
+
+      # the Details button with a thread open: the thread closes, Details shows
+      view |> element("#reply-#{root.id}") |> render_click()
+      details(view)
+      assert_patched(view, ~p"/channels/#{channel.id}")
+      refute has_element?(view, "#thread-panel")
+      assert has_element?(view, "#details-panel")
+
+      # Esc (the SidePanel hook) and the button close it
+      view |> element("#details-panel") |> render_hook("close_panel", %{})
+      refute has_element?(view, "#details-panel")
+      assert_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+      details(view)
+      details(view)
+      refute has_element?(view, "#details-panel")
+    end
+
+    test "the browser's preference opens it from lg up; a thread on arrival wins", ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      assert has_element?(view, "#channel-details-pref[data-pref-media='(min-width: 1024px)']")
+
+      pref = fn view, value, media ->
+        view
+        |> element("#channel-details-pref")
+        |> render_hook("pref", %{"key" => "channel-details", "value" => value, "media" => media})
+      end
+
+      pref.(view, "open", true)
+      assert has_element?(view, "#details-panel")
+      pref.(view, "closed", true)
+      refute has_element?(view, "#details-panel")
+      # below lg it never opens by itself
+      pref.(view, "open", false)
+      refute has_element?(view, "#details-panel")
+
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, view, _html} = live(conn_of(ctx), ChannelLive.thread_path(channel.id, root.id))
+      pref.(view, "open", true)
+      assert has_element?(view, "#thread-panel")
+      refute has_element?(view, "#details-panel")
+      # ...without forgetting that Details was left open
+      refute_push_event(view, "pref", %{key: "channel-details"})
+
+      # the palette's Show and Hide
+      render_hook(view, "toggle_details", %{"open" => true})
+      assert has_element?(view, "#details-panel")
+      render_hook(view, "toggle_details", %{"open" => false})
+      refute has_element?(view, "#details-panel")
+    end
+
+    test "only the user closing it is remembered: a thread, an activity or a narrower window is not",
+         ctx do
+      %{channel: channel, agent: agent} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      pref = fn value, media ->
+        view
+        |> element("#channel-details-pref")
+        |> render_hook("pref", %{"key" => "channel-details", "value" => value, "media" => media})
+      end
+
+      pref.("open", true)
+      assert has_element?(view, "#details-panel")
+
+      # a thread opens over it, then the window crosses lg both ways
+      view |> element("#reply-#{root.id}") |> render_click()
+      refute has_element?(view, "#details-panel")
+      pref.("open", false)
+      pref.("open", true)
+      assert has_element?(view, "#thread-panel")
+      refute has_element?(view, "#details-panel")
+
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # an activity panel takes the slot the same way
+      details(view)
+      assert_push_event(view, "pref", %{key: "channel-details", value: "open"})
+      turn = record_turn(ctx, %{})
+      render_patch(view, ChannelLive.activity_path(channel.id, turn.id))
+      assert has_element?(view, "#activity-panel")
+      refute has_element?(view, "#details-panel")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # the user's own close is the one that sticks
+      details(view)
+      assert has_element?(view, "#details-panel")
+      details(view)
+      assert_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+    end
+
+    test "narrowing the window below lg closes its forms too, so it reopens collapsed", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      pref = fn value, media ->
+        view
+        |> element("#channel-details-pref")
+        |> render_hook("pref", %{"key" => "channel-details", "value" => value, "media" => media})
+      end
+
+      pref.("open", true)
+      render_hook(view, "open_details", %{"section" => "spend"})
+      view |> element("#take-lock-toggle") |> render_click()
+      assert has_element?(view, "#budget-panel")
+      assert has_element?(view, "#take-lock-form")
+
+      pref.("open", false)
+      refute has_element?(view, "#details-panel")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # back above lg it opens as remembered, with nothing half-filled
+      pref.("open", true)
+      assert has_element?(view, "#details-panel")
+      refute has_element?(view, "#budget-panel")
+      refute has_element?(view, "#take-lock-form")
+    end
+
+    test "below lg, Brief › Add closes the Details overlay so the editor shows", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      view
+      |> element("#channel-details-pref")
+      |> render_hook("pref", %{"key" => "channel-details", "value" => "", "media" => false})
+
+      details(view)
+      assert has_element?(view, "#details-panel")
+      view |> element("#edit-brief") |> render_click()
+      refute has_element?(view, "#details-panel")
+      assert has_element?(view, "#brief-form")
+      refute_push_event(view, "pref", %{key: "channel-details", value: "closed"})
+
+      # from lg up Details is beside the feed, and stays
+      render_hook(view, "toggle_brief_form", %{})
+      refute has_element?(view, "#brief-form")
+
+      view
+      |> element("#channel-details-pref")
+      |> render_hook("pref", %{"key" => "channel-details", "value" => "open", "media" => true})
+
+      assert has_element?(view, "#details-panel")
+      view |> element("#edit-brief") |> render_click()
+      assert has_element?(view, "#details-panel")
+      assert has_element?(view, "#brief-form")
+    end
+
+    test "each header chip opens it at its section", ctx do
+      %{channel: channel, repository: repository} = ctx
+      {:granted, _} = Canopy.Locks.acquire(ctx.session, repository.id, "tests", nil)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      for {chip, section} <- [
+            {"#agents-button", "agents"},
+            {"#lock-chip-tests", "locks"},
+            {"#edit-budget", "spend"}
+          ] do
+        render_hook(view, "close_panel", %{})
+        view |> element(chip) |> render_click()
+        assert has_element?(view, "#details-panel")
+        assert_push_event(view, "details:focus", %{section: ^section})
+      end
+
+      assert has_element?(view, "#details-panel [data-section=spend] #budget-panel")
+
+      # the palette's older commands land in Details too
+      render_hook(view, "close_panel", %{})
+      render_hook(view, "toggle_schedules", %{})
+      assert has_element?(view, "#details-panel #schedules-panel")
+      render_hook(view, "toggle_locks", %{})
+      assert_push_event(view, "details:focus", %{section: "locks"})
+    end
+
+    test "closing it closes its parts; an old toggle reopens it on its part, never collapsed",
+         ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      # Change limit → close → the palette's "Channel: budget"
+      render_hook(view, "open_details", %{"section" => "spend"})
+      assert has_element?(view, "#budget-panel")
+      render_hook(view, "close_panel", %{})
+      render_hook(view, "toggle_budget", %{})
+      assert has_element?(view, "#details-panel #budget-panel")
+      assert_push_event(view, "details:focus", %{section: "spend"})
+      # with Details showing, the same toggle closes it
+      render_hook(view, "toggle_budget", %{})
+      refute has_element?(view, "#budget-panel")
+
+      # a half-taken lock doesn't come back either
+      view |> element("#take-lock-toggle") |> render_click()
+      assert has_element?(view, "#take-lock-form")
+      render_hook(view, "close_panel", %{})
+      details(view)
+      refute has_element?(view, "#take-lock-form")
+    end
+
+    test "agent rows: working and waiting on you tick from when they began; idle shows no time",
+         ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer, session: session} = ctx
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      details(view)
+      started = System.os_time(:millisecond) - 4 * 60_000
+
+      broadcast_telemetry(channel.id, agent.id, :tool_started, %{
+        call_id: "c1",
+        tool: "read",
+        status: :running,
+        input: %{"filePath" => "lib/a.ex"},
+        at: started,
+        message_id: "m",
+        part_id: "p1"
+      })
+
+      elapsed = "#member-#{agent.id}-elapsed-#{started}"
+      assert has_element?(view, "#member-#{agent.id}", "working")
+      assert has_element?(view, "#{elapsed}[data-started-at='#{started}'][data-coarse]", "4m")
+      assert has_element?(view, "#{elapsed}[phx-hook][phx-update=ignore][title^='Working since']")
+      # idle: no time
+      assert has_element?(view, "#member-#{reviewer.id}", "idle")
+      refute has_element?(view, "[id^='member-#{reviewer.id}-elapsed']")
+
+      # waiting on you: from the question's time
+      {:ok, question} =
+        QuestionRequests.record(%{
+          channel_id: channel.id,
+          agent_session_id: session.id,
+          opencode_question_id: "que_" <> Fixtures.unique_suffix(),
+          questions: [%{"question" => "Which key?", "options" => [%{"label" => "A"}]}],
+          status: "pending"
+        })
+
+      broadcast_status(channel.id, agent.id, :awaiting_user)
+      asked = DateTime.to_unix(question.inserted_at, :millisecond)
+      assert has_element?(view, "#member-#{agent.id}-awaiting", "waiting on you")
+
+      assert has_element?(
+               view,
+               "#member-#{agent.id}-elapsed-#{asked}[title^='Waiting on you since']",
+               "<1m"
+             )
+
+      # the agents button leads with who needs you
+      assert has_element?(view, "#agents-button #agents-waiting", "1")
+      assert render(element(view, "#agents-button")) =~ "@#{agent.name} waiting on you"
     end
   end
 

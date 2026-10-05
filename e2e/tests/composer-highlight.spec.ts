@@ -14,7 +14,7 @@ test.describe("composer highlight", () => {
     // take @reviewer out of the channel: its mention would wake nobody
     await clickHeader(page, "edit-members");
     const reviewerRow = page
-      .locator('[id^="member-row-"]')
+      .locator('#members li[id^="member-"]')
       .filter({ has: page.getByText("@reviewer", { exact: true }) });
     await reviewerRow.locator('[id^="remove-member-"]').click();
     await expect(reviewerRow).toHaveCount(0);

@@ -69,7 +69,21 @@ const STATIC = [
     when: ctx => ctx.hold,
     action: {push: "release_hold"},
   },
-  // the open channel's header buttons
+  // the open channel's header buttons, and its Details panel
+  {
+    id: "details-show",
+    label: "Show channel details",
+    keywords: ["panel", "info", "sidebar", "members", "locks"],
+    when: ctx => Boolean(ctx.channel),
+    action: {push: "toggle_details", payload: {open: true}},
+  },
+  {
+    id: "details-hide",
+    label: "Hide channel details",
+    keywords: ["panel", "info", "sidebar", "close"],
+    when: ctx => Boolean(ctx.channel),
+    action: {push: "toggle_details", payload: {open: false}},
+  },
   {
     id: "stop-all",
     label: "Stop all agents here",
