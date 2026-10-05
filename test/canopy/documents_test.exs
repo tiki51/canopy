@@ -124,6 +124,58 @@ defmodule Canopy.DocumentsTest do
     end
   end
 
+  describe "preview_text/2" do
+    defp text_doc(content) do
+      {:ok, doc} =
+        Documents.create(%{
+          filename: "a.log",
+          mime: "text/plain",
+          source: {:binary, content},
+          user_id: user_fixture().id
+        })
+
+      doc
+    end
+
+    test "counts lines and returns the whole of a short file" do
+      assert {:ok, "a\nb\n", %{lines: 2, truncated: false}} =
+               Documents.preview_text(text_doc("a\nb\n"))
+
+      assert {:ok, "a\nb", %{lines: 2, truncated: false}} =
+               Documents.preview_text(text_doc("a\nb"))
+    end
+
+    test "cuts at the line limit and at the byte limit, on line boundaries" do
+      doc = text_doc("1\n2\n3\n4\n")
+
+      assert {:ok, "1\n2\n", %{lines: 4, truncated: true}} =
+               Documents.preview_text(doc, max_lines: 2)
+
+      assert {:ok, "1\n2\n", %{truncated: true}} = Documents.preview_text(doc, max_bytes: 5)
+    end
+
+    test "a single long line is cut at a character boundary" do
+      doc = text_doc(String.duplicate("é", 10))
+      assert {:ok, text, %{lines: 1, truncated: true}} = Documents.preview_text(doc, max_bytes: 5)
+      assert text == "éé"
+    end
+
+    test "invalid UTF-8 is replaced and other kinds are refused" do
+      assert {:ok, text, _} = Documents.preview_text(text_doc("ok " <> <<0xFF>> <> "\n"))
+      assert String.valid?(text)
+
+      {:ok, png} =
+        Documents.create(%{
+          filename: "a.png",
+          mime: "image/png",
+          source: {:binary, @png},
+          user_id: user_fixture().id
+        })
+
+      assert Documents.preview_text(png) == {:error, :not_text}
+    end
+  end
+
   describe "list/1 and delete/1" do
     test "filters by search and kind, newest first" do
       user = user_fixture()

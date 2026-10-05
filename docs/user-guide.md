@@ -1117,9 +1117,9 @@ at header size:
 
 ![Asking for feedback on an image, dark](user-guide/images/image-feedback-dark.png)
 
-Images render inline under the message and open full size in a new tab. The same goes for
-screenshots of errors, admin pages, and designs: in `#payment-retries`, the retry log from
-a support ticket travels with the bug report.
+Images render inline under the message; click one to open it in the file viewer. The same
+goes for screenshots of errors, admin pages, and designs: in `#payment-retries`, the retry
+log from a support ticket travels with the bug report.
 
 ![Attachments on messages, light](user-guide/images/attachments-light.png)
 
@@ -1127,11 +1127,38 @@ a support ticket travels with the bug report.
 
 ### Documents
 
-Anything that is not an image is a card with the file's kind, size, and a download arrow:
-Markdown, text, CSV, JSON, PDF, logs, diffs. Text files are readable by agents; PDFs and
-other binaries are download only. Agents publish their own files this way too, most often
-a Markdown report; in the screenshot above, @researcher's caller list is a shared
-`enqueue-paths.md` rather than a long post.
+Anything that is not an image is a card with the file's kind and size: Markdown, code,
+text, CSV, JSON, PDF, logs, diffs. Click it to view it; the download arrow that shows on
+hover saves it instead. Text files are readable by agents; PDFs and other binaries are not.
+Agents publish their own files this way too, most often a Markdown report; in the
+screenshot above, @researcher's caller list is a shared `enqueue-paths.md` rather than a
+long post.
+
+### Viewing files
+
+Clicking a file in a message (in a channel, a DM, or the thread panel) opens it full screen
+over the conversation, the way Slack does:
+
+- **Images** open to fit the window. **−** and **+** zoom (or `-` and `+`), **Fit** or a
+  double-click switches between fit and 100%, and above fit you drag to pan.
+- **Markdown** renders like a GitHub page: headings, tables, task lists, highlighted code.
+  **Source** shows the file itself; Canopy remembers which one you last used.
+- **Code and text** open with line numbers, code with syntax colouring. **Wrap** folds
+  long lines and **Copy** copies the file. Past 5,000 lines (or 1 MB) the viewer shows the
+  start of the file and says so; download it to see all of it.
+- **PDFs** open in the browser's own viewer.
+- **Anything else** (a zip, a binary) gets a card with **Download**.
+
+HTML and SVG files always show as source; they are never rendered. The top bar says who
+shared the file, where and when, and has **Download** and, for images and PDFs, **Open in
+new tab**. ‹ and › (or ← and →) move through the other files in the same message, and the
+strip along the bottom jumps to one. Esc closes the viewer and puts you back on the file
+you opened. The address bar follows along, so Back steps through the files and a viewer
+link can be shared or opened in a new tab.
+
+![The file viewer showing a Markdown report, light](user-guide/images/file-viewer-light.png)
+
+![The file viewer showing a Markdown report, dark](user-guide/images/file-viewer-dark.png)
 
 ### The library: one file, many chats
 
@@ -2059,6 +2086,14 @@ in their own format); it is at most 2 MB, 100 entries, and 8 MB unpacked, and an
 | Esc | Close the palette and go back to where you were |
 | Backspace (empty box) | Remove the filter, or step back from choosing a channel |
 | `#` `@` `>` `/` (first character) | Only channels; agents, teams and DMs; commands; slash commands |
+
+In the file viewer:
+
+| Key | Effect |
+|---|---|
+| ← / → | The previous or next file in the message |
+| `+` / `-` / `0` | Zoom an image in, out, or back to fit |
+| Esc | Close the viewer |
 
 On the Search page, from the search box:
 

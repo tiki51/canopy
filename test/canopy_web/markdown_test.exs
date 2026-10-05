@@ -140,4 +140,39 @@ defmodule CanopyWeb.MarkdownTest do
       assert html == "def __init__(self): **kwargs <mark>hit</mark>"
     end
   end
+
+  describe "document_html/1" do
+    test "keeps single newlines soft and gives headings ids" do
+      html = Markdown.document_html("# Retry design\n\nline one\nline two\n")
+      assert html =~ ~s(<h1 id="doc-retry-design">)
+      refute html =~ "<br"
+    end
+
+    test "escapes raw HTML and turns remote images into links" do
+      html = Markdown.document_html("<script>x</script>\n\n![chart](https://evil.test/a.png)\n")
+      refute html =~ "<script>"
+      refute html =~ "<img"
+      assert html =~ ~s(href="https://evil.test/a.png")
+    end
+
+    test "highlights code fences and leaves #links in the document" do
+      html =
+        Markdown.document_html(
+          "[up](#top) [out](https://x.test)\n\n```elixir\nIO.puts(\"<b>\")\n```\n"
+        )
+
+      assert html =~ ~s(<pre class="doc-fence">)
+      assert html =~ ~s(class="l-line")
+      assert html =~ "&lt;b&gt;"
+      assert html =~ ~s(<a href="#top">)
+      assert html =~ ~s(target="_blank" rel="noopener noreferrer" href="https://x.test")
+    end
+
+    test "leaves fences plain in a document over 256 KB" do
+      fence = "```elixir\nIO.puts(:hi)\n```\n\n"
+      html = Markdown.document_html(fence <> String.duplicate("word ", 60_000))
+      assert html =~ ~s(<pre class="doc-fence"><code class="language-plaintext">)
+      refute html =~ "l-function"
+    end
+  end
 end

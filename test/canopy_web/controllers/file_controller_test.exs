@@ -41,6 +41,18 @@ defmodule CanopyWeb.FileControllerTest do
     assert get_resp_header(conn, "content-type") == ["text/markdown"]
   end
 
+  test "?download=1 makes any kind an attachment and keeps the other headers", %{conn: conn} do
+    doc = create(%{filename: "shot.png", mime: "image/png", source: {:binary, @png}})
+    conn = get(conn, Documents.url_path(doc) <> "?download=1")
+
+    assert conn.status == 200
+    assert [disposition] = get_resp_header(conn, "content-disposition")
+    assert disposition =~ ~r/^attachment; filename="shot.png"/
+    assert get_resp_header(conn, "content-type") == ["image/png"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+  end
+
   test "svg never renders inline", %{conn: conn} do
     doc = create(%{filename: "logo.svg", mime: "image/svg+xml", source: {:binary, "<svg/>"}})
     conn = get(conn, Documents.url_path(doc))

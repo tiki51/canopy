@@ -48,6 +48,60 @@ defmodule CanopyWeb.Markdown do
 
   def to_html(_, _opts), do: ""
 
+  @doc_mdex_opts [
+    extension: [
+      strikethrough: true,
+      table: true,
+      tasklist: true,
+      autolink: true,
+      header_id_prefix: "doc-"
+    ],
+    render: [escape: true, hardbreaks: false],
+    syntax_highlight: nil
+  ]
+
+  @doc """
+  A Markdown document (a shared `.md` file) to HTML for the file viewer.
+  Unlike `to_html/2`, single newlines stay soft (it is a document, not a chat
+  line), headings get ids (`doc-…`), code fences are highlighted, and
+  nothing is linked as a mention or channel. Raw HTML is still escaped and
+  remote images still become links. Links open in a new tab, except `#…`
+  links within the document (the viewer's hook scrolls to those).
+  """
+  @spec document_html(String.t()) :: String.t()
+  def document_html(text) when is_binary(text) do
+    text
+    |> MDEx.to_html!(@doc_mdex_opts)
+    |> highlight_fences(byte_size(text) <= CanopyWeb.Highlight.max_bytes())
+    |> restrict_images()
+    |> String.replace(
+      ~r/<a href="(?!#)/,
+      ~s(<a target="_blank" rel="noopener noreferrer" href=")
+    )
+  end
+
+  @fence_regex ~r/<pre><code(?: class="language-([^"]*)")?>(.*?)<\/code><\/pre>/s
+
+  # MDEx renders fences unhighlighted (its NIF is built without Lumis);
+  # each one is unescaped and run through CanopyWeb.Highlight instead. In a
+  # document over 256 KB they stay plain: hundreds of fences add up.
+  defp highlight_fences(html, colour?) do
+    Regex.replace(@fence_regex, html, fn _whole, info, body ->
+      lang = if colour? and info != "", do: CanopyWeb.Highlight.fence_language(info)
+      ~s(<pre class="doc-fence">) <> CanopyWeb.Highlight.code(unescape(body), lang) <> "</pre>"
+    end)
+  end
+
+  defp unescape(html) do
+    html
+    |> String.replace("&lt;", "<")
+    |> String.replace("&gt;", ">")
+    |> String.replace("&quot;", "\"")
+    |> String.replace("&#x27;", "'")
+    |> String.replace("&#39;", "'")
+    |> String.replace("&amp;", "&")
+  end
+
   @doc """
   Markdown as one line of plain text, for previews (a quoted parent, a thread
   row, a notification): code fences, emphasis, links, images, headings,

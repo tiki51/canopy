@@ -35,7 +35,10 @@ import CommandPalette from "./hooks/command_palette"
 import SearchNav from "./hooks/search_nav"
 import Notifier from "./hooks/notifier"
 import HeaderFit from "./hooks/header_fit"
+import FileViewer from "./hooks/file_viewer"
+import copyText from "./copy_text"
 import notifier from "./notify"
+import "./file_viewer_links"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
@@ -54,6 +57,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     SearchNav,
     Notifier,
     HeaderFit,
+    FileViewer,
   },
 })
 
@@ -117,22 +121,7 @@ document.addEventListener("keydown", e => {
 
 // Copy buttons: JS.dispatch("canopy:copy", to: "#element", detail: {button: id})
 // copies the element's text; the button's [data-copy-label] says "Copied" for
-// a moment. Plain http on a LAN (CANOPY_BIND) has no clipboard API, so a
-// hidden textarea and execCommand stand in.
-const copyText = text => {
-  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text)
-  return new Promise((resolve, reject) => {
-    const box = document.createElement("textarea")
-    box.value = text
-    box.setAttribute("readonly", "")
-    box.style.position = "fixed"
-    box.style.opacity = "0"
-    document.body.appendChild(box)
-    box.select()
-    try { document.execCommand("copy") ? resolve() : reject() } catch (e) { reject(e) }
-    box.remove()
-  })
-}
+// a moment.
 window.addEventListener("canopy:copy", e => {
   const text = e.target.innerText || e.target.textContent || ""
   const button = e.detail && e.detail.button && document.getElementById(e.detail.button)

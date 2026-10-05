@@ -355,6 +355,65 @@ defmodule Canopy.Documents do
 
   def read_text(%Document{}, _offset, _length), do: {:error, :not_text}
 
+  @doc """
+  The start of a text document for the file viewer, cut at a line boundary:
+  `{:ok, text, %{lines: total_lines, truncated: boolean}}`. At most
+  `:max_lines` lines (default 5,000) and `:max_bytes` bytes (default 1 MB)
+  come back; a single line longer than that is cut at a character boundary.
+  Invalid UTF-8 is replaced. An SVG (kind `other`, so it is never served
+  inline) reads as its XML source. Other non-text kinds return
+  `{:error, :not_text}`.
+  """
+  def preview_text(document, opts \\ [])
+
+  def preview_text(%Document{kind: kind, mime: mime} = document, opts)
+      when kind == "text" or mime == "image/svg+xml" do
+    max_bytes = Keyword.get(opts, :max_bytes, 1_048_576)
+    max_lines = Keyword.get(opts, :max_lines, 5_000)
+
+    with {:ok, bytes} <- read(document) do
+      text = if String.valid?(bytes), do: bytes, else: String.replace_invalid(bytes)
+      total = line_count(text)
+      shown = text |> take_lines(max_lines) |> take_bytes(max_bytes)
+      {:ok, shown, %{lines: total, truncated: byte_size(shown) < byte_size(text)}}
+    end
+  end
+
+  def preview_text(%Document{}, _opts), do: {:error, :not_text}
+
+  @doc "Lines in a text: a final newline ends the last line rather than starting one."
+  def line_count(""), do: 0
+
+  def line_count(text) do
+    newlines = length(:binary.matches(text, "\n"))
+    if String.ends_with?(text, "\n"), do: newlines, else: newlines + 1
+  end
+
+  defp take_lines(text, max) do
+    case :binary.matches(text, "\n") |> Enum.drop(max - 1) do
+      [{pos, 1} | _] -> binary_part(text, 0, pos + 1)
+      [] -> text
+    end
+  end
+
+  # Whole lines up to `max` bytes; failing that, as many whole characters.
+  defp take_bytes(text, max) when byte_size(text) <= max, do: text
+
+  defp take_bytes(text, max) do
+    head = binary_part(text, 0, max)
+
+    case :binary.matches(head, "\n") |> List.last() do
+      {pos, 1} -> binary_part(text, 0, pos + 1)
+      nil -> valid_prefix(head)
+    end
+  end
+
+  defp valid_prefix(bin) do
+    if String.valid?(bin),
+      do: bin,
+      else: valid_prefix(binary_part(bin, 0, byte_size(bin) - 1))
+  end
+
   @doc "The file as a `data:` URL, the shape OpenCode wants for a prompt part."
   def data_url(%Document{} = document) do
     with {:ok, bytes} <- read(document) do
