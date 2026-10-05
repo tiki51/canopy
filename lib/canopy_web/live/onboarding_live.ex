@@ -1271,9 +1271,9 @@ defmodule CanopyWeb.OnboardingLive do
               <% value when value in [nil, :checking] -> %>
                 <span class="text-base-content/60">Checking…</span>
               <% {:ok, version} -> %>
-                OpenCode{if version, do: " #{version}"} at <code class="font-mono text-xs break-all">{@opencode_url}</code>.
+                OpenCode{if version, do: " #{version}"} at <code class="font-mono text-xs whitespace-nowrap">{@opencode_url}</code>.
               <% {:error, _reason} -> %>
-                Not running at <code class="font-mono text-xs break-all">{@opencode_url}</code>.
+                Not running at <code class="font-mono text-xs whitespace-nowrap">{@opencode_url}</code>.
                 Start it with <code class="font-mono text-xs">opencode serve --port 4096</code>
                 and leave it running, then <em>Check again</em>.
                 <%!-- Not a link: Settings is behind this modal. --%>
