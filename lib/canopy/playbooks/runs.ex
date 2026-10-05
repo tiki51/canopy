@@ -275,8 +275,7 @@ defmodule Canopy.Playbooks.Runs do
   names the role nobody fills (or the deactivated agent that would).
   """
   def resolve_roster(%Definition{} = definition, team, overrides \\ %{}) do
-    members = if team, do: Teams.active_members(team), else: []
-    labels = if team, do: Teams.member_roles(team), else: %{}
+    {members, labels} = team_members(team)
 
     definition
     |> Definition.owner_roles()
@@ -288,26 +287,43 @@ defmodule Canopy.Playbooks.Runs do
     end)
   end
 
-  defp fill_role(role, definition, team, members, labels, overrides) do
-    candidate =
-      cond do
-        name = overrides[role] ->
-          {:named, name}
+  @doc """
+  Who fills each role of a definition when a run starts with no overrides,
+  decided the way `resolve_roster/3` decides it, for a page to show before
+  the start: `[%{role, agent, source}]`, where `source` says why ("from
+  @team", "playbook default") and `agent` is nil when nobody does.
+  """
+  def roster_preview(%Definition{} = definition) do
+    team = definition.team && Teams.get_by_name(definition.team)
+    {members, labels} = team_members(team)
 
-        agent = Enum.find(members, &(labels[&1.id] == role)) ->
-          {:agent, agent}
+    definition
+    |> Definition.owner_roles()
+    |> Enum.map(fn role ->
+      case role_candidate(role, definition, members, labels, %{}) do
+        {:agent, agent} ->
+          %{role: role, agent: agent, source: "from @#{team.name}"}
 
-        agent = Enum.find(members, &(&1.name == role)) ->
-          {:agent, agent}
+        {:named, name} ->
+          case Agents.get_by_name(name) do
+            %Agent{active: true} = agent ->
+              %{role: role, agent: agent, source: "playbook default"}
 
-        name = definition.roles[role] ->
-          {:named, name}
+            _ ->
+              %{role: role, agent: nil, source: "@#{name} isn't available"}
+          end
 
-        true ->
-          :none
+        :none ->
+          %{role: role, agent: nil, source: "nobody fills it yet"}
       end
+    end)
+  end
 
-    case candidate do
+  defp team_members(nil), do: {[], %{}}
+  defp team_members(team), do: {Teams.active_members(team), Teams.member_roles(team)}
+
+  defp fill_role(role, definition, team, members, labels, overrides) do
+    case role_candidate(role, definition, members, labels, overrides) do
       {:agent, agent} ->
         {:ok, agent}
 
@@ -322,6 +338,18 @@ defmodule Canopy.Playbooks.Runs do
         where = if team, do: " (not on @#{team.name})", else: ""
 
         {:error, "nobody fills role #{role}#{where}; start again with assign: \"#{role}=@agent\""}
+    end
+  end
+
+  # Who a role falls to: an override, a team member whose role label is the
+  # role, a team member named like it, then the playbook's default.
+  defp role_candidate(role, definition, members, labels, overrides) do
+    cond do
+      name = overrides[role] -> {:named, name}
+      agent = Enum.find(members, &(labels[&1.id] == role)) -> {:agent, agent}
+      agent = Enum.find(members, &(&1.name == role)) -> {:agent, agent}
+      name = definition.roles[role] -> {:named, name}
+      true -> :none
     end
   end
 
@@ -357,34 +385,47 @@ defmodule Canopy.Playbooks.Runs do
       "finish or cancel it first, or start in a new channel with channel_name"
   end
 
-  # A free channel name: the one given, or the playbook plus the brief's first words.
-  defp channel_name(repository_id, given, playbook, brief) do
-    base =
-      if present?(given) do
-        given |> String.trim() |> String.trim_leading("#") |> String.downcase()
-      else
-        words =
-          brief
-          |> String.downcase()
-          |> String.replace(~r/[^a-z0-9]+/, " ")
-          |> String.split()
-          |> Enum.take(4)
-
-        Enum.join([playbook.name | words], "-")
-      end
+  @doc """
+  A new run's channel name: the one `given` (trimmed, without `#`), or a
+  free one on the repository made from the playbook's name and the brief's
+  first words (`channel_name_base/2`), `-2` and on when taken. With no
+  repository yet, the base as it is.
+  """
+  def channel_name(repository_id, given, playbook_name, brief) do
+    if present?(given) do
+      given
+      |> String.trim()
+      |> String.trim_leading("#")
+      |> String.downcase()
       |> String.slice(0, 50)
       |> String.trim("-")
-
-    if present?(given) do
-      base
     else
-      Stream.iterate(1, &(&1 + 1))
-      |> Stream.map(fn
-        1 -> base
-        n -> "#{base}-#{n}"
-      end)
-      |> Enum.find(&is_nil(Channels.get_by_name(repository_id, &1)))
+      free_channel_name(repository_id, channel_name_base(playbook_name, brief))
     end
+  end
+
+  @doc "The playbook's name and the brief's first four words, as a channel name (not checked for being free)."
+  def channel_name_base(playbook_name, brief) do
+    words =
+      (brief || "")
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, " ")
+      |> String.split()
+      |> Enum.take(4)
+
+    [playbook_name | words] |> Enum.join("-") |> String.slice(0, 50) |> String.trim("-")
+  end
+
+  @doc "`base`, or `base-2` and on: the first name no channel on the repository has."
+  def free_channel_name(nil, base), do: base
+
+  def free_channel_name(repository_id, base) do
+    Stream.iterate(1, &(&1 + 1))
+    |> Stream.map(fn
+      1 -> base
+      n -> "#{base}-#{n}"
+    end)
+    |> Enum.find(&is_nil(Channels.get_by_name(repository_id, &1)))
   end
 
   # The playbook re-checked, the new channel (if any), the run and its steps,
@@ -411,7 +452,8 @@ defmodule Canopy.Playbooks.Runs do
     end)
     |> Multi.run(:channel, fn _repo, _ ->
       if new? do
-        name = channel_name(origin.repository_id, Map.get(attrs, :channel_name), playbook, brief)
+        name =
+          channel_name(origin.repository_id, Map.get(attrs, :channel_name), playbook.name, brief)
 
         case Channels.create(%{
                repository_id: origin.repository_id,

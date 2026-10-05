@@ -2,7 +2,7 @@ defmodule CanopyWeb.PlaybookComponents do
   @moduledoc """
   Playbook pieces shared by the channel's run panel and the Playbooks page:
   a run's steps (status, round, owners, result, delegations), the start
-  form, and the preview of a definition's steps in the editor.
+  form, and agent avatars.
   """
 
   use CanopyWeb, :html
@@ -66,7 +66,7 @@ defmodule CanopyWeb.PlaybookComponents do
             {status_label(@run.status)}
           </span>
           <span class="text-xs text-base-content/60">
-            coordinated by {agent_name(@names, @run.coordinator_agent_id)} · started by {starter(
+            led by {agent_name(@names, @run.coordinator_agent_id)} · started by {starter(
               @run,
               @names,
               @user_name
@@ -101,7 +101,7 @@ defmodule CanopyWeb.PlaybookComponents do
         <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-base-content/70">
           <div id="playbook-roster" class="flex flex-wrap items-center gap-1.5">
             <span class="font-medium text-base-content/60">Roster</span>
-            <span :if={@run.roster == %{}}>the coordinator only</span>
+            <span :if={@run.roster == %{}}>the lead only</span>
             <span
               :for={{role, id} <- Enum.sort(@run.roster)}
               id={"playbook-roster-#{role}"}
@@ -121,13 +121,13 @@ defmodule CanopyWeb.PlaybookComponents do
           >
             <input type="hidden" name="run_id" value={@run.id} />
             <label for="reassign-coordinator" class="font-medium text-base-content/60">
-              Coordinator
+              Lead
             </label>
             <select
               id="reassign-coordinator"
               name="agent_id"
               class="select select-xs w-44"
-              aria-label="New coordinator"
+              aria-label="New lead"
             >
               <option
                 :for={agent <- @agents}
@@ -314,7 +314,7 @@ defmodule CanopyWeb.PlaybookComponents do
           field={@form[:coordinator_id]}
           type="select"
           id="start-coordinator"
-          label="Coordinator"
+          label="Led by"
           options={Enum.map(@agents, &{"@#{&1.name}", &1.id})}
         />
       </div>
@@ -346,45 +346,45 @@ defmodule CanopyWeb.PlaybookComponents do
     """
   end
 
-  @doc "The steps of a parsed definition, for the editor's preview."
-  attr :definition, :any, required: true
+  @doc """
+  An agent's avatar tile (its colour and initial), or a dashed `?` for a
+  role nobody fills. `agent` is anything with `name` and `color`.
+  """
+  attr :agent, :any, default: nil
+  attr :size, :string, default: "size-5"
+  attr :class, :any, default: nil
 
-  def definition_preview(assigns) do
+  def avatar(%{agent: nil} = assigns) do
     ~H"""
-    <div id="playbook-preview" class="flex flex-col gap-2 text-sm">
-      <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/70">
-        <span class="font-mono font-semibold text-base-content">{@definition.name}</span>
-        <span :if={@definition.team}>team <span class="font-mono">@{@definition.team}</span></span>
-        <span :if={@definition.coordinator}>
-          coordinator <span class="font-mono">@{@definition.coordinator}</span>
-        </span>
-        <span>{if @definition.channel == "new",
-          do: "runs in a new channel",
-          else: "runs in the channel"}</span>
-        <span>
-          {if @definition.stall_after,
-            do: "nudges after #{@definition.stall_after} min quiet",
-            else: "never nudged"}
-        </span>
-      </div>
-      <ol id="playbook-preview-steps" class="flex flex-col gap-1">
-        <li
-          :for={{step, n} <- Enum.with_index(@definition.steps, 1)}
-          id={"preview-step-#{step.id}"}
-          class="flex flex-wrap items-baseline gap-2"
-        >
-          <span class="w-5 text-right text-xs text-base-content/50">{n}.</span>
-          <span class="font-medium">{step.title}</span>
-          <span class="font-mono text-xs text-base-content/50">{step.id}</span>
-          <span class="text-xs text-base-content/70">{Enum.join(step.owner, ", ")}</span>
-          <span :if={step.approval} class="badge badge-warning badge-xs">your sign-off</span>
-          <span :if={step.optional} class="badge badge-ghost badge-xs">optional</span>
-          <span :if={step.on_reject} class="text-[11px] text-base-content/50">
-            on reject → {step.on_reject}
-          </span>
-        </li>
-      </ol>
-    </div>
+    <span
+      class={[
+        "flex shrink-0 items-center justify-center rounded-md border border-dashed border-base-content/30 text-[10px] font-bold text-base-content/50",
+        @size,
+        @class
+      ]}
+      aria-hidden="true"
+    >
+      ?
+    </span>
+    """
+  end
+
+  def avatar(assigns) do
+    ~H"""
+    <span
+      class={[
+        "flex shrink-0 select-none items-center justify-center rounded-md bg-primary/15 text-[10px] font-bold text-primary",
+        @size,
+        @class
+      ]}
+      style={
+        @agent.color &&
+          "background-color: #{@agent.color}; color: #{CanopyWeb.TimelineComponents.initial_color(@agent.color)}"
+      }
+      aria-hidden="true"
+    >
+      {@agent.name |> String.first() |> to_string() |> String.upcase()}
+    </span>
     """
   end
 
@@ -411,7 +411,7 @@ defmodule CanopyWeb.PlaybookComponents do
   defp agent_name(names, id), do: "@" <> Map.get(names, id, "agent")
 
   defp owners(%{owner_ids: [], owner_roles: roles}, _names) do
-    if "coordinator" in roles, do: "coordinator", else: ""
+    if "coordinator" in roles, do: "lead", else: ""
   end
 
   defp owners(%{owner_ids: ids}, names), do: Enum.map_join(ids, " ", &agent_name(names, &1))
