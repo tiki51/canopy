@@ -383,3 +383,139 @@
   border-color: var(--color-primary);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 40%, transparent);
 }
+
+/* File viewer (CanopyWeb.FileViewer, assets/js/hooks/file_viewer.js). The
+   hook sets data-mode (Markdown: preview | source) and data-wrap on the
+   sheet; without them a Markdown file shows its Preview and lines don't wrap.
+   A Preview is the whole file, so Source's "Showing the first…" banner hides. */
+.file-viewer::backdrop { background: transparent; }
+.doc-sheet[data-markdown]:not([data-mode="source"]) .doc-source,
+.doc-sheet[data-markdown]:not([data-mode="source"]) .doc-wrap,
+.doc-sheet[data-markdown]:not([data-mode="source"]) .doc-truncated,
+.doc-sheet[data-mode="source"] .doc-preview { display: none; }
+.doc-toolbar { background: color-mix(in oklab, var(--color-base-content) 4%, var(--color-base-200)); }
+.doc-mode[aria-pressed="true"] {
+  background: var(--color-base-200); color: var(--color-base-content);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--color-base-content) 12%, transparent);
+}
+.doc-sheet[data-wrap] .doc-wrap {
+  background: color-mix(in oklab, var(--color-primary) 10%, transparent); color: var(--color-primary);
+}
+
+/* Code and text with line numbers: one block per line (CanopyWeb.Highlight),
+   the number drawn from data-line so copying a selection skips it. */
+.doc-code { margin: 0; padding: 0.75rem 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 20px; tab-size: 4; }
+.doc-code code { display: block; min-width: max-content; }
+.doc-code .l-line { position: relative; display: block; min-height: 20px; padding: 0 1rem 0 52px; white-space: pre; }
+.doc-code .l-line::before {
+  content: attr(data-line); position: absolute; left: 0; width: 52px; padding-right: 1rem;
+  box-sizing: border-box; text-align: right; user-select: none;
+  color: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+}
+.doc-sheet[data-wrap] .doc-code code { min-width: 0; }
+.doc-sheet[data-wrap] .doc-code .l-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* A Markdown document, styled like GitHub's with the theme's tokens. */
+.doc-markdown { font-size: 15px; line-height: 1.6; overflow-wrap: break-word; }
+.doc-markdown > :first-child { margin-top: 0; }
+.doc-markdown :is(p, ul, ol, blockquote, table, pre, hr) { margin: 0 0 1rem; }
+.doc-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 1.5rem 0 1rem; font-weight: 600; line-height: 1.25; scroll-margin-top: 1rem; }
+.doc-markdown h1 { font-size: 28px; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-base-300); }
+.doc-markdown h2 { font-size: 21px; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-base-300); }
+.doc-markdown h3 { font-size: 17px; }
+.doc-markdown :is(h4, h5, h6) { font-size: 15px; }
+.doc-markdown a { color: var(--color-secondary); text-decoration: none; }
+.doc-markdown a:hover { text-decoration: underline; }
+.doc-markdown a.anchor { display: none; }
+.doc-markdown ul, .doc-markdown ol { padding-left: 2em; }
+.doc-markdown ul { list-style: disc; }
+.doc-markdown ol { list-style: decimal; }
+.doc-markdown li + li { margin-top: 0.25em; }
+.doc-markdown li > :is(ul, ol) { margin: 0.25em 0 0; }
+.doc-markdown li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
+.doc-markdown li > input[type="checkbox"] { margin-right: 0.5em; vertical-align: -0.1em; accent-color: var(--color-primary); }
+.doc-markdown blockquote {
+  padding: 0 1em; border-left: 0.25em solid var(--color-base-300);
+  color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+}
+.doc-markdown code {
+  font-family: var(--font-mono); font-size: 85%; padding: 0.2em 0.4em; border-radius: 0.375rem;
+  background: color-mix(in oklab, var(--color-base-content) 7%, transparent);
+}
+.doc-markdown pre.doc-fence {
+  padding: 1rem; overflow-x: auto; border-radius: 0.375rem; font-size: 13px; line-height: 1.45;
+  background: color-mix(in oklab, var(--color-base-content) 4%, var(--color-base-200));
+}
+.doc-markdown pre.doc-fence code { display: block; padding: 0; font-size: inherit; background: transparent; border-radius: 0; }
+.doc-markdown pre.doc-fence .l-line { display: block; min-height: 1lh; white-space: pre; }
+.doc-markdown table { display: block; width: max-content; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.doc-markdown :is(th, td) { padding: 6px 13px; border: 1px solid var(--color-base-300); }
+.doc-markdown th { font-weight: 600; background: color-mix(in oklab, var(--color-base-content) 5%, var(--color-base-200)); }
+.doc-markdown tbody tr:nth-child(2n) { background: color-mix(in oklab, var(--color-base-content) 2.5%, var(--color-base-200)); }
+.doc-markdown hr { height: 0.25em; padding: 0; background: var(--color-base-300); border: 0; }
+.doc-markdown img { max-width: 100%; border-radius: 0.375rem; }
+
+/* Highlighted tokens (Lumis l-* classes), GitHub light and dark. */
+:root, [data-theme="light"] {
+  --hl-keyword: #CF222E; --hl-string: #0A3069; --hl-function: #8250DF; --hl-comment: #6E7781;
+  --hl-number: #0550AE; --hl-type: #953800; --hl-tag: #116329; --hl-plus: #116329; --hl-minus: #82071E;
+  --hl-plus-bg: #DAFBE1; --hl-minus-bg: #FFEBE9;
+}
+[data-theme="dark"] {
+  --hl-keyword: #FF7B72; --hl-string: #A5D6FF; --hl-function: #D2A8FF; --hl-comment: #8B949E;
+  --hl-number: #79C0FF; --hl-type: #FFA657; --hl-tag: #7EE787; --hl-plus: #AFF5B4; --hl-minus: #FFDCD7;
+  --hl-plus-bg: #033A16; --hl-minus-bg: #67060C;
+}
+:is(.doc-code, .doc-fence) :is([class^="l-keyword"], [class*=" l-keyword"], .l-conditional, .l-repeat, .l-include, .l-exception, .l-storageclass) { color: var(--hl-keyword); }
+:is(.doc-code, .doc-fence) :is([class^="l-string"], [class*=" l-string"], .l-character, [class^="l-markup-link-url"]) { color: var(--hl-string); }
+:is(.doc-code, .doc-fence) :is([class^="l-function"], [class*=" l-function"], [class^="l-method"]) { color: var(--hl-function); }
+:is(.doc-code, .doc-fence) :is([class^="l-comment"], [class*=" l-comment"]) { color: var(--hl-comment); font-style: italic; }
+:is(.doc-code, .doc-fence) :is([class^="l-number"], .l-float, .l-boolean, [class^="l-constant"], [class^="l-attribute"], [class^="l-property"], .l-variable-builtin, [class^="l-string-special-symbol"], [class^="l-markup-heading"]) { color: var(--hl-number); }
+:is(.doc-code, .doc-fence) :is([class^="l-type"], [class*=" l-type"], .l-constructor, [class^="l-module"], [class^="l-label"]) { color: var(--hl-type); }
+:is(.doc-code, .doc-fence) :is([class^="l-tag"], [class*=" l-tag"]) { color: var(--hl-tag); }
+:is(.doc-code, .doc-fence) [class^="l-markup-heading"] { font-weight: 600; }
+:is(.doc-code, .doc-fence) [class^="l-markup-strong"] { font-weight: 600; }
+:is(.doc-code, .doc-fence) [class^="l-markup-italic"] { font-style: italic; }
+:is(.doc-code, .doc-fence) :is([class^="l-diff-plus"], [class^="l-markup-inserted"]) { color: var(--hl-plus); background: var(--hl-plus-bg); }
+:is(.doc-code, .doc-fence) :is([class^="l-diff-minus"], [class^="l-markup-deleted"]) { color: var(--hl-minus); background: var(--hl-minus-bg); }
+/* Playbook builder (CanopyWeb.PlaybookBuilderLive). Popovers share one
+   shadow; the send-back rail is drawn by spans in each step row (the target
+   gets .rail-start, rows between .rail-mid, the sender .rail-end), so it
+   follows the rows as they open, close and move. `bottom: -10px` bridges
+   the gap-2 between rows; each overlapping loop gets its own lane. */
+.pop { box-shadow: 0 14px 36px -10px rgb(11 24 52 / .28), 0 2px 6px rgb(11 24 52 / .06); }
+.rail {
+  position: absolute; left: calc(-27px - var(--lane, 0) * 10px); width: calc(18px + var(--lane, 0) * 10px);
+  border: 0 dashed color-mix(in oklab, var(--color-secondary) 60%, transparent); pointer-events: none;
+}
+.rail-start { top: 50%; bottom: -10px; border-left-width: 2px; border-top-width: 2px; border-top-left-radius: 8px; }
+.rail-mid { top: -1px; bottom: -10px; border-left-width: 2px; }
+.rail-end { top: -1px; height: calc(50% + 1px); border-left-width: 2px; border-bottom-width: 2px; border-bottom-left-radius: 8px; }
+.rail-start::after { content: "▶"; position: absolute; right: -7px; top: -8px; font-size: 10px; color: var(--color-secondary); }
+.rail-start.rail-solo { bottom: auto; height: 0; }
+/* the step a problem link or role link pointed at flashes once */
+@keyframes step-flash { from, 30% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--color-primary) 35%, transparent); } }
+.step-flash { animation: step-flash 1.6s ease-out; }
+/* while dragging: the lifted card and the slot it would drop into */
+/* z-index keeps the next row from painting over the lifted card's shadow */
+.step-drag { position: relative; z-index: 10; box-shadow: 0 14px 36px -10px rgb(11 24 52 / .28); transform: rotate(0.6deg) scale(1.01); border-color: color-mix(in oklab, var(--color-primary) 60%, transparent) !important; }
+.step-ghost { border: 2px dashed color-mix(in oklab, var(--color-primary) 60%, transparent) !important; background: color-mix(in oklab, var(--color-primary) 5%, transparent) !important; }
+.step-ghost > * { visibility: hidden; }
+.step-ghost::after {
+  content: attr(data-drop-label); position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--color-primary);
+}
+.auto-grow { field-sizing: content; }
+/* md_field: an empty field shows its editor; otherwise the rendered text
+   shows until focus comes into the field. Pure CSS on purpose: LiveView
+   patches a locked form through a clone, which drops JS-command state. */
+.md-field[data-blank] .md-preview,
+.md-field:has(.md-editor:focus-within) .md-preview,
+.md-field:not([data-blank]):not(:focus-within) .md-editor { display: none; }
+/* New playbook: the cards sit on base-200, so their buttons get base-100 and a
+   border; only the card being worked in has the primary one. */
+.new-card-go { --btn-color: var(--color-base-100); border-color: var(--color-base-300); }
+.new-card:focus-within .new-card-go:not(:disabled) {
+  --btn-color: var(--color-primary); --btn-fg: var(--color-primary-content); border-color: var(--color-primary);
+}
+@media (prefers-reduced-motion: reduce) { .step-flash { animation: none; } .step-drag { transform: none; } }

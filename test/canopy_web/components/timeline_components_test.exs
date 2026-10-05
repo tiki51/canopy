@@ -859,7 +859,7 @@ defmodule CanopyWeb.TimelineComponentsTest do
                "to_agent_id" => "agt_be",
                "by" => "handoff"
              }) ==
-               "bug-fix: coordinator @pm → @backend (it followed the handoff)"
+               "bug-fix: lead @pm → @backend (it followed the handoff)"
 
       assert line("playbook_stalled", %{"title" => "Fix", "quiet_s" => 1900}) ==
                "bug-fix has been on Fix for 31 min with no activity; nudged @pm"

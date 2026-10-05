@@ -49,6 +49,26 @@ defmodule Canopy.MixProject do
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
       {:mdex, "~> 0.13.5"},
+      # syntax highlighting for the file viewer and Markdown code fences; Lumis
+      # loads only the languages a project depends on, one package each
+      # (`CanopyWeb.Highlight` maps file extensions to these)
+      {:lumis, "~> 0.10"},
+      {:lumis_wasm_bash, "~> 0.26"},
+      {:lumis_wasm_css, "~> 0.26"},
+      {:lumis_wasm_elixir, "~> 0.26"},
+      {:lumis_wasm_go, "~> 0.26"},
+      {:lumis_wasm_html, "~> 0.26"},
+      {:lumis_wasm_javascript, "~> 0.26"},
+      {:lumis_wasm_json, "~> 0.26"},
+      {:lumis_wasm_markdown, "~> 0.26"},
+      {:lumis_wasm_markdown_inline, "~> 0.26"},
+      {:lumis_wasm_python, "~> 0.26"},
+      {:lumis_wasm_ruby, "~> 0.26"},
+      {:lumis_wasm_rust, "~> 0.26"},
+      {:lumis_wasm_sql, "~> 0.26"},
+      {:lumis_wasm_tsx, "~> 0.26"},
+      {:lumis_wasm_typescript, "~> 0.26"},
+      {:lumis_wasm_yaml, "~> 0.26"},
       {:oban, "~> 2.24"},
       {:crontab, "~> 1.2"},
       # playbook frontmatter (Canopy.Playbooks.Definition)

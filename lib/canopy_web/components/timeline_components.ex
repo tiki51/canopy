@@ -13,7 +13,7 @@ defmodule CanopyWeb.TimelineComponents do
   use CanopyWeb, :html
 
   alias Canopy.Runtime.Activity
-  alias CanopyWeb.Markdown
+  alias CanopyWeb.{FileViewer, Markdown}
 
   # -- Timeline items ----------------------------------------------------------
 
@@ -661,61 +661,119 @@ defmodule CanopyWeb.TimelineComponents do
   end
 
   @doc """
-  The documents attached to a message: images inline (opening the file in a
-  new tab), everything else as a card with a download link.
+  The documents attached to a message: images on one row (one alone keeps a
+  large preview, several become thumbnails), every other file as a card on
+  the next. Each tile opens the file viewer (`?file=…&in=…` on the channel;
+  `CanopyWeb.ChannelLive` lays it over the rest of the current URL, such as
+  an open thread) and has its own Download button. Order is the viewer's
+  (`CanopyWeb.FileViewer.ordered/1`), so its strip matches.
   """
   attr :message, :map, required: true
   attr :dom_prefix, :string, default: "", doc: "prefixes the ids where a message shows twice"
 
   def attachments(%{message: %{documents: docs}} = assigns) when is_list(docs) and docs != [] do
+    {images, files} = Enum.split_with(docs, &(&1.kind == "image"))
+
+    assigns =
+      assigns
+      |> assign(:images, images)
+      |> assign(:files, files)
+      |> assign(:single?, length(images) == 1)
+
     ~H"""
-    <div class="mt-1.5 flex flex-wrap gap-2" id={"#{@dom_prefix}attachments-#{@message.id}"}>
-      <%= for doc <- @message.documents do %>
-        <a
-          :if={doc.kind == "image"}
-          id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
-          href={Canopy.Documents.url_path(doc)}
-          target="_blank"
-          rel="noopener"
-          class="block max-w-full overflow-hidden rounded-lg border border-base-300 bg-base-200"
-          title={"#{doc.filename} (#{Canopy.Documents.size_label(doc.byte_size)})"}
-          data-kind="image"
+    <div class="mt-1.5 flex flex-col gap-2" id={"#{@dom_prefix}attachments-#{@message.id}"}>
+      <div :if={@images != []} class="flex flex-wrap gap-2">
+        <div
+          :for={doc <- @images}
+          class="group/tile relative max-w-full overflow-hidden rounded-lg border border-base-300 bg-base-200"
         >
-          <img
-            src={Canopy.Documents.url_path(doc)}
-            alt={doc.filename}
-            loading="lazy"
-            class="max-h-80 max-w-full object-contain"
-          />
-        </a>
-        <a
-          :if={doc.kind != "image"}
-          id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
-          href={Canopy.Documents.url_path(doc)}
-          target="_blank"
-          rel="noopener"
-          class="flex max-w-xs items-center gap-2 rounded-lg border border-base-300 bg-base-200 px-2.5 py-1.5 text-xs transition hover:border-primary/50"
-          data-kind={doc.kind}
-        >
-          <.icon name={document_icon(doc.kind)} class="size-5 shrink-0 text-base-content/60" />
-          <span class="min-w-0">
-            <span class="block truncate font-medium">{doc.filename}</span>
-            <span class="block text-base-content/60">
-              {String.upcase(doc.kind)} · {Canopy.Documents.size_label(doc.byte_size)}
+          <.link
+            patch={viewer_path(@message, doc)}
+            id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
+            data-kind="image"
+            data-viewer-link
+            aria-label={"Open #{doc.filename}"}
+            title={"#{doc.filename} (#{Canopy.Documents.size_label(doc.byte_size)})"}
+            class="block rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/55"
+          >
+            <img
+              src={Canopy.Documents.url_path(doc)}
+              alt={doc.filename}
+              loading="lazy"
+              class={[
+                if(@single?,
+                  do: "max-h-60 max-w-[360px] object-contain max-sm:max-w-full",
+                  else: "h-[116px] w-[188px] object-cover"
+                )
+              ]}
+            />
+            <span class="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/65 to-transparent px-2 pb-1.5 pt-5 text-[11px] font-medium text-white opacity-0 transition group-hover/tile:opacity-100 group-focus-within/tile:opacity-100">
+              {doc.filename}
             </span>
-          </span>
-          <.icon name="hero-arrow-down-tray-mini" class="ml-1 size-4 shrink-0 text-base-content/50" />
-        </a>
-      <% end %>
+          </.link>
+          <.download_button doc={doc} class="absolute right-1.5 top-1.5 bg-base-100/90 shadow-sm" />
+        </div>
+      </div>
+      <div :if={@files != []} class="flex flex-wrap gap-2">
+        <div :for={doc <- @files} class="group/tile relative w-[236px] max-w-full">
+          <.link
+            patch={viewer_path(@message, doc)}
+            id={"#{@dom_prefix}attachment-#{@message.id}-#{doc.id}"}
+            data-kind={doc.kind}
+            data-viewer-link
+            aria-label={"Open #{doc.filename}"}
+            class="flex items-center gap-2.5 rounded-lg border border-base-300 bg-base-200 py-2 pl-2.5 pr-11 transition group-hover/tile:border-primary/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/55"
+          >
+            <span class={[
+              "flex size-9 shrink-0 items-center justify-center rounded-md",
+              FileViewer.tint(FileViewer.kind(doc))
+            ]}>
+              <.icon name={FileViewer.kind_icon(FileViewer.kind(doc))} class="size-5" />
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[13px] font-medium">{doc.filename}</span>
+              <span class="block truncate text-[11px] text-base-content/60">
+                {FileViewer.type_label(doc)} · {Canopy.Documents.size_label(doc.byte_size)}
+              </span>
+            </span>
+          </.link>
+          <.download_button
+            doc={doc}
+            class="absolute right-2.5 top-1/2 -translate-y-1/2 bg-base-200"
+          />
+        </div>
+      </div>
     </div>
     """
   end
 
   def attachments(assigns), do: ~H""
 
-  defp document_icon("text"), do: "hero-document-text"
-  defp document_icon("pdf"), do: "hero-document"
-  defp document_icon(_), do: "hero-paper-clip"
+  # The channel with the viewer open on `doc`. Tiles sit in streamed messages
+  # that aren't re-rendered when the URL changes, so the link carries only the
+  # viewer's params and ChannelLive.handle_params merges in the current ones.
+  defp viewer_path(message, doc),
+    do: ~p"/channels/#{message.channel_id}?#{[file: doc.id, in: message.id]}"
+
+  attr :doc, :map, required: true
+  attr :class, :string, default: nil
+
+  defp download_button(assigns) do
+    ~H"""
+    <a
+      href={FileViewer.download_path(@doc)}
+      download={@doc.filename}
+      class={[
+        "flex size-7 shrink-0 items-center justify-center rounded-md border border-base-300 text-base-content/70 opacity-0 transition hover:text-base-content group-focus-within/tile:opacity-100 group-hover/tile:opacity-100 pointer-coarse:opacity-100",
+        @class
+      ]}
+      aria-label={"Download #{@doc.filename}"}
+      title="Download"
+    >
+      <.icon name="hero-arrow-down-tray-mini" class="size-4" />
+    </a>
+    """
+  end
 
   @doc "A centred, subtle line for collaboration events and system notes."
   attr :id, :string, required: true
@@ -2819,11 +2877,11 @@ defmodule CanopyWeb.TimelineComponents do
         _ -> ""
       end
 
-    "#{p["playbook"]}: coordinator #{agent_ref(names, p["from_agent_id"], user_name)} → #{agent_ref(names, p["to_agent_id"], user_name)}#{by}"
+    "#{p["playbook"]}: lead #{agent_ref(names, p["from_agent_id"], user_name)} → #{agent_ref(names, p["to_agent_id"], user_name)}#{by}"
   end
 
   defp playbook_text("playbook_coordinator_kept", p, agent, _user, _names, _user_name),
-    do: "#{p["playbook"]}: the coordinator stays #{agent}" <> suffix(p["reason"])
+    do: "#{p["playbook"]}: the lead stays #{agent}" <> suffix(p["reason"])
 
   defp playbook_text("playbook_stalled", p, agent, _user, _names, _user_name) do
     "#{p["playbook"]} has been on #{p["title"]} for #{Canopy.Playbooks.Runs.duration_text(p["quiet_s"] || 0)} with no activity; nudged #{agent}"
@@ -2940,11 +2998,12 @@ defmodule CanopyWeb.TimelineComponents do
     end
   end
 
-  # -- Private helpers ---------------------------------------------------------
+  @doc "Who sent a message: `@agent`, a user's display name, or else `user_name` (the local user)."
+  def sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name
+  def sender_name(%{user: %{display_name: name}}, _user_name) when is_binary(name), do: name
+  def sender_name(_message, user_name), do: user_name
 
-  defp sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name
-  defp sender_name(%{user: %{display_name: name}}, _user_name) when is_binary(name), do: name
-  defp sender_name(_message, user_name), do: user_name
+  # -- Private helpers ---------------------------------------------------------
 
   defp initial(name) do
     name |> String.trim_leading("@") |> String.first() |> to_string() |> String.upcase()

@@ -116,7 +116,6 @@ test.describe("screenshots for the user guide", () => {
     await page.mouse.click(5, 5);
 
     // the start of the conversation: root cause with a code block, delegation
-    await openThreads(page);
     await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = 0));
     await page.waitForTimeout(300);
     await shot(page, "channel-conversation");
@@ -295,5 +294,19 @@ test.describe("screenshots for the user guide", () => {
     await clickHeader(page, "lock-chip-tests");
     await expect(page.locator("#lock-tests-queue")).toContainText("@researcher");
     await shot(page, "locks-panel", { clip: await detailsClip(page) });
+  });
+
+  // its own test, so it can be captured alone: npx playwright test user-guide -g "file viewer"
+  test("capture the file viewer", async ({ page }) => {
+    await page.goto("/");
+    await sidebarChannel(page, "payment-retries").click();
+    await expect(page.locator("#channel-name")).toContainText("payment-retries");
+
+    // the researcher's write-up opened as a document
+    await page.locator("[data-viewer-link]", { hasText: "enqueue-paths.md" }).first().click();
+    await expect(page.locator("#file-viewer-preview")).toBeVisible();
+    await shot(page, "file-viewer");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#file-viewer")).toHaveCount(0);
   });
 });
