@@ -37,6 +37,7 @@ import Notifier from "./hooks/notifier"
 import HeaderFit from "./hooks/header_fit"
 import FileViewer from "./hooks/file_viewer"
 import copyText from "./copy_text"
+import PlaybookBuilder from "./hooks/playbook_builder"
 import notifier from "./notify"
 import "./file_viewer_links"
 
@@ -58,6 +59,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     Notifier,
     HeaderFit,
     FileViewer,
+    PlaybookBuilder,
   },
 })
 

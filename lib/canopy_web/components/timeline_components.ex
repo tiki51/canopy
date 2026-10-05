@@ -2868,11 +2868,11 @@ defmodule CanopyWeb.TimelineComponents do
         _ -> ""
       end
 
-    "#{p["playbook"]}: coordinator #{agent_ref(names, p["from_agent_id"], user_name)} → #{agent_ref(names, p["to_agent_id"], user_name)}#{by}"
+    "#{p["playbook"]}: lead #{agent_ref(names, p["from_agent_id"], user_name)} → #{agent_ref(names, p["to_agent_id"], user_name)}#{by}"
   end
 
   defp playbook_text("playbook_coordinator_kept", p, agent, _user, _names, _user_name),
-    do: "#{p["playbook"]}: the coordinator stays #{agent}" <> suffix(p["reason"])
+    do: "#{p["playbook"]}: the lead stays #{agent}" <> suffix(p["reason"])
 
   defp playbook_text("playbook_stalled", p, agent, _user, _names, _user_name) do
     "#{p["playbook"]} has been on #{p["title"]} for #{Canopy.Playbooks.Runs.duration_text(p["quiet_s"] || 0)} with no activity; nudged #{agent}"

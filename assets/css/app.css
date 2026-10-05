@@ -499,3 +499,44 @@
 :is(.doc-code, .doc-fence) [class^="l-markup-italic"] { font-style: italic; }
 :is(.doc-code, .doc-fence) :is([class^="l-diff-plus"], [class^="l-markup-inserted"]) { color: var(--hl-plus); background: var(--hl-plus-bg); }
 :is(.doc-code, .doc-fence) :is([class^="l-diff-minus"], [class^="l-markup-deleted"]) { color: var(--hl-minus); background: var(--hl-minus-bg); }
+/* Playbook builder (CanopyWeb.PlaybookBuilderLive). Popovers share one
+   shadow; the send-back rail is drawn by spans in each step row (the target
+   gets .rail-start, rows between .rail-mid, the sender .rail-end), so it
+   follows the rows as they open, close and move. `bottom: -10px` bridges
+   the gap-2 between rows; each overlapping loop gets its own lane. */
+.pop { box-shadow: 0 14px 36px -10px rgb(11 24 52 / .28), 0 2px 6px rgb(11 24 52 / .06); }
+.rail {
+  position: absolute; left: calc(-27px - var(--lane, 0) * 10px); width: calc(18px + var(--lane, 0) * 10px);
+  border: 0 dashed color-mix(in oklab, var(--color-secondary) 60%, transparent); pointer-events: none;
+}
+.rail-start { top: 50%; bottom: -10px; border-left-width: 2px; border-top-width: 2px; border-top-left-radius: 8px; }
+.rail-mid { top: -1px; bottom: -10px; border-left-width: 2px; }
+.rail-end { top: -1px; height: calc(50% + 1px); border-left-width: 2px; border-bottom-width: 2px; border-bottom-left-radius: 8px; }
+.rail-start::after { content: "▶"; position: absolute; right: -7px; top: -8px; font-size: 10px; color: var(--color-secondary); }
+.rail-start.rail-solo { bottom: auto; height: 0; }
+/* the step a problem link or role link pointed at flashes once */
+@keyframes step-flash { from, 30% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--color-primary) 35%, transparent); } }
+.step-flash { animation: step-flash 1.6s ease-out; }
+/* while dragging: the lifted card and the slot it would drop into */
+/* z-index keeps the next row from painting over the lifted card's shadow */
+.step-drag { position: relative; z-index: 10; box-shadow: 0 14px 36px -10px rgb(11 24 52 / .28); transform: rotate(0.6deg) scale(1.01); border-color: color-mix(in oklab, var(--color-primary) 60%, transparent) !important; }
+.step-ghost { border: 2px dashed color-mix(in oklab, var(--color-primary) 60%, transparent) !important; background: color-mix(in oklab, var(--color-primary) 5%, transparent) !important; }
+.step-ghost > * { visibility: hidden; }
+.step-ghost::after {
+  content: attr(data-drop-label); position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--color-primary);
+}
+.auto-grow { field-sizing: content; }
+/* md_field: an empty field shows its editor; otherwise the rendered text
+   shows until focus comes into the field. Pure CSS on purpose: LiveView
+   patches a locked form through a clone, which drops JS-command state. */
+.md-field[data-blank] .md-preview,
+.md-field:has(.md-editor:focus-within) .md-preview,
+.md-field:not([data-blank]):not(:focus-within) .md-editor { display: none; }
+/* New playbook: the cards sit on base-200, so their buttons get base-100 and a
+   border; only the card being worked in has the primary one. */
+.new-card-go { --btn-color: var(--color-base-100); border-color: var(--color-base-300); }
+.new-card:focus-within .new-card-go:not(:disabled) {
+  --btn-color: var(--color-primary); --btn-fg: var(--color-primary-content); border-color: var(--color-primary);
+}
+@media (prefers-reduced-motion: reduce) { .step-flash { animation: none; } .step-drag { transform: none; } }
