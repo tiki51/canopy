@@ -39,7 +39,8 @@ test.describe("question cards", () => {
     await expect(card.locator('[id$="-dismiss"]')).toHaveClass(/btn-ghost/);
     await expect(card.locator('[id$="-dismiss"]')).not.toHaveClass(/text-error/);
     await expect(page.locator("#awaiting-bar")).toContainText(`@${name} is waiting on your answer`);
-    await expect(page.locator(`#members [data-status="awaiting_user"]`)).toHaveCount(1);
+    await expect(page.locator(`#agents-button [data-status="awaiting_user"]`)).toHaveCount(1);
+    await expect(page.locator("#agents-waiting")).toContainText("1");
 
     // a draft that mentions the waiting agent says it will not answer the card
     const input = page.locator("#composer-input");

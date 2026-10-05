@@ -133,8 +133,9 @@ defmodule CanopyWeb.ChannelMessageLinksTest do
     assert has_element?(view, "#thread-replies [data-scroll-target]", "the reply")
   end
 
-  test "the header searches the channel", %{conn: conn} = ctx do
+  test "Details searches the channel", %{conn: conn} = ctx do
     {:ok, view, _html} = live(conn, ~p"/channels/#{ctx.channel.id}")
+    view |> element("#toggle-details") |> render_click()
 
     assert view |> element("#search-channel") |> render() =~
              ~s(href="/search?channel=#{ctx.channel.id}")

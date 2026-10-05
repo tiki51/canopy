@@ -2,9 +2,10 @@ import { test, expect, Page } from "@playwright/test";
 import { createChannel, send, timeline, uniq } from "./helpers";
 
 // The app shell is exactly the window: the page itself never scrolls, only the
-// columns inside it. And the channel header fits its controls to its width
-// (the HeaderFit hook): none is ever clipped, whatever the window, the side
-// panel, or a held lock adds; what leaves the row is in the ⋯ menu.
+// columns inside it. And the channel header fits its one row to its width
+// (the HeaderFit hook): nothing is ever clipped, whatever the window, the side
+// panel (Details narrows the header), or a held lock adds; what leaves the
+// row is in Details.
 
 /** The page is no taller and no wider than the window. */
 async function expectNoPageScroll(page: Page) {
@@ -20,13 +21,15 @@ async function expectNoPageScroll(page: Page) {
 
 /** Every header control that shows sits inside the header and the window, and shows all of itself. */
 async function expectHeaderFits(page: Page) {
-  // the hook settles on resize; wait for one frame after it
-  await page.evaluate(() => new Promise(requestAnimationFrame));
+  // the hook settles on resize; wait for a frame after it
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const problems = await page.evaluate(() => {
     const header = document.getElementById("channel-header")!.getBoundingClientRect();
+    const row = document.getElementById("channel-header-row")!;
     const out: string[] = [];
+    if (row.scrollWidth > row.clientWidth + 1) out.push(`the row overflows: ${row.scrollWidth} > ${row.clientWidth}`);
     const shown = Array.from(document.querySelectorAll<HTMLElement>("#channel-header-actions > *")).filter(
-      (el) => el.id !== "channel-more-menu" && el.getClientRects().length > 0,
+      (el) => el.getClientRects().length > 0,
     );
     for (const el of shown) {
       const box = el.getBoundingClientRect();
@@ -34,7 +37,8 @@ async function expectHeaderFits(page: Page) {
         out.push(`${el.id} at ${Math.round(box.left)}–${Math.round(box.right)} outside the header (to ${Math.round(header.right)})`);
       if (el.scrollWidth > el.clientWidth + 1) out.push(`${el.id} clips its own label`);
     }
-    if (!shown.some((el) => el.id === "stop-all")) out.push("Stop is not showing");
+    for (const id of ["stop-all", "toggle-details"])
+      if (!shown.some((el) => el.id === id)) out.push(`#${id} is not showing`);
     // the topic is whole, or keeps room for a few words, or gives way: never a
     // stray letter beside the name
     const topic = document.getElementById("channel-topic");
@@ -42,26 +46,15 @@ async function expectHeaderFits(page: Page) {
       const width = topic.getBoundingClientRect().width;
       if (width + 1 < Math.min(topic.scrollWidth, 90)) out.push(`the topic is squeezed to ${Math.round(width)}px`);
     }
-    if (!shown.some((el) => el.id === "channel-more")) out.push("the ⋯ button is not showing");
+    // the name never vanishes to its "#"
+    const name = document.getElementById("channel-name")!.getBoundingClientRect().width;
+    if (name < 60) out.push(`the channel name is squeezed to ${Math.round(name)}px`);
     return out;
   });
   expect(problems).toEqual([]);
 }
 
-/** Opens the ⋯ menu and returns the ids of the entries it shows. */
-async function menuEntries(page: Page) {
-  await page.locator("#channel-more").click();
-  const menu = page.locator("#channel-more-menu");
-  await expect(menu).toBeVisible();
-  const ids = await menu.evaluate((el) =>
-    Array.from(el.querySelectorAll<HTMLElement>("button, a"))
-      .filter((item) => item.getClientRects().length > 0)
-      .map((item) => item.id),
-  );
-  await page.keyboard.press("Escape");
-  await expect(menu).toBeHidden();
-  return ids;
-}
+const fit = (page: Page) => page.locator("#channel-header").getAttribute("data-fit");
 
 test.describe("layout", () => {
   // The header spec holds the repository's `tests` lock by hand; whatever
@@ -81,63 +74,105 @@ test.describe("layout", () => {
     channelPath = null;
   });
 
-  test("the channel header never clips a control, at 1440 and 1024, with a lock and the thread panel", async ({ page }) => {
+  test("the channel header never clips: 1440 and 1024, with a lock, Details, and the thread panel", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     // a long name and topic, and a held lock, as in the review's screenshots
     channelPath = "/channels/" + (await createChannel(page, uniq("billing-retries-duplicate-charge")));
-    await page.locator("#edit-locks").click();
+    await page.evaluate(() => localStorage.removeItem("canopy:channel-details"));
+    await page.locator("#toggle-details").click();
+    await page.locator("#take-lock-toggle").click();
     await page.locator("#take-lock-reason").fill("layout spec");
     await page.locator("#take-lock").click();
-    // the locks panel stays open after taking one; the chip closes it
-    await page.locator("#lock-chip-tests").click();
-    await expect(page.locator("#locks-panel")).toBeHidden();
+    await expect(page.locator("#lock-chip-tests")).toBeVisible();
+    await page.locator("#toggle-details").click();
+    await expect(page.locator("#details-panel")).toBeHidden();
 
+    // Details closed at 1440: every control keeps its label
     await expectHeaderFits(page);
     await expectNoPageScroll(page);
-    // at a laptop width the plain buttons are icons with a tooltip, the lock chip keeps its name
-    await expect(page.locator("#edit-task")).toHaveAttribute("title", /task/i);
     await expect(page.locator("#lock-chip-tests")).toContainText("tests");
+    await expect(page.locator("#open-changes")).toContainText("Changes");
+    await expect(page.locator("#toggle-details")).toContainText("Details");
     await expect(page.locator("#stop-all")).toContainText("Stop");
-    // Archive is always in the ⋯ menu
-    expect(await menuEntries(page)).toContain("archive-channel");
+
+    // Details open narrows the header: it collapses, nothing clips, Stop stays
+    await page.locator("#toggle-details").click();
+    await expect(page.locator("#details-panel")).toBeVisible();
+    await expectHeaderFits(page);
+    await expectNoPageScroll(page);
+    expect(await fit(page)).toContain("rest-icons");
+    await expect(page.locator("#stop-all")).toBeVisible();
+    // icon-only controls keep a name and a tooltip
+    await expect(page.locator("#toggle-details")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#open-changes")).toHaveAttribute("title", /changes/i);
 
     await page.setViewportSize({ width: 1024, height: 768 });
     await expectHeaderFits(page);
     await expectNoPageScroll(page);
 
-    // the thread panel takes 28rem of the row: the header collapses further
+    // the thread panel takes the slot: Details closes, and stays closed after
     await send(page, "A root for the layout spec");
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
     const root = timeline(page).locator("article", { hasText: "A root for the layout spec" }).first();
     await root.hover();
     await root.locator('[id^="reply-"]').click();
     await expect(page.locator("#thread-panel")).toBeVisible();
+    await expect(page.locator("#details-panel")).toBeHidden();
     await expectHeaderFits(page);
     await expectNoPageScroll(page);
+    await page.locator("#thread-panel-close").click();
+    await expect(page.locator("#thread-panel")).toBeHidden();
+    await expect(page.locator("#details-panel")).toBeHidden();
 
-    // whatever left the row is in the menu, and works from there
-    const entries = await menuEntries(page);
-    expect(entries).toEqual(expect.arrayContaining(["archive-channel", "more-edit-task", "more-edit-members"]));
-    await page.locator("#channel-more").click();
-    await page.locator("#more-edit-task").click();
-    await expect(page.locator("#channel-more-menu")).toBeHidden();
-    await expect(page.locator("#task-form")).toBeVisible();
+    // a chip opens Details at its section
+    await page.locator("#lock-chip-tests").click();
+    await expect(page.locator("#details-locks")).toBeInViewport();
+    await expect(page.locator("#lock-tests")).toContainText("layout spec");
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await expectHeaderFits(page);
     await expectNoPageScroll(page);
   });
 
-  test("Archive from the ⋯ menu asks first, then archives; Reopen brings it back", async ({ page }) => {
+  test("below lg Details is a full-screen overlay with Back, and never opens by itself", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const path = "/channels/" + (await createChannel(page));
+    // remembered open from lg up
+    await page.locator("#toggle-details").click();
+    await expect(page.locator("#details-panel")).toBeVisible();
+    await page.reload();
+    await expect(page.locator("#details-panel")).toBeVisible();
+
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto(path);
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await expect(page.locator("#details-panel")).toBeHidden();
+    await expectHeaderFits(page);
+
+    await page.locator("#toggle-details").click();
+    const panel = page.locator("#details-panel");
+    await expect(page.locator("#details-panel-back")).toBeVisible();
+    await expect(page.locator("#details-panel-close")).toBeHidden();
+    await expect
+      .poll(() => panel.evaluate((el) => { const b = el.getBoundingClientRect(); return [b.left, b.width]; }))
+      .toEqual([0, 800]);
+    await page.locator("#details-panel-back").click();
+    await expect(panel).toBeHidden();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expectHeaderFits(page);
+    await expectNoPageScroll(page);
+  });
+
+  test("Archive in Details asks first, then archives; Reopen brings it back", async ({ page }) => {
     await createChannel(page);
-    await page.locator("#channel-more").click();
+    await page.locator("#toggle-details").click();
     await page.locator("#archive-channel").click();
-    // the confirmation is a modal dialog; the menu closes under it
     await expect(page.locator("#canopy-confirm")).toBeVisible();
-    await expect(page.locator("#channel-more-menu")).toBeHidden();
     await page.locator("#canopy-confirm-ok").click();
     await expect(page.locator("#archived-badge")).toBeVisible();
     await expect(page.locator("#archived-bar")).toBeVisible();
+    await expect(page.locator("#archive-channel")).toBeHidden();
 
     await page.locator("#reopen-channel").click();
     await expect(page.locator("#archived-badge")).toBeHidden();

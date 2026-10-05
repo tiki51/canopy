@@ -48,12 +48,14 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
   # the grant wake a release sends is handled before the test's stubs go
   defp settle(channel), do: :sys.get_state(Runtime.Supervisor.whereis(channel.id))
 
-  test "with no locks the header offers the Locks panel, which says so", ctx do
+  test "with no locks the header has no chip, and Details › Locks says so", ctx do
     {:ok, view, _html} = open(ctx.conn, ctx.channel)
 
     refute has_element?(view, "[id^='lock-chip-']")
-    view |> element("#edit-locks") |> render_click()
-    assert has_element?(view, "#locks-panel #locks-empty")
+    view |> element("#toggle-details") |> render_click()
+    assert has_element?(view, "#details-locks #locks-empty")
+    assert has_element?(view, "#details-locks", "shared by #{ctx.repository.name}")
+    refute has_element?(view, "#take-lock-form")
   end
 
   test "a lock taken in another channel on the repository shows up live as a chip", ctx do
@@ -68,13 +70,17 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
     chip = element(view, "#lock-chip-tests")
     assert render(chip) =~ "@#{ctx.agent.name}"
     assert render(chip) =~ "next: @#{ctx.fullstack.name}"
-    refute has_element?(view, "#edit-locks")
-
-    # the agent chips: a lock on the holder, a queued mark on the waiter
-    assert has_element?(view, "#member-#{ctx.agent.id}-lock")
-    assert has_element?(view, "#member-#{ctx.fullstack.id}-lock-queued")
+    # an agent in line for a lock marks the Details button
+    assert has_element?(view, "#toggle-details #details-dot.bg-warning")
 
     render_click(chip)
+    refute has_element?(view, "#details-dot")
+    assert_push_event(view, "details:focus", %{section: "locks"})
+
+    # the agent rows: what the holder holds, what the waiter waits for
+    assert has_element?(view, "#member-#{ctx.agent.id}-lock", "holds tests")
+    assert has_element?(view, "#member-#{ctx.fullstack.id}-lock-queued", "waiting for tests")
+
     holder = view |> element("#lock-tests-holder") |> render()
     assert holder =~ "@#{ctx.agent.name}"
     assert holder =~ "in ##{ctx.other.name}"
@@ -119,13 +125,14 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
     assert html =~ "nobody was waiting"
     assert Locks.list(ctx.repository.id) == []
     assert has_element?(view, "#locks-empty")
-    assert has_element?(view, "#edit-locks")
+    refute has_element?(view, "[id^='lock-chip-']")
     settle(ctx.channel)
   end
 
   test "the user takes a lock by hand and releases it", ctx do
     {:ok, view, _html} = open(ctx.conn, ctx.channel)
-    view |> element("#edit-locks") |> render_click()
+    view |> element("#toggle-details") |> render_click()
+    view |> element("#take-lock-toggle", "Take a lock") |> render_click()
 
     html =
       view
@@ -133,6 +140,7 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
       |> render_submit()
 
     assert html =~ "You hold `tests`"
+    refute has_element?(view, "#take-lock-form")
     assert render(element(view, "#lock-chip-tests")) =~ ctx.user.display_name
 
     # an agent asking now waits behind the user
@@ -140,6 +148,7 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
     assert holder.user_id == ctx.user.id
 
     # taken already: says who has it
+    view |> element("#take-lock-toggle") |> render_click()
     html = view |> form("#take-lock-form", lock: %{name: "tests"}) |> render_submit()
     assert html =~ "You already hold `tests`"
 
@@ -152,6 +161,7 @@ defmodule CanopyWeb.ChannelLocksLiveTest do
     {:granted, _} = Locks.acquire(ctx.session, ctx.repository.id, "tests", nil)
     {:ok, view, _html} = open(ctx.conn, ctx.channel)
     view |> element("#lock-chip-tests") |> render_click()
+    view |> element("#take-lock-toggle") |> render_click()
 
     html = view |> form("#take-lock-form", lock: %{name: "tests"}) |> render_submit()
     assert html =~ "is held by @#{ctx.agent.name}"

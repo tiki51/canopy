@@ -243,8 +243,8 @@ test.describe("stills for canopy_site", () => {
     await page.locator('[id^="permission-"][id$="-always"]').first().click();
     await expect(perm).toBeHidden({ timeout: 30_000 });
 
-    // -- ST-5: the handoff to @reviewer: the owner badge and the three handoff lines ----------
-    await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 120_000 });
+    // -- ST-5: the handoff to @reviewer: the three handoff lines ----------
+    await expect(timeline(page).locator('[id^="line-"]', { hasText: "ownership moved" }).last()).toBeVisible({ timeout: 120_000 });
     await expect(timeline(page)).toContainText(/accepted/i);
     await bottom(page);
     await park(page);
@@ -304,6 +304,8 @@ test.describe("stills for canopy_site", () => {
     await park(page);
     await shot(page, "schedule-weekday", () => around(schedules, 0));
     await clickHeader(page, "edit-schedules");
+    await page.locator("#toggle-details").click();
+    await expect(page.locator("#details-panel")).toBeHidden();
 
     // -- ST-7: the next morning ---------------------------------------------------------------
     // Fast-forward the schedule's Oban job to now, let @backend post, then
@@ -366,12 +368,12 @@ test.describe("stills for canopy_site", () => {
     await bottom(page);
     await page.locator("#stop-all").hover();
     await shot(page, "stop-all", pane);
-    // The docs detail: the right end of the header, from the spend button (or the member
-    // pills, whichever starts further left) to the edge, so Stop is the focal point.
+    // The docs detail: the right end of the header, from the agents button (or the spend
+    // button, whichever starts further left) to the edge, so Stop is the focal point.
     await shot(page, "stop-all-toolbar", async () => {
       const header = (await page.locator("#channel-header").boundingBox())!;
       const budget = (await page.locator("#edit-budget").boundingBox())!;
-      const members = (await page.locator("#members").boundingBox())!;
+      const members = (await page.locator("#agents-button").boundingBox())!;
       const x = Math.floor(Math.min(budget.x, members.x) - 16);
       return { x, y: header.y, width: 1440 - x, height: header.height };
     });

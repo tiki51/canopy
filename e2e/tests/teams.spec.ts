@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { send, timeline, uniq, clickHeader } from "./helpers";
+import { send, timeline, uniq, clickHeader, openDetails } from "./helpers";
 
 /** Creates a channel whose only member (and owner) is @backend; returns its id. */
 async function backendOnlyChannel(page: Page, name = uniq("solo")): Promise<string> {
@@ -67,6 +67,7 @@ test.describe("teams", () => {
     await send(page, `/i @${team} check the login page`);
     await expect(timeline(page)).toContainText(`@${team} joined: @reviewer, @test`);
     await expect(timeline(page)).toContainText(`@${team} check the login page`);
+    await openDetails(page);
     await expect(page.locator(`#member-${testId}`)).toBeVisible();
     await expect(timeline(page)).toContainText("@reviewer finished");
     await expect(timeline(page)).toContainText("@test finished");

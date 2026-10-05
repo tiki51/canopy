@@ -179,7 +179,10 @@ test.describe("activity cards", () => {
     await send(page, "Run the activity demo.");
     await expect(timeline(page)).toContainText("Fixed the double charge");
 
+    // Routine activity is in Details, an overlay at this width
     await clickHeader(page, "toggle-activity");
+    await page.locator("#details-panel-back").click();
+    await expect(page.locator("#details-panel")).toBeHidden();
     const turn = lastTurn(page);
     await turn.locator('[id^="turn-toggle-"]').click();
     await expect(turn).toHaveAttribute("data-open", "true");

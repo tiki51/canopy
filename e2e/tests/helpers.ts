@@ -26,20 +26,29 @@ export async function send(page: Page, text: string) {
 
 export const timeline = (page: Page) => page.locator("#timeline");
 
+/** Opens the channel's Details side panel, unless it is open. */
+export async function openDetails(page: Page) {
+  const panel = page.locator("#details-panel");
+  if (await panel.isVisible()) return;
+  await page.locator("#toggle-details").click();
+  await expect(panel).toBeVisible();
+}
+
+// Header controls HeaderFit may hide for lack of room, and their twin in Details.
+const IN_DETAILS: Record<string, string> = { "open-changes": "details-changes", "edit-budget": "edit-budget-row" };
+
 /**
- * Clicks a channel header control (`edit-task`, `toggle-activity`, `lock-chip-tests`, …):
- * the inline one, or its copy in the ⋯ menu when the header has moved it there
- * for lack of room (the HeaderFit hook). The header refits a frame after its
- * width changes (a side panel just closed), so this retries until one of the
- * two takes the click.
+ * Clicks a channel control (`edit-task`, `toggle-activity`, `lock-chip-tests`, …):
+ * in the header when it shows there, otherwise in the Details panel, opened
+ * first. The header refits a frame after its width changes (a side panel
+ * just opened or closed), so this retries until the click lands.
  */
 export async function clickHeader(page: Page, id: string) {
-  const inline = page.locator(`#${id}`);
-  const copy = page.locator(`#more-${id}`);
+  const inline = page.locator(`#channel-header #${id}`);
   await expect(async () => {
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
     if (await inline.isVisible()) return await inline.click({ timeout: 2_000 });
-    if (!(await page.locator("#channel-more-menu").isVisible())) await page.locator("#channel-more").click({ timeout: 2_000 });
-    await copy.click({ timeout: 2_000 });
+    await openDetails(page);
+    await page.locator(`#details-panel #${IN_DETAILS[id] ?? id}`).click({ timeout: 2_000 });
   }).toPass({ timeout: 15_000 });
 }

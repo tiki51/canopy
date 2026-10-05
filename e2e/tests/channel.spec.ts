@@ -1,9 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
+import { createChannel, send, timeline, uniq, clickHeader, openDetails } from "./helpers";
 
 test.describe("channel collaboration", () => {
   test("a user message wakes the owner: telemetry, an agent post via MCP, the reply, and a turn summary", async ({ page }) => {
     await createChannel(page);
+    await openDetails(page);
     await expect(page.locator("#owner-badge")).toContainText("backend");
 
     await send(page, "Why are invoices duplicated?");
@@ -84,6 +85,7 @@ test.describe("channel collaboration", () => {
 
   test("/handoff asks the target, who accepts through MCP, and the owner badge changes", async ({ page }) => {
     await createChannel(page);
+    await openDetails(page);
     await expect(page.locator("#owner-badge")).toContainText("backend");
 
     await send(page, "/handoff @reviewer needs a second pair of eyes");
@@ -96,12 +98,14 @@ test.describe("channel collaboration", () => {
     await createChannel(page, "sched");
     await send(page, "Please schedule a quick check for a few seconds from now.");
     await expect(timeline(page)).toContainText(/scheduled: once · Run the scheduled check/);
-    await expect(page.locator("#schedule-count")).toContainText("1");
+    // Details (closed) carries a dot for it
+    await expect(page.locator("#details-dot")).toBeVisible();
 
     // the "created" toast covers the header buttons until dismissed
     await page.locator("#flash-info").click();
     await expect(page.locator("#flash-info")).toBeHidden();
     await clickHeader(page, "edit-schedules");
+    await expect(page.locator("#schedule-count")).toContainText("1 active");
     const row = page.locator('[id^="channel-schedules-sch_"]').first();
     await expect(row).toContainText("Run the scheduled check and report.");
 

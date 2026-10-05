@@ -7,7 +7,13 @@
 // interactions (an agent working, a permission card, a delegation) run
 // against the fake OpenCode, so that text is placeholder.
 import { test, expect, Page } from "@playwright/test";
-import { send, timeline, clickHeader } from "./helpers";
+import { send, timeline, clickHeader, openDetails } from "./helpers";
+
+/** The Details side panel, whole height. */
+async function detailsClip(page: Page) {
+  const box = (await page.locator("#details-panel").boundingBox())!;
+  return { x: Math.floor(box.x), y: 0, width: Math.ceil(box.width), height: Math.ceil(box.height) };
+}
 
 const enabled = process.env.USER_GUIDE === "1" && process.env.CANOPY_SEED !== undefined;
 const dir = "../docs/user-guide/images";
@@ -126,26 +132,32 @@ test.describe("screenshots for the user guide", () => {
     await shot(page, "channel-activity");
     await clickHeader(page, "toggle-activity");
 
-    // header panels
+    // the Details panel: the whole of it, then each part that opens in place
+    await openDetails(page);
+    await shot(page, "details-panel");
+
     await clickHeader(page, "edit-task");
     await expect(page.locator("#task-panel")).toBeVisible();
-    await shot(page, "task-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await clickHeader(page, "edit-task");
+    await shot(page, "task-panel", { clip: await detailsClip(page) });
+    await page.locator("#task-form button", { hasText: "Cancel" }).click();
 
     await clickHeader(page, "edit-members");
     await expect(page.locator("#members-panel")).toBeVisible();
-    await shot(page, "members-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
+    await shot(page, "members-panel", { clip: await detailsClip(page) });
     await clickHeader(page, "edit-members");
 
     await clickHeader(page, "edit-schedules");
     await expect(page.locator("#schedules-panel")).toBeVisible();
-    await shot(page, "schedules-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
+    await page.locator("#details-automation").scrollIntoViewIfNeeded();
+    await shot(page, "schedules-panel", { clip: await detailsClip(page) });
     await clickHeader(page, "edit-schedules");
 
     await clickHeader(page, "edit-budget");
     await expect(page.locator("#budget-panel")).toBeVisible();
-    await shot(page, "budget-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
-    await clickHeader(page, "edit-budget");
+    await shot(page, "budget-panel", { clip: await detailsClip(page) });
+    await clickHeader(page, "edit-budget-row");
+    await page.locator("#toggle-details").click();
+    await expect(page.locator("#details-panel")).toBeHidden();
 
     await clickHeader(page, "open-changes");
     await expect(page.locator("#changes-modal")).toBeVisible();
@@ -271,7 +283,7 @@ test.describe("screenshots for the user guide", () => {
     await shot(page, "delegation");
 
     await send(page, "/handoff @reviewer needs a second pair of eyes on the plan");
-    await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 60_000 });
+    await expect(timeline(page).locator('[id^="line-"]', { hasText: "ownership moved" }).last()).toBeVisible({ timeout: 60_000 });
     await shot(page, "handoff");
 
     // -- Locks: @test holds the suite, @researcher waits its turn ------------------------
@@ -282,6 +294,6 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("#lock-chip-tests")).toContainText("next: @researcher", { timeout: 30_000 });
     await clickHeader(page, "lock-chip-tests");
     await expect(page.locator("#lock-tests-queue")).toContainText("@researcher");
-    await shot(page, "locks-panel", { clip: { x: 312, y: 0, width: 1128, height: 420 } });
+    await shot(page, "locks-panel", { clip: await detailsClip(page) });
   });
 });

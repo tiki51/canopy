@@ -119,8 +119,8 @@ test.describe("recording for canopy_site", () => {
       return { x, y: Math.max(0, bottom - h), w, h };
     }, `telemetry-${backend}`);
 
-    // The handoff, the owner badge, and the review.
-    await expect(page.locator("#owner-badge")).toContainText("reviewer", { timeout: 60_000 });
+    // The handoff and the review.
+    await expect(page.locator('#timeline [id^="line-"]', { hasText: "ownership moved" }).last()).toBeVisible({ timeout: 60_000 });
     await expect(page.locator("#timeline")).toContainText("Approving with two small notes", { timeout: 60_000 });
     await page.waitForTimeout(2500);
     const end = now();
