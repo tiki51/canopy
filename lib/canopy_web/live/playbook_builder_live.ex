@@ -54,7 +54,7 @@ defmodule CanopyWeb.PlaybookBuilderLive do
   def handle_params(params, _uri, socket) do
     case socket.assigns.live_action do
       :new ->
-        draft = PlaybookBuilder.blank()
+        draft = PlaybookBuilder.blank(Enum.map(Playbooks.list(), & &1.name))
 
         {:noreply,
          socket
@@ -140,9 +140,12 @@ defmodule CanopyWeb.PlaybookBuilderLive do
   defp change(socket, fun), do: put_draft(socket, fun.(socket.assigns.draft))
 
   # A new playbook starts out incomplete; it is not told off for that (the
-  # Create button says what it needs), only for a send-back a move broke.
+  # Create button says what it needs), only for a send-back a move broke,
+  # or a name Create would refuse.
   defp shown_problems(%{assigns: %{playbook: %Playbook{}}}, problems), do: problems
-  defp shown_problems(_socket, problems), do: Enum.filter(problems, &(&1[:kind] == :send_back))
+
+  defp shown_problems(_socket, problems),
+    do: Enum.filter(problems, &(&1[:kind] in [:send_back, :name]))
 
   # -- PubSub ----------------------------------------------------------------------
 
@@ -215,20 +218,11 @@ defmodule CanopyWeb.PlaybookBuilderLive do
   # -- Typing ----------------------------------------------------------------------
 
   @impl true
-  def handle_event("edit", params, socket) do
-    socket = assign(socket, :owner_query, params["owner_query"] || socket.assigns.owner_query)
+  def handle_event("edit", params, socket), do: {:noreply, put_params(socket, params)}
 
-    {draft, role_error} =
-      socket.assigns.draft
-      |> put_about(params)
-      |> put_steps(params["steps"] || %{})
-      |> put_role(params["role"])
-
-    socket = if params["role"], do: assign(socket, :key_error, role_error), else: socket
-    {:noreply, put_draft(socket, draft)}
-  end
-
-  def handle_event("save", _params, socket), do: save(socket)
+  # A submit cancels a debounced change still pending (⌘S right after
+  # typing), so the form's params are applied before saving.
+  def handle_event("save", params, socket), do: socket |> put_params(params) |> save()
 
   def handle_event("discard", _params, socket) do
     case socket.assigns.playbook do
@@ -418,11 +412,18 @@ defmodule CanopyWeb.PlaybookBuilderLive do
         {:noreply, socket}
 
       undo ->
-        {:noreply,
-         socket
-         |> assign(:undo, nil)
-         |> change(&PlaybookBuilder.restore(&1, undo))
-         |> push_event("builder:flash", %{id: "step-#{undo.step.uid}"})}
+        case PlaybookBuilder.restore(socket.assigns.draft, undo) do
+          {:ok, draft} ->
+            {:noreply,
+             socket
+             |> assign(:undo, nil)
+             |> put_draft(draft)
+             |> push_event("builder:flash", %{id: "step-#{undo.step.uid}"})}
+
+          # at the most steps: the toast stays, so Undo works after a delete
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, reason)}
+        end
     end
   end
 
@@ -441,12 +442,8 @@ defmodule CanopyWeb.PlaybookBuilderLive do
   def handle_event("reorder", %{"uids" => uids}, socket) when is_list(uids),
     do: {:noreply, change(socket, &PlaybookBuilder.reorder(&1, uids))}
 
-  def handle_event("set_send_back", %{"uid" => uid, "to" => to}, socket) do
-    target = if to == "", do: nil, else: to
-
-    {:noreply,
-     change(socket, &PlaybookBuilder.update_step(&1, uid, fn s -> %{s | on_reject: target} end))}
-  end
+  def handle_event("set_send_back", %{"uid" => uid, "to" => to}, socket),
+    do: {:noreply, change(socket, &PlaybookBuilder.set_send_back(&1, uid, to))}
 
   def handle_event("toggle_flag", %{"uid" => uid, "flag" => flag}, socket)
       when flag in ~w(approval optional send_back) do
@@ -454,23 +451,20 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
     {:noreply,
      change(socket, fn d ->
-       PlaybookBuilder.update_step(d, uid, fn s ->
-         case flag do
-           "approval" ->
-             %{s | approval: !s.approval}
+       case {flag, PlaybookBuilder.step(d, uid)} do
+         {"approval", _} ->
+           PlaybookBuilder.update_step(d, uid, &%{&1 | approval: !&1.approval})
 
-           "optional" ->
-             %{s | optional: !s.optional}
+         {"optional", _} ->
+           PlaybookBuilder.update_step(d, uid, &%{&1 | optional: !&1.optional})
 
-           "send_back" ->
-             if s.on_reject do
-               %{s | on_reject: nil}
-             else
-               above = draft |> PlaybookBuilder.send_back_targets(uid) |> List.last()
-               %{s | on_reject: above && above.id}
-             end
-         end
-       end)
+         {"send_back", %{on_reject: on_reject}} when not is_nil(on_reject) ->
+           PlaybookBuilder.set_send_back(d, uid, nil)
+
+         {"send_back", _} ->
+           above = draft |> PlaybookBuilder.send_back_targets(uid) |> List.last()
+           PlaybookBuilder.set_send_back(d, uid, above && above.id)
+       end
      end)}
   end
 
@@ -486,11 +480,13 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
   # -- The playbook ------------------------------------------------------------------------------
 
+  # Never with unsaved edits, the builder's or the file text's: enabling
+  # reloads the page, and approves what was saved.
   def handle_event("toggle_enabled", _params, socket) do
-    %{playbook: playbook, dirty: dirty} = socket.assigns
+    playbook = socket.assigns.playbook
 
     cond do
-      is_nil(playbook) or dirty ->
+      is_nil(playbook) or unsaved?(socket.assigns) ->
         {:noreply, socket}
 
       true ->
@@ -509,15 +505,23 @@ defmodule CanopyWeb.PlaybookBuilderLive do
              )}
 
           {:error, :stale} ->
-            fresh = Playbooks.get(playbook.id)
+            case Playbooks.get(playbook.id) do
+              # deleted elsewhere: nothing unsaved here to keep
+              nil ->
+                {:noreply,
+                 socket
+                 |> put_flash(:error, "#{playbook.name} was deleted.")
+                 |> push_navigate(to: ~p"/playbooks")}
 
-            {:noreply,
-             socket
-             |> load(fresh)
-             |> put_flash(
-               :error,
-               "It changed since the page loaded; read it through, then enable it."
-             )}
+              fresh ->
+                {:noreply,
+                 socket
+                 |> load(fresh)
+                 |> put_flash(
+                   :error,
+                   "It changed since the page loaded; read it through, then enable it."
+                 )}
+            end
 
           {:error, _} ->
             {:noreply,
@@ -724,6 +728,19 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
   # -- Params into the draft -------------------------------------------------------------------------
 
+  defp put_params(socket, params) do
+    socket = assign(socket, :owner_query, params["owner_query"] || socket.assigns.owner_query)
+
+    {draft, role_error} =
+      socket.assigns.draft
+      |> put_about(params)
+      |> put_steps(params["steps"] || %{})
+      |> put_role(params["role"])
+
+    socket = if params["role"], do: assign(socket, :key_error, role_error), else: socket
+    put_draft(socket, draft)
+  end
+
   defp put_about(draft, params) do
     draft
     |> put_if(params, "title", :title)
@@ -763,8 +780,8 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
   defp put_steps(draft, steps) do
     Enum.reduce(steps, draft, fn {uid, fields}, draft ->
-      PlaybookBuilder.update_step(draft, uid, fn step ->
-        step =
+      draft =
+        PlaybookBuilder.update_step(draft, uid, fn step ->
           Enum.reduce(~w(title instructions done_when), step, fn key, step ->
             case fields do
               %{^key => value} when is_binary(value) ->
@@ -774,15 +791,16 @@ defmodule CanopyWeb.PlaybookBuilderLive do
                 step
             end
           end)
+        end)
 
-        case fields do
-          %{"on_reject" => to} when is_binary(to) and to != "" and not is_nil(step.on_reject) ->
-            %{step | on_reject: to}
+      case {fields, PlaybookBuilder.step(draft, uid)} do
+        {%{"on_reject" => to}, %{on_reject: current}}
+        when is_binary(to) and to != "" and not is_nil(current) and to != current ->
+          PlaybookBuilder.set_send_back(draft, uid, to)
 
-          _ ->
-            step
-        end
-      end)
+        _ ->
+          draft
+      end
     end)
   end
 
@@ -1043,11 +1061,13 @@ defmodule CanopyWeb.PlaybookBuilderLive do
           :if={@playbook && is_nil(@unreadable) && !@deleted}
           class={[
             "flex shrink-0 items-center gap-1.5 text-xs text-base-content/70",
-            @dirty && "cursor-not-allowed opacity-60",
-            !@dirty && "cursor-pointer"
+            unsaved?(assigns) && "cursor-not-allowed opacity-60",
+            !unsaved?(assigns) && "cursor-pointer"
           ]}
           title={
-            if @dirty, do: "Save first", else: "Enabled playbooks are listed in every agent's prompt"
+            if unsaved?(assigns),
+              do: "Save first",
+              else: "Enabled playbooks are listed in every agent's prompt"
           }
         >
           <input
@@ -1055,7 +1075,7 @@ defmodule CanopyWeb.PlaybookBuilderLive do
             id="builder-enabled"
             class="toggle toggle-xs toggle-primary"
             checked={@playbook.enabled}
-            disabled={@dirty}
+            disabled={unsaved?(assigns)}
             phx-click="toggle_enabled"
           /> Enabled
         </label>
@@ -1400,7 +1420,16 @@ defmodule CanopyWeb.PlaybookBuilderLive do
           </span>
         <% else %>
           <%= if @draft.name == "" do %>
-            Agents will know it by a short name made from this.
+            Agents will know it by a short name made from this, or
+            <button
+              type="button"
+              id="edit-name"
+              class="hover:text-base-content hover:underline"
+              phx-click="edit_name"
+              title="Choose the name agents use"
+            >
+              choose one
+            </button>
           <% else %>
             Agents know it as
             <button

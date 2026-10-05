@@ -815,5 +815,81 @@ defmodule Canopy.Playbooks.RunsTest do
     end
   end
 
+  describe "what the start page shows comes from here" do
+    test "roster_preview/1 fills each role the way a start does", ctx do
+      labelled = agent_fixture(name: "labelled-" <> unique_suffix())
+      named = agent_fixture(name: "fixer")
+      default = agent_fixture(name: "default-" <> unique_suffix())
+      team = team_fixture([labelled, named], %{name: "crew-" <> unique_suffix()})
+
+      Repo.update_all(
+        from(m in Teams.TeamMember, where: m.team_id == ^team.id and m.agent_id == ^labelled.id),
+        set: [role: "tester"]
+      )
+
+      playbook =
+        playbook_fixture(
+          "previewed",
+          [{"test", "Test", "tester"}, {"fix", "Fix", "fixer"}, {"docs", "Docs", "writer"}],
+          "team: #{team.name}\nroles:\n  writer: #{default.name}\n  tester: #{default.name}\n"
+        )
+
+      {:ok, definition} = Canopy.Playbooks.definition(playbook)
+      preview = Runs.roster_preview(definition)
+
+      assert [
+               %{role: "tester", source: "from @" <> _},
+               %{role: "fixer", source: "from @" <> _},
+               %{role: "writer", source: "playbook default"}
+             ] = preview
+
+      {run, false} = start!(ctx, playbook)
+      assert run.roster == Map.new(preview, &{&1.role, &1.agent.id})
+    end
+
+    test "roster_preview/1 says who isn't available and what nobody fills" do
+      gone = agent_fixture(name: "gone-" <> unique_suffix())
+      {:ok, _} = Canopy.Agents.deactivate(gone)
+
+      playbook =
+        playbook_fixture(
+          "unfillable",
+          [{"a", "A", "dev"}, {"b", "B", "ops"}],
+          "roles:\n  dev: #{gone.name}\n  ops: nobody-here\n"
+        )
+
+      {:ok, definition} = Canopy.Playbooks.definition(playbook)
+
+      assert [
+               %{role: "dev", agent: nil, source: "@" <> dev_source},
+               %{role: "ops", agent: nil, source: "@nobody-here isn't available"}
+             ] = Runs.roster_preview(definition)
+
+      assert dev_source == "#{gone.name} isn't available"
+      assert {:error, _} = Runs.resolve_roster(definition, nil)
+    end
+
+    test "channel_name/4 is the name a new run's channel gets", ctx do
+      playbook = playbook_fixture("named-run", [{"a", "A", "coordinator"}], "channel: new\n")
+      repo_id = ctx.repository.id
+
+      assert Runs.channel_name(nil, nil, "named-run", "Fix the Login, page now!") ==
+               "named-run-fix-the-login-page"
+
+      assert Runs.channel_name(repo_id, " #Launch-Day ", "named-run", "x") == "launch-day"
+
+      expected = Runs.channel_name(repo_id, nil, playbook.name, "Fix the login")
+      assert expected == "named-run-fix-the-login"
+      {run, true} = start!(ctx, playbook, %{brief: "Fix the login"})
+      assert Channels.get!(run.channel_id).name == expected
+
+      # taken now: the next one gets -2, here and in the start
+      assert Runs.channel_name(repo_id, nil, playbook.name, "Fix the login") == expected <> "-2"
+      {:ok, _, :cancelled} = Runs.cancel(run, :user, "again")
+      {run, true} = start!(ctx, playbook, %{brief: "Fix the login"})
+      assert Channels.get!(run.channel_id).name == expected <> "-2"
+    end
+  end
+
   defp step(run, id), do: Enum.find(run.steps, &(&1.step_id == id))
 end

@@ -6,6 +6,7 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
 
   alias Canopy.{Fixtures, Playbooks}
   alias Canopy.Playbooks.Definition
+  alias CanopyWeb.PlaybookBuilder
 
   defp seed! do
     {:ok, playbook} = Playbooks.create(%{body: Playbooks.bug_fix_text(), source: "seed"})
@@ -337,5 +338,122 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     view |> form("#playbook-text-form", playbook: %{body: body}) |> render_submit()
     refute has_element?(view, "#playbook-text-form")
     assert has_element?(view, "li[data-title='By hand']")
+  end
+
+  test "Save applies what the form submits: ⌘S right after typing saves the typed text", %{
+    conn: conn
+  } do
+    playbook = seed!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    fix = uid(view, "Fix")
+    view |> element("#open-step-#{fix}") |> render_click()
+    edit(view, %{"title" => "Bug fix, faster"})
+
+    # the submit cancels the debounced change for what was typed last, so
+    # only the submit carries it
+    view
+    |> element("#builder-form")
+    |> render_submit(%{
+      "title" => "Bug fix, fastest",
+      "steps" => %{fix => %{"title" => "Fix it now"}}
+    })
+
+    assert has_element?(view, "#save-state", "Saved")
+    assert has_element?(view, "#playbook-builder[data-dirty='false']")
+    assert Playbooks.get!(playbook.id).body =~ "\n# Bug fix, fastest\n"
+    assert %{title: "Fix it now"} = Definition.step(definition!(playbook), "fix")
+  end
+
+  test "a title with no plain letters: the made-up name is shown, editable, and checked", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, ~p"/playbooks/new/blank")
+    assert has_element?(view, "#edit-name", "choose one")
+    [s1] = [uid(view, "Untitled step")]
+
+    edit(view, %{
+      "title" => "日本語のレビュー",
+      "description" => "Review the Japanese copy.",
+      "steps" => %{s1 => %{"title" => "Read it"}}
+    })
+
+    view |> element("#step-#{s1} button", "The lead does it") |> render_click()
+    assert has_element?(view, "#edit-name", "playbook")
+    refute has_element?(view, "#save-playbook[disabled]")
+
+    # a name Create would refuse is said, not hidden
+    view |> element("#edit-name") |> render_click()
+    edit(view, %{"name" => "x"})
+    assert has_element?(view, "#problem-banner", "needs at least 2 characters")
+    assert has_element?(view, "#save-playbook[disabled]")
+
+    edit(view, %{"name" => "ja-review"})
+    refute has_element?(view, "#problem-banner")
+    view |> element("#builder-form") |> render_submit()
+
+    playbook = Playbooks.get_by_name("ja-review")
+    assert_patch(view, ~p"/playbooks/#{playbook.id}/edit")
+    assert playbook.body =~ "\n# 日本語のレビュー\n"
+  end
+
+  test "a one-letter title can still be created", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/playbooks/new/blank")
+    [s1] = [uid(view, "Untitled step")]
+
+    edit(view, %{
+      "title" => "Q",
+      "description" => "Quick checks.",
+      "steps" => %{s1 => %{"title" => "Check"}}
+    })
+
+    view |> element("#step-#{s1} button", "The lead does it") |> render_click()
+    assert has_element?(view, "#edit-name", "playbook")
+    view |> element("#builder-form") |> render_submit()
+    assert %{body: body} = Playbooks.get_by_name("playbook")
+    assert body =~ "\n# Q\n"
+  end
+
+  test "file text being typed keeps Enabled locked: toggling never discards it", %{conn: conn} do
+    playbook = playbook_fixture("locked", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    view |> element("#builder-edit-text") |> render_click()
+
+    mine = String.replace(playbook.body, "title: A", "title: Mine")
+    view |> form("#playbook-text-form", playbook: %{body: mine}) |> render_change()
+    assert has_element?(view, "#builder-enabled[disabled]")
+
+    render_hook(view, "toggle_enabled", %{})
+    assert Playbooks.get!(playbook.id).enabled
+    assert has_element?(view, "#playbook-text-form textarea", "title: Mine")
+  end
+
+  test "toggling Enabled on a playbook deleted elsewhere leaves for the library", %{conn: conn} do
+    playbook = playbook_fixture("vanished", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    # gone without the page hearing of it yet
+    Canopy.Repo.delete!(playbook)
+
+    view |> element("#builder-enabled") |> render_click()
+    {path, flash} = assert_redirect(view)
+    assert path == ~p"/playbooks"
+    assert flash["error"] =~ "vanished was deleted"
+  end
+
+  test "Undo at the most steps says why it can't put the step back", %{conn: conn} do
+    steps = for n <- 1..PlaybookBuilder.max_steps(), do: {"s#{n}", "Step #{n}", "coordinator"}
+    playbook = playbook_fixture("full", steps)
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    first = uid(view, "Step 1")
+    view |> element("#open-step-#{first}") |> render_click()
+    view |> element("#delete-step-#{first}") |> render_click()
+    render_hook(view, "add_step", %{"index" => "19"})
+
+    html = view |> element("#undo-delete") |> render_click()
+    assert html =~ "A playbook has at most 20 steps"
+    refute has_element?(view, "li[data-title='Step 1']")
+    assert has_element?(view, "#steps-heading", "20")
+    assert has_element?(view, "#undo-toast")
   end
 end

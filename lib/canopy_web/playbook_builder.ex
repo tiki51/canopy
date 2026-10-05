@@ -2,9 +2,13 @@ defmodule CanopyWeb.PlaybookBuilder do
   @moduledoc """
   The playbook builder's draft, and everything done to it, for
   `CanopyWeb.PlaybookBuilderLive`. A draft is `Canopy.Playbooks.Writer`'s
-  map, with two additions per step the file never sees: `uid` (stable while
-  steps move) and `fresh` (added since the last save, so its key still
-  follows its title).
+  map, with additions per step the file never sees: `uid` (stable while
+  steps move), `fresh` (added since the last save, so its key still follows
+  its title), and `back_uid` (the uid of the step it sends work back to:
+  send-backs follow steps, not keys, while keys move; `on_reject` is
+  resolved from it whenever keys are refreshed). A new playbook's draft
+  also carries `taken_names`, the library's names, so a name made up for a
+  title with no usable letters is free.
 
   `text/1` is what Save writes; `problems/2` says, in the builder's words,
   what stops that text from parsing, attached to the step it is about.
@@ -27,16 +31,28 @@ defmodule CanopyWeb.PlaybookBuilder do
       steps
       |> Enum.with_index(1)
       |> Enum.map(fn {s, n} -> Map.merge(s, %{uid: "s#{n}", fresh: false}) end)
+      |> bind_send_backs()
     end)
     |> then(&Map.put(&1, :uid_seq, length(&1.steps)))
     |> Map.put(:name_follows_title, false)
   end
 
-  @doc "A new playbook: one empty step, and a name that follows the title until saved."
-  def blank do
+  @doc """
+  A new playbook: one empty step, and a name that follows the title until
+  saved. `taken_names` are the library's names, which a made-up name avoids.
+  """
+  def blank(taken_names \\ []) do
     Writer.blank()
     |> Map.put(:name_follows_title, true)
+    |> Map.put(:taken_names, taken_names)
     |> Map.put(:steps, [empty_step("s1")])
+  end
+
+  # each send-back, by the uid of the step its key names (none for a key
+  # no step has)
+  defp bind_send_backs(steps) do
+    uids = Map.new(steps, &{&1.id, &1.uid})
+    Enum.map(steps, &Map.put(&1, :back_uid, &1.on_reject && Map.get(uids, &1.on_reject)))
   end
 
   @doc "A copy of a draft as saved: every key frozen."
@@ -54,6 +70,7 @@ defmodule CanopyWeb.PlaybookBuilder do
       title: "",
       owner: [],
       on_reject: nil,
+      back_uid: nil,
       approval: false,
       optional: false,
       instructions: "",
@@ -71,12 +88,13 @@ defmodule CanopyWeb.PlaybookBuilder do
 
   @doc """
   Keeps derived keys current: a fresh step's key follows its title (unique,
-  `-2` and on), and a new playbook's name follows its title.
+  `-2` and on), and a new playbook's name follows its title. Send-backs
+  follow the step they were set to (by uid), whatever its key becomes.
   """
   def refresh(draft) do
     draft =
       if draft.name_follows_title,
-        do: %{draft | name: Writer.slug(draft.title)},
+        do: %{draft | name: title_name(draft)},
         else: draft
 
     {steps, _taken} =
@@ -93,24 +111,49 @@ defmodule CanopyWeb.PlaybookBuilder do
         end
       end)
 
-    # a fresh step another step sends back to keeps that reference, unless
-    # another step still has the old key (one restored by Undo, say): the
-    # send-back is then that step's
-    kept = MapSet.new(steps, & &1.id)
+    %{draft | steps: resolve_send_backs(steps)}
+  end
 
-    renamed =
-      Enum.zip(draft.steps, steps)
-      |> Enum.filter(fn {a, b} -> a.id != b.id and a.id != "" and a.id not in kept end)
-      |> Map.new(fn {a, b} -> {a.id, b.id} end)
+  # `on_reject` from `back_uid`. A send-back to a key no step has (a
+  # hand-written file's typo, say) has no uid and stays as it is, so the
+  # problem it is stays visible.
+  defp resolve_send_backs(steps) do
+    ids = Map.new(steps, &{&1.uid, &1.id})
 
-    steps =
-      Enum.map(steps, fn s ->
-        if s.on_reject && Map.has_key?(renamed, s.on_reject),
-          do: %{s | on_reject: renamed[s.on_reject]},
-          else: s
-      end)
+    Enum.map(steps, fn step ->
+      case Map.get(step, :back_uid) do
+        nil ->
+          step
 
-    %{draft | steps: steps}
+        back ->
+          case Map.fetch(ids, back) do
+            {:ok, id} -> %{step | on_reject: id}
+            :error -> Map.put(step, :back_uid, nil)
+          end
+      end
+    end)
+  end
+
+  # The name a new playbook gets from its title: the title's slug, or, for a
+  # title with too few plain letters to make one (`日本語のレビュー`, `X`), a
+  # free `playbook`, `playbook-2`, … the user can change.
+  defp title_name(draft) do
+    slug = Writer.slug(draft.title || "")
+
+    cond do
+      String.trim(draft.title || "") == "" -> ""
+      String.length(slug) >= 2 -> slug
+      true -> unique("playbook", MapSet.new(Map.get(draft, :taken_names, [])))
+    end
+  end
+
+  @doc "Sets where a step sends work back to: the step whose key is `to`, or nowhere (nil)."
+  def set_send_back(draft, uid, to) when to in [nil, ""],
+    do: update_step(draft, uid, &Map.merge(&1, %{on_reject: nil, back_uid: nil}))
+
+  def set_send_back(draft, uid, to) do
+    target = Enum.find(draft.steps, &(&1.id == to))
+    update_step(draft, uid, &Map.merge(&1, %{on_reject: to, back_uid: target && target.uid}))
   end
 
   defp frozen_ids(draft), do: for(s <- draft.steps, not s.fresh, do: s.id)
@@ -187,7 +230,12 @@ defmodule CanopyWeb.PlaybookBuilder do
     step =
       case preset do
         "review" ->
-          %{empty_step(uid) | on_reject: above && above.id, title: "Review"}
+          %{
+            empty_step(uid)
+            | on_reject: above && above.id,
+              back_uid: above && above.uid,
+              title: "Review"
+          }
 
         "sign_off" ->
           %{empty_step(uid) | owner: ["coordinator"], approval: true, title: "Your sign-off"}
@@ -230,24 +278,49 @@ defmodule CanopyWeb.PlaybookBuilder do
 
       i ->
         step = Enum.at(draft.steps, i)
-        senders = for s <- draft.steps, s.uid != uid, s.on_reject == step.id, do: s.uid
+
+        senders =
+          for s <- draft.steps, s.uid != uid, sends_back_to?(s, step), do: s.uid
 
         steps =
           draft.steps
           |> List.delete_at(i)
-          |> Enum.map(&if(&1.uid in senders, do: %{&1 | on_reject: nil}, else: &1))
+          |> Enum.map(
+            &if(&1.uid in senders, do: Map.merge(&1, %{on_reject: nil, back_uid: nil}), else: &1)
+          )
 
         {%{draft | steps: steps}, %{step: step, index: i, senders: senders, position: i + 1}}
     end
   end
 
-  def restore(draft, %{step: step, index: index, senders: senders}) do
-    steps =
-      draft.steps
-      |> List.insert_at(min(index, length(draft.steps)), step)
-      |> Enum.map(&if(&1.uid in senders, do: %{&1 | on_reject: step.id}, else: &1))
+  defp sends_back_to?(sender, step) do
+    case Map.get(sender, :back_uid) do
+      nil -> sender.on_reject != nil and sender.on_reject == step.id
+      back -> back == step.uid
+    end
+  end
 
-    refresh(%{draft | steps: steps})
+  @doc """
+  Puts a deleted step back, with the send-backs it had. `{:ok, draft}`, or
+  `{:error, reason}` when the draft already has the most steps a playbook
+  may have.
+  """
+  def restore(draft, %{step: step, index: index, senders: senders}) do
+    if length(draft.steps) >= @max_steps do
+      {:error,
+       "A playbook has at most #{@max_steps} steps. Delete one first, then undo to put #{title(step)} back."}
+    else
+      steps =
+        draft.steps
+        |> List.insert_at(min(index, length(draft.steps)), step)
+        |> Enum.map(fn s ->
+          if s.uid in senders,
+            do: Map.merge(s, %{on_reject: step.id, back_uid: step.uid}),
+            else: s
+        end)
+
+      {:ok, refresh(%{draft | steps: steps})}
+    end
   end
 
   @doc "Puts the steps in the order of `uids`; unknown uids are ignored, missing steps keep their place at the end."
@@ -364,16 +437,29 @@ defmodule CanopyWeb.PlaybookBuilder do
   def humanize("coordinator"), do: "Lead"
   def humanize(key), do: Writer.humanize(key)
 
+  # The phrases of the parser's and `Runs`'s messages that say
+  # `coordinator` or `channel_name`, as the pages say them. Whole phrases,
+  # so a name in the message (`@coordinator-bot`, `coordinator-handoff`) is
+  # never touched.
+  @plain_phrases [
+    {"the coordinator @", "the lead @"},
+    {"the coordinator is missing", "the lead is missing"},
+    {"the new coordinator @", "the new lead @"},
+    {"the new coordinator is missing", "the new lead is missing"},
+    {"(the coordinator or the roster)", "(the lead or the roster)"},
+    {"only the coordinator or the channel owner", "only the lead or the channel owner"},
+    {"roles: coordinator is reserved for whoever runs the playbook",
+     "roles: coordinator is the lead's role, so another role can't use that name"},
+    {"with channel_name", "with a channel name"}
+  ]
+
   @doc """
   A parser or `Runs` message in the words the pages use: the coordinator is
-  the lead, and `channel_name` is a channel name. Agents get the originals.
+  the lead, and `channel_name` is a channel name. Only the known phrases
+  change; agents get the originals.
   """
   def plain_words(text) do
-    text
-    |> String.replace(~r/\bCoordinator\b/, "Lead")
-    |> String.replace(~r/\bcoordinator\b/, "lead")
-    |> String.replace(~r/\bwith channel_name\b/, "with a channel name")
-    |> String.replace("channel_name", "channel name")
+    Enum.reduce(@plain_phrases, text, fn {from, to}, text -> String.replace(text, from, to) end)
   end
 
   # -- Send-backs -----------------------------------------------------------------------
@@ -472,20 +558,33 @@ defmodule CanopyWeb.PlaybookBuilder do
 
   defp about_problems(draft) do
     desc = String.trim(draft.description || "")
+    title = String.trim(draft.title || "")
+    name = String.trim(draft.name || "")
 
-    [
-      String.trim(draft.title || "") == "" && String.trim(draft.name || "") == "" &&
-        "Give the playbook a name.",
-      (String.trim(draft.name || "") != "" and
-         not Regex.match?(~r/^[a-z0-9]+(-[a-z0-9]+)*$/, draft.name)) &&
-        "The name agents know it by must be lowercase words joined by dashes.",
-      String.length(draft.name || "") > 40 && "The name agents know it by is over 40 characters.",
-      desc == "" && "Say when to use this playbook, in the description.",
-      String.length(desc) > 200 && "The description is over 200 characters.",
-      draft.steps == [] && "A playbook needs at least one step."
-    ]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.map(&%{uid: nil, text: &1, fixes: []})
+    # name problems are `kind: :name`: shown on a new playbook too, since
+    # the name is what Create would fail on
+    named =
+      [
+        title != "" && name == "" && "Give the playbook the name agents know it by.",
+        (name != "" and not Regex.match?(~r/^[a-z0-9]+(-[a-z0-9]+)*$/, name)) &&
+          "The name agents know it by must be lowercase words joined by dashes.",
+        String.length(name) == 1 && "The name agents know it by needs at least 2 characters.",
+        String.length(name) > 40 && "The name agents know it by is over 40 characters."
+      ]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&%{uid: nil, kind: :name, text: &1, fixes: []})
+
+    plain = fn texts ->
+      texts |> Enum.filter(&is_binary/1) |> Enum.map(&%{uid: nil, text: &1, fixes: []})
+    end
+
+    plain.([title == "" && name == "" && "Give the playbook a name."]) ++
+      named ++
+      plain.([
+        desc == "" && "Say when to use this playbook, in the description.",
+        String.length(desc) > 200 && "The description is over 200 characters.",
+        draft.steps == [] && "A playbook needs at least one step."
+      ])
   end
 
   defp role_problems(%{team: team}) when is_binary(team) and team != "", do: []

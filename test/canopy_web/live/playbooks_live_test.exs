@@ -316,4 +316,121 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     view |> form("#start-run-form", start: params) |> render_submit()
     assert Runs.active_for_channel(ctx.channel.id) == nil
   end
+
+  test "a playbook's title is its body's first heading, never a later one", %{conn: conn} do
+    body =
+      playbook_text("rules", [{"a", "A", "coordinator"}])
+      |> String.replace("Ground rules for rules.", "Ground rules for rules.\n\n---\n\n# Appendix")
+
+    {:ok, untitled} = Playbooks.create(%{body: body})
+
+    {:ok, titled} =
+      Playbooks.create(%{
+        body:
+          playbook_text("titled", [{"a", "A", "coordinator"}])
+          |> String.replace("---\n\nGround rules", "---\n\n# Ship it\n\nGround rules")
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    assert has_element?(view, "#edit-playbook-#{untitled.id}", "Rules")
+    refute has_element?(view, "#edit-playbook-#{untitled.id}", "Appendix")
+    assert has_element?(view, "#edit-playbook-#{titled.id}", "Ship it")
+
+    {:ok, _view, html} = live(conn, ~p"/playbooks/#{untitled.id}/start")
+    refute html =~ "Appendix"
+  end
+
+  test "start: typing in the form doesn't re-read the roster, channels, or repositories", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+
+    playbook =
+      playbook_fixture("typed", [{"build", "Build", "dev"}], "roles:\n  dev: #{ctx.agent.name}\n")
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+    view |> form("#start-run-form", start: %{runs_in: "new"}) |> render_change()
+
+    test_pid = self()
+    handler = "start-queries-#{inspect(test_pid)}"
+
+    :telemetry.attach(
+      handler,
+      [:canopy, :repo, :query],
+      fn _event, _measure, meta, _ -> send(test_pid, {:query, self(), meta.source}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    params = %{
+      runs_in: "new",
+      repository_id: ctx.repository.id,
+      coordinator_id: ctx.agent.id,
+      brief: "Ship the onboarding flow today"
+    }
+
+    # the first new-channel brief looks for a free channel name once
+    view |> form("#start-run-form", start: params) |> render_change()
+    assert has_element?(view, "#start-channel-name[value='typed-ship-the-onboarding-flow']")
+    assert Enum.uniq(view_queries(view.pid)) == ["channels"]
+
+    # more typing past the name's words, and another field: nothing read
+    view
+    |> form("#start-run-form", start: %{params | brief: "Ship the onboarding flow today, please"})
+    |> render_change()
+
+    view |> form("#start-run-form", start: %{params | runs_in: "current"}) |> render_change()
+    assert view_queries(view.pid) == []
+    assert has_element?(view, "#start-role-dev", "playbook default")
+  end
+
+  test "start: the suggested channel name is the one the run would get", %{conn: conn} do
+    ctx = Fixtures.scenario()
+    playbook = playbook_fixture("taken", [{"a", "A", "coordinator"}])
+    Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "taken-go-live"})
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+    view |> form("#start-run-form", start: %{runs_in: "new"}) |> render_change()
+
+    view
+    |> form("#start-run-form",
+      start: %{runs_in: "new", repository_id: ctx.repository.id, brief: "Go live"}
+    )
+    |> render_change()
+
+    expected = Runs.channel_name(ctx.repository.id, nil, playbook.name, "Go live")
+    assert expected == "taken-go-live-2"
+    assert has_element?(view, "#start-channel-name[value='#{expected}']")
+  end
+
+  test "a run starting updates its playbook's last run on the library", %{conn: conn} do
+    ctx = Fixtures.scenario()
+    on_exit(&stop_channels/0)
+    playbook = playbook_fixture("counted", [{"a", "A", "coordinator"}])
+    other = playbook_fixture("uncounted", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    assert has_element?(view, "#playbook-#{playbook.id}", "never run")
+
+    {:ok, _run, false} =
+      Runs.start(%{
+        playbook: playbook,
+        channel: ctx.channel,
+        coordinator: ctx.agent,
+        started_by_agent_id: ctx.agent.id,
+        brief: "go"
+      })
+
+    assert has_element?(view, "#playbook-#{playbook.id}", "last run now")
+    assert has_element?(view, "#playbook-#{playbook.id}", "1 running")
+    assert has_element?(view, "#playbook-#{other.id}", "never run")
+  end
+
+  defp view_queries(pid) do
+    receive do
+      {:query, ^pid, source} -> [source | view_queries(pid)]
+      {:query, _other, _source} -> view_queries(pid)
+    after
+      0 -> []
+    end
+  end
 end

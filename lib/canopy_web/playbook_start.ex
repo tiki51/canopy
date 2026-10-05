@@ -63,7 +63,12 @@ defmodule CanopyWeb.PlaybookStart do
         # playbook itself runs where it's started
         name =
           blank_to_nil(params["channel_name"]) ||
-            channel_name(playbook_name(params["playbook_id"]), params["brief"], repository.id)
+            Runs.channel_name(
+              repository.id,
+              nil,
+              playbook_name(params["playbook_id"]),
+              params["brief"]
+            )
 
         params
         |> Map.delete("runs_in")
@@ -110,8 +115,11 @@ defmodule CanopyWeb.PlaybookStart do
   defp assign(%{"roles" => %{} = roles}, playbook) do
     defaults =
       case definition(playbook) do
-        nil -> %{}
-        definition -> Map.new(roster_rows(definition), &{&1.role, &1.agent && &1.agent.name})
+        nil ->
+          %{}
+
+        definition ->
+          Map.new(Runs.roster_preview(definition), &{&1.role, &1.agent && &1.agent.name})
       end
 
     roles
@@ -127,7 +135,7 @@ defmodule CanopyWeb.PlaybookStart do
     rows =
       case definition(playbook) do
         nil -> []
-        definition -> roster_rows(definition)
+        definition -> Runs.roster_preview(definition)
       end
 
     unfilled =
@@ -142,62 +150,6 @@ defmodule CanopyWeb.PlaybookStart do
   end
 
   defp roles_filled(_params, _playbook), do: :ok
-
-  @doc """
-  Who fills each role of a definition when a run starts, the way
-  `Runs.resolve_roster/3` decides it: `[%{role, agent, source}]`, where
-  `source` says why ("from @team", "playbook default") and `agent` is nil
-  when nobody does.
-  """
-  def roster_rows(definition) do
-    team = definition.team && Canopy.Teams.get_by_name(definition.team)
-    members = if team, do: Canopy.Teams.active_members(team), else: []
-    labels = if team, do: Canopy.Teams.member_roles(team), else: %{}
-
-    definition
-    |> Canopy.Playbooks.Definition.owner_roles()
-    |> Enum.map(fn role ->
-      cond do
-        agent = Enum.find(members, &(labels[&1.id] == role)) ->
-          %{role: role, agent: agent, source: "from @#{team.name}"}
-
-        agent = Enum.find(members, &(&1.name == role)) ->
-          %{role: role, agent: agent, source: "from @#{team.name}"}
-
-        name = definition.roles[role] ->
-          case Agents.get_by_name(name) do
-            %{active: true} = agent -> %{role: role, agent: agent, source: "playbook default"}
-            _ -> %{role: role, agent: nil, source: "@#{name} isn't available"}
-          end
-
-        true ->
-          %{role: role, agent: nil, source: "nobody fills it yet"}
-      end
-    end)
-  end
-
-  @doc "The channel name a new run's channel gets unless one is given: the playbook plus the brief's first words."
-  def channel_name(playbook_name, brief, repository_id) do
-    words =
-      (brief || "")
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9]+/, " ")
-      |> String.split()
-      |> Enum.take(4)
-
-    base = [playbook_name | words] |> Enum.join("-") |> String.slice(0, 50) |> String.trim("-")
-
-    if repository_id do
-      Stream.iterate(1, &(&1 + 1))
-      |> Stream.map(fn
-        1 -> base
-        n -> "#{base}-#{n}"
-      end)
-      |> Enum.find(&is_nil(Channels.get_by_name(repository_id, &1)))
-    else
-      base
-    end
-  end
 
   defp playbook_name(id) do
     case present?(id) && Playbooks.get(id) do

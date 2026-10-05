@@ -58,14 +58,19 @@ defmodule Canopy.Playbooks do
     |> Map.new()
   end
 
-  @doc "When each playbook last started a run, per playbook id, for the library page."
-  def last_run_at do
-    Repo.all(
-      from r in Run,
-        where: not is_nil(r.playbook_id),
-        group_by: r.playbook_id,
-        select: {r.playbook_id, max(r.inserted_at)}
-    )
+  @doc """
+  When each playbook last started a run, per playbook id, for the library
+  page; with a channel id, only its runs counted (to update the map when
+  that channel's run changes).
+  """
+  def last_run_at(channel_id \\ nil) do
+    query = from r in Run, where: not is_nil(r.playbook_id)
+    query = if channel_id, do: where(query, [r], r.channel_id == ^channel_id), else: query
+
+    query
+    |> group_by([r], r.playbook_id)
+    |> select([r], {r.playbook_id, max(r.inserted_at)})
+    |> Repo.all()
     |> Map.new()
   end
 

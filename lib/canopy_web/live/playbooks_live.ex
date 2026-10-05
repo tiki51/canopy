@@ -22,7 +22,7 @@ defmodule CanopyWeb.PlaybooksLive do
   import CanopyWeb.PlaybookComponents, only: [avatar: 1]
 
   alias Canopy.{Agents, Channels, Playbooks, Repositories}
-  alias Canopy.Playbooks.{Definition, Playbook, Runs}
+  alias Canopy.Playbooks.{Definition, Playbook, Runs, Writer}
   alias CanopyWeb.{PlaybookAsk, PlaybookBuilder, PlaybookStart}
 
   @impl true
@@ -77,6 +77,7 @@ defmodule CanopyWeb.PlaybooksLive do
              socket
              |> assign(:playbook, playbook)
              |> assign(:page_title, "Start " <> playbook.name)
+             |> assign_start_page()
              |> assign_start(%{})}
         end
     end
@@ -85,11 +86,14 @@ defmodule CanopyWeb.PlaybooksLive do
   @impl true
   def handle_info({:playbooks, :changed}, socket), do: {:noreply, load_list(socket)}
 
-  def handle_info({:playbook_runs, :changed, _channel_id}, socket) do
+  # only the changed channel's runs can have moved a playbook's last run
+  def handle_info({:playbook_runs, :changed, channel_id}, socket) do
     {:noreply,
      socket
      |> assign(:run_counts, Playbooks.active_run_counts())
-     |> assign(:last_runs, Playbooks.last_run_at())}
+     |> update(:last_runs, fn last ->
+       Map.merge(last, Playbooks.last_run_at(channel_id), fn _id, a, b -> later(a, b) end)
+     end)}
   end
 
   def handle_info(_message, socket), do: {:noreply, socket}
@@ -229,6 +233,7 @@ defmodule CanopyWeb.PlaybooksLive do
       {:error, reason} ->
         {:noreply,
          socket
+         |> assign_start_page()
          |> assign_start(params)
          |> put_flash(:error, PlaybookBuilder.plain_words(reason))}
     end
@@ -248,12 +253,20 @@ defmodule CanopyWeb.PlaybooksLive do
   defp load_list(socket) do
     playbooks = Playbooks.list()
 
+    definitions = Map.new(playbooks, &{&1.id, ok_definition(&1)})
+
     socket
     |> assign(:playbooks, playbooks)
-    |> assign(:definitions, Map.new(playbooks, &{&1.id, ok_definition(&1)}))
+    |> assign(:definitions, definitions)
+    |> assign(:titles, Map.new(playbooks, &{&1.id, title(&1, definitions[&1.id])}))
     |> assign(:run_counts, Playbooks.active_run_counts())
     |> assign(:last_runs, Playbooks.last_run_at())
   end
+
+  defp later(%DateTime{} = a, %DateTime{} = b),
+    do: if(DateTime.compare(a, b) == :lt, do: b, else: a)
+
+  defp later(a, b), do: max(a, b)
 
   defp ok_definition(playbook) do
     case Playbooks.definition(playbook) do
@@ -276,29 +289,46 @@ defmodule CanopyWeb.PlaybooksLive do
   defp visible(playbooks, "drafts"), do: Enum.reject(playbooks, & &1.enabled)
   defp visible(playbooks, _), do: playbooks
 
-  # The start form's state: the playbook's defaults, then what was typed.
-  defp assign_start(socket, params) do
+  # What the start page shows that the form doesn't change: the parsed
+  # definition, who fills each role, where it can run. Once per visit (and
+  # after a failed start), not on every keystroke.
+  defp assign_start_page(socket) do
     playbook = socket.assigns.playbook
     definition = ok_definition(playbook)
-    repositories = Repositories.list()
-    channels = channel_options()
-    rows = if definition, do: PlaybookStart.roster_rows(definition), else: []
 
+    coordinator_id =
+      case definition && Runs.default_coordinator(definition, nil) do
+        %{id: id} -> id
+        _ -> nil
+      end
+
+    socket
+    |> assign(:definition, definition)
+    |> assign(:start_title, title(playbook, definition))
     # a `channel: new` playbook always gets a new channel (`Runs.start`)
-    always_new = definition && definition.channel == "new"
+    |> assign(:always_new, definition && definition.channel == "new")
+    |> assign(:start_rows, if(definition, do: Runs.roster_preview(definition), else: []))
+    |> assign(:start_repositories, Repositories.list())
+    |> assign(:start_channels, channel_options())
+    |> assign(:start_coordinator_id, coordinator_id)
+    |> assign(:start_channel_name, nil)
+  end
+
+  # The start form's state: the playbook's defaults, then what was typed.
+  defp assign_start(socket, params) do
+    %{
+      playbook: playbook,
+      always_new: always_new,
+      start_rows: rows,
+      start_repositories: repositories,
+      start_channels: channels
+    } = socket.assigns
 
     runs_in =
       if always_new, do: "new", else: params["runs_in"] || "current"
 
     repository_id =
       params["repository_id"] || (List.first(repositories) && List.first(repositories).id)
-
-    coordinator_id =
-      params["coordinator_id"] ||
-        case definition && Runs.default_coordinator(definition, nil) do
-          %{id: id} -> id
-          _ -> nil
-        end
 
     roles =
       Map.new(rows, fn row ->
@@ -307,10 +337,10 @@ defmodule CanopyWeb.PlaybooksLive do
 
     name_touched = params["channel_name_touched"] == "true"
 
-    channel_name =
+    {channel_name, socket} =
       if name_touched,
-        do: params["channel_name"] || "",
-        else: PlaybookStart.channel_name(playbook.name, params["brief"], repository_id)
+        do: {params["channel_name"] || "", socket},
+        else: suggested_channel_name(socket, playbook, params["brief"], repository_id)
 
     form =
       to_form(
@@ -323,20 +353,31 @@ defmodule CanopyWeb.PlaybooksLive do
             params["channel_id"] || (List.first(channels) && elem(List.first(channels), 1)),
           "channel_name" => channel_name,
           "channel_name_touched" => to_string(name_touched),
-          "coordinator_id" => coordinator_id,
+          "coordinator_id" => params["coordinator_id"] || socket.assigns.start_coordinator_id,
           "roles" => roles
         },
         as: :start,
         id: "start-run-form"
       )
 
-    socket
-    |> assign(:definition, definition)
-    |> assign(:always_new, always_new)
-    |> assign(:start_rows, rows)
-    |> assign(:start_repositories, repositories)
-    |> assign(:start_channels, channels)
-    |> assign(:start_form, form)
+    assign(socket, :start_form, form)
+  end
+
+  # The name `Runs.start` would give the new channel. Looking for a free one
+  # reads the channels, so only when the brief's first words or the
+  # repository change.
+  defp suggested_channel_name(socket, playbook, brief, repository_id) do
+    key = {Runs.channel_name_base(playbook.name, brief), repository_id}
+
+    case socket.assigns.start_channel_name do
+      {^key, name} ->
+        {name, socket}
+
+      _ ->
+        {base, repo} = key
+        name = Runs.free_channel_name(repo, base)
+        {name, assign(socket, :start_channel_name, {key, name})}
+    end
   end
 
   defp start_params(socket, params) do
@@ -354,12 +395,13 @@ defmodule CanopyWeb.PlaybooksLive do
     |> Enum.map(&{"##{&1.name} · #{&1.repository.name}", &1.id})
   end
 
-  defp title(%Playbook{body: body, name: name}) do
-    case Regex.run(~r/^---\n.*?\n---\s*\n+#[ \t]+(.+?)[ \t]*$/ms, body) do
-      [_, title] -> String.trim(title)
-      nil -> PlaybookBuilder.humanize(name)
-    end
-  end
+  # The `# Title` the builder shows, from the parsed body; the name, in
+  # words, for a playbook that doesn't parse.
+  defp title(%Playbook{name: name}, nil), do: PlaybookBuilder.humanize(name)
+  defp title(%Playbook{}, %Definition{} = definition), do: Writer.draft(definition).title
+
+  defp title_of(titles, %Playbook{id: id} = playbook),
+    do: Map.get(titles, id) || PlaybookBuilder.humanize(playbook.name)
 
   defp source_label(%Playbook{source: "agent", enabled: false, created_by: %{name: name}}),
     do: "draft by @#{name}"
@@ -565,7 +607,7 @@ defmodule CanopyWeb.PlaybooksLive do
               id={"edit-playbook-#{playbook.id}"}
               class="text-[15px] font-semibold hover:underline"
             >
-              {title(playbook)}
+              {title_of(@titles, playbook)}
             </.link>
             <span class="font-mono text-xs text-base-content/45">{playbook.name}</span>
             <span class={[
@@ -776,7 +818,7 @@ defmodule CanopyWeb.PlaybooksLive do
                 class="radio radio-sm radio-primary mt-0.5"
               />
               <span class="min-w-0">
-                <span class="font-medium">{title(playbook)}</span>
+                <span class="font-medium">{title_of(@titles, playbook)}</span>
                 <span class="text-xs text-base-content/50">
                   {source_word(playbook)}{if @definitions[playbook.id],
                     do: " · #{length(@definitions[playbook.id].steps)} steps"}
@@ -795,7 +837,7 @@ defmodule CanopyWeb.PlaybooksLive do
             disabled={is_nil(@copy_id)}
           >
             Copy {(Enum.find(@playbooks, &(&1.id == @copy_id)) || %{name: ""})
-            |> then(&if(&1.name == "", do: "", else: title(&1)))}
+            |> then(&if(&1.name == "", do: "", else: title_of(@titles, &1)))}
           </button>
         </section>
 
@@ -886,7 +928,7 @@ defmodule CanopyWeb.PlaybooksLive do
 
   defp start_page(assigns) do
     ~H"""
-    <Layouts.page title={title(@playbook)} subtitle="Start a run" max_width="max-w-6xl">
+    <Layouts.page title={@start_title} subtitle="Start a run" max_width="max-w-6xl">
       <:actions>
         <.link navigate={~p"/playbooks"} id="cancel-start" class="btn btn-ghost btn-sm">Cancel</.link>
       </:actions>
@@ -896,7 +938,7 @@ defmodule CanopyWeb.PlaybooksLive do
         id="start-disabled"
         class="rounded-box border border-warning/40 bg-warning/5 px-4 py-3 text-sm"
       >
-        {title(@playbook)} is disabled.
+        {@start_title} is disabled.
         <.link navigate={~p"/playbooks/#{@playbook.id}/edit"} class="link">Enable it</.link>
         first.
       </p>
@@ -1113,9 +1155,7 @@ defmodule CanopyWeb.PlaybooksLive do
         <aside id="start-preview" class="rounded-box border border-base-300 bg-base-200 p-5">
           <h2 class="font-semibold">What will happen</h2>
           <p class="text-xs text-base-content/55">
-            {title(@playbook)} · {length(@definition.steps)} steps · {stall_text(
-              @definition.stall_after
-            )}
+            {@start_title} · {length(@definition.steps)} steps · {stall_text(@definition.stall_after)}
           </p>
           <ol class="mt-3 flex flex-col divide-y divide-base-300 text-sm">
             <li
