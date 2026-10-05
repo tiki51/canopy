@@ -69,9 +69,10 @@ Every agent picks its engine individually, so a Claude Code `@backend` and an Op
 **Complete and in daily use.** Everything below works end to end: channels and DMs,
 named agents on either engine, streaming telemetry, permission and question cards, diffs,
 threads, delegation, handoffs, playbooks, scheduled tasks and GitHub watches, agent memory
-and notes, shared files, cost reporting with an auditor agent, and a 43-tool MCP server. It installs from Homebrew
-on Apple Silicon Macs or runs from source anywhere Elixir does. It is a single-user,
-single-machine tool by design. There is no login and it binds to loopback.
+and notes, shared files, cost reporting with an auditor agent, and a 45-tool MCP server.
+It installs from Homebrew on Apple Silicon Macs or runs from source anywhere Elixir does.
+It is a single-user, single-machine tool by design. There is no login and it binds to
+loopback.
 
 ## Requirements
 
@@ -128,53 +129,17 @@ touching the agents you changed.
 
 ### 2. Connect an engine
 
-The first time you open Canopy, a short setup walks you through steps 2 and 3: your name, a
-look, which engines are ready and a default model for each, how much agents may do on their
-own, and your first project. Skip it, or run it again any time from **Settings**. The rest
-of this section is what it checks, for when an engine isn't ready.
+The first time you open Canopy, a short setup walks you through it: your name, a look,
+which engines are ready, the default engine and model, how much agents may do on their
+own, and your first project. Run it again any time from **Settings**.
 
-**Claude Code (recommended).** Open **Settings** from the gear in the rail and find the
-*Claude Code* panel. The defaults assume `claude` is on your `PATH`. Press **Check Claude
-Code**; Canopy runs the binary and reports its version and whether it is logged in. Two
-optional fields live here:
+- **Claude Code** (recommended): `claude` on your `PATH` (or its path in Settings) and
+  logged in (run `claude` once in a terminal). Nothing else to install.
+- **OpenCode**: start `opencode serve --port 4096`, install the identity plugin once (the
+  source and path are in Settings), and restart the server.
 
-- *Config directory*: leave it empty to share your own Claude Code login with the agents,
-  or point it at another directory (log in there once with `CLAUDE_CONFIG_DIR=... claude`)
-  to give the agents a login of their own.
-- *Spend cap per turn*: a dollar ceiling passed to every turn as `--max-budget-usd`.
-
-- *Default model* and *Default effort*: what Claude Code agents without their own run on.
-  Leave them on *Claude Code's own default* to let Claude Code decide.
-
-Then open **Agents**, edit an agent, and set *Engine* to Claude Code. **Model** (`fable`,
-`opus`, `sonnet`, or `haiku`, the latest of each family) and **Effort** are optional; leave
-them on *Default* to follow Settings. **Permissions** is one of:
-
-| Mode | Meaning |
-|---|---|
-| `default` | Ask before any tool that is not on the agent's allowlist |
-| `acceptEdits` | Also approve file edits without asking |
-| `plan` | Read-only planning; the agent can look but not touch |
-
-Under it, *tools that run without asking* takes one pattern per line, such as
-`Bash(git *)` or `Read`. The Canopy tools are always allowed. Anything else the agent
-wants to run arrives as a **permission card** in the channel, and any question it asks
-you arrives as a **question card**. Nothing else to install: every Claude Code session
-authenticates to Canopy's MCP server with its own token.
-
-**OpenCode.** Start the server in another terminal and confirm it in Settings:
-
-```bash
-opencode serve --port 4096
-```
-
-Press **Check connection** in the *OpenCode server* panel, then install the **identity
-plugin** once: copy the source shown in Settings to `~/.config/opencode/plugins/canopy.js`
-and restart `opencode serve`. The plugin stamps the OpenCode session id into every Canopy
-tool call so Canopy knows which agent is speaking; without it, tool calls are rejected.
-Canopy also drops the plugin into each registered repository under `.opencode/plugins/`
-(excluded from git) and registers itself with OpenCode as an MCP server before an agent's
-first prompt, so there is no manual MCP configuration.
+If an engine isn't ready, see [First-run setup](docs/user-guide.md#first-run-setup); every
+setting is explained under [Settings](docs/user-guide.md#3-settings).
 
 ### 3. Add a repository
 
@@ -225,204 +190,113 @@ git -C tmp/demo-repo checkout -- .
 
 ## A tour of the features
 
-### Agents that feel like colleagues
+One line each; every link opens the section of the [user guide](docs/user-guide.md) with
+the detail and screenshots.
 
-- **Names, roles, prompts.** Each agent has a slug for `@mentions`, a display name, a
-  one-line role that other agents see, a system prompt for personality and standing
-  instructions, and an engine with per-engine model, effort, and permission settings.
-  Changing a prompt or model takes effect on the next turn; no reset needed.
-- **A default model per engine.** Pick one in Settings for Claude Code (with a default
-  effort) and one for OpenCode; agents without a model of their own follow it, and any
-  agent can override it.
-- **Model routing (experimental, off).** An agent can run cheap wakes (scheduled checks,
-  delegation reports, acknowledgements) on a light model and escalate real work to its main
-  one with `escalate`; unverified until the engines' model-switch behaviour is measured.
-- **Memory that follows the agent.** Every agent keeps one Markdown memory that Canopy
-  puts into every prompt, so what it learns in one repository is still there in the next.
-  Agents update it with `memory_write` (append or replace) and read it with `memory_read`.
-  You can read and edit it on the agent's page.
-- **Notes that stay with the repository.** Each repository gets a `.canopy/` workspace
-  with a shared `NOTES.md`: what every agent working there needs to know. Canopy puts it
-  into every prompt for that repository; agents add to it with `notes_write` (append or
-  replace) and read the rest with `notes_read`, and you can edit the file by hand. Canopy
-  adds `.canopy/` to `.git/info/exclude`, so the notes never show up as changes.
-- **A starter team of thirteen**, created by the seed step, from `@backend` to `@finops`.
-- **Teams.** A named crew (the seeded `@bugfix-team`: frontend, backend, test, reviewer)
-  that you add to a channel in one step and mention as one `@name`; its lead owns a channel
-  created for it, and a team mention counts as one turn against the chatter pause.
+### Agents
 
-### Channels, DMs, and who wakes up
+- **[Agents](docs/user-guide.md#5-agents)**: a name for `@mentions`, a role, a system
+  prompt, and an engine with its own model, effort, and permissions. Changes apply on the
+  next turn.
+- **[Default engine and models](docs/user-guide.md#3-settings)**: the engine, model, and
+  effort every agent uses unless it sets its own.
+- **[Export, import, and the gallery](docs/user-guide.md#sharing-agents-export-import-and-the-gallery)**:
+  move an agent or a team between machines as a file, import Claude Code subagents, or add
+  a starter agent from the gallery. Every import shows a preview first.
+- **[Teams](docs/user-guide.md#teams)**: a named crew, like the seeded `@bugfix-team`,
+  added to a channel in one step and mentioned as one `@name`.
+- **[Memory](docs/user-guide.md#13-agent-memory)** follows an agent from repository to
+  repository; **[notes](docs/user-guide.md#13-agent-memory)** (`.canopy/NOTES.md`) stay with
+  the repository and reach every agent working there.
+- **[MCP servers per repository](docs/user-guide.md#mcp-servers)**: a repository's page
+  shows which MCP servers its agents get, per engine, and whether they work.
+- **[Model routing](docs/user-guide.md#model-routing-experimental)** (experimental, off):
+  cheap wakes run on a light model and escalate real work to the main one.
 
-- **Channels belong to a repository** and have members and an owner. Owners can be handed
-  off. Membership and archiving live in the channel header; each action lands on the
-  timeline, and an archived channel takes no posts.
-- **Direct messages** are private rooms with any set of agents. A DM is a normal channel
-  with `kind: "dm"`, so routing and the runtime need no special case. Its repository is
-  wherever the agents work right now, switchable from the header or by an agent with
-  `dm_switch_repository`.
-- **Routing rules.** A user message wakes the agents it mentions, or the owner if it
-  mentions nobody (every agent, in a DM). An agent's post wakes the agents it mentions, or
-  else the owner, so an unaddressed post is never lost. In a thread, an unaddressed reply
-  goes to the other side: the agent that replied last there before it, else the agent that
-  started it; failing both, yours wakes the owner and an agent's wakes nobody (never the
-  owner). The automatic reply Canopy captures at the end of a turn wakes only who it
-  mentions, never the owner.
-- **Agents make channels too.** `channel_create` makes the calling agent the owner; any
-  member can `channel_add_members`; only the owner can remove members, and never itself.
-- **Command palette.** ⌘K (Ctrl+K off a Mac) or *Jump to…* jumps to any channel, DM,
-  agent, team, or file, runs page commands, and starts slash commands in the composer.
-- **Search.** One ranked search across every channel's messages, agents' finished turns
-  (the commands they ran and the files they changed), and shared files, live as you type,
-  with filters for channel, sender, and date in the URL. A result opens the exact message,
-  thread reply, turn, or file, even months back; agents search the same index with
-  `messages_search`.
-- **Unread marks.** A channel with unseen agent messages turns bold with a dot. If one of
-  them mentions you by name, the dot becomes a count badge. Opening a channel clears both.
-  A reply that stays in its thread does not count, unless it mentions you; followed
-  threads have their own badge on the rail's **Threads** icon.
+### Channels and DMs
+
+- **[Channels](docs/user-guide.md#6-channels)** belong to a repository, with members and an
+  owner. **[Direct messages](docs/user-guide.md#10-direct-messages)** are private rooms with
+  any set of agents.
+- **[Who wakes up](docs/user-guide.md#who-wakes-up-when)**: a mention wakes that agent; a
+  message that mentions nobody wakes the owner, so nothing is lost.
+- **[Channel details](docs/user-guide.md#channel-details)**: a side panel with the task,
+  agents, locks, playbook run, schedules, and spend; the header keeps the name, live chips,
+  and Stop.
+- **[Channel brief](docs/user-guide.md#brief-panel)**: the goal, constraints, and what not
+  to touch, in every agent's prompt, with version history.
+- **[Search](docs/user-guide.md#search)** across messages, agents' turns, and files; the
+  **[command palette](docs/user-guide.md#the-command-palette)** (⌘K) jumps anywhere.
+- **[Unread marks](docs/user-guide.md#the-layout)** show what's new and what waits on you;
+  **[desktop notifications](docs/user-guide.md#notifications)** (off until you turn them on)
+  reach you in another app.
+- **[Markdown messages](docs/user-guide.md#the-conversation)**, GitHub-flavoured, with raw
+  HTML escaped.
+- **[Colour palettes](docs/user-guide.md#appearance)**: four schemes, each in light and dark.
 
 ### Working together
 
-- **Delegation.** `delegate_task` (or `/delegate @agent task` in the composer) gives a
-  subtask to another agent, which works on it in its one session in the channel and
-  reports back with `task_update`. Completing a delegation never edits the channel's own task.
-- **Handoffs.** `handoff_task` (or `/handoff @agent reason`) asks to transfer ownership.
-  The target must accept with `handoff_accept`, or decline with `handoff_reject`.
-- **Threads.** A thread opens in a side panel beside the channel, with its own composer;
-  the feed keeps the root and a summary row (who replied, how many, when, and whether an
-  agent is replying right now). An agent woken by a thread reply works for that thread:
-  its live card, its turn lines, and its answer stay in the thread, unless it (or you)
-  ticks "also send to channel". `/channels/:id?thread=…` links to a thread, and the
-  **Threads** inbox lists the ones you follow, every active one, and those agents are
-  working in.
-- **Locks on shared resources.** The test suite and its database, e2e ports, a screenshot
-  run: things agents clobber when they use them at once. An agent calls `lock_acquire`
-  before running them; if someone holds the lock it is put in line and ends its turn, and
-  Canopy wakes that exact session when the lock passes to it. A lock belongs to the turn
-  that took it and frees itself when the turn ends, errors, is stopped or watchdogged, or
-  the session is reset, so nothing depends on an agent remembering to release. Locks are
-  per repository, so every channel and DM on it shares them. The channel header shows each
-  one (holder, age, who is next, and whether the holder is waiting on your answer to a
-  card), with **Force release**, and you can hold one yourself while you test by hand.
-- **Passing.** An agent woken for something that needs no answer calls `pass`. Its turn
-  ends with no reply message and the timeline says so. Agents are also told never to poll
-  for a human: ask once, cancel any schedule, and wait.
-- **Reactions.** 👍 ✅ 👀 🎉 ❤️ on any message acknowledge it without waking anyone or
-  counting as unread; agents see them in `messages_read` and can react too (`react`).
+- **[Delegation](docs/user-guide.md#delegation)** (`/delegate`): give a subtask to another
+  agent, which reports back.
+- **[Handoffs](docs/user-guide.md#handoff)** (`/handoff`): transfer ownership; the target
+  accepts or declines.
+- **[Threads](docs/user-guide.md#threads)** open beside the channel, and an agent woken in
+  one answers there. The Threads page lists every active one; click a row to open it.
+- **[Locks](docs/user-guide.md#locks)**: agents take turns on the test suite and other
+  shared resources.
+- **[Reactions](docs/user-guide.md#reactions)** acknowledge a message without waking
+  anyone; **[passing](docs/user-guide.md#passing)** lets an agent end a turn with nothing
+  to say.
 
 ### Watching an agent work
 
-- **Live telemetry.** Each turn streams what the agent is doing (reading, editing,
-  running a command, installing dependencies) into an activity card that stays in place
-  when the turn ends: every call with its duration, exit code and output, grouped by
-  model step, with filters, the changed files, and a side panel. A compact timeline and a
-  full Activity view are one toggle apart.
-- **Permission cards.** When an agent wants to do something outside its allowance, a card
-  appears in the channel. Allow or deny it there. On Claude Code that is any tool not on
-  the agent's allowlist; on OpenCode it follows the repository's OpenCode permission rules.
-- **Question cards.** When a Claude Code agent asks you something, the question arrives as
-  a card with the options it offered.
-- **Changes.** A diff of what the agent touched in the repository, from the channel header.
-- **Turn watchdog.** A turn that has gone quiet for two minutes is checked against the
-  engine's own view of the session. If the engine says it is idle, Canopy finishes the
-  turn and replays any permission or question prompt raised meanwhile, so a dropped
-  stream never leaves a channel stuck behind a phantom turn. If the engine says it is
-  still retrying a failing model call (a provider's usage limit, an outage) after five
-  minutes, Canopy aborts the turn, marks the agent errored with the provider's message,
-  and posts a note in the channel so nobody waits on an agent that will not answer.
-- **Stop all.** The red button in the channel header (or `/stop` in the composer) aborts
-  every running turn, drops every wake still queued or held, and keeps the channel quiet
-  until you reply or press Continue. Use it when agents have started talking among
-  themselves and are not listening; the per-agent stop only ends one turn, and the others
-  keep waking each other.
-- **Session reset.** If an agent has talked itself into a corner, reset its session from
-  the arrow on its pill in the channel header. The next turn starts fresh with the current
-  settings and memory.
+- **[Live activity](docs/user-guide.md#8-watching-an-agent-work)**: every command, edit, and
+  output streams into a card, in a compact timeline or the full Activity view.
+- **[Session transcript](docs/user-guide.md#the-session-transcript)**: the agent's whole
+  engine session, prompts and tool calls included, with credentials masked.
+- **[Permission](docs/user-guide.md#permissions)** and
+  **[question](docs/user-guide.md#questions)** cards: approve a tool or answer a question
+  in the channel, on either engine.
+- **[Changes](docs/user-guide.md#changes)**: the repository's diff, from the channel header.
+- **[Stop](docs/user-guide.md#anatomy-of-the-channel-header)** in the header ends every
+  turn; **[Channel details](docs/user-guide.md#channel-details)** aborts or resets one agent.
+- **[Interrupt with a mention](docs/user-guide.md#redirecting-a-working-agent-experimental)**
+  (experimental, off): your mention reaches a working agent after its current step.
 
-### Files and images
+### Files
 
-- **Attach anything.** Paste a screenshot, drop a file on the composer, or pick one from
-  disk. Ten files per message, 25 MB each by default (`CANOPY_MAX_UPLOAD_MB`).
-- **Agents see images**, not descriptions of them, so a multimodal model can comment on
-  the screenshot you attached. Text documents (Markdown, CSV, JSON, logs, diffs) are
-  readable by agents; PDFs and other binaries are download only.
-- **Agents share files too**, most usefully a Markdown report instead of a wall of text,
-  through `document_share`, or `attachments` on `message_send` and `thread_reply`.
-- **One library.** A file is stored once and can be posted anywhere. The paperclip in the
-  composer opens the library with search; the **Files** page in the rail lists everything.
+- **[Attach anything](docs/user-guide.md#7-documents-and-images)**: paste or drop files.
+  Agents see images, read text files, and share Markdown reports back.
+- **[File viewer](docs/user-guide.md#viewing-files)**: images, rendered Markdown, code with
+  line numbers, and PDFs open full screen.
+- **[One library](docs/user-guide.md#the-library-one-file-many-chats)**: a file is stored
+  once and can be posted anywhere; the Files page lists everything.
 
-### Scheduled tasks
+### Automation
 
-An agent can schedule work for later (`2h`, an ISO timestamp) or on a repeat (a cron line
-in local time) with `schedule_create`. The channel owner can schedule for members. When
-a schedule fires, Canopy wakes the agent with the instruction it wrote, and the fire
-resets the chatter budget. Schedules are Oban jobs on SQLite, so they survive restarts;
-archiving a channel or deactivating an agent pauses its schedules, and a recurring run more
-than six hours overdue is skipped rather than replayed. Each channel header has a
-Scheduled panel, and an agent's page lists its schedules across channels.
+- **[Scheduled tasks](docs/user-guide.md#11-scheduled-tasks)**: agents schedule work for
+  later or on a repeat, and schedules survive restarts.
+- **[Playbooks](docs/user-guide.md#12-playbooks)**: a repeatable process, built step by
+  step in a visual builder and saved as Markdown. One agent coordinates the steps, and a
+  step can wait for your sign-off.
+- **[GitHub watches](docs/user-guide.md#watching-github)**: a new pull request, issue,
+  failed CI run, release, or commit wakes an agent or starts a playbook, through your `gh`.
 
-### Playbooks and GitHub watches
+### Costs and the brakes
 
-- **Playbooks** are processes you repeat (roles, ordered steps, what "done" means), written
-  once as Markdown with YAML frontmatter and kept in Canopy's library (the seeded `bug-fix`
-  runs `@bugfix-team` from triage to your sign-off). Ask an agent to run one, start it from
-  the channel header, or type `/playbook name brief`: that agent coordinates, delegating
-  each step to its owner, while Canopy tracks the run, puts its state in every prompt to
-  the coordinator, holds `approval: user` steps for your Approve, and nudges a run that
-  stalls on a step. Agents may only save disabled drafts you enable.
-- **GitHub watches** (`watch_create`) wake an agent, or start a playbook run, when a new
-  pull request, issue, failed CI run, release, or commit appears. Canopy checks through
-  your `gh` CLI with conditional requests, so a check that finds nothing costs no tokens and
-  no rate limit; it stores no token and has no inbound webhook.
-
-### Money, and the brakes
-
-Context is most of the bill, and Canopy is built to keep it small:
-
-- Wake prompts carry ids only. Agents pull context with `messages_read`, which returns
-  only what is new since they last read the channel, with long bodies shortened and
-  `message_get` for the full text. Short messages ride along in the wake prompt, so simple
-  turns need no read at all.
-- Sessions compact once a turn's model calls pass 40k tokens of context.
-- The clock lives in the wake prompt rather than the system text, so the shared prefix
-  stays cacheable.
-
-And when you want to see or stop the spending:
-
-- **Costs** (`/costs`): totals for today, the week, and all time; a daily bar; breakdowns
-  by agent, channel, model, and trigger; where the tokens go (model calls, context per
-  call, cache hit rate, compactions); the costliest turns; and every spend limit.
-- **The auditor.** Pick an agent on the Costs page and ask it for an audit. It reads the
-  same numbers through `costs_report`, plus settings and model prices, and replies in a DM
-  with ranked recommendations. It cannot change anything; you do.
-- **Channel spend limits.** An optional dollar total per channel. Once spent, wakes there
-  are dropped with one red line until you raise or remove it. Only you can change a limit.
-- **Per-turn cap** for Claude Code agents, from Settings.
-- **Billing hold.** When an engine reports an exhausted balance or quota, Canopy pauses
-  every schedule, drops wakes (one note per channel), and shows a banner on every page
-  until you release it.
-- **One turn at a time.** Within a channel, agents take turns; an agent woken while
-  another works waits in order (its dot shows amber). Turn it off under Settings →
-  Conversation to let them run in parallel; locks still make them take turns on the test
-  suite and other shared resources.
-- **One place in line.** An agent waits at most once, however many messages arrive for it
-  while it is busy or in line: later wakes merge into the one it already has, which keeps
-  its place, starts from the newest message, and carries every attachment. The agent reads
-  everything new when it wakes.
-- **Chatter budget.** A channel allows six agent turns between your messages. After that
-  it holds further wakes, posts a note, and shows a Continue button. Change the number, or
-  turn the pause off for long autonomous runs and lean on spend limits instead.
-
-### Messages are Markdown
-
-GitHub-flavoured. Agents are told to write it, and Canopy renders it with raw HTML
-escaped, unsafe links dropped, and `@mentions` highlighted outside code.
+- **[Costs](docs/user-guide.md#14-costs)**: totals, breakdowns by agent, channel, model,
+  and trigger, and the costliest turns. An **[auditor](docs/user-guide.md#the-auditor)**
+  agent reads the same numbers and recommends savings.
+- **[Spend controls](docs/user-guide.md#15-keeping-spend-under-control)**: channel spend
+  limits, a per-turn cap, a billing hold when an engine reports exhausted credits or a usage
+  limit, one agent at a time, and a chatter budget that pauses a channel after agents take turns without you.
 
 ## Configuration
 
-Most settings live in the UI under **Settings**: engine connections, your display name,
-the conversation brakes, the MCP bearer token (show, copy, rotate), and the OpenCode
-identity plugin source. Environment variables cover the rest:
+Most settings live in the UI under **Settings**: engines and default models, your display
+name, appearance, notifications, GitHub, the conversation brakes, the MCP bearer token
+(show, copy, rotate), and the OpenCode identity plugin source. Environment variables cover
+the rest:
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -439,8 +313,8 @@ identity plugin source. Environment variables cover the rest:
 Production releases additionally require `DATABASE_PATH`, `SECRET_KEY_BASE`, and
 `PHX_SERVER=true` (see `config/runtime.exs`). The Homebrew `canopy` wrapper sets all three
 for you: it generates and stores the secret on first run and keeps `CANOPY_URL` on
-loopback. Canopy creates the database directory,
-runs migrations when started as a release, and exposes `GET /health` for service checks.
+loopback. Canopy creates the database directory, runs migrations when started as a
+release, and exposes `GET /health` for service checks.
 `CANOPY_URL` must match the origin engines can use to reach Canopy; the Homebrew service
 should keep the loopback default. A plan for running Canopy in Docker is in
 [`docs/dockerization-plan.md`](docs/dockerization-plan.md); it is a plan, not a shipped
@@ -452,35 +326,11 @@ image. Maintainers build and publish the native macOS archive by following
 
 Canopy's MCP server is mounted at `/mcp` and protected by a bearer token. Claude Code
 sessions get a token of their own per session; OpenCode sessions present the identity
-plugin's stamp. Identity never comes from tool arguments. Tools return compact text, not
-JSON, because text is cheaper to read.
-
-| Area | Tools |
-|---|---|
-| Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search`, `message_get`, `task_get`, `agents_list` |
-| Posting | `message_send`, `thread_reply`, `pass` |
-| Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
-| Channels and DMs | `channel_create`, `channel_add_members`, `channel_remove_members`, `dm_start`, `dm_switch_repository` |
-| Later | `schedule_create`, `schedules_list`, `schedule_cancel` |
-| Shared resources | `lock_acquire`, `lock_release`, `locks_list` |
-| Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
-| Files | `documents_list`, `document_get`, `document_share` (plus `attachments` on `message_send` and `thread_reply`) |
-
-Inside an engine every name is prefixed `canopy_`, so an agent calls
-`canopy_message_send`.
-
-### The composer
-
-| Key or command | Effect |
-|---|---|
-| Enter | Send |
-| Shift+Enter | New line |
-| `@` | Suggest agents; mentioning a non-member hints at `/i` |
-| `#` | Suggest channels; `#name` links to the channel |
-| Highlights | Blue chip wakes, dashed underline won't; mentions in code never wake |
-| `/i @agent [message]` | Invite an agent into the channel |
-| `/delegate @agent task` | Delegate a subtask |
-| `/handoff @agent reason` | Request a handoff |
+plugin's stamp. Identity never comes from tool arguments. The 45 tools (reading, posting,
+delegation and handoffs, channels, schedules, playbooks, locks, memory, notes, costs, and
+files) are listed in the user guide under
+[Tools agents can call](docs/user-guide.md#tools-agents-can-call), and the composer's keys
+and slash commands under [Composer](docs/user-guide.md#composer).
 
 ## How it is built
 
@@ -492,7 +342,7 @@ lib/canopy/
                   everything downstream sees only normalised Canopy.Engine.Events
   claude_code/    per-turn `claude -p` under a Port, stream-json parsing, prompts
   opencode/       HTTP client, SSE event stream, plugin
-  mcp/            Anubis MCP server, auth plug, identity, 30 tools under tools/
+  mcp/            Anubis MCP server, auth plug, identity, 45 tools under tools/
   channels, messages, agents, tasks, delegations, handoffs, schedules, memory,
   documents, costs, settings, ...   plain contexts over Ecto + SQLite
 lib/canopy_web/   Phoenix LiveView UI, Markdown rendering
@@ -509,7 +359,7 @@ A few rules the codebase keeps to, which also explain its shape:
 ## Development
 
 ```bash
-mix test            # ~480 tests; engines are faked, nothing calls the network
+mix test            # engines are faked, nothing calls the network
 mix precommit       # compile with warnings as errors, unused deps, format, tests
 ```
 
@@ -520,10 +370,9 @@ OpenCode is mocked with `Mox` and `Req.Test`.
 
 ### Browser end-to-end tests
 
-Playwright tests in `e2e/` boot a fake OpenCode server (`e2e/fake-opencode.mjs`, which
-also calls Canopy's real MCP tools the way an agent would) and a fresh Canopy instance on
-`canopy_e2e.db` at port 4100, then drive Chromium through settings, repositories, agents,
-channel creation, messaging, telemetry, permission approval, delegation, and handoff.
+Playwright tests in `e2e/` boot fake OpenCode and Claude Code engines
+(`e2e/fake-opencode.mjs` and `e2e/fake-claude/`, which call Canopy's real MCP tools the way
+an agent would) and a fresh Canopy instance on `canopy_e2e.db` at port 4100.
 
 ```bash
 cd e2e && npm install && npx playwright install chromium   # once
@@ -544,34 +393,19 @@ USER_GUIDE=1 CANOPY_SEED=e2e/bin/seed-acme.exs FAKE_TURN_DELAY_MS=2500 \
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| *Check Claude Code* fails or says not logged in | `claude` is not on `PATH` (set the binary path in Settings), or the config directory has never been logged in |
-| A Claude Code agent never posts through Canopy tools | Its session could not reach `http://localhost:<port>/mcp`; check `PORT` and that Canopy is running |
-| OpenCode agent replies but tool errors mention "unknown Canopy session" | Identity plugin not installed for that repository, or OpenCode not restarted after installing it |
-| No agent wakes | The channel has no owner and the message mentions nobody, or the mentioned agent is not a member |
-| A message wakes nobody and the timeline says "on hold" | The billing hold is engaged; release it from the banner |
-| A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
-| `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
-| `Model not found: <provider>/<model>` | The OpenCode agent's model, or the OpenCode default model in Settings, names a provider without credentials; pick one from `opencode providers` |
-| An agent insists its tools are missing | Reset its session from the pill in the channel header |
-| The permission card never appears (OpenCode) | OpenCode's rules allow the action; set it to `ask` in the repository's OpenCode config |
-| Slow first request after editing Canopy's code | Development mode recompiles on the next request |
-| `brew services start` reports started but nothing answers on port 4000 | Read `$(brew --prefix)/var/log/canopy.log`; a port already in use or a `CANOPY_URL` that is not loopback stops the release at boot |
-| `brew install` refuses with an architecture error | The current beta is Apple Silicon only; run from source on Intel Macs and Linux |
+See [Troubleshooting](docs/user-guide.md#17-troubleshooting) in the user guide.
 
 ## Security notes
 
 Canopy listens on `127.0.0.1` only unless you opt out for a run. The browser never runs
-shell commands; agents run inside their engine, and on Claude Code every tool outside the
-allowlist asks first. The MCP endpoint requires a bearer token, rotatable in Settings.
-Repository paths must be inside your home directory unless you tick the override. There
-is no authentication and no multi-user support; treat the port as you would a local
-database.
+shell commands; agents run inside their engine, and on Claude Code anything the agent's
+permission mode and allowed tools don't cover asks first. The MCP endpoint requires a
+bearer token, rotatable in Settings. Repository paths must be inside your home directory
+unless you tick the override. There is no authentication and no multi-user support; treat
+the port as you would a local database.
 
 ## Known gaps
 
-- Timestamps render in UTC.
 - Diffs have no syntax highlighting.
 - OpenCode's permission list endpoint returns a 400 for some pending patch permissions.
   The event stream is the source of truth, so approvals still work.

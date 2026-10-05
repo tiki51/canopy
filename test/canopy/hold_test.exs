@@ -62,4 +62,36 @@ defmodule Canopy.HoldTest do
     refute Hold.billing_error?("Model not found: anthropic/claude")
     refute Hold.billing_error?(nil)
   end
+
+  test "recognises Claude Code's billing and usage-limit wording" do
+    assert Hold.billing_error?("Credit balance is too low")
+    assert Hold.billing_error?("Claude AI usage limit reached|1759683600")
+    assert Hold.billing_error?("You've hit your limit · resets 3pm")
+    assert Hold.billing_error?("You've hit your monthly spend limit.")
+    assert Hold.billing_error?("You have reached your weekly usage limit")
+    assert Hold.billing_error?("You're out of extra usage")
+    refute Hold.billing_error?("Budget limit reached ($0.52 of $0.50)")
+    refute Hold.billing_error?("You've hit your fast limit")
+    refute Hold.billing_error?("Context limit reached")
+    refute Hold.billing_error?("error_max_turns")
+  end
+
+  test "a Claude Code error result carries the wording through to the check" do
+    {events, _} =
+      Canopy.ClaudeCode.Events.normalize(
+        %{
+          "type" => "result",
+          "subtype" => "success",
+          "is_error" => true,
+          "result" => "Credit balance is too low",
+          "usage" => %{}
+        },
+        Canopy.ClaudeCode.Events.new()
+      )
+
+    assert %{type: :agent_error, data: %{error: %{"data" => %{"message" => reason}}}} =
+             List.last(events)
+
+    assert Hold.billing_error?(reason)
+  end
 end

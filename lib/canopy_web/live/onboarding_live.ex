@@ -26,8 +26,8 @@ defmodule CanopyWeb.OnboardingLive do
   setup?" in the footer.
 
   The default engine (`CanopyWeb.EngineComponents.default_engine_choice/1`)
-  is preselected from the checks and saved, until the user picks one: only
-  Claude Code ready → Claude Code; only OpenCode, or both → OpenCode. The
+  is preselected from the checks and saved, until the user picks one: Claude
+  Code ready, alone or with OpenCode → Claude Code; only OpenCode → OpenCode. The
   starter agents follow the default, so they answer on whichever engine
   works. The default model controls list the default engine first.
   """
@@ -633,8 +633,9 @@ defmodule CanopyWeb.OnboardingLive do
   defp checking?(assigns), do: :checking in [assigns.claude_check, assigns.opencode_health]
 
   # Once both checks are in, the default engine follows what is ready until
-  # the user picks one (on this visit or before it): only Claude Code ready →
-  # Claude Code; only OpenCode, or both → OpenCode; neither → left alone.
+  # the user picks one (on this visit or before it): Claude Code ready (alone
+  # or with OpenCode) → Claude Code; only OpenCode → OpenCode; neither → left
+  # alone.
   # It is saved like every control here, since the starter agents follow the
   # default: on a Mac with only Claude Code they would otherwise sit on an
   # OpenCode that isn't running. A *Check again* re-applies the rule.
@@ -645,7 +646,7 @@ defmodule CanopyWeb.OnboardingLive do
       cond do
         socket.assigns.engine_picked -> nil
         :checking in [claude, opencode] or nil in [claude, opencode] -> nil
-        claude_ready?(claude) and not opencode_ready?(opencode) -> "claude_code"
+        claude_ready?(claude) -> "claude_code"
         opencode_ready?(opencode) -> "opencode"
         true -> nil
       end

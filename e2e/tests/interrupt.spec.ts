@@ -12,6 +12,8 @@ const NUDGE = "@backend skip the payment tests";
 
 async function setInterrupt(page: Page, on: boolean) {
   await page.goto("/settings");
+  // a click before LiveView connects is lost to the remount
+  await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
   const box = page.locator("#chatter-form input[type=checkbox][name='setting[interrupt_on_mention]']");
   if (on) await box.check();
   else await box.uncheck();
@@ -61,6 +63,20 @@ test.describe("interrupting a working agent", () => {
     await expect(timeline(page)).toContainText("will read your message after its current step");
     await expect(timeline(page)).toContainText("took 1 message mid-turn");
     await expect(timeline(page).getByText("@backend started working")).toHaveCount(1);
+
+    // the transcript has the steered message before the reply that reads it
+    await page.locator('#members li[id^="member-"]', { hasText: "@backend" }).locator('a[id^="transcript-"]').click();
+    const entries = page.locator("#transcript-entries > [data-kind]");
+    await expect(entries.last()).toContainText("Re your message");
+    const order = await entries.evaluateAll(
+      (els, nudge) =>
+        els.map((el) => {
+          const text = el.textContent || "";
+          return text.includes("Re your message") ? "reply" : text.includes(nudge) ? "steered" : "";
+        }),
+      NUDGE,
+    );
+    expect(order.filter(Boolean)).toEqual(["steered", "reply"]);
   });
 
   test("Alt+Enter sends without interrupting: the message waits for the turn", async ({ page }) => {

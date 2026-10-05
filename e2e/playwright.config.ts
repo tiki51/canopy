@@ -18,6 +18,16 @@ if ((process.env.SITE === "1" || process.env.SITE_VIDEO === "1") && !process.env
   process.env.SITE_UTC_OFFSET_MIN = String(offset);
 }
 
+// The user-guide capture shows the fake OpenCode's version and MCP servers;
+// give it real-looking ones (both default to test fixtures).
+if (process.env.USER_GUIDE === "1") {
+  process.env.FAKE_OPENCODE_VERSION ??= "1.18.11";
+  process.env.FAKE_OPENCODE_MCP ??= JSON.stringify({
+    github: { type: "local", command: ["npx", "-y", "@modelcontextprotocol/server-github"], environment: { GITHUB_TOKEN: "ghp_example" } },
+    sentry: { type: "remote", url: "https://mcp.sentry.dev/mcp" },
+  });
+}
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 60_000,

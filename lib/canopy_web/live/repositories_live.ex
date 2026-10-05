@@ -588,7 +588,7 @@ defmodule CanopyWeb.RepositoriesLive do
         <ul :if={@engine.notes != []} id={"mcp-notes-#{@engine.engine}"} class="flex flex-col gap-1">
           <li :for={note <- @engine.notes} class="flex items-start gap-1.5 text-xs text-warning">
             <.icon name="hero-exclamation-triangle-mini" class="mt-px size-3.5 shrink-0" />
-            <span class="break-all">{note}</span>
+            <span class="min-w-0 wrap-anywhere">{note}</span>
           </li>
         </ul>
 
@@ -674,7 +674,7 @@ defmodule CanopyWeb.RepositoriesLive do
               >
                 {status_text(server.status)}
               </span>
-              <div :if={server.error} class="mt-1 max-w-56 break-all text-xs text-error">
+              <div :if={server.error} class="mt-1 max-w-56 break-words text-xs text-error">
                 {server.error}
               </div>
               <button

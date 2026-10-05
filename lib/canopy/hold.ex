@@ -1,10 +1,10 @@
 defmodule Canopy.Hold do
   @moduledoc """
-  A global stop on agent activity. Engaged automatically when OpenCode reports
-  a billing problem (no balance, quota exhausted): every schedule pauses, every
-  wake is dropped with a note in its channel, and a banner shows the reason on
-  every page until you release it. Releasing resumes the schedules the hold
-  paused; your next message in a channel wakes its agents as usual.
+  A global stop on agent activity. Engaged automatically when an engine reports
+  a billing problem (no balance, quota or usage limit exhausted): every schedule
+  pauses, every wake is dropped with a note in its channel, and a banner shows
+  the reason on every page until you release it. Releasing resumes the schedules
+  the hold paused; your next message in a channel wakes its agents as usual.
   """
 
   alias Canopy.{Schedules, Settings}
@@ -48,17 +48,31 @@ defmodule Canopy.Hold do
   end
 
   @doc """
-  Whether an OpenCode error is a billing problem worth stopping for: an
-  exhausted balance or quota, or a payment-required response.
+  Whether an engine error is a billing problem worth stopping for: an
+  exhausted balance or quota, a payment-required response, or (Claude Code)
+  a low credit balance or a reached subscription usage or spend limit.
+  Claude Code's per-turn budget cap and fast-mode limit are not holds.
   """
   def billing_error?(reason) when is_binary(reason) do
+    opencode_billing?(reason) or claude_code_billing?(reason)
+  end
+
+  def billing_error?(_), do: false
+
+  defp opencode_billing?(reason) do
     Regex.match?(
       ~r/insufficient[ _](balance|quota|credit|funds)|credit_balance_exhausted|no credits remaining|payment required|billing|out of credits|\b402\b/i,
       reason
     )
   end
 
-  def billing_error?(_), do: false
+  # wording from the claude CLI (2.1.x)
+  defp claude_code_billing?(reason) do
+    Regex.match?(
+      ~r/credit balance (is )?too low|usage limit reached|hit your (limit|monthly spend limit)|reached your (weekly )?usage limit|out of extra usage/i,
+      reason
+    )
+  end
 
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
 
