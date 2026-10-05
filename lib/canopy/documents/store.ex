@@ -45,6 +45,36 @@ defmodule Canopy.Documents.Store do
 
   def read(id), do: File.read(path(id))
 
+  @doc "At most the first `n` bytes of a document, and its size: `{:ok, bytes, size}`."
+  def read_prefix(id, n) when is_integer(n) and n >= 0 do
+    with {:ok, %File.Stat{size: size}} <- File.stat(path(id)),
+         {:ok, data} <- File.open(path(id), [:read, :binary, :raw], &IO.binread(&1, n)) do
+      case data do
+        bytes when is_binary(bytes) -> {:ok, bytes, size}
+        :eof -> {:ok, "", size}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Folds `fun.(chunk, acc)` over a document's bytes from `offset` on, 64 KB at
+  a time, so a large file never sits in memory whole: `{:ok, acc}`.
+  """
+  def reduce_from(id, offset, acc, fun) when is_integer(offset) and is_function(fun, 2) do
+    File.open(path(id), [:read, :binary, :raw], fn fd ->
+      {:ok, _} = :file.position(fd, offset)
+      reduce_chunks(fd, acc, fun)
+    end)
+  end
+
+  defp reduce_chunks(fd, acc, fun) do
+    case IO.binread(fd, 65_536) do
+      chunk when is_binary(chunk) -> reduce_chunks(fd, fun.(chunk, acc), fun)
+      _eof_or_error -> acc
+    end
+  end
+
   @doc "Total bytes on disk across every stored document."
   def total_bytes do
     dir()

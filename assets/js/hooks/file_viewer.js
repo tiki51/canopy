@@ -3,18 +3,18 @@
 // The server renders the dialog with `open`, so a re-render never drops the
 // attribute; on mount it is closed and reopened with showModal(), which puts
 // it in the top layer, makes the page behind inert and traps focus. Closing
-// is always the Close link's patch (Esc, the close button, Back), so the URL
-// and the server agree; the server then removes the dialog. When a tile's
-// click pushed the viewer's URL, Close goes Back instead, so the history
-// doesn't end up with the channel twice.
+// is always the Close link's patch (Esc, the close button), which replaces
+// the viewer's URL with the one under it, so the URL and the server agree;
+// the server then removes the dialog. Back closes it too.
 //
 // Everything that needs no server lives here: ← → (the arrow links), zoom and
 // pan for images, the image's dimensions, Wrap and the Markdown mode
 // (remembered in localStorage), Copy, and in-document #links. Per-file state
 // sits in phx-update="ignore" containers keyed by the document id, so it
-// survives unrelated re-renders and starts fresh on another file.
+// survives unrelated re-renders and starts fresh on another file. Listeners
+// are the dialog's own, delegated: elements such as #file-viewer-image are
+// reused from one file to the next.
 import copyText from "../copy_text"
-import {openedByLink} from "../file_viewer_links"
 
 const MD_KEY = "canopy:viewer-md-mode"
 const WRAP_KEY = "canopy:viewer-wrap"
@@ -34,7 +34,6 @@ const FileViewer = {
     // focus goes back to the tile that opened the viewer
     const active = document.activeElement
     this.returnTo = active && active.matches && active.matches("[data-viewer-link]") ? active.id : null
-    this.backOnClose = openedByLink(this.el.dataset.doc, this.el.dataset.message)
 
     if (this.el.open) this.el.close()
     this.el.showModal()
@@ -51,6 +50,20 @@ const FileViewer = {
     })
     this.el.addEventListener("keydown", e => this.onKeydown(e))
     this.el.addEventListener("click", e => this.onClick(e))
+    // zoomed, a drag captures the pointer on the stage, so the stage gets the
+    // double-click
+    this.el.addEventListener("dblclick", e => {
+      const on = this.zoom === null ? "#file-viewer-image" : "[data-viewer-stage]"
+      if (e.target.closest(on)) this.setZoom(this.zoom === null ? 1 : null)
+    })
+    this.el.addEventListener("pointerdown", e => this.onPointerDown(e))
+    // load and error don't bubble: caught on the way down
+    this.el.addEventListener("load", e => {
+      if (e.target.id === "file-viewer-image") this.imageLoaded(e.target)
+    }, true)
+    this.el.addEventListener("error", e => {
+      if (e.target.id === "file-viewer-image") this.imageFailed(e.target)
+    }, true)
 
     this.setup()
     // the panel itself, so no button looks picked until someone tabs
@@ -105,10 +118,14 @@ const FileViewer = {
     if (e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       if (e.target.closest("[data-viewer-mode], input, textarea, select")) return
-      // a long unwrapped line scrolls sideways instead
-      const body = e.target.closest(".doc-body")
-      if (body && body.scrollWidth > body.clientWidth) return
       e.preventDefault()
+      // a long unwrapped line scrolls sideways instead (focus is on the
+      // dialog, so the browser wouldn't scroll the sheet itself)
+      const body = this.el.querySelector(".doc-body")
+      if (body && body.scrollWidth > body.clientWidth) {
+        body.scrollBy({left: e.key === "ArrowLeft" ? -40 : 40})
+        return
+      }
       this.nav(e.key === "ArrowLeft" ? "prev" : "next")
     } else if (this.image() && (e.key === "+" || e.key === "=")) {
       e.preventDefault()
@@ -128,13 +145,6 @@ const FileViewer = {
   },
 
   onClick(e) {
-    if (this.backOnClose && e.target.closest("#file-viewer-close")) {
-      e.preventDefault()
-      e.stopPropagation()
-      this.backOnClose = false
-      history.back()
-      return
-    }
     const zoom = e.target.closest("[data-viewer-zoom]")
     if (zoom) {
       const action = zoom.dataset.viewerZoom
@@ -172,7 +182,18 @@ const FileViewer = {
     sheet.querySelectorAll("[data-viewer-mode]").forEach(button => {
       button.setAttribute("aria-pressed", String(button.dataset.viewerMode === mode))
     })
+    // a Markdown Preview is the whole file; a cut Source copies what it shows
+    const copy = sheet.querySelector("[data-viewer-copy]")
+    if (copy) copy.title = this.copyCut(sheet, copy) ? "Copy what is shown" : "Copy the file"
     if (remember) store.set(MD_KEY, mode)
+  },
+
+  previewing(sheet) {
+    return sheet.dataset.markdown === "true" && sheet.dataset.mode !== "source"
+  },
+
+  copyCut(sheet, button) {
+    return !this.previewing(sheet) && !!(button.dataset.copyLines || button.dataset.copyBytes)
   },
 
   setWrap(sheet, on, remember) {
@@ -184,10 +205,21 @@ const FileViewer = {
     if (remember) store.set(WRAP_KEY, on ? "1" : "0")
   },
 
+  // The file's own bytes, fetched (the page holds only rendered HTML), so
+  // CRLFs, NULs and a BOM come out as they are; a cut Source gives its lines
+  // or bytes.
   copy(button) {
-    const raw = this.sheet()?.querySelector("[data-viewer-raw]")
-    if (!raw) return
-    copyText(raw.content.textContent).then(() => {
+    const sheet = this.sheet()
+    if (!sheet) return
+    const cut = this.copyCut(sheet, button)
+    const text = fetch(button.dataset.copyUrl, {credentials: "same-origin"})
+      .then(res => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then(buffer => {
+        const bytes = cut && button.dataset.copyBytes ? Number(button.dataset.copyBytes) : buffer.byteLength
+        const text = new TextDecoder("utf-8", {ignoreBOM: true}).decode(buffer.slice(0, bytes))
+        return cut && button.dataset.copyLines ? firstLines(text, Number(button.dataset.copyLines)) : text
+      })
+    copyLater(text).then(() => {
       const label = button.querySelector("[data-copy-label]")
       if (!label) return
       label.textContent = "Copied"
@@ -199,51 +231,59 @@ const FileViewer = {
   // -- Image: loading, dimensions, zoom, pan -------------------------------------
 
   setupImage(img) {
+    // the element may have shown another image: start it over
+    this.setZoom(null)
+    img.hidden = false
     const stage = img.closest("[data-viewer-stage]")
-    const loading = stage.querySelector("[data-viewer-loading]")
-    const error = stage.querySelector("[data-viewer-error]")
-
-    const loaded = () => {
-      loading.hidden = true
-      img.classList.remove("opacity-0")
-      const dims = this.el.querySelector("#file-viewer-dims")
-      if (dims) {
-        dims.textContent = ` · ${img.naturalWidth} × ${img.naturalHeight}`
-        dims.hidden = false
-      }
-    }
-    const failed = () => {
-      loading.hidden = true
-      img.hidden = true
-      error.hidden = false
-    }
-    if (img.complete) img.naturalWidth ? loaded() : failed()
+    stage.querySelector("[data-viewer-error]").hidden = true
+    const dims = this.el.querySelector("#file-viewer-dims")
+    if (dims) dims.hidden = true
+    if (img.complete) img.naturalWidth ? this.imageLoaded(img) : this.imageFailed(img)
     else {
-      img.addEventListener("load", loaded, {once: true})
-      img.addEventListener("error", failed, {once: true})
+      stage.querySelector("[data-viewer-loading]").hidden = false
+      img.classList.add("opacity-0")
     }
+  },
 
-    img.addEventListener("dblclick", () => this.setZoom(this.zoom === null ? 1 : null))
+  imageLoaded(img) {
+    const stage = img.closest("[data-viewer-stage]")
+    if (!stage) return
+    stage.querySelector("[data-viewer-loading]").hidden = true
+    img.classList.remove("opacity-0")
+    const dims = this.el.querySelector("#file-viewer-dims")
+    if (dims) {
+      dims.textContent = ` · ${img.naturalWidth} × ${img.naturalHeight}`
+      dims.hidden = false
+    }
+  },
 
-    // above Fit, drag to pan
-    stage.addEventListener("pointerdown", e => {
-      if (this.zoom === null || e.button !== 0) return
-      e.preventDefault()
-      stage.setPointerCapture(e.pointerId)
-      const start = {x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop}
-      stage.style.cursor = "grabbing"
-      const move = ev => {
-        stage.scrollLeft = start.left - (ev.clientX - start.x)
-        stage.scrollTop = start.top - (ev.clientY - start.y)
-      }
-      const up = () => {
-        stage.style.cursor = "grab"
-        stage.removeEventListener("pointermove", move)
-      }
-      stage.addEventListener("pointermove", move)
-      stage.addEventListener("pointerup", up, {once: true})
-      stage.addEventListener("pointercancel", up, {once: true})
-    })
+  imageFailed(img) {
+    const stage = img.closest("[data-viewer-stage]")
+    if (!stage) return
+    stage.querySelector("[data-viewer-loading]").hidden = true
+    img.hidden = true
+    stage.querySelector("[data-viewer-error]").hidden = false
+  },
+
+  // above Fit, drag to pan
+  onPointerDown(e) {
+    const stage = e.target.closest("[data-viewer-stage]")
+    if (!stage || this.zoom === null || e.button !== 0) return
+    e.preventDefault()
+    stage.setPointerCapture(e.pointerId)
+    const start = {x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop}
+    stage.style.cursor = "grabbing"
+    const move = ev => {
+      stage.scrollLeft = start.left - (ev.clientX - start.x)
+      stage.scrollTop = start.top - (ev.clientY - start.y)
+    }
+    const up = () => {
+      stage.style.cursor = "grab"
+      stage.removeEventListener("pointermove", move)
+    }
+    stage.addEventListener("pointermove", move)
+    stage.addEventListener("pointerup", up, {once: true})
+    stage.addEventListener("pointercancel", up, {once: true})
   },
 
   fitScale(img) {
@@ -271,17 +311,19 @@ const FileViewer = {
   // null is Fit
   setZoom(scale) {
     const img = this.image()
-    if (!img || !img.naturalWidth) return
+    if (!img) return
     const stage = img.closest("[data-viewer-stage]")
     const label = this.el.querySelector("#file-viewer-zoom-label")
-    this.zoom = scale
 
     if (scale === null) {
+      this.zoom = null
       Object.assign(img.style, {width: "", height: "", maxWidth: "", maxHeight: ""})
       Object.assign(stage.style, {overflow: "", cursor: ""})
       if (label) label.textContent = "Fit"
       return
     }
+    if (!img.naturalWidth) return
+    this.zoom = scale
 
     Object.assign(img.style, {
       width: `${Math.round(img.naturalWidth * scale)}px`,
@@ -294,6 +336,29 @@ const FileViewer = {
     stage.scrollTop = (stage.scrollHeight - stage.clientHeight) / 2
     if (label) label.textContent = `${Math.round(scale * 100)}%`
   },
+}
+
+// The first `n` lines of a text, each with its newline.
+function firstLines(text, n) {
+  let at = -1
+  for (let i = 0; i < n; i++) {
+    at = text.indexOf("\n", at + 1)
+    if (at === -1) return text
+  }
+  return text.slice(0, at + 1)
+}
+
+// Copies text that is still on its way. A ClipboardItem takes the promise,
+// so the click's user activation still counts once the fetch is done (Safari
+// needs that); elsewhere the text is written when it arrives.
+function copyLater(text) {
+  if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write && window.isSecureContext) {
+    const blob = text.then(t => new Blob([t], {type: "text/plain"}))
+    return navigator.clipboard
+      .write([new ClipboardItem({"text/plain": blob})])
+      .catch(() => text.then(copyText))
+  }
+  return text.then(copyText)
 }
 
 function reducedMotion() {

@@ -138,7 +138,7 @@ defmodule Canopy.DocumentsTest do
     end
 
     test "counts lines and returns the whole of a short file" do
-      assert {:ok, "a\nb\n", %{lines: 2, truncated: false}} =
+      assert {:ok, "a\nb\n", %{lines: 2, size: 4, truncated: false}} =
                Documents.preview_text(text_doc("a\nb\n"))
 
       assert {:ok, "a\nb", %{lines: 2, truncated: false}} =
@@ -148,15 +148,35 @@ defmodule Canopy.DocumentsTest do
     test "cuts at the line limit and at the byte limit, on line boundaries" do
       doc = text_doc("1\n2\n3\n4\n")
 
-      assert {:ok, "1\n2\n", %{lines: 4, truncated: true}} =
+      assert {:ok, "1\n2\n", %{lines: 4, truncated: :lines}} =
                Documents.preview_text(doc, max_lines: 2)
 
-      assert {:ok, "1\n2\n", %{truncated: true}} = Documents.preview_text(doc, max_bytes: 5)
+      assert {:ok, "1\n2\n", %{lines: 4, size: 8, shown_bytes: 4, truncated: :bytes}} =
+               Documents.preview_text(doc, max_bytes: 5)
+
+      assert {:ok, "1\n2\n3\n4\n", %{truncated: false}} =
+               Documents.preview_text(doc, max_lines: 4)
+
+      assert {:ok, "1\n2\n3\n4\n", %{truncated: false}} =
+               Documents.preview_text(doc, max_lines: :infinity)
+    end
+
+    test "a file past the byte limit is read only so far, and its lines still counted" do
+      line = String.duplicate("x", 99) <> "\n"
+      doc = text_doc(String.duplicate(line, 3_000) <> "tail")
+
+      assert {:ok, text, %{lines: 3_001, size: 300_004, truncated: :bytes}} =
+               Documents.preview_text(doc, max_bytes: 1_000)
+
+      assert text == String.duplicate(line, 10)
     end
 
     test "a single long line is cut at a character boundary" do
       doc = text_doc(String.duplicate("é", 10))
-      assert {:ok, text, %{lines: 1, truncated: true}} = Documents.preview_text(doc, max_bytes: 5)
+
+      assert {:ok, text, %{lines: 1, truncated: :bytes}} =
+               Documents.preview_text(doc, max_bytes: 5)
+
       assert text == "éé"
     end
 
@@ -173,6 +193,42 @@ defmodule Canopy.DocumentsTest do
         })
 
       assert Documents.preview_text(png) == {:error, :not_text}
+    end
+
+    test "another kind reads as text only when it is valid UTF-8" do
+      create = fn name, bytes ->
+        {:ok, doc} =
+          Documents.create(%{
+            filename: name,
+            source: {:binary, bytes},
+            user_id: user_fixture().id
+          })
+
+        doc
+      end
+
+      ts = create.("retry.ts", "export const n: number = 1;\n")
+      assert ts.kind == "other"
+      assert {:ok, "export const n: number = 1;\n", %{lines: 1}} = Documents.preview_text(ts)
+
+      video = create.("clip.ts", <<0x47, 0x40, 0x11, 0x10, 0xFF, 0xFE, 0x00>>)
+      assert Documents.preview_text(video) == {:error, :not_text}
+    end
+
+    test "a missing file is an error, not a crash" do
+      doc = text_doc("gone\n")
+      :ok = Canopy.Documents.Store.delete(doc.id)
+      assert {:error, :enoent} = Documents.preview_text(doc)
+    end
+
+    test "line_count/1 and take_lines/2" do
+      assert Documents.line_count("") == 0
+      assert Documents.line_count("a") == 1
+      assert Documents.line_count("a\n") == 1
+      assert Documents.line_count("a\n\nb") == 3
+      assert Documents.take_lines("a\nb\nc", 2) == "a\nb\n"
+      assert Documents.take_lines("a\nb", 5) == "a\nb"
+      assert Documents.take_lines("a\nb", :infinity) == "a\nb"
     end
   end
 

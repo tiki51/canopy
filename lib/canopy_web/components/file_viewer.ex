@@ -11,9 +11,9 @@ defmodule CanopyWeb.FileViewer do
   `load/3` is pure apart from reading the file; `viewer/1` renders the
   `<dialog>`. The FileViewer hook (`assets/js/hooks/file_viewer.js`) opens it
   modally and owns what never needs the server: keys, focus, zoom, Wrap, the
-  Markdown mode and Copy. That state lives inside `phx-update="ignore"`
-  containers keyed by the document id, so an unrelated re-render keeps it and
-  another file starts fresh.
+  Markdown mode and Copy (which fetches the file's own bytes). That state
+  lives inside `phx-update="ignore"` containers keyed by the document id, so
+  an unrelated re-render keeps it and another file starts fresh.
   """
 
   use CanopyWeb, :html
@@ -37,9 +37,10 @@ defmodule CanopyWeb.FileViewer do
     :language,
     :line_count,
     :shown_lines,
+    :shown_bytes,
+    :size,
     :preview_html,
     :source_html,
-    :raw,
     truncated: false,
     preview_off: false,
     unreadable: false
@@ -84,22 +85,43 @@ defmodule CanopyWeb.FileViewer do
     images ++ files
   end
 
+  # Markdown up to 1 MB is read whole: Preview renders all of it, Source
+  # shows its first 5,000 lines. Past 1 MB Preview is off and the (cut)
+  # source shows instead.
   defp put_content(%{kind: kind, doc: doc} = viewer) when kind in [:markdown, :code, :text] do
-    case Documents.preview_text(doc, max_bytes: @max_bytes, max_lines: @max_lines) do
-      {:ok, text, %{lines: lines, truncated: truncated}} ->
+    preview? = kind == :markdown and doc.byte_size <= @max_bytes
+    max_lines = if preview?, do: :infinity, else: @max_lines
+
+    case Documents.preview_text(doc, max_bytes: @max_bytes, max_lines: max_lines) do
+      {:ok, text, meta} ->
+        {source, cut} = if preview?, do: source_lines(text, meta), else: {text, meta.truncated}
         lang = language(doc)
 
         viewer = %{
           viewer
-          | line_count: lines,
-            shown_lines: Documents.line_count(text),
-            truncated: truncated,
-            raw: text,
-            language: language_label(viewer.kind, doc),
-            source_html: Highlight.code(text, lang && elem(lang, 0))
+          | line_count: meta.lines,
+            size: meta.size,
+            shown_lines: Documents.line_count(source),
+            shown_bytes: if(cut == :bytes, do: meta.shown_bytes),
+            truncated: cut,
+            language: language_label(kind, doc),
+            source_html: Highlight.code(source, lang && elem(lang, 0))
         }
 
-        if kind == :markdown, do: put_preview(viewer), else: viewer
+        cond do
+          kind != :markdown ->
+            viewer
+
+          preview? and meta.truncated == false ->
+            %{viewer | preview_html: Markdown.document_html(text)}
+
+          true ->
+            %{viewer | preview_off: true}
+        end
+
+      # a file stored as another kind (`.ts` is `video/mp2t`) that isn't text after all
+      {:error, :not_text} ->
+        %{viewer | kind: :none, label: other_label(doc.filename)}
 
       {:error, _} ->
         %{viewer | kind: :none, unreadable: true}
@@ -108,18 +130,12 @@ defmodule CanopyWeb.FileViewer do
 
   defp put_content(viewer), do: viewer
 
-  # Preview renders the whole document, up to 1 MB; past that it is off and
-  # the (truncated) source shows instead.
-  defp put_preview(%{doc: %{byte_size: size}} = viewer) when size > @max_bytes,
-    do: %{viewer | preview_off: true}
-
-  defp put_preview(%{truncated: false, raw: text} = viewer),
-    do: %{viewer | preview_html: Markdown.document_html(text)}
-
-  defp put_preview(%{doc: doc} = viewer) do
-    {:ok, text, _} = Documents.preview_text(doc, max_bytes: @max_bytes, max_lines: 1_000_000)
-    %{viewer | preview_html: Markdown.document_html(text)}
+  defp source_lines(text, %{truncated: false}) do
+    source = Documents.take_lines(text, @max_lines)
+    {source, if(byte_size(source) < byte_size(text), do: :lines, else: false)}
   end
+
+  defp source_lines(text, %{truncated: cut}), do: {text, cut}
 
   # -- What a file is ------------------------------------------------------------
 
@@ -140,6 +156,10 @@ defmodule CanopyWeb.FileViewer do
   def kind(%{mime: "image/svg+xml", filename: name}) do
     if ext(name) == "svg", do: :code, else: :none
   end
+
+  # source stored under another type (`retry.ts` is `video/mp2t`); `load/3`
+  # falls back to no preview when its bytes aren't text
+  def kind(%{kind: "other"} = doc), do: if(language(doc), do: :code, else: :none)
 
   def kind(_doc), do: :none
 
@@ -205,12 +225,7 @@ defmodule CanopyWeb.FileViewer do
   `in a DM` for a direct message, `in a thread` for a thread reply.
   """
   def origin(message, channel, user_name) do
-    author =
-      case message do
-        %{agent: %{name: name}} when is_binary(name) -> "@" <> name
-        %{user: %{display_name: name}} when is_binary(name) -> name
-        _ -> user_name || "You"
-      end
+    author = CanopyWeb.TimelineComponents.sender_name(message, user_name || "You")
 
     place =
       cond do
@@ -248,24 +263,51 @@ defmodule CanopyWeb.FileViewer do
 
   # -- The dialog ----------------------------------------------------------------
 
+  @doc """
+  The channel's URL with the viewer showing `doc` of `message`, or closed
+  (no message): `base` is the rest of the current URL's params, which stay
+  (all but `attach`, which would put a file in the composer again).
+  """
+  def viewer_path(channel_id, base, message \\ nil, doc \\ nil) do
+    query =
+      (base || %{})
+      |> Map.drop(["id", "attach", "file", "in"])
+      |> then(&if(message, do: Map.merge(&1, %{"file" => doc.id, "in" => message.id}), else: &1))
+
+    if query == %{},
+      do: ~p"/channels/#{channel_id}",
+      else: ~p"/channels/#{channel_id}?#{query}"
+  end
+
+  # The path showing the file `step` away from the open one, or nil past either end.
+  defp step_path(
+         %__MODULE__{index: index, documents: docs, message: message},
+         channel_id,
+         base,
+         step
+       ) do
+    case index + step do
+      i when i >= 0 and i < length(docs) ->
+        viewer_path(channel_id, base, message, Enum.at(docs, i))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp many?(%__MODULE__{documents: docs}), do: length(docs) > 1
+
+  # Every value is read from @viewer (and the two URL attrs) in the template,
+  # never assigned here: a re-render of the channel that leaves them alone
+  # then sends nothing of the viewer again.
   attr :viewer, __MODULE__, required: true
-  attr :close, :string, required: true, doc: "the path without the viewer"
-  attr :path, :any, required: true, doc: "index => the path showing that file"
+  attr :channel_id, :string, required: true
+
+  attr :base, :map,
+    default: nil,
+    doc: "the current URL's params, kept when the viewer moves or closes"
 
   def viewer(assigns) do
-    v = assigns.viewer
-    count = length(v.documents)
-
-    assigns =
-      assigns
-      |> assign(:v, v)
-      |> assign(:doc, v.doc)
-      |> assign(:count, count)
-      |> assign(:many?, count > 1)
-      |> assign(:url, Documents.url_path(v.doc))
-      |> assign(:prev, if(v.index > 0, do: assigns.path.(v.index - 1)))
-      |> assign(:next, if(v.index < count - 1, do: assigns.path.(v.index + 1)))
-
     ~H"""
     <dialog
       id="file-viewer"
@@ -273,33 +315,35 @@ defmodule CanopyWeb.FileViewer do
       phx-hook="FileViewer"
       aria-labelledby="file-viewer-name"
       tabindex="-1"
-      data-doc={@doc.id}
-      data-message={@v.message.id}
-      data-kind={@v.kind}
+      data-doc={@viewer.doc.id}
+      data-message={@viewer.message.id}
+      data-kind={@viewer.kind}
       class="file-viewer fixed inset-0 z-50 m-0 hidden h-dvh max-h-none w-screen max-w-none flex-col border-0 bg-[#0A1730]/90 p-0 text-white backdrop-blur-[2px] open:flex outline-none backdrop:bg-transparent"
     >
       <header class="flex h-16 shrink-0 items-center gap-3 px-5 max-[760px]:px-3">
         <div class="flex size-9 shrink-0 items-center justify-center rounded-md bg-white/10">
-          <.icon name={kind_icon(@v.kind)} class="size-5" />
+          <.icon name={kind_icon(@viewer.kind)} class="size-5" />
         </div>
         <div
-          id={"file-viewer-title-#{@doc.id}"}
+          id={"file-viewer-title-#{@viewer.doc.id}"}
           phx-update="ignore"
           class="min-w-0 flex-1 leading-tight"
         >
-          <h2 id="file-viewer-name" class="truncate text-[14px] font-semibold">{@doc.filename}</h2>
+          <h2 id="file-viewer-name" class="truncate text-[14px] font-semibold">
+            {@viewer.doc.filename}
+          </h2>
           <p
             id="file-viewer-meta"
             class="truncate text-[12px] text-white/60 max-[760px]:hidden"
-            title={"#{file_meta(@v)} · #{@v.origin}"}
+            title={"#{file_meta(@viewer)} · #{@viewer.origin}"}
           >
-            {file_meta(@v)}<span id="file-viewer-dims" hidden></span> · {@v.origin}
+            {file_meta(@viewer)}<span id="file-viewer-dims" hidden></span> · {@viewer.origin}
           </p>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
           <div
-            :if={@v.kind == :image}
-            id={"file-viewer-zoom-#{@doc.id}"}
+            :if={@viewer.kind == :image}
+            id={"file-viewer-zoom-#{@viewer.doc.id}"}
             phx-update="ignore"
             class="flex h-9 items-center rounded-lg bg-white/10 text-[13px] text-white/80 max-[760px]:hidden"
             role="group"
@@ -335,9 +379,9 @@ defmodule CanopyWeb.FileViewer do
             </button>
           </div>
           <a
-            :if={@v.kind in [:image, :pdf]}
+            :if={@viewer.kind in [:image, :pdf]}
             id="file-viewer-open"
-            href={@url}
+            href={Documents.url_path(@viewer.doc)}
             target="_blank"
             rel="noopener"
             class={icon_button()}
@@ -348,10 +392,10 @@ defmodule CanopyWeb.FileViewer do
           </a>
           <a
             id="file-viewer-download"
-            href={download_path(@doc)}
-            download={@doc.filename}
+            href={download_path(@viewer.doc)}
+            download={@viewer.doc.filename}
             class="flex h-9 items-center gap-1.5 rounded-lg bg-white px-3 text-[13px] font-semibold text-[#0A1730] transition hover:bg-white/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-            title={"Download #{@doc.filename}"}
+            title={"Download #{@viewer.doc.filename}"}
           >
             <.icon name="hero-arrow-down-tray" class="size-4" />
             <span class="max-[760px]:sr-only">Download</span>
@@ -359,7 +403,7 @@ defmodule CanopyWeb.FileViewer do
           <span class="mx-1 h-6 w-px bg-white/15" aria-hidden="true" />
           <.link
             id="file-viewer-close"
-            patch={@close}
+            patch={viewer_path(@channel_id, @base)}
             replace
             class={icon_button()}
             aria-label="Close"
@@ -372,17 +416,17 @@ defmodule CanopyWeb.FileViewer do
 
       <div class="relative flex min-h-0 flex-1 items-center justify-center px-28 max-[1100px]:px-16 max-[760px]:px-0">
         <.nav_arrow
-          :if={@many?}
+          :if={many?(@viewer)}
           id="file-viewer-prev"
-          to={@prev}
+          to={step_path(@viewer, @channel_id, @base, -1)}
           dir="prev"
           class="left-6 max-[1100px]:left-3 max-[760px]:hidden"
         />
-        <.stage v={@v} url={@url} doc={@doc} />
+        <.stage v={@viewer} />
         <.nav_arrow
-          :if={@many?}
+          :if={many?(@viewer)}
           id="file-viewer-next"
-          to={@next}
+          to={step_path(@viewer, @channel_id, @base, 1)}
           dir="next"
           class="right-6 max-[1100px]:right-3 max-[760px]:hidden"
         />
@@ -390,26 +434,26 @@ defmodule CanopyWeb.FileViewer do
 
       <footer class={[
         "flex shrink-0 flex-col items-center justify-center gap-1.5",
-        if(@many?, do: "h-[92px] max-[760px]:h-14", else: "h-10")
+        if(many?(@viewer), do: "h-[92px] max-[760px]:h-14", else: "h-10")
       ]}>
         <nav
-          :if={@many?}
+          :if={many?(@viewer)}
           id="file-viewer-strip"
           aria-label="Files in this message"
           class="flex max-w-full gap-2 overflow-x-auto px-4 py-1 max-[760px]:hidden"
         >
           <.link
-            :for={{doc, i} <- Enum.with_index(@v.documents)}
+            :for={{doc, i} <- Enum.with_index(@viewer.documents)}
             id={"file-viewer-thumb-#{doc.id}"}
-            patch={@path.(i)}
+            patch={viewer_path(@channel_id, @base, @viewer.message, doc)}
             replace
-            aria-label={"Open #{doc.filename} (#{i + 1} of #{@count})"}
-            aria-current={i == @v.index && "true"}
+            aria-label={"Open #{doc.filename} (#{i + 1} of #{length(@viewer.documents)})"}
+            aria-current={i == @viewer.index && "true"}
             title={doc.filename}
             class={[
               "flex h-12 w-16 shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md bg-white/10 text-[10px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white/70",
-              i == @v.index && "ring-2 ring-white ring-offset-2 ring-offset-[#0A1730]",
-              i != @v.index && "opacity-60 hover:opacity-100"
+              i == @viewer.index && "ring-2 ring-white ring-offset-2 ring-offset-[#0A1730]",
+              i != @viewer.index && "opacity-60 hover:opacity-100"
             ]}
           >
             <img
@@ -426,10 +470,16 @@ defmodule CanopyWeb.FileViewer do
           </.link>
         </nav>
         <div class="flex items-center gap-3">
-          <.nav_arrow :if={@many?} id="file-viewer-prev-sm" to={@prev} dir="prev" small />
+          <.nav_arrow
+            :if={many?(@viewer)}
+            id="file-viewer-prev-sm"
+            to={step_path(@viewer, @channel_id, @base, -1)}
+            dir="prev"
+            small
+          />
           <p class="flex items-center gap-1 text-[11px] text-white/50">
-            <%= if @many? do %>
-              <span id="file-viewer-position">{@v.index + 1} of {@count}</span>
+            <%= if many?(@viewer) do %>
+              <span id="file-viewer-position">{@viewer.index + 1} of {length(@viewer.documents)}</span>
               <span class="max-[760px]:hidden">·</span>
               <span class="flex items-center gap-1 max-[760px]:hidden">
                 <kbd class={kbd()}>←</kbd> <kbd class={kbd()}>→</kbd> browse
@@ -440,10 +490,18 @@ defmodule CanopyWeb.FileViewer do
               <kbd class={kbd()}>Esc</kbd> close
             </span>
           </p>
-          <.nav_arrow :if={@many?} id="file-viewer-next-sm" to={@next} dir="next" small />
+          <.nav_arrow
+            :if={many?(@viewer)}
+            id="file-viewer-next-sm"
+            to={step_path(@viewer, @channel_id, @base, 1)}
+            dir="next"
+            small
+          />
         </div>
         <span class="sr-only" aria-live="polite">
-          {@doc.filename}{if @many?, do: ", #{@v.index + 1} of #{@count}"}
+          {@viewer.doc.filename}{if(many?(@viewer),
+            do: ", #{@viewer.index + 1} of #{length(@viewer.documents)}"
+          )}
         </span>
       </footer>
     </dialog>
@@ -470,8 +528,8 @@ defmodule CanopyWeb.FileViewer do
       id={@id}
       patch={@to || "#"}
       replace
-      aria-label={if @dir == "prev", do: "Previous file", else: "Next file"}
-      title={if @dir == "prev", do: "Previous (←)", else: "Next (→)"}
+      aria-label={if(@dir == "prev", do: "Previous file", else: "Next file")}
+      title={if(@dir == "prev", do: "Previous (←)", else: "Next (→)")}
       aria-disabled={is_nil(@to) && "true"}
       tabindex={is_nil(@to) && "-1"}
       data-viewer-nav={@dir}
@@ -484,7 +542,7 @@ defmodule CanopyWeb.FileViewer do
       ]}
     >
       <.icon
-        name={if @dir == "prev", do: "hero-chevron-left", else: "hero-chevron-right"}
+        name={if(@dir == "prev", do: "hero-chevron-left", else: "hero-chevron-right")}
         class="size-5"
       />
     </.link>
@@ -492,13 +550,11 @@ defmodule CanopyWeb.FileViewer do
   end
 
   attr :v, __MODULE__, required: true
-  attr :url, :string, required: true
-  attr :doc, :map, required: true
 
   defp stage(%{v: %{kind: :image}} = assigns) do
     ~H"""
     <div
-      id={"file-viewer-image-#{@doc.id}"}
+      id={"file-viewer-image-#{@v.doc.id}"}
       phx-update="ignore"
       data-viewer-stage
       class="flex h-full w-full overflow-hidden py-2"
@@ -509,25 +565,32 @@ defmodule CanopyWeb.FileViewer do
       />
       <img
         id="file-viewer-image"
-        src={@url}
-        alt={@doc.filename}
+        src={Documents.url_path(@v.doc)}
+        alt={@v.doc.filename}
         draggable="false"
         class="m-auto max-h-full max-w-full rounded-md object-contain opacity-0 shadow-2xl transition-opacity"
       />
       <div data-viewer-error hidden class="m-auto">
-        <.no_preview doc={@doc} message="This image couldn't be loaded." />
+        <.no_preview doc={@v.doc} message="This image couldn't be loaded." />
       </div>
     </div>
     """
   end
 
+  # FileController serves a PDF's inline view without the sandbox CSP, which
+  # browsers' PDF viewers refuse to render in
   defp stage(%{v: %{kind: :pdf}} = assigns) do
     ~H"""
     <div
-      id={"file-viewer-pdf-#{@doc.id}"}
+      id={"file-viewer-pdf-#{@v.doc.id}"}
       class="h-full w-[940px] max-w-full overflow-hidden rounded-xl bg-base-200 shadow-2xl max-[760px]:rounded-none"
     >
-      <iframe id="file-viewer-pdf" src={@url} title={@doc.filename} class="h-full w-full border-0"></iframe>
+      <iframe
+        id="file-viewer-pdf"
+        src={Documents.url_path(@v.doc)}
+        title={@v.doc.filename}
+        class="h-full w-full border-0"
+      ></iframe>
     </div>
     """
   end
@@ -537,7 +600,7 @@ defmodule CanopyWeb.FileViewer do
     <%!-- LiveView still syncs the data-* of an ignored element, so the hook's
          data-mode and data-wrap live on the sheet inside it --%>
     <div
-      id={"file-viewer-sheet-#{@doc.id}"}
+      id={"file-viewer-sheet-#{@v.doc.id}"}
       phx-update="ignore"
       class="h-full w-[940px] max-w-full"
     >
@@ -585,12 +648,17 @@ defmodule CanopyWeb.FileViewer do
           >
             <.icon name="hero-bars-3-bottom-left-mini" class="size-4" /> Wrap
           </button>
+          <%!-- Copy fetches the file's own bytes; when Source is cut, only
+               what it shows (its lines, or its bytes) --%>
           <button
             type="button"
             id="file-viewer-copy"
             data-viewer-copy
+            data-copy-url={Documents.url_path(@v.doc)}
+            data-copy-lines={@v.truncated == :lines && @v.shown_lines}
+            data-copy-bytes={@v.truncated == :bytes && @v.shown_bytes}
             class="flex h-7 items-center gap-1.5 rounded-md border border-base-300 bg-base-100 px-2 text-base-content/80 transition hover:border-primary/50 hover:text-base-content"
-            title={if @v.truncated, do: "Copy what is shown", else: "Copy the file"}
+            title={if(@v.truncated, do: "Copy what is shown", else: "Copy the file")}
           >
             <.icon name="hero-clipboard-document-mini" class="size-4" />
             <span data-copy-label>Copy</span>
@@ -603,20 +671,20 @@ defmodule CanopyWeb.FileViewer do
         >
           This file is too big to preview. Showing the source.
         </div>
+        <%!-- Source's banner: a Markdown Preview shows the whole file, and
+             app.css hides this while it does --%>
         <div
           :if={@v.truncated}
           id="file-viewer-truncated"
           class="doc-truncated flex items-center gap-2 border-b border-warning/25 bg-warning/10 px-4 py-2 text-[12.5px]"
         >
           <span>
-            <span class="font-semibold">
-              Showing the first {delimit(@v.shown_lines)} of {delimit(@v.line_count)} lines.
-            </span>
+            <span class="font-semibold">{truncated_label(@v)}</span>
             <span class="text-base-content/70">Download the file to see all of it.</span>
           </span>
           <a
-            href={download_path(@doc)}
-            download={@doc.filename}
+            href={download_path(@v.doc)}
+            download={@v.doc.filename}
             class="ml-auto flex shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
           >
             <.icon name="hero-arrow-down-tray-mini" class="size-4" /> Download
@@ -632,9 +700,6 @@ defmodule CanopyWeb.FileViewer do
           </article>
           <pre id="file-viewer-source" class="doc-source doc-code">{raw(@v.source_html)}</pre>
         </div>
-        <%!-- no id: morphdom would carry a keyed template over to the next
-             file's sheet, and it never patches a template's content --%>
-        <template data-viewer-raw>{@v.raw}</template>
       </div>
     </div>
     """
@@ -643,17 +708,33 @@ defmodule CanopyWeb.FileViewer do
   defp stage(assigns) do
     ~H"""
     <.no_preview
-      doc={@doc}
+      doc={@v.doc}
+      kind={@v.kind}
+      label={@v.label}
       message={
-        if @v.unreadable,
+        if(@v.unreadable,
           do: "This file couldn't be read.",
           else: "Canopy can't show a preview of this kind of file."
+        )
       }
     />
     """
   end
 
+  @doc """
+  The cut Source's banner: `Showing the first 5,000 of 48,120 lines.`, or by
+  size when one line ran past the byte limit (`the first 1.0 MB of 3.4 MB`).
+  """
+  def truncated_label(%__MODULE__{truncated: :lines} = v),
+    do: "Showing the first #{delimit(v.shown_lines)} of #{delimit(v.line_count)} lines."
+
+  def truncated_label(%__MODULE__{truncated: :bytes} = v),
+    do:
+      "Showing the first #{Documents.size_label(v.shown_bytes)} of #{Documents.size_label(v.size)}."
+
   attr :doc, :map, required: true
+  attr :kind, :atom, default: nil, doc: "the viewer's kind when it differs from the file's"
+  attr :label, :string, default: nil
   attr :message, :string, required: true
 
   defp no_preview(assigns) do
@@ -663,11 +744,11 @@ defmodule CanopyWeb.FileViewer do
       class="flex w-[440px] max-w-[calc(100vw-2rem)] flex-col items-center rounded-2xl bg-base-200 px-10 py-10 text-center text-base-content shadow-2xl"
     >
       <div class="flex size-16 items-center justify-center rounded-xl bg-base-content/10 text-base-content/70">
-        <.icon name={kind_icon(kind(@doc))} class="size-8" />
+        <.icon name={kind_icon(@kind || kind(@doc))} class="size-8" />
       </div>
       <p class="mt-5 max-w-full truncate text-[16px] font-semibold">{@doc.filename}</p>
       <p class="mt-0.5 text-[13px] text-base-content/60">
-        {type_label(@doc)} · {Documents.size_label(@doc.byte_size)}
+        {@label || type_label(@doc)} · {Documents.size_label(@doc.byte_size)}
       </p>
       <p class="mt-5 text-[14px]">{@message}</p>
       <a

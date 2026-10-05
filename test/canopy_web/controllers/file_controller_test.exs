@@ -53,6 +53,33 @@ defmodule CanopyWeb.FileControllerTest do
     assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
   end
 
+  test "a PDF's inline view goes without the sandbox, which PDF viewers won't render in",
+       %{conn: conn} do
+    pdf = "%PDF-1.4\n%%EOF\n"
+    doc = create(%{filename: "spec.pdf", mime: "application/pdf", source: {:binary, pdf}})
+    assert doc.kind == "pdf"
+
+    conn = get(conn, Documents.url_path(doc))
+    assert conn.status == 200
+    assert get_resp_header(conn, "content-type") == ["application/pdf"]
+    assert [disposition] = get_resp_header(conn, "content-disposition")
+    assert disposition =~ ~r/^inline; filename="spec.pdf"/
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(conn, "content-security-policy") == ["frame-ancestors 'self'"]
+
+    # downloading it is sandboxed like everything else
+    conn = get(build_conn(), Documents.url_path(doc) <> "?download=1")
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+  end
+
+  test "a PDF's inline view still answers only on a loopback host", %{conn: conn} do
+    doc =
+      create(%{filename: "spec.pdf", mime: "application/pdf", source: {:binary, "%PDF-1.4\n"}})
+
+    conn = get(%{conn | host: "evil.example"}, Documents.url_path(doc))
+    assert conn.status == 403
+  end
+
   test "svg never renders inline", %{conn: conn} do
     doc = create(%{filename: "logo.svg", mime: "image/svg+xml", source: {:binary, "<svg/>"}})
     conn = get(conn, Documents.url_path(doc))

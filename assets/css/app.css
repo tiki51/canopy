@@ -409,10 +409,12 @@
 
 /* File viewer (CanopyWeb.FileViewer, assets/js/hooks/file_viewer.js). The
    hook sets data-mode (Markdown: preview | source) and data-wrap on the
-   sheet; without them a Markdown file shows its Preview and lines don't wrap. */
+   sheet; without them a Markdown file shows its Preview and lines don't wrap.
+   A Preview is the whole file, so Source's "Showing the first…" banner hides. */
 .file-viewer::backdrop { background: transparent; }
 .doc-sheet[data-markdown]:not([data-mode="source"]) .doc-source,
 .doc-sheet[data-markdown]:not([data-mode="source"]) .doc-wrap,
+.doc-sheet[data-markdown]:not([data-mode="source"]) .doc-truncated,
 .doc-sheet[data-mode="source"] .doc-preview { display: none; }
 .doc-toolbar { background: color-mix(in oklab, var(--color-base-content) 4%, var(--color-base-200)); }
 .doc-mode[aria-pressed="true"] {

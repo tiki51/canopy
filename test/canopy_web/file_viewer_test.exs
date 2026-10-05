@@ -58,7 +58,56 @@ defmodule CanopyWeb.FileViewerTest do
       assert viewer.preview_html =~ ~s(<h1 id="doc-title">)
       refute viewer.preview_html =~ "<br"
       assert viewer.source_html =~ ~s(class="l-line")
-      assert viewer.raw =~ "# Title"
+      assert viewer.truncated == false
+    end
+
+    test "long Markdown previews whole while Source shows its first 5,000 lines" do
+      text = "# Log\n\n" <> Enum.map_join(1..6_000, "\n", &"- item #{&1}") <> "\n"
+      md = doc("long.md", text)
+      {message, channel} = message_with([md])
+      {:ok, viewer} = FileViewer.load(message, md.id, channel: channel)
+
+      refute viewer.preview_off
+      assert viewer.preview_html =~ "item 6000"
+      assert viewer.truncated == :lines
+      assert viewer.line_count == 6_002
+      assert viewer.shown_lines == 5_000
+      assert viewer.source_html =~ "item 4998"
+      refute viewer.source_html =~ "item 4999"
+      assert FileViewer.truncated_label(viewer) == "Showing the first 5,000 of 6,002 lines."
+    end
+
+    test "a file that can't be read shows as unreadable, Markdown too" do
+      md = doc("gone.md", "# Gone\n")
+      log = doc("gone.log", "x\n")
+      {message, channel} = message_with([md, log])
+      :ok = Canopy.Documents.Store.delete(md.id)
+      :ok = Canopy.Documents.Store.delete(log.id)
+
+      for d <- [md, log] do
+        {:ok, viewer} = FileViewer.load(message, d.id, channel: channel)
+        assert viewer.kind == :none
+        assert viewer.unreadable
+      end
+    end
+
+    test "TypeScript stored as video/mp2t is highlighted source; a real .ts video isn't" do
+      ts = doc("retry.ts", File.read!(Path.expand("../support/files/retry.ts", __DIR__)))
+      video = doc("clip.ts", <<0x47, 0x40, 0x11, 0x10, 0xFF, 0xFE, 0x00>>)
+      assert ts.mime == "video/mp2t"
+      {message, channel} = message_with([ts, video])
+
+      {:ok, viewer} = FileViewer.load(message, ts.id, channel: channel)
+      assert viewer.kind == :code
+      assert viewer.language == "TypeScript"
+      assert viewer.label == "TypeScript"
+      assert viewer.source_html =~ ~s(class="l-keyword)
+      assert viewer.line_count == 13
+
+      {:ok, viewer} = FileViewer.load(message, video.id, channel: channel)
+      assert viewer.kind == :none
+      refute viewer.unreadable
+      assert viewer.label == "TS file"
     end
 
     test "HTML is highlighted source, never rendered" do
@@ -105,7 +154,7 @@ defmodule CanopyWeb.FileViewerTest do
       {message, channel} = message_with([log])
       {:ok, viewer} = FileViewer.load(message, log.id, channel: channel)
 
-      assert viewer.truncated
+      assert viewer.truncated == :lines
       assert viewer.line_count == 5_200
       assert viewer.shown_lines == 5_000
       assert FileViewer.file_meta(viewer) =~ "5,200 lines"
@@ -118,7 +167,17 @@ defmodule CanopyWeb.FileViewerTest do
 
       assert viewer.preview_off
       assert viewer.preview_html == nil
-      assert viewer.truncated
+      assert viewer.truncated == :bytes
+    end
+
+    test "a long line cut by bytes says so by size, not lines" do
+      log = doc("one-line.log", String.duplicate("x", 3 * 1_048_576))
+      {message, channel} = message_with([log])
+      {:ok, viewer} = FileViewer.load(message, log.id, channel: channel)
+
+      assert viewer.truncated == :bytes
+      assert viewer.line_count == 1
+      assert FileViewer.truncated_label(viewer) == "Showing the first 1.0 MB of 3.0 MB."
     end
   end
 

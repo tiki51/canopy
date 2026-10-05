@@ -81,10 +81,7 @@ defmodule CanopyWeb.Markdown do
     |> MDEx.to_html!(@doc_mdex_opts)
     |> highlight_fences(byte_size(text) <= CanopyWeb.Highlight.max_bytes())
     |> restrict_images()
-    |> String.replace(
-      ~r/<a href="(?!#)/,
-      ~s(<a target="_blank" rel="noopener noreferrer" href=")
-    )
+    |> open_links_in_new_tab(skip_fragments: true)
   end
 
   @fence_regex ~r/<pre><code(?: class="language-([^"]*)")?>(.*?)<\/code><\/pre>/s
@@ -329,6 +326,9 @@ defmodule CanopyWeb.Markdown do
     end)
   end
 
-  defp open_links_in_new_tab(html),
-    do: String.replace(html, "<a href=", ~s(<a target="_blank" rel="noopener noreferrer" href=))
+  # `skip_fragments: true` leaves `#…` links alone (in-document anchors).
+  defp open_links_in_new_tab(html, opts \\ []) do
+    pattern = if opts[:skip_fragments], do: ~r/<a href=(?!"#)/, else: "<a href="
+    String.replace(html, pattern, ~s(<a target="_blank" rel="noopener noreferrer" href=))
+  end
 end

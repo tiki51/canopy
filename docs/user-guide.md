@@ -1153,8 +1153,8 @@ HTML and SVG files always show as source; they are never rendered. The top bar s
 shared the file, where and when, and has **Download** and, for images and PDFs, **Open in
 new tab**. ‹ and › (or ← and →) move through the other files in the same message, and the
 strip along the bottom jumps to one. Esc closes the viewer and puts you back on the file
-you opened. The address bar follows along, so Back steps through the files and a viewer
-link can be shared or opened in a new tab.
+you opened. The address bar follows along, keeping an open thread or panel underneath, so
+Back closes the viewer and a viewer link can be shared or opened in a new tab.
 
 ![The file viewer showing a Markdown report, light](user-guide/images/file-viewer-light.png)
 
@@ -2091,7 +2091,7 @@ In the file viewer:
 
 | Key | Effect |
 |---|---|
-| ← / → | The previous or next file in the message |
+| ← / → | The previous or next file in the message (a long unwrapped line scrolls sideways instead) |
 | `+` / `-` / `0` | Zoom an image in, out, or back to fit |
 | Esc | Close the viewer |
 

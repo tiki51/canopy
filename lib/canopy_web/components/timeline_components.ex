@@ -664,8 +664,8 @@ defmodule CanopyWeb.TimelineComponents do
   The documents attached to a message: images on one row (one alone keeps a
   large preview, several become thumbnails), every other file as a card on
   the next. Each tile opens the file viewer (`?file=…&in=…` on the channel;
-  `assets/js/file_viewer_links.js` keeps the rest of the URL, such as an
-  open thread) and has its own Download button. Order is the viewer's
+  `CanopyWeb.ChannelLive` lays it over the rest of the current URL, such as
+  an open thread) and has its own Download button. Order is the viewer's
   (`CanopyWeb.FileViewer.ordered/1`), so its strip matches.
   """
   attr :message, :map, required: true
@@ -700,11 +700,12 @@ defmodule CanopyWeb.TimelineComponents do
               src={Canopy.Documents.url_path(doc)}
               alt={doc.filename}
               loading="lazy"
-              class={
-                if @single?,
+              class={[
+                if(@single?,
                   do: "max-h-60 max-w-[360px] object-contain max-sm:max-w-full",
                   else: "h-[116px] w-[188px] object-cover"
-              }
+                )
+              ]}
             />
             <span class="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/65 to-transparent px-2 pb-1.5 pt-5 text-[11px] font-medium text-white opacity-0 transition group-hover/tile:opacity-100 group-focus-within/tile:opacity-100">
               {doc.filename}
@@ -748,8 +749,9 @@ defmodule CanopyWeb.TimelineComponents do
 
   def attachments(assigns), do: ~H""
 
-  # The channel with the viewer open on `doc`; the click keeps the rest of
-  # the current URL (assets/js/file_viewer_links.js).
+  # The channel with the viewer open on `doc`. Tiles sit in streamed messages
+  # that aren't re-rendered when the URL changes, so the link carries only the
+  # viewer's params and ChannelLive.handle_params merges in the current ones.
   defp viewer_path(message, doc),
     do: ~p"/channels/#{message.channel_id}?#{[file: doc.id, in: message.id]}"
 
@@ -2956,11 +2958,12 @@ defmodule CanopyWeb.TimelineComponents do
 
   def short_time(_), do: ""
 
-  # -- Private helpers ---------------------------------------------------------
+  @doc "Who sent a message: `@agent`, a user's display name, or else `user_name` (the local user)."
+  def sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name
+  def sender_name(%{user: %{display_name: name}}, _user_name) when is_binary(name), do: name
+  def sender_name(_message, user_name), do: user_name
 
-  defp sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name
-  defp sender_name(%{user: %{display_name: name}}, _user_name) when is_binary(name), do: name
-  defp sender_name(_message, user_name), do: user_name
+  # -- Private helpers ---------------------------------------------------------
 
   defp initial(name) do
     name |> String.trim_leading("@") |> String.first() |> to_string() |> String.upcase()

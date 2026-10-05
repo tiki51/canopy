@@ -3,8 +3,10 @@ defmodule CanopyWeb.ChannelLiveFileViewerTest do
 
   import Mox
   import Phoenix.LiveViewTest
+  import CanopyWeb.LiveHelpers
 
   alias Canopy.{Documents, Fixtures, Messages, Runtime}
+  alias CanopyWeb.ChannelLive
   alias Canopy.OpenCode.ClientMock, as: OC
 
   @png File.read!(Path.expand("../../support/files/red.png", __DIR__))
@@ -134,6 +136,58 @@ defmodule CanopyWeb.ChannelLiveFileViewerTest do
     view |> element("#file-viewer-close") |> render_click()
     assert_patch(view, ~p"/channels/#{channel.id}?#{[thread: root.id]}")
     assert has_element?(view, "#thread-panel")
+  end
+
+  test "a tile opened over an open thread lays the viewer over it, and closing keeps it", ctx do
+    %{channel: channel, user: user} = ctx
+    png = doc("chart.png", @png, "image/png")
+    message = share(ctx, [png])
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/channels/#{channel.id}?#{[thread: root.id]}")
+    assert has_element?(view, "#thread-panel")
+
+    # the tile's own link carries only the viewer's params…
+    view |> element("#attachment-#{message.id}-#{png.id}") |> render_click()
+    assert_patch(view, viewer_url(channel, png, message))
+
+    # …and the server puts the rest of the URL back
+    path = assert_patch(view)
+
+    assert path |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query() ==
+             %{"thread" => root.id, "file" => png.id, "in" => message.id}
+
+    assert has_element?(view, "#file-viewer[data-doc='#{png.id}']")
+    assert has_element?(view, "#thread-panel")
+
+    view |> element("#file-viewer-close") |> render_click()
+    assert_patch(view, ~p"/channels/#{channel.id}?#{[thread: root.id]}")
+    refute has_element?(view, "#file-viewer")
+    assert has_element?(view, "#thread-panel")
+  end
+
+  test "patching to the URL already shown still has its say", ctx do
+    %{channel: channel, agent: agent} = ctx
+    live_url = ChannelLive.activity_path(channel.id, "live:" <> agent.id)
+
+    # the agent isn't working yet: no panel
+    {:ok, view, _html} = live(ctx.conn, live_url)
+    refute has_element?(view, "#activity-panel")
+
+    # it starts, and its card's live link points at the same URL
+    broadcast_telemetry(channel.id, agent.id, :tool_started, %{
+      call_id: "c1",
+      tool: "read",
+      status: :running,
+      input: %{"filePath" => "lib/a.ex"},
+      title: nil,
+      message_id: "m",
+      part_id: "p1"
+    })
+
+    view |> element("#telemetry-#{agent.id}-panel") |> render_click()
+    assert_patch(view, live_url)
+    assert has_element?(view, "#activity-panel")
   end
 
   test "a file from another conversation is refused", ctx do
