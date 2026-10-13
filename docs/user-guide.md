@@ -503,6 +503,45 @@ resets, so release it yourself once you can work again.
 *Release hold* resumes the paused schedules. The next message in a channel wakes agents
 again. Agents are also told never to poll for a human: they ask once and wait for you.
 
+### Environment
+
+The last panel on Settings puts the starter agents back, or starts Canopy over with an
+empty workspace.
+
+![Settings, Environment, light](user-guide/images/settings-environment-light.png)
+
+![Settings, Environment, dark](user-guide/images/settings-environment-dark.png)
+
+- **Rerun seeder** adds any starter agents, teams and playbooks that are missing, and
+  makes @finops the cost auditor when none is set. It never changes or removes what you
+  have. The result shows under the row until you leave the page: what it created (and
+  *Show all* for the full list), or "Nothing to add" when every starter is there. If the
+  seeder stops partway, it says why, and whatever it created before that is kept. It does
+  the same as `mix run priv/repo/seeds.exs` or `canopy seed`.
+- **Reset…** deletes every channel and DM, message, agent, team, playbook and run, task,
+  schedule and watch, agent memory, shared file and the cost history, then runs the
+  seeder. Your settings (engines, models, brakes, the MCP token, the collaboration prompt,
+  a billing hold), your display name and your registered repositories stay, and nothing
+  inside a repository is touched. Agents start fresh engine sessions; their old Claude
+  Code and OpenCode session files stay on disk, unused.
+
+![Settings, Reset modal, light](user-guide/images/settings-reset-light.png)
+
+![Settings, Reset modal, dark](user-guide/images/settings-reset-dark.png)
+
+The modal counts what goes and lists what stays. Type `reset` to enable **Reset Canopy**.
+First, the database is copied next to itself as `<name>.<YYYY-MM-DDTHHMM>.db` (for example
+`canopy.2026-10-13T1104.db`); Canopy never deletes these copies, so remove old ones by hand.
+While the reset runs, the modal names the step and can't be closed. Running agent turns
+are stopped, and every other Canopy tab refuses new work. When it finishes, every open tab
+reloads onto Settings, with a banner that says what the seeder created and where the backup
+is.
+
+If a step fails before anything is deleted, the modal says so ("Nothing was deleted") and
+offers **Try again**. If the seeder stops after the clear, the banner says so and **Rerun
+seeder** adds the missing starters. If some shared files couldn't be deleted, the banner
+names the folder to empty by hand.
+
 ---
 
 ## 4. Repositories

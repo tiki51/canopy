@@ -42,6 +42,7 @@ defmodule CanopyWeb.ChannelLive do
     Channels,
     Costs,
     Documents,
+    Environment,
     Messages,
     Handoffs,
     Locks,
@@ -128,8 +129,35 @@ defmodule CanopyWeb.ChannelLive do
      |> stream_configure(:timeline, dom_id: &"evt-#{&1.id}")
      |> stream_configure(:thread, dom_id: &"thread-evt-#{&1.id}")
      |> stream(:timeline, [])
-     |> stream(:thread, [])}
+     |> stream(:thread, [])
+     |> attach_hook(:reset_guard, :handle_event, &reset_guard/3)}
   end
+
+  # Events that reach the runtime (an `ensure_channel` deeper in, or a wake),
+  # refused while Canopy resets (`Canopy.Environment`): the runtime is
+  # stopping, and nothing new may start. A new event that calls the runtime
+  # goes on this list. Elsewhere a few paths may still crash once during the
+  # seconds a reset runs and are accepted as such, since the page remounts and
+  # Nav's redirect follows: a new channel, a DM opened from Agents, a playbook
+  # started from the Playbooks page, the cost auditor's wake
+  # (`costs/auditor.ex`) and MCP's playbook tools (`playbook_ask.ex`,
+  # `playbook_start.ex`, which answer 503 during a reset anyway).
+  @runtime_events ~w(send send_thread abort interrupt_now stop_all switch_repository
+                     reset_session respond_permission answer_question reject_question
+                     continue_chatter start_playbook approve_playbook_step
+                     request_playbook_changes reassign_coordinator)
+
+  @doc false
+  def runtime_events, do: @runtime_events
+
+  # The composer keeps its text: it clears only when the server says it sent.
+  defp reset_guard(event, _params, socket) when event in @runtime_events do
+    if Environment.resetting?(),
+      do: {:halt, put_flash(socket, :error, CanopyWeb.EnvironmentComponents.resetting_message())},
+      else: {:cont, socket}
+  end
+
+  defp reset_guard(_event, _params, socket), do: {:cont, socket}
 
   # what says which file the viewer shows
   @viewer_keys ["id", "file", "in"]
@@ -569,18 +597,21 @@ defmodule CanopyWeb.ChannelLive do
   defp load_channel(socket, id) do
     socket = leave_channel(socket)
 
-    if connected?(socket) do
-      :ok = Timeline.subscribe(id)
-      {:ok, _pid} = Runtime.ensure_channel(id)
-    end
+    # While Canopy resets, the channel's server can't start and the page is
+    # read-only: no runtime reads (a server may stop mid-call), no read mark
+    # (a write that waits out the reset's lock). Nav's redirect follows.
+    if connected?(socket), do: :ok = Timeline.subscribe(id)
+
+    resetting? =
+      Environment.resetting?() or (connected?(socket) and not start_runtime(id))
 
     channel = Channels.get!(id)
     members = Channels.members(channel)
     user = Users.local()
-    Unread.mark_read(id, user)
+    unless resetting?, do: Unread.mark_read(id, user)
     names = Map.new(Agents.list(), &{&1.id, &1.name})
     events = Timeline.list(id, limit: @page_size, scope: :channel)
-    statuses = Runtime.status(id)
+    statuses = if resetting?, do: %{}, else: Runtime.status(id)
 
     agent_statuses =
       Map.new(members, fn member -> {member.id, Map.get(statuses, member.id, :idle)} end)
@@ -607,16 +638,16 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:user, user)
     |> assign(:names, names)
     |> assign(:agent_statuses, agent_statuses)
-    |> assign(:paused?, Runtime.paused?(id))
-    |> assign(:stopped?, Runtime.stopped?(id))
+    |> assign(:paused?, not resetting? and Runtime.paused?(id))
+    |> assign(:stopped?, not resetting? and Runtime.stopped?(id))
     |> assign(:telemetry, telemetry)
     |> assign(:act, act)
     |> assign(:pending_text, %{})
     |> assign(:activity, nil)
     |> assign(:receipts, receipts(events))
     |> assign(:turn_ids, turn_ids(events))
-    |> assign(:turn_threads, Runtime.turn_threads(id))
-    |> assign(:steers, Runtime.steers(id))
+    |> assign(:turn_threads, if(resetting?, do: %{}, else: Runtime.turn_threads(id)))
+    |> assign(:steers, if(resetting?, do: %{}, else: Runtime.steers(id)))
     |> then(&assign(&1, :queued, queued_of(&1.assigns.steers)))
     |> assign(:interrupt_on?, Settings.interrupt_on_mention?())
     |> assign(:message_ids, message_ids(events))
@@ -658,6 +689,14 @@ defmodule CanopyWeb.ChannelLive do
     |> assign_branch()
     |> assign(:first_page, events)
     |> schedule_branch_refresh()
+  end
+
+  # False when a reset raised its gate since `resetting?/0` was asked.
+  defp start_runtime(id) do
+    case Runtime.ensure_channel(id) do
+      {:ok, _pid} -> true
+      {:error, :resetting} -> false
+    end
   end
 
   # The channel's playbook run (if one is in progress) for the header chip and

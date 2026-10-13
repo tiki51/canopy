@@ -9,17 +9,32 @@ defmodule CanopyWeb.SettingsLive do
   light model for model routing (experimental), the local user's display name,
   appearance (light/dark mode and colour palette, kept in the browser), the
   collaboration preamble every agent is given, and the MCP section (identity
-  plugin source, endpoint URL, token).
+  plugin source, endpoint URL, token), and the Environment section: rerun the
+  seeder, or reset Canopy from scratch (`Canopy.Environment`, rendered by
+  `CanopyWeb.EnvironmentComponents`).
+
+  Environment broadcasts reach this page through `CanopyWeb.Nav`, the only
+  subscriber: it reloads every tab onto `/settings?reset=<id>` when a reset
+  deleted something, and passes the step and "nothing was deleted" messages
+  on to this page alone. `?reset=<id>` shows that reset's banner while it is
+  still `Canopy.Environment.last_reset/0`.
   """
   use CanopyWeb, :live_view
 
-  alias Canopy.{Agents, MCP}
+  alias Canopy.{Agents, Environment, MCP}
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Runtime.Prompts
   alias Canopy.Settings
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, EngineComponents, NotifyComponents, PresetComponents}
+
+  alias CanopyWeb.{
+    AppearanceComponents,
+    EngineComponents,
+    EnvironmentComponents,
+    NotifyComponents,
+    PresetComponents
+  }
 
   @opencode_default_fields {:opencode_default_provider, :opencode_default_model}
   @opencode_light_fields {:opencode_light_provider, :opencode_light_model}
@@ -56,8 +71,31 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:files_dir, Canopy.Documents.Store.dir())
      |> assign(:files_limit, Canopy.Documents.max_bytes())
      |> assign(:files_count, Canopy.Documents.count())
-     |> assign(:files_bytes, Canopy.Documents.total_bytes())}
+     |> assign(:files_bytes, Canopy.Documents.total_bytes())
+     |> assign(:seed, nil)
+     |> assign(:reset_result, nil)
+     # Nav subscribed this process before this mount, so a step broadcast
+     # after this status/0 still arrives: a tab opened mid-reset is locked too.
+     |> assign(:reset, nil)
+     |> lock_if_running(Environment.status())}
   end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, assign(socket, :reset_result, reset_result(params["reset"]))}
+  end
+
+  # The banner of the reset just done, while it is the last one and deleted
+  # something (a reset that failed first never reloads the tabs).
+  defp reset_result(id) when is_binary(id) do
+    case Environment.last_reset() do
+      %{id: ^id, status: :done} = result -> result
+      %{id: ^id, status: :failed, deleted?: true} = failure -> failure
+      _ -> nil
+    end
+  end
+
+  defp reset_result(_id), do: nil
 
   @impl true
   def handle_event("validate_opencode", %{"setting" => params}, socket) do
@@ -393,16 +431,169 @@ defmodule CanopyWeb.SettingsLive do
     end
   end
 
+  # -- Environment -------------------------------------------------------------
+
+  # The seed runs in a task, so the button stays "Seeding…" for the whole
+  # call; while a reset runs it is disabled and refused here too.
+  def handle_event("rerun_seeder", _params, socket) do
+    if seeding?(socket) or EnvironmentComponents.running?(socket.assigns.reset) do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:seed, {:running})
+       |> start_async(:seed, &Environment.seed/0)}
+    end
+  end
+
+  def handle_event("open_reset", _params, socket) do
+    status = Environment.status()
+
+    cond do
+      socket.assigns.reset != nil or seeding?(socket) ->
+        {:noreply, socket}
+
+      match?({:running, _}, status) ->
+        {:noreply, lock_if_running(socket, status)}
+
+      true ->
+        {:noreply,
+         assign(socket, :reset, %{
+           state: :confirm,
+           preview: Environment.preview(),
+           phrase_ok?: false,
+           progress: nil,
+           failure: nil,
+           origin?: false
+         })}
+    end
+  end
+
+  def handle_event("reset_phrase", %{"phrase" => phrase}, socket) do
+    case socket.assigns.reset do
+      %{state: :confirm} = reset ->
+        {:noreply, assign(socket, :reset, %{reset | phrase_ok?: phrase_ok?(phrase)})}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # The button is disabled until the phrase matches; a forged submit is
+  # checked again here, and a second one finds the modal already running.
+  def handle_event("start_reset", %{"phrase" => phrase}, socket) do
+    case socket.assigns.reset do
+      %{state: :confirm} ->
+        if phrase_ok?(phrase), do: begin_reset(socket), else: {:noreply, socket}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("start_reset", _params, socket), do: {:noreply, socket}
+
+  # The user confirmed this already, and the failure box says what happens.
+  def handle_event("retry_reset", _params, socket) do
+    case socket.assigns.reset do
+      %{state: :failed} -> begin_reset(socket)
+      _ -> {:noreply, socket}
+    end
+  end
+
+  # A running reset can't be dismissed, whatever sends the event.
+  def handle_event("close_reset", _params, socket) do
+    case socket.assigns.reset do
+      %{state: state} when state in [:confirm, :failed] -> {:noreply, assign(socket, :reset, nil)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  defp begin_reset(socket) do
+    case Environment.reset() do
+      {:ok, id} ->
+        progress = %{id: id, step: :stopping, index: 1, total: 4}
+        {:noreply, update(socket, :reset, &running(&1, progress, true))}
+
+      {:error, :already_running} ->
+        {:noreply, lock_if_running(socket, Environment.status())}
+    end
+  end
+
+  defp seeding?(socket), do: socket.assigns.seed == {:running}
+
+  defp phrase_ok?(phrase), do: String.downcase(String.trim(to_string(phrase))) == "reset"
+
+  # A reset that is running (this tab's, another tab's, or one this tab
+  # mounted into) locks the modal; one that already ended leaves the page be.
+  defp lock_if_running(socket, {:running, progress}),
+    do: update(socket, :reset, &running(&1, progress, false))
+
+  defp lock_if_running(socket, _idle), do: socket
+
+  # Already running keeps whose reset it is; anything else is another tab's,
+  # unless this tab just started it.
+  defp running(%{state: :running} = reset, progress, _origin?), do: %{reset | progress: progress}
+
+  defp running(reset, progress, origin?) do
+    Map.merge(reset || %{preview: nil, phrase_ok?: false}, %{
+      state: :running,
+      progress: progress,
+      failure: nil,
+      origin?: origin?
+    })
+  end
+
   @impl true
   def handle_info({:settings, :default_models_changed}, socket) do
     {:noreply, socket |> assign(:setting, Settings.get()) |> assign_usage()}
   end
 
+  # Passed on by CanopyWeb.Nav to this page only; Nav itself reloads every
+  # tab on :reset_done and on a failure after something was deleted.
+  def handle_info({:environment, {:reset_step, progress}}, socket),
+    do: {:noreply, update(socket, :reset, &running(&1, progress, false))}
+
+  def handle_info({:environment, {:reset_failed, %{deleted?: false} = failure}}, socket) do
+    case socket.assigns.reset do
+      %{state: :running} = reset ->
+        {:noreply, assign(socket, :reset, %{reset | state: :failed, failure: failure})}
+
+      _ ->
+        {:noreply, put_flash(socket, :error, EnvironmentComponents.failed_sentence(failure))}
+    end
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_async(:seed, {:ok, {:ok, report}}, socket),
+    do: {:noreply, assign(socket, :seed, {:ok, report, DateTime.utc_now()})}
+
+  # A reset started between the click and the seed: the modal locks on it,
+  # unless it already ended, when nothing would be left to unlock it.
+  def handle_async(:seed, {:ok, {:error, :resetting}}, socket) do
+    socket = assign(socket, :seed, nil)
+
+    case Environment.status() do
+      {:running, _} = status ->
+        {:noreply, lock_if_running(socket, status)}
+
+      _idle ->
+        {:noreply, put_flash(socket, :error, "Canopy just finished resetting. Try again.")}
+    end
+  end
+
+  def handle_async(:seed, {:ok, {:error, reason, partial}}, socket),
+    do: {:noreply, assign(socket, :seed, {:error, reason, partial, DateTime.utc_now()})}
+
+  def handle_async(:seed, {:exit, reason}, socket),
+    do:
+      {:noreply,
+       assign(socket, :seed, {:error, "crashed (#{inspect(reason)})", nil, DateTime.utc_now()})}
 
   # A server that just answered may have been started since the page loaded:
   # its models make the default selects usable.
-  @impl true
   def handle_async(:health, {:ok, result}, socket) do
     health = normalize_health(result)
 
@@ -1371,6 +1562,55 @@ defmodule CanopyWeb.SettingsLive do
             </dd>
           </dl>
         </Layouts.panel>
+
+        <Layouts.panel
+          id="environment-panel"
+          title="Environment"
+          description="Restore Canopy's starter agents, teams and playbooks, or start over with an empty workspace."
+        >
+          <div class="flex flex-col gap-4">
+            <EnvironmentComponents.reset_result
+              :if={@reset_result}
+              result={@reset_result}
+              files_dir={@files_dir}
+            >
+              <:copy>
+                <.copy_button id="copy-backup-path" target="#reset-backup-path" label="Copy path" />
+              </:copy>
+            </EnvironmentComponents.reset_result>
+
+            <div>
+              <div class="flex items-start gap-4">
+                <div class="min-w-0 flex-1">
+                  <h3 class="text-sm font-medium">Rerun the seeder</h3>
+                  <p class="mt-0.5 text-xs text-base-content/60">
+                    Adds any starter agents, teams and playbooks that are missing, and assigns the cost auditor. It never changes or removes what you already have.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  id="rerun-seeder"
+                  class="btn btn-soft btn-sm shrink-0"
+                  phx-click="rerun_seeder"
+                  disabled={@seed == {:running} or EnvironmentComponents.running?(@reset)}
+                >
+                  <%= if @seed == {:running} do %>
+                    <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+                    Seeding…
+                  <% else %>
+                    <.icon name="hero-arrow-path" class="size-4" /> Rerun seeder
+                  <% end %>
+                </button>
+              </div>
+              <EnvironmentComponents.seed_result :if={@seed not in [nil, {:running}]} seed={@seed} />
+            </div>
+
+            <EnvironmentComponents.reset_row disabled={
+              @seed == {:running} or EnvironmentComponents.running?(@reset)
+            } />
+          </div>
+        </Layouts.panel>
+        <EnvironmentComponents.reset_modal :if={@reset} reset={@reset} hold={@hold} />
       </Layouts.page>
     </Layouts.app>
     """

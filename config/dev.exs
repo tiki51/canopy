@@ -69,6 +69,13 @@ config :canopy, CanopyWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :canopy, dev_routes: true
 
+# CANOPY_RESET_STEP_DELAY_MS makes each step of an environment reset sleep
+# that long first, so manual and e2e checks can see the running state. Dev
+# only: the release never reads it. Off by default.
+if delay = System.get_env("CANOPY_RESET_STEP_DELAY_MS") do
+  config :canopy, :environment_reset_opts, step_delay_ms: String.to_integer(delay)
+end
+
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 

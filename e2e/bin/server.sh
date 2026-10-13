@@ -14,6 +14,15 @@ export MIX_ENV=dev
 export CANOPY_LIVE_RELOAD=0
 export PORT="${CANOPY_E2E_PORT:-4100}"
 export CANOPY_DB="${CANOPY_DB:-$PWD/canopy_e2e.db}"
+# This script deletes $CANOPY_DB below, and agent shells inherit one pointing
+# at the user's live dev database: only an e2e-named one is accepted.
+case "$(basename "$CANOPY_DB")" in
+  canopy_e2e*.db) ;;
+  *)
+    echo "server.sh: refusing to delete $CANOPY_DB; unset CANOPY_DB or name it canopy_e2e*.db" >&2
+    exit 1
+    ;;
+esac
 export PHX_SERVER=true
 # A Claude Code turn that prints nothing this long is killed (120 s outside the
 # suite); short enough for a spec to wait past it, longer than any fake hold.
@@ -22,6 +31,12 @@ FAKE_URL="http://127.0.0.1:${FAKE_OPENCODE_PORT:-4396}"
 REPO="$PWD/tmp/e2e-repo"
 
 rm -f "$CANOPY_DB" "$CANOPY_DB-shm" "$CANOPY_DB-wal"
+# Backups an environment spec's reset left behind when it died before its own
+# cleanup (canopy_e2e.<YYYY-MM-DDTHHMM>[-n].db). Only next to the e2e database:
+# an inherited CANOPY_DB may be someone's real one, with real backups beside it.
+if [ "$(basename "$CANOPY_DB")" = "canopy_e2e.db" ]; then
+  rm -f "${CANOPY_DB%.db}".[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*.db
+fi
 mix ecto.create --quiet
 mix ecto.migrate --quiet
 mix run priv/repo/seeds.exs

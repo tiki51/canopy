@@ -13,6 +13,10 @@ config :canopy, Canopy.Repo,
 # Document bytes for tests go under _build so they never mix with dev files.
 config :canopy, files_dir: Path.expand("../_build/test/tmp/files", __DIR__)
 
+# A reset's backup is a stub file under _build: VACUUM INTO can't run inside the
+# sandbox's transaction (Canopy.Environment.Backup has its own unboxed test).
+config :canopy, :environment_backup, Canopy.Environment.FakeBackup
+
 # Tests index documents themselves (Canopy.Search.Backfill.run/0); the boot task
 # would race the sandbox.
 config :canopy, :search_backfill, false

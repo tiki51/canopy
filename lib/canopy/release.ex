@@ -13,7 +13,10 @@ defmodule Canopy.Release do
     end
   end
 
-  @doc "Starts the release without its HTTP server and seeds missing defaults."
+  @doc """
+  Starts the release without its HTTP server and seeds missing defaults. A
+  failure raises `Canopy.Seeds.Error`, so `bin/canopy eval` exits non-zero.
+  """
   def seed do
     endpoint_config =
       @app
@@ -22,7 +25,7 @@ defmodule Canopy.Release do
 
     Application.put_env(@app, CanopyWeb.Endpoint, endpoint_config, persistent: true)
     {:ok, _} = Application.ensure_all_started(@app)
-    Canopy.Seeds.run()
+    Canopy.Seeds.run_cli!()
   end
 
   def rollback(repo, version) do

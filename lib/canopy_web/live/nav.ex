@@ -33,7 +33,19 @@ defmodule CanopyWeb.Nav do
   `cmdk:files` (a filename search), `cmdk:stop` (`/stop` in a channel you are
   not in) and `cmdk:notify` (the desktop notifications switch was flipped: a
   flash says so); see `CanopyWeb.CommandPalette`.
+
+  It is the only subscriber to `Canopy.Environment`'s broadcasts. A reset that
+  deleted something (`:reset_done`, or `:reset_failed` with `deleted?: true`)
+  reloads every tab, whatever page it shows, onto `/settings?reset=<id>`,
+  where the banner says how it went. The other environment messages (steps,
+  and failures that deleted nothing) go on to `CanopyWeb.SettingsLive` only
+  and stop here on every other page. A page opened on a row that a reset
+  deleted in the last few minutes (a tab that missed the broadcast) lands on
+  the same banner instead of a 404. While a reset runs, `cmdk:stop` is
+  refused with a flash.
   """
+
+  use CanopyWeb, :verified_routes
 
   import Phoenix.Component
   import Phoenix.LiveView
@@ -45,6 +57,7 @@ defmodule CanopyWeb.Nav do
     Attention,
     Channels,
     Documents,
+    Environment,
     Hold,
     Playbooks,
     Repositories,
@@ -68,8 +81,16 @@ defmodule CanopyWeb.Nav do
       Teams.subscribe()
       Playbooks.subscribe()
       Runtime.subscribe_activity()
+      Environment.subscribe()
     end
 
+    case deleted_by_reset(socket.view, params) do
+      nil -> mount_nav(socket, params)
+      reset_id -> {:halt, redirect(socket, to: ~p"/settings?reset=#{reset_id}")}
+    end
+  end
+
+  defp mount_nav(socket, params) do
     socket =
       socket
       |> refresh_nav()
@@ -83,6 +104,46 @@ defmodule CanopyWeb.Nav do
 
     {:cont, socket}
   end
+
+  # How long after a reset a page on one of its deleted rows still goes to
+  # that reset's banner; later, a missing row is a plain 404 again.
+  @reset_redirect_seconds 10 * 60
+
+  # The id of a recent reset that deleted the row this page is about, or nil.
+  # Only pages whose route carries a deleted row's id look; the reset is
+  # checked before the row.
+  defp deleted_by_reset(view, params) do
+    with lookup when is_function(lookup, 0) <- row_lookup(view, params),
+         %{id: reset_id} <- recent_reset(),
+         nil <- lookup.() do
+      reset_id
+    else
+      _ -> nil
+    end
+  end
+
+  defp row_lookup(view, %{"id" => id})
+       when view in [CanopyWeb.ChannelLive, CanopyWeb.ChannelLive.Transcript],
+       do: fn -> Channels.get(id) end
+
+  defp row_lookup(CanopyWeb.AgentsLive, %{"id" => id}), do: fn -> Agents.get(id) end
+  defp row_lookup(CanopyWeb.TeamsLive, %{"id" => id}), do: fn -> Teams.get(id) end
+
+  defp row_lookup(view, %{"id" => id})
+       when view in [CanopyWeb.PlaybooksLive, CanopyWeb.PlaybookBuilderLive],
+       do: fn -> Playbooks.get(id) end
+
+  defp row_lookup(_view, _params), do: nil
+
+  defp recent_reset do
+    case Environment.last_reset() do
+      %{status: :done, at: at} = reset -> if recent?(at), do: reset
+      %{status: :failed, deleted?: true, at: at} = reset -> if recent?(at), do: reset
+      _ -> nil
+    end
+  end
+
+  defp recent?(at), do: DateTime.diff(DateTime.utc_now(), at) <= @reset_redirect_seconds
 
   # A page that (re)connects hears of the cards still waiting from the last
   # half hour, in case it missed their notes (asleep, offline). The browser
@@ -182,7 +243,29 @@ defmodule CanopyWeb.Nav do
 
   # `/stop` chosen in the palette for a channel you are not in: the channel
   # step was the confirmation, so it stops at once and says so here.
-  defp handle_event("cmdk:stop", %{"channel_id" => id}, socket) when is_binary(id) do
+  defp handle_event("cmdk:stop", params, socket) do
+    if Environment.resetting?() do
+      {:halt, %{ok: false},
+       put_flash(socket, :error, CanopyWeb.EnvironmentComponents.resetting_message())}
+    else
+      cmdk_stop(params, socket)
+    end
+  end
+
+  # The palette flipped this browser's desktop notifications switch; the
+  # switch itself lives in the browser (assets/js/notify.js).
+  defp handle_event("cmdk:notify", %{"on" => on}, socket) do
+    message =
+      if on == true,
+        do: "Desktop notifications are on in this browser.",
+        else: "Desktop notifications are off in this browser."
+
+    {:halt, %{}, put_flash(socket, :info, message)}
+  end
+
+  defp handle_event(_event, _params, socket), do: {:cont, socket}
+
+  defp cmdk_stop(%{"channel_id" => id}, socket) when is_binary(id) do
     case Channels.get(id) do
       %{} = channel ->
         if Channels.archived?(channel) do
@@ -203,21 +286,8 @@ defmodule CanopyWeb.Nav do
     end
   end
 
-  defp handle_event("cmdk:stop", _params, socket),
+  defp cmdk_stop(_params, socket),
     do: {:halt, %{ok: false}, put_flash(socket, :error, "That channel no longer exists.")}
-
-  # The palette flipped this browser's desktop notifications switch; the
-  # switch itself lives in the browser (assets/js/notify.js).
-  defp handle_event("cmdk:notify", %{"on" => on}, socket) do
-    message =
-      if on == true,
-        do: "Desktop notifications are on in this browser.",
-        else: "Desktop notifications are off in this browser."
-
-    {:halt, %{}, put_flash(socket, :info, message)}
-  end
-
-  defp handle_event(_event, _params, socket), do: {:cont, socket}
 
   defp stop_label(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
   defp stop_label(channel), do: "#" <> channel.name
@@ -296,6 +366,22 @@ defmodule CanopyWeb.Nav do
     socket = if opts[:flash], do: put_flash(socket, :info, opts[:flash]), else: socket
     {:halt, push_navigate(socket, to: opts[:to] || without_setup(socket))}
   end
+
+  # A reset that deleted something: the rows behind every page (sidebar,
+  # palette, drafts kept in the browser) are gone, so every tab reloads onto
+  # the banner. A full page load, not a live navigation.
+  defp handle_info({:environment, {:reset_done, %{id: id}}}, socket),
+    do: {:halt, redirect(socket, to: ~p"/settings?reset=#{id}")}
+
+  defp handle_info({:environment, {:reset_failed, %{id: id, deleted?: true}}}, socket),
+    do: {:halt, redirect(socket, to: ~p"/settings?reset=#{id}")}
+
+  # Steps, and failures that deleted nothing, are Settings' alone; other
+  # pages have no handle_info for them.
+  defp handle_info({:environment, _message}, %{view: CanopyWeb.SettingsLive} = socket),
+    do: {:cont, socket}
+
+  defp handle_info({:environment, _message}, socket), do: {:halt, socket}
 
   defp handle_info(_message, socket), do: {:cont, socket}
 

@@ -1,45 +1,175 @@
 defmodule Canopy.Seeds do
-  @moduledoc "Creates Canopy's initial settings, user, default agents, starter team, and starter playbook."
+  @moduledoc """
+  Creates Canopy's initial settings, user, default agents, starter team, and starter playbook.
+
+  `run/0` does the work and returns a report; it does no IO, so Settings can
+  show it (`Canopy.Environment.seed/0`). `print/1` writes the report as the
+  lines the command line has always printed (`scripts/smoke-release.sh` and
+  the Homebrew formula's test match `created agent @backend` and
+  `agent @backend already exists`), and `run_cli!/0` does both and raises on
+  a failure, so `mix run priv/repo/seeds.exs` and `canopy seed` exit non-zero.
+  """
 
   alias Canopy.{Agents, Settings, Teams, Users}
 
-  @doc "Seeds missing defaults without changing existing records."
+  defmodule Error do
+    defexception [:reason]
+
+    @impl true
+    def message(%{reason: reason}), do: "seeder stopped: #{reason}"
+  end
+
+  @typedoc "One starter, in a report."
+  @type item :: %{kind: :agent | :team | :playbook, name: String.t()}
+
+  @typedoc "What a run created, found already there, or skipped."
+  @type report :: %{
+          created: [item()],
+          existing: [item()],
+          skipped: [item()],
+          cost_auditor: {:assigned | :unchanged | :none, String.t() | nil} | nil,
+          settings: %{opencode_url: String.t() | nil} | nil,
+          user: %{id: String.t(), display_name: String.t()} | nil
+        }
+
+  @doc """
+  Seeds missing defaults without changing existing records.
+
+  Returns `{:ok, report}`, or `{:error, reason, partial}` when a step fails;
+  whatever was created before the failure is kept and is in `partial`.
+  """
+  @spec run() :: {:ok, report()} | {:error, String.t(), report()}
   def run do
+    # Each step adds to the report as it goes, so a failure still reports what
+    # was done before it.
+    Process.put(__MODULE__, empty_report())
+
+    try do
+      seed_settings_and_user()
+      seed_agents()
+      seed_teams()
+      seed_playbooks()
+      seed_cost_auditor()
+      {:ok, finish(Process.get(__MODULE__))}
+    rescue
+      e -> {:error, Canopy.Environment.error_message(e), finish(Process.get(__MODULE__))}
+    after
+      Process.delete(__MODULE__)
+    end
+  end
+
+  @doc "Prints a `run/0` result as the seeder's lines and returns it."
+  def print({:ok, report} = result) do
+    print_report(report)
+    result
+  end
+
+  def print({:error, reason, partial} = result) do
+    print_report(partial)
+    IO.puts("seeder stopped: #{reason}")
+    result
+  end
+
+  @doc "`run/0` and `print/1` for the command line; raises `Canopy.Seeds.Error` on a failure."
+  def run_cli! do
+    case run() |> print() do
+      {:ok, report} -> report
+      {:error, reason, _partial} -> raise Error, reason: reason
+    end
+  end
+
+  defp print_report(report) do
+    if s = report.settings, do: IO.puts("settings: opencode_url=#{s.opencode_url}")
+    if u = report.user, do: IO.puts("user: #{u.display_name} (#{u.id})")
+
+    report
+    |> items_in_seed_order()
+    |> Enum.each(fn {bucket, item} -> IO.puts(line(bucket, item)) end)
+
+    case report.cost_auditor do
+      {:assigned, name} -> IO.puts("assigned @#{name} as the cost auditor")
+      _ -> :ok
+    end
+  end
+
+  defp empty_report do
+    %{
+      created: [],
+      existing: [],
+      skipped: [],
+      cost_auditor: nil,
+      settings: nil,
+      user: nil
+    }
+  end
+
+  # Lists were built newest first.
+  defp finish(report) do
+    %{
+      report
+      | created: Enum.reverse(report.created),
+        existing: Enum.reverse(report.existing),
+        skipped: Enum.reverse(report.skipped)
+    }
+  end
+
+  # The report keeps created and existing apart; the lines interleave them as
+  # the seeder met them: agents in starter order, then teams, then playbooks.
+  defp items_in_seed_order(report) do
+    agent_rank = agent_names() |> Enum.with_index() |> Map.new()
+    kind_rank = %{agent: 0, team: 1, playbook: 2}
+
+    [:created, :existing, :skipped]
+    |> Enum.flat_map(fn bucket -> Enum.map(Map.fetch!(report, bucket), &{bucket, &1}) end)
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {{_bucket, item}, i} ->
+      {kind_rank[item.kind],
+       if(item.kind == :agent, do: Map.get(agent_rank, item.name, i), else: i)}
+    end)
+    |> Enum.map(fn {pair, _i} -> pair end)
+  end
+
+  defp line(:created, %{kind: :playbook, name: name}), do: "created playbook #{name}"
+  defp line(:existing, %{kind: :playbook, name: name}), do: "playbook #{name} already exists"
+  defp line(:created, %{kind: kind, name: name}), do: "created #{kind} @#{name}"
+  defp line(:existing, %{kind: kind, name: name}), do: "#{kind} @#{name} already exists"
+  defp line(:skipped, %{kind: kind, name: name}), do: "skipped #{kind} @#{name}"
+
+  defp record(bucket, kind, name) do
+    report = Process.get(__MODULE__)
+
+    Process.put(__MODULE__, %{
+      report
+      | bucket => [%{kind: kind, name: name} | Map.fetch!(report, bucket)]
+    })
+  end
+
+  defp put_report(key, value),
+    do: Process.put(__MODULE__, %{Process.get(__MODULE__) | key => value})
+
+  defp seed_settings_and_user do
     settings = Settings.get()
+    put_report(:settings, %{opencode_url: settings.opencode_url})
+
     user = Users.local()
+    put_report(:user, %{id: user.id, display_name: user.display_name})
+  end
 
-    IO.puts("settings: opencode_url=#{settings.opencode_url}")
-    IO.puts("user: #{user.display_name} (#{user.id})")
-
+  defp seed_agents do
     for attrs <- starter_agents() do
       case Agents.get_by_name(attrs.name) do
         nil ->
-          {:ok, agent} = Agents.create(attrs)
-          IO.puts("created agent @#{agent.name}")
+          case Agents.create(attrs) do
+            {:ok, agent} ->
+              record(:created, :agent, agent.name)
+
+            {:error, changeset} ->
+              raise "agent @#{attrs.name}: #{changeset_errors(changeset)}"
+          end
 
         agent ->
-          IO.puts("agent @#{agent.name} already exists")
+          record(:existing, :agent, agent.name)
       end
-    end
-
-    seed_teams()
-
-    # Starter playbooks, created when missing by name; an existing one is never edited.
-    for result <- Canopy.Playbooks.seed() do
-      case result do
-        {:created, name} -> IO.puts("created playbook #{name}")
-        {:exists, name} -> IO.puts("playbook #{name} already exists")
-      end
-    end
-
-    # The cost auditor answers "Request audit" on the Costs page.
-    case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
-      {nil, %{id: id}} ->
-        {:ok, _} = Canopy.Costs.Auditor.assign(id)
-        IO.puts("assigned @finops as the cost auditor")
-
-      _ ->
-        :ok
     end
   end
 
@@ -52,10 +182,10 @@ defmodule Canopy.Seeds do
 
       cond do
         Teams.get_by_name(name) ->
-          IO.puts("team @#{name} already exists")
+          record(:existing, :team, name)
 
         Agents.get_by_name(name) || is_nil(lead) ->
-          IO.puts("skipped team @#{name}")
+          record(:skipped, :team, name)
 
         true ->
           {:ok, team} =
@@ -64,9 +194,47 @@ defmodule Canopy.Seeds do
             |> Map.merge(%{agent_ids: Enum.map(agents, & &1.id), lead_agent_id: lead.id})
             |> Teams.create()
 
-          IO.puts("created team @#{team.name}")
+          record(:created, :team, team.name)
       end
     end
+  end
+
+  # Starter playbooks, created when missing by name; an existing one is never edited.
+  defp seed_playbooks do
+    for result <- Canopy.Playbooks.seed() do
+      case result do
+        {:created, name} -> record(:created, :playbook, name)
+        {:exists, name} -> record(:existing, :playbook, name)
+      end
+    end
+  end
+
+  # The cost auditor answers "Request audit" on the Costs page.
+  defp seed_cost_auditor do
+    result =
+      case {Canopy.Costs.Auditor.agent(), Agents.get_by_name("finops")} do
+        {nil, %{id: id, name: name}} ->
+          {:ok, _} = Canopy.Costs.Auditor.assign(id)
+          {:assigned, name}
+
+        {%{name: name}, _} ->
+          {:unchanged, name}
+
+        {nil, nil} ->
+          {:none, nil}
+      end
+
+    put_report(:cost_auditor, result)
+  end
+
+  defp changeset_errors(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, opts} ->
+      Regex.replace(~r"%{(\w+)}", message, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Enum.map_join(", ", fn {field, messages} -> "#{field} #{Enum.join(messages, ", ")}" end)
   end
 
   defp starter_teams do
