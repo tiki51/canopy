@@ -11,7 +11,7 @@ import { test, expect, Page } from "@playwright/test";
 import os from "node:os";
 import path from "node:path";
 import { send, timeline, clickHeader, openDetails } from "./helpers";
-import { iso, sql } from "./site-helpers";
+import { db, iso, sql } from "./site-helpers";
 import { stubNotifications, turnOn } from "./notify-helpers";
 
 /** The Details side panel, whole height. */
@@ -639,7 +639,7 @@ test.describe("screenshots for the user guide", () => {
     await shot(page, "settings-notifications", { clip: { x: 312, y: 0, width: 1128, height: 900 } });
   });
 
-  // last: it clears setup in the database, so the app opens as a fresh install
+  // near the end: it clears setup in the database, so the app opens as a fresh install
   test("capture the first-run setup", async ({ page }) => {
     // as on a fresh install: no default engine yet, so setup picks Claude Code
     sql("UPDATE settings SET onboarded_at = NULL, default_engine = NULL");
@@ -658,5 +658,43 @@ test.describe("screenshots for the user guide", () => {
     } finally {
       sql(`UPDATE settings SET onboarded_at = '${iso(new Date())}'`);
     }
+  });
+
+  // Last of all: Rerun seeder puts back the starter agents the Acme seed
+  // deletes, so every capture before this one keeps Acme's sidebar. The reset
+  // modal is never submitted.
+  test("capture the environment section", async ({ page }) => {
+    await page.goto("/settings");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    // A hold isn't part of a reset. The Settings captures above release Acme's;
+    // run on its own (-g), this capture still finds it engaged.
+    if (await page.locator("#release-hold").isVisible()) {
+      await page.locator("#release-hold").click();
+      await expect(page.locator("#hold-banner")).toBeHidden();
+      await dismissFlash(page);
+    }
+    const panel = page.locator("#environment-panel");
+    await panel.scrollIntoViewIfNeeded();
+
+    // the modal, phrase half typed (Reset Canopy still disabled), then Cancel
+    await page.locator("#open-reset").click();
+    await expect(page.locator("#reset-dialog")).toBeVisible();
+    await page.locator("#reset-confirm").pressSequentially("res");
+    await expect(page.locator("#confirm-reset")).toBeDisabled();
+    // the backup sits next to the e2e database; show where an installed Canopy keeps it
+    await page.locator("#reset-backup-preview").evaluate(
+      (el, [dir, base]) => {
+        el.textContent = el.textContent!.replace(dir, "~/Library/Application Support/Canopy/").replace(base, "canopy.");
+      },
+      [path.dirname(db) + "/", path.basename(db, ".db") + "."],
+    );
+    await shot(page, "settings-reset", {}, () => scrubPaths(page));
+    await page.locator("#cancel-reset").click();
+    await expect(page.locator("#reset-modal")).toHaveCount(0);
+
+    await page.locator("#rerun-seeder").click();
+    await expect(page.locator("#seed-result")).toBeVisible();
+    await page.locator("#seed-result details summary").click();
+    await shotOf(page, "settings-environment", panel);
   });
 });

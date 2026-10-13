@@ -24,6 +24,15 @@ defmodule Canopy.MCP.AuthPlugTest do
     refute conn.halted
   end
 
+  test "halts with 503 while Canopy resets, even with a good token" do
+    Canopy.EnvironmentHelpers.raise_gate()
+
+    conn = request([{"authorization", "Bearer " <> Settings.mcp_token()}])
+    assert conn.halted
+    assert conn.status == 503
+    assert JSON.decode!(conn.resp_body) == %{"error" => "canopy is resetting"}
+  end
+
   test "halts with 401 on a wrong, malformed, or missing token" do
     for headers <- [
           [{"authorization", "Bearer nope"}],

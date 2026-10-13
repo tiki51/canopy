@@ -75,6 +75,15 @@ defmodule Canopy.ClaudeCode.Supervisor do
     end
   end
 
+  @doc "Terminates every turn left (a reset's last sweep); each kills its `claude` process."
+  def stop_all_turns do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(@dynamic), is_pid(pid) do
+      DynamicSupervisor.terminate_child(@dynamic, pid)
+    end
+
+    :ok
+  end
+
   def whereis(session_id) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] -> pid

@@ -21,6 +21,18 @@ defmodule Canopy.MCP.AuthPlug do
 
   @impl Plug
   def call(conn, _opts) do
+    # Canopy.Environment's reset deletes the sessions and data the tools work on
+    if Canopy.Environment.resetting?() do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(503, JSON.encode!(%{"error" => "canopy is resetting"}))
+      |> halt()
+    else
+      authenticate(conn)
+    end
+  end
+
+  defp authenticate(conn) do
     with {:ok, token} <- bearer_token(conn),
          {:ok, conn} <- authenticate(conn, token) do
       conn

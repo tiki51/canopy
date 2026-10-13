@@ -3,12 +3,24 @@ defmodule Canopy.SeedsTest do
 
   import ExUnit.CaptureIO
 
+  import Canopy.Fixtures
+
   alias Canopy.{Agents, Repo, Seeds, Settings}
   alias Canopy.Settings.Setting
   alias Canopy.Users.User
 
   test "run/0 creates missing defaults and preserves existing records" do
-    capture_io(&Seeds.run/0)
+    assert {:ok, report} = Seeds.run()
+
+    assert report.created ==
+             Enum.map(Seeds.agent_names(), &%{kind: :agent, name: &1}) ++
+               [%{kind: :team, name: "bugfix-team"}, %{kind: :playbook, name: "bug-fix"}]
+
+    assert report.existing == []
+    assert report.skipped == []
+    assert report.cost_auditor == {:assigned, "finops"}
+    assert report.settings == %{opencode_url: Settings.get().opencode_url}
+    assert %{id: _, display_name: _} = report.user
 
     assert Enum.map(Agents.list(), & &1.name) == [
              "backend",
@@ -60,7 +72,10 @@ defmodule Canopy.SeedsTest do
     assert {:ok, custom_auditor} = Agents.create(%{name: "custom-auditor"})
     assert {:ok, _} = Canopy.Costs.Auditor.assign(custom_auditor.id)
 
-    capture_io(&Seeds.run/0)
+    assert {:ok, report} = Seeds.run()
+    assert report.created == []
+    assert length(report.existing) == length(Seeds.agent_names()) + 2
+    assert report.cost_auditor == {:unchanged, "custom-auditor"}
 
     assert Agents.get_by_name("backend").role == "Customized role"
     assert Canopy.Teams.get_by_name("bugfix-team").description == "Ours now"
@@ -69,5 +84,61 @@ defmodule Canopy.SeedsTest do
     assert Settings.get().auditor_agent_id == custom_auditor.id
     assert Repo.aggregate(Setting, :count) == 1
     assert Repo.aggregate(User, :count) == 1
+  end
+
+  test "print/1 writes the lines the release smoke test and the Homebrew formula match" do
+    output = capture_io(fn -> Seeds.print(Seeds.run()) end)
+    user = Canopy.Users.local()
+
+    assert output =~ "settings: opencode_url=#{Settings.get().opencode_url}\n"
+    assert output =~ "user: #{user.display_name} (#{user.id})\n"
+    # scripts/smoke-release.sh:34 and Formula/canopy.rb:163
+    assert output =~ "created agent @backend\n"
+    assert output =~ "created team @bugfix-team\n"
+    assert output =~ "created playbook bug-fix\n"
+    assert output =~ "assigned @finops as the cost auditor\n"
+
+    # agents in starter order, then the team, then the playbook
+    lines = String.split(output, "\n", trim: true)
+    agent_lines = Enum.filter(lines, &String.starts_with?(&1, "created agent @"))
+    assert agent_lines == Enum.map(Seeds.agent_names(), &"created agent @#{&1}")
+    assert List.last(lines) == "assigned @finops as the cost auditor"
+
+    output = capture_io(fn -> Seeds.print(Seeds.run()) end)
+    # scripts/smoke-release.sh:40 and Formula/canopy.rb:165
+    assert output =~ "agent @backend already exists\n"
+    assert output =~ "team @bugfix-team already exists\n"
+    assert output =~ "playbook bug-fix already exists\n"
+    refute output =~ "cost auditor"
+  end
+
+  describe "a failure" do
+    # a team holding a starter agent's name makes that agent's insert fail
+    setup do
+      team_fixture([agent_fixture()], %{name: "designer"})
+      :ok
+    end
+
+    test "run/0 keeps what it created and returns it as the partial report" do
+      assert {:error, reason, partial} = Seeds.run()
+      assert reason =~ "agent @designer"
+
+      before = Enum.take_while(Seeds.agent_names(), &(&1 != "designer"))
+      assert before != []
+      assert partial.created == Enum.map(before, &%{kind: :agent, name: &1})
+      assert partial.cost_auditor == nil
+      assert partial.settings && partial.user
+      assert Enum.all?(before, &Agents.get_by_name/1)
+    end
+
+    test "run_cli!/0 prints what it did and the reason, then raises" do
+      output =
+        capture_io(fn ->
+          assert_raise Seeds.Error, ~r/^seeder stopped: agent @designer/, &Seeds.run_cli!/0
+        end)
+
+      assert output =~ "created agent @#{hd(Seeds.agent_names())}\n"
+      assert output =~ "seeder stopped: agent @designer"
+    end
   end
 end

@@ -256,6 +256,14 @@ defmodule Canopy.Runtime.ChannelServer do
   how many wakes dropped.
   """
   def stop_all(server), do: GenServer.call(server, :stop_all)
+
+  @doc """
+  Aborts every turn in flight through its engine, before a reset
+  (`Canopy.Environment`) terminates this server. Unlike `stop_all/1` it posts
+  no note and broadcasts nothing: the channel is about to be deleted.
+  """
+  def shutdown(server), do: GenServer.call(server, :shutdown, 15_000)
+
   def stopped?(server), do: GenServer.call(server, :stopped?)
 
   def reset_session(server, agent_id, by),
@@ -452,6 +460,25 @@ defmodule Canopy.Runtime.ChannelServer do
             {:reply, error, state}
         end
     end
+  end
+
+  def handle_call(:shutdown, _from, state) do
+    state =
+      Enum.reduce(state.turns, state, fn {sid, turn}, acc ->
+        {mod, es, acc} = engine_of(acc, turn.session)
+
+        case mod.abort(ctx(acc), es, turn.session) do
+          {:ok, _} ->
+            :ok
+
+          {:error, error} ->
+            Logger.warning("abort of #{sid} for a reset failed: #{inspect(error)}")
+        end
+
+        acc
+      end)
+
+    {:reply, :ok, state}
   end
 
   # The user's stop button. Every turn in flight is aborted and closed here,

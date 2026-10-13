@@ -27,6 +27,8 @@ defmodule Canopy.Application do
       Canopy.ClaudeCode.Prompts,
       # One process per open channel owning agent sessions
       Canopy.Runtime.Supervisor,
+      # Runs a reset from Settings, one at a time (after the runtime it stops)
+      Canopy.Environment.Resetter,
       # MCP server for agents (Streamable HTTP, mounted at /mcp; transport starts only when the endpoint serves)
       {Canopy.MCP.Server, transport: :streamable_http},
       # Start a worker by calling: Canopy.Worker.start_link(arg)
