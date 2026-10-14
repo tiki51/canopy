@@ -80,10 +80,12 @@ defmodule CanopyWeb.EnvironmentLiveTest do
       html = render_async(view)
 
       assert has_element?(view, "#seed-result[role=status]")
-      assert html =~ "Created #{length(Seeds.agent_names()) + 2}"
+      assert html =~ "Created #{length(Seeds.agent_names()) + 3}"
       assert has_element?(view, "#seed-result .badge", "agent @backend")
       assert has_element?(view, "#seed-result .badge", "team @bugfix-team")
       assert has_element?(view, "#seed-result .badge", "playbook bug-fix")
+      assert has_element?(view, "#seed-result .badge", "playbook feature-build")
+      assert has_element?(view, "#seed-result details dd", "feature-build")
       assert has_element?(view, "#seed-result details dd", "@finops")
       refute has_element?(view, "#rerun-seeder[disabled]")
 
@@ -93,7 +95,7 @@ defmodule CanopyWeb.EnvironmentLiveTest do
       assert has_element?(
                view,
                "#seed-result",
-               "Nothing to add. All #{length(Seeds.agent_names()) + 2} starters already exist."
+               "Nothing to add. All #{length(Seeds.agent_names()) + 3} starters already exist."
              )
     end
 
