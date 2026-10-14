@@ -14,12 +14,14 @@
 // AskUserQuestion go through `mcp__canopy__permission` like the real CLI's
 // --permission-prompt-tool, so the cards in the channel are the app's own.
 //
-// The site story (e2e/tests/site-*.spec.ts) is scripted below; anything else
+// The site story (e2e/tests/site-*.spec.ts, a Feature build run from
+// e2e/bin/seed-reports.exs) and the older billing story are scripted below; anything else
 // gets a short generic turn. Per-session story state lives in the OS temp dir,
 // standing in for the transcript Claude Code would keep between turns.
 //
 //   FAKE_TURN_DELAY_MS   pause per tool call (default 50; the site specs use 2500)
 //   FAKE_CLAUDE_VERSION  what --version prints and system/init reports
+//   FAKE_CLAUDE_PROMPT_LOG  a file to append every turn's prompt to (debugging a story)
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -50,6 +52,7 @@ function flags(args) {
     if (a === "--session-id" || a === "--resume") opts.sid = next();
     else if (a === "--model") opts.model = next();
     else if (a === "--mcp-config") opts.mcpConfig = next();
+    else if (a === "--append-system-prompt-file") opts.systemFile = next();
     else if (a === "--permission-mode") opts.mode = next();
     else if (a === "--permission-prompt-tool") opts.promptTool = next();
     else if (a === "--allowedTools") while (args[i + 1] && !args[i + 1].startsWith("--")) opts.allowed.push(next());
@@ -59,6 +62,14 @@ function flags(args) {
 const opts = flags(argv);
 const sid = opts.sid || "fake-session";
 const cwd = process.cwd();
+// Who this turn is for, from the collaboration prompt's first line ("… (@name), an AI coworker …").
+const me = (() => {
+  try {
+    return fs.readFileSync(opts.systemFile, "utf8").match(/\(@([\w-]+)\), an AI coworker/)?.[1] || null;
+  } catch {
+    return null;
+  }
+})();
 const MODELS = { sonnet: "claude-sonnet-5", opus: "claude-opus-5-5", haiku: "claude-haiku-4-5" };
 const model = MODELS[opts.model] || opts.model || "claude-sonnet-5";
 
@@ -256,6 +267,12 @@ const edit = (rel, oldString, newString, hold = 1) =>
     return `The file ${input.file_path} has been updated successfully.`;
   }, { hold });
 const bash = (command, output, hold = 1) => tool("Bash", { command }, () => (typeof output === "function" ? output() : output), { hold });
+const write = (rel, content, hold = 1) =>
+  tool("Write", { file_path: abs(rel), content }, (input) => {
+    fs.mkdirSync(path.dirname(input.file_path), { recursive: true });
+    fs.writeFileSync(input.file_path, input.content);
+    return `File created successfully at: ${input.file_path}`;
+  }, { hold });
 
 function grepFiles(pattern) {
   const hits = [];
@@ -276,12 +293,12 @@ function grepFiles(pattern) {
 const grep = (pattern, hold = 1) => tool("Grep", { pattern, output_mode: "content", "-n": true }, () => grepFiles(pattern), { hold });
 
 // Canopy's own tools, through the real MCP server. Quick: they are not the show.
-const canopy = (name, args = {}) =>
+const canopy = (name, args = {}, hold = 0.3) =>
   tool(`mcp__canopy__${name}`, args, async () => {
     const reply = await mcpCall(name, args);
     if (reply.error) throw new Error(reply.error);
     return reply.text;
-  }, { hold: 0.3 });
+  }, { hold });
 
 function finish(text, extra = {}) {
   for (const folded of foldedTexts) {
@@ -480,6 +497,445 @@ async function scheduledCheck(instruction) {
   finish("Posted the 09:00 queue check.");
 }
 
+// ---- the site's playbook story (e2e/bin/seed-reports.exs) ---------------------------------
+// One Feature build run, "Add a CSV export to the Reports page", coordinated
+// by @project-manager. The coordinator reads where the run is from the note
+// Canopy appends to its every prompt ("step N of M … Delegations: x of y
+// done"), so a wake that arrives late or twice finds the run already moved on
+// and passes. The delegates know their part from the step line of their
+// delegation ("This is step `build` of the feature-build playbook").
+const FB_STEPS = ["intake", "design", "design-approval", "tech-design", "tech-review", "build", "verify", "design-check", "notify"];
+
+const PAGE_TOOLBAR_OLD = `      toolbar={<FilterChips value={filters} onChange={setFilters} />}`;
+const PAGE_TOOLBAR_NEW = `      toolbar={
+        <>
+          <FilterChips value={filters} onChange={setFilters} />
+          <ExportMenu reportId={reportId} filters={filters} />
+        </>
+      }`;
+const PAGE_IMPORT_OLD = `import { useReport } from "../api/reports";`;
+const PAGE_IMPORT_NEW = `import { Menu, MenuItem } from "../components/Menu";
+import { exportUrl, useReport, type Filters } from "../api/reports";`;
+const PAGE_END_OLD = `  );
+}
+`;
+const PAGE_END_NEW = `  );
+}
+
+function ExportMenu({ reportId, filters }: { reportId: string; filters: Filters }) {
+  return (
+    <Menu label="Export">
+      <MenuItem href={exportUrl(reportId, filters)} hint="Filters and sort as shown">
+        CSV, current view
+      </MenuItem>
+      <MenuItem href={exportUrl(reportId, {})} hint="Ignores the filters">
+        CSV, all rows
+      </MenuItem>
+    </Menu>
+  );
+}
+`;
+const API_TS_OLD = "const query = (filters: Filters) => new URLSearchParams(filters).toString();";
+const API_TS_NEW = `${API_TS_OLD}
+
+/** The CSV download for a report, with the filters the table shows. */
+export const exportUrl = (reportId: string, filters: Filters) =>
+  \`/api/reports/\${reportId}/export.csv?\${query(filters)}\`;`;
+
+const REPORTS_OLD = "    return Report(id=report_id, title=spec.title, columns=spec.columns, rows=rows)";
+const EMPTY_GUARD = `    if not report.rows:
+        return ""
+`;
+const REPORTS_NEW = `${REPORTS_OLD}
+
+
+def export_csv(report: Report) -> str:
+    """The report as CSV: a header row, then one line per row."""
+${EMPTY_GUARD}    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(report.columns)
+    writer.writerows(report.rows)
+    return out.getvalue()`;
+const IMPORTS_OLD = "from dataclasses import dataclass\n";
+const IMPORTS_NEW = `import csv
+import io
+${IMPORTS_OLD}`;
+const ROUTE_IMPORT_OLD = "from flask import Blueprint, jsonify, request";
+const ROUTE_IMPORT_NEW = "from flask import Blueprint, Response, jsonify, request";
+const ROUTE_OLD = `    return jsonify(title=report.title, columns=report.columns, rows=report.rows)
+`;
+const ROUTE_NEW = `${ROUTE_OLD}
+
+@bp.get("/<report_id>/export.csv")
+def export(report_id: str):
+    report = reports.build_report(report_id, request.args.to_dict())
+    return Response(
+        reports.export_csv(report),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{report_id}.csv"'},
+    )
+`;
+const TESTS_OLD = `    assert report.columns == ["Week", "Region", "Signups", "Activated", "Rate"]
+`;
+const TESTS_NEW = `${TESTS_OLD}
+
+
+def test_export_csv_has_a_header_and_one_line_per_row(signups_store):
+    report = reports.build_report("weekly-signups", {})
+    lines = reports.export_csv(report).splitlines()
+    assert lines[0] == "Week,Region,Signups,Activated,Rate"
+    assert len(lines) == len(report.rows) + 1
+`;
+const TESTS_EMPTY = `${TESTS_NEW}
+
+def test_export_csv_of_an_empty_report_is_the_header_only(empty_store):
+    report = reports.build_report("weekly-signups", {})
+    assert reports.export_csv(report) == "Week,Region,Signups,Activated,Rate\\r\\n"
+`;
+
+const DESIGN_POST = `Three designs for the CSV export, all built from the shared \`DataTable\`:
+
+- **A · Export button in the page header.** One click, exports what the table shows. Simple, but it sits away from the filters it depends on.
+- **B · Export menu in the table toolbar.** Next to the filters it respects, with "current view" and "all rows". Room for more formats later. **My pick.**
+- **C · Export dialog with a column picker.** The most control, but an extra step for everyone who just wants the numbers.`;
+
+const TECH_FRONTEND = `# CSV export: frontend
+
+- \`web/src/pages/ReportsPage.tsx\`: an \`ExportMenu\` in the \`DataTable\` toolbar slot, beside \`FilterChips\` (design B).
+- \`web/src/api/reports.ts\`: \`exportUrl(reportId, filters)\` builds \`/api/reports/<id>/export.csv?<filters>\`.
+- Menu items are plain links, so the browser handles the download; no blob handling in React.
+- Contract with backend: \`GET /api/reports/<id>/export.csv\`, the same filter query params as \`GET /api/reports/<id>\`.
+- Tests: \`ReportsPage.test.tsx\` checks both menu items' hrefs.`;
+
+const TECH_BACKEND = `# CSV export: backend
+
+- \`acme/reports/reports.py\`: \`export_csv(report) -> str\`, a header row then one line per row (\`csv.writer\`).
+- \`acme/reports/api.py\`: \`GET /api/reports/<id>/export.csv\`, same filters as \`GET /api/reports/<id>\`, \`text/csv\` with a \`Content-Disposition\` filename.
+- No new queries: it reuses \`build_report\`, so the read-only runner and its limits still apply.
+- Tests: \`tests/test_reports.py\` covers the header, the row count and the route.`;
+
+const TEST_PLAN = `# CSV export: test plan
+
+| # | Case | Kind |
+|---|---|---|
+| 1 | Header row matches the report's columns | unit |
+| 2 | One line per row, in table order | unit |
+| 3 | Values with commas and quotes are escaped | unit |
+| 4 | An empty report exports the header row only | unit |
+| 5 | Filters in the query string reach \`build_report\` | unit |
+| 6 | \`Content-Disposition\` names the file \`<report>.csv\` | unit |
+| 7 | Export menu shows "CSV, current view" and "CSV, all rows" | e2e |
+| 8 | "Current view" keeps the filters; "all rows" drops them | e2e |
+| 9 | The downloaded file opens with the expected header | e2e |
+
+Screens: the toolbar with the menu open, light and dark.`;
+
+const TEST_REPORT = `# CSV export: test report
+
+Run on the working tree after the empty-report fix.
+
+| Suite | Result |
+|---|---|
+| \`pytest tests/test_reports.py\` | 16 passed |
+| \`npx playwright test reports-export\` | 5 passed |
+
+All 9 plan cases pass, including #4 (an empty report exports the header row only), which failed in the first run.
+
+Screens: the Export menu open in the toolbar, light and dark.`;
+
+const SUMMARY = `**CSV export on the Reports page is ready for your sign-off.**
+
+- **Design:** Option B, an Export menu in the table toolbar ("CSV, current view" and "CSV, all rows").
+- **Changes, 5 files:** \`ReportsPage.tsx\`, \`api/reports.ts\`, \`reports.py\`, \`api.py\`, \`test_reports.py\`.
+- **Review:** sent back once (empty reports exported nothing); fixed, then approved.
+- **Tests:** 16 unit and 5 e2e pass; the report is attached.`;
+
+const docIds = (text) => [...new Set((text || "").match(/doc_[A-Za-z0-9]+/g) || [])];
+// What the run's agents share beyond the channel (the design doc ids), per repository.
+const storyFile = path.join(os.tmpdir(), "canopy-fake-claude", `story-${cwd.replace(/\W+/g, "_").slice(-80)}.json`);
+const loadStory = () => {
+  try {
+    return JSON.parse(fs.readFileSync(storyFile, "utf8"));
+  } catch {
+    return {};
+  }
+};
+const saveStory = (story) => {
+  fs.mkdirSync(path.dirname(storyFile), { recursive: true });
+  fs.writeFileSync(storyFile, JSON.stringify(story));
+};
+
+// The coordinator: where the run is comes from Canopy's note on every prompt.
+async function coordinate(prompt, body) {
+  const note = prompt.match(/Playbook in progress here: feature-build \(run \S+\), step (\d+) of \d+ "[^"]*"( is waiting for the user's approval)?(?: \(round (\d+)\))?/);
+  const started = /You are coordinating the feature-build playbook/.test(prompt);
+  if ((!note && !started) || note?.[2]) {
+    await canopy("pass", {});
+    return finish("Nothing to do: the run is waiting for Priya, or done.");
+  }
+  const step = note ? FB_STEPS[Number(note[1]) - 1] : "intake";
+  const round = Number(note?.[3] || 1);
+  const counted = /Delegations for this step: \d+ of \d+ done\.|All delegations for this step are done\./.test(prompt);
+  const allDone = /All delegations for this step are done\./.test(prompt);
+
+  if (step === "intake") {
+    await canopy("task_update", {
+      title: "Feature: CSV export on the Reports page",
+      description: "Add a CSV export to the Reports page, for people who take report numbers into a spreadsheet. Likely touches the frontend (ReportsPage, the DataTable toolbar) and the backend (a CSV endpoint beside the report API).",
+      status: "working",
+    });
+    await read("web/src/pages/ReportsPage.tsx");
+    await read("acme/reports/api.py");
+    await canopy("playbook_advance", {
+      result: "Feature: export the report on screen as CSV from the Reports page. For: anyone who takes report numbers into a spreadsheet. Source: Priya's brief. Layers: frontend (`ReportsPage.tsx`, `DataTable` toolbar) and backend (`acme/reports/api.py`).",
+    });
+    await canopy("delegate_task", {
+      to: "designer",
+      task: "Propose 3 distinct designs for exporting a report as CSV from the Reports page (`web/src/pages/ReportsPage.tsx`, built on the shared `DataTable`). One mockup per design, shared as a document, with a short rationale each and your recommendation.",
+    });
+    return finish("Captured the request; the designer is on three designs.");
+  }
+
+  if (step === "design" && allDone) {
+    const ids = loadStory().designs || [];
+    await canopy("playbook_advance", { result: "Three designs shared, A to C. @designer recommends B, the Export menu in the table toolbar." });
+    await canopy("playbook_advance", {
+      result: "Three designs for the CSV export. @designer recommends B: it sits with the filters it respects.",
+      question: "Which design should we build?",
+      options: [
+        { label: "A · Header button", description: "One click, away from the filters." },
+        { label: "B · Toolbar menu", description: "Beside the filters; current view or all rows.", recommended: true },
+        { label: "C · Export dialog", description: "Pick the columns; one more step." },
+      ],
+      attachments: ids.join(","),
+    });
+    return finish("Design approval is with Priya.");
+  }
+
+  if (step === "tech-design" && !counted) {
+    const choice = prompt.match(/They chose: "([^"]+)"/)?.[1] || "B · Toolbar menu";
+    await canopy("task_update", { description: `Add a CSV export to the Reports page. Approved design: ${choice}.` });
+    await canopy("delegate_task", {
+      to: "frontend",
+      task: `Write the frontend technical design for the CSV export, design ${choice}: files, the contract with backend (\`GET /api/reports/<id>/export.csv\`, same filters), tests. Backend writes its side in parallel.`,
+    });
+    await canopy("delegate_task", {
+      to: "backend",
+      task: "Write the backend technical design for the CSV export: `export_csv` in `acme/reports/reports.py` and `GET /api/reports/<id>/export.csv`, same filters as the report API, tests. Frontend writes its side in parallel.",
+    });
+    return finish("Technical design is with frontend and backend.");
+  }
+
+  if (step === "tech-design" && allDone) {
+    await canopy("playbook_advance", { result: "Both docs shared (tech-design-frontend.md, tech-design-backend.md); they name the same contract, `GET /api/reports/<id>/export.csv`." });
+    await canopy("delegate_task", { to: "reviewer", task: "Review the frontend and backend technical design docs for the CSV export (shared in the channel). Approve, or request changes with reasons." });
+    return finish("Technical review is with the reviewer.");
+  }
+
+  if (step === "tech-review" && allDone) {
+    await canopy("playbook_advance", { result: "@reviewer approved both docs; the contract matches." });
+    await canopy("delegate_task", {
+      to: "frontend",
+      task: "Build design B: an Export menu in the `DataTable` toolbar on the Reports page, per your tech doc. The CSV endpoint is backend's side of the contract; coordinate it with them. Report files changed and passing tests.",
+    });
+    await canopy("delegate_task", { to: "test", task: "Write the test plan for the CSV export from the approved design and both tech docs: cases, edge cases, e2e flows, and the screens to capture. Share it as a document." });
+    return finish("Build is under way: frontend on the feature, test on the plan.");
+  }
+
+  if (step === "build" && allDone) {
+    await canopy("playbook_advance", {
+      result: round > 1 ? "@backend fixed the empty export: a header row only, with a test." : "Frontend and backend done, unit tests pass; test plan shared.",
+    });
+    await canopy("delegate_task", { to: "reviewer", task: "Review `git diff` for the CSV export against the approved design and tech docs: correctness, edge cases, regressions." });
+    await canopy("delegate_task", { to: "test", task: "Run your test plan for the CSV export (unit and e2e) and report the results, with the report as a document." });
+    return finish("Verify: the reviewer on the diff, test running the plan.");
+  }
+
+  if (step === "verify" && allDone && round === 1) {
+    await canopy("playbook_advance", {
+      next: "build",
+      result: "↩ Sent back to Build: empty reports export a header row only. @reviewer found `export_csv` returns an empty string for an empty report, and @test's case 4 fails the same way.",
+    });
+    await canopy("delegate_task", {
+      to: "backend",
+      task: "Sent back from verify: an empty report must export the header row only. `export_csv` returns \"\" when there are no rows (`acme/reports/reports.py:25`). Fix it and add the test for case 4.",
+    });
+    return finish("Sent Build back for the empty-report case.");
+  }
+
+  if (step === "verify" && allDone) {
+    await canopy("playbook_advance", { result: "Test plan passes (16 unit, 5 e2e; test-report.md). @reviewer approved." });
+    await canopy("delegate_task", { to: "designer", task: "Compare the built Export menu (screens in test-report.md) with design B and approve, or list the differences." });
+    return finish("Design check is with the designer.");
+  }
+
+  if (step === "design-check" && allDone) {
+    await canopy("playbook_advance", { result: "@designer approved: it matches design B." });
+    await canopy("message_send", { text: SUMMARY });
+    await canopy("signoff_request", {
+      title: "CSV export on Reports",
+      question: "Ship the CSV export?",
+      summary: "Design B, 5 files changed, review and tests pass. The test report is attached; Changes shows the diff.",
+      attachments: ".canopy/out/test-report.md",
+    });
+    return finish("Summary posted; waiting for Priya's sign-off.");
+  }
+
+  if (step === "notify" && /Accepted your sign-off/.test(body)) {
+    await canopy("playbook_advance", { result: "Priya signed off on the CSV export." });
+    await canopy("task_update", { status: "completed", result: "CSV export on the Reports page: design B, 5 files, signed off." });
+    return finish("Signed off; the run is complete.");
+  }
+
+  await canopy("pass", {});
+  return finish("Waiting on the step's delegations.");
+}
+
+// A delegate's part, by who it is and which step it is for.
+async function delegateTurn(prompt, state) {
+  const step = prompt.match(/This is step `([\w-]+)` of the feature-build playbook/)?.[1];
+  const delegation = prompt.match(/Delegation ID: (dl_\S+)/)?.[1];
+  const done = (result) => canopy("task_update", { status: "completed", result, delegation });
+
+  if (me === "designer" && step === "design") {
+    await read("web/src/pages/ReportsPage.tsx");
+    await read("web/src/components/DataTable.tsx");
+    const ids = [];
+    for (const [key, caption] of [["a", "Option A · Export button in the page header"], ["b", "Option B · Export menu in the table toolbar"], ["c", "Option C · Export dialog with a column picker"]]) {
+      const shared = await canopy("document_share", { path: `.canopy/out/designs/csv-export-option-${key}.png`, caption });
+      ids.push(docIds(shared.result)[0]);
+    }
+    saveStory({ ...loadStory(), designs: ids });
+    await canopy("message_send", { text: DESIGN_POST, attachments: ids.join(",") });
+    await done("3 designs shared: A, B (recommended), C.");
+    return finish("Shared three designs; B is my pick.");
+  }
+  if (me === "designer" && step === "design-check") {
+    await read("web/src/pages/ReportsPage.tsx");
+    await canopy("message_send", { text: "Design check: the Export menu matches B, in the toolbar beside the filters, with both items and their hints. Approved." });
+    await done("Approved: matches design B.");
+    return finish("Approved the build against design B.");
+  }
+
+  if ((me === "frontend" || me === "backend") && step === "tech-design") {
+    await read(me === "frontend" ? "web/src/pages/ReportsPage.tsx" : "acme/reports/reports.py");
+    const shared = await canopy("document_share", { content: me === "frontend" ? TECH_FRONTEND : TECH_BACKEND, filename: `tech-design-${me}.md` });
+    if (shared.error) throw new Error(shared.result);
+    await done(`Tech design shared: tech-design-${me}.md.`);
+    return finish("Tech design shared.");
+  }
+
+  if (me === "reviewer" && step === "tech-review") {
+    await canopy("message_send", { text: "Both tech docs approved. The contract matches on both sides: `GET /api/reports/<id>/export.csv` with the report's own filters, and no new queries." });
+    await done("Approved both docs.");
+    return finish("Approved the technical designs.");
+  }
+
+  if (me === "frontend" && step === "build") {
+    state.buildDelegation = delegation;
+    saveState(state);
+    await read("web/src/pages/ReportsPage.tsx");
+    await read("web/src/components/DataTable.tsx");
+    await edit("web/src/pages/ReportsPage.tsx", PAGE_TOOLBAR_OLD, PAGE_TOOLBAR_NEW, 1.2);
+    await edit("web/src/pages/ReportsPage.tsx", PAGE_IMPORT_OLD, PAGE_IMPORT_NEW, 0.4);
+    await edit("web/src/pages/ReportsPage.tsx", PAGE_END_OLD, PAGE_END_NEW, 0.8);
+    await edit("web/src/api/reports.ts", API_TS_OLD, API_TS_NEW, 0.8);
+    await canopy("delegate_task", {
+      to: "backend",
+      task: "Add the CSV endpoint the Export menu links to: `GET /api/reports/<id>/export.csv` with the same filters as `GET /api/reports/<id>`, built on a new `export_csv(report)` in `acme/reports/reports.py` (a header row, then one line per row). Tests in `tests/test_reports.py`.",
+    });
+    await canopy("memory_write", {
+      text: `## ${new Date().toISOString().slice(0, 10)}\n- Reports use the shared DataTable component (\`web/src/components/DataTable.tsx\`); put report actions in its \`toolbar\` slot, not the page header.`,
+    }, 3);
+    return finish("Export menu is in; backend is on the CSV endpoint.");
+  }
+  if (me === "frontend" && /Your delegated subtask .* was completed by @backend/.test(prompt)) {
+    await bash("npm test -- ReportsPage", " ✓ src/pages/ReportsPage.test.tsx (3 tests) 412ms\n\n Test Files  1 passed (1)\n      Tests  3 passed (3)", 1);
+    await canopy("message_send", { text: "Build done: the **Export** menu sits in the `DataTable` toolbar beside the filters, with \"CSV, current view\" and \"CSV, all rows\". The backend endpoint is wired in, and `npm test` passes." });
+    await canopy("task_update", { status: "completed", result: "Export menu in ReportsPage.tsx and exportUrl in api/reports.ts; backend added export_csv and the route. npm test: 3 passed; pytest: 3 passed.", delegation: state.buildDelegation });
+    return finish("Reported the build.");
+  }
+
+  if (me === "backend" && !step && /delegated a subtask to you/.test(prompt) && /export\.csv/.test(prompt)) {
+    await read("acme/reports/reports.py");
+    const edited = await edit("acme/reports/reports.py", REPORTS_OLD, REPORTS_NEW, 1);
+    if (edited.denied) {
+      await done("Stopped: the edit to reports.py was not approved.");
+      return finish("The edit was not approved; nothing changed.");
+    }
+    await edit("acme/reports/reports.py", IMPORTS_OLD, IMPORTS_NEW, 0.4);
+    await edit("acme/reports/api.py", ROUTE_IMPORT_OLD, ROUTE_IMPORT_NEW, 0.4);
+    await edit("acme/reports/api.py", ROUTE_OLD, ROUTE_NEW, 0.8);
+    await edit("tests/test_reports.py", TESTS_OLD, TESTS_NEW, 0.6);
+    await bash("pytest tests/test_reports.py -q", "...                                                                      [100%]\n3 passed in 0.4s", 1);
+    await done("`GET /api/reports/<id>/export.csv` and `export_csv` in reports.py; tests in test_reports.py; pytest: 3 passed.");
+    return finish("CSV endpoint done.");
+  }
+  if (me === "backend" && step === "build") {
+    await read("acme/reports/reports.py");
+    await edit("acme/reports/reports.py", EMPTY_GUARD, "", 1);
+    await edit("tests/test_reports.py", TESTS_NEW, TESTS_EMPTY, 0.6);
+    await bash("pytest tests/test_reports.py -q", "....                                                                     [100%]\n4 passed in 0.4s", 1);
+    await canopy("message_send", { text: "Fixed: an empty report now exports the header row only. The early `return \"\"` is gone, and `test_export_csv_of_an_empty_report_is_the_header_only` covers it." });
+    await done("Empty reports export the header row only; new test; pytest: 4 passed.");
+    return finish("Fixed the empty export.");
+  }
+
+  if (me === "test" && step === "build") {
+    await read("acme/reports/api.py");
+    const shared = await canopy("document_share", { content: TEST_PLAN, filename: "test-plan.md" });
+    if (shared.error) throw new Error(shared.result);
+    await done("Test plan shared: test-plan.md (9 cases, 3 e2e).");
+    return finish("Test plan shared.");
+  }
+  if (me === "test" && step === "verify") {
+    state.verifyRuns = (state.verifyRuns || 0) + 1;
+    saveState(state);
+    if (state.verifyRuns === 1) {
+      await bash("pytest -q", "..F.........                                                             [100%]\nFAILED tests/test_export.py::test_empty_report_exports_header_only - AssertionError: '' != 'Week,Region,Signups,Activated,Rate\\r\\n'\n1 failed, 11 passed in 0.9s", 1.2);
+      await bash("npx playwright test reports-export", "  5 passed (6.1s)", 1);
+      await canopy("message_send", { text: "First run of the plan: 11 of 12 unit cases and all 5 e2e pass. **Case 4 fails:** an empty report downloads a 0-byte file instead of the header row." });
+      await done("11/12 unit, 5/5 e2e. Case 4 fails: an empty report exports 0 bytes, no header row.");
+      return finish("Reported one failing case.");
+    }
+    await bash("pytest -q", "............                                                             [100%]\n16 passed in 1.0s", 1.2);
+    await bash("npx playwright test reports-export", "  5 passed (6.0s)", 1);
+    await write(".canopy/out/test-report.md", TEST_REPORT, 0.6);
+    await canopy("message_send", { text: "The test plan passes: 16 unit and 5 e2e, including case 4 (empty report, header row only). Report attached.", attachments: ".canopy/out/test-report.md" });
+    await done("All 9 cases pass (16 unit, 5 e2e); test-report.md attached.");
+    return finish("Test plan passes; report attached.");
+  }
+
+  if (me === "reviewer" && step === "verify") {
+    state.reviews = (state.reviews || 0) + 1;
+    saveState(state);
+    await bash("git diff", () => execFileSync("git", ["diff"], { cwd, encoding: "utf8" }) || "(no changes)", 1.2);
+    if (state.reviews === 1) {
+      await read("acme/reports/reports.py");
+      await canopy("message_send", {
+        text: "↩ **Changes requested on Build.** `export_csv` returns an empty string for an empty report (`acme/reports/reports.py:25`), so the download has no header row and a spreadsheet opens it with no columns. **Empty reports should export a header row only.** Everything else looks right.",
+      });
+      await done("Changes requested: empty reports export a header row only (reports.py:25).");
+      return finish("Sent the empty-report case back.");
+    }
+    await canopy("message_send", { text: "Approved. The empty case now exports the header row, and the new test covers it." });
+    await done("Approved.");
+    return finish("Approved the build.");
+  }
+  return false;
+}
+
+async function reportsStory(prompt, body, state) {
+  if (me === "project-manager" && /feature-build/.test(prompt)) {
+    await coordinate(prompt, body);
+    return true;
+  }
+  if (/feature-build playbook/.test(prompt) || (me === "backend" && /export\.csv/.test(prompt)) || (me === "frontend" && /completed by @backend/.test(prompt))) {
+    return (await delegateTurn(prompt, state)) !== false;
+  }
+  return false;
+}
+
 // ---- questions (e2e/tests/questions.spec.ts) --------------------------------------------
 // "…ask me what to call the release" asks a question with no options (only a
 // typed answer can answer it); "…ask me which colour" one with options. The
@@ -512,6 +968,9 @@ async function turn(prompt) {
   const story = state.story || {};
   const messageFrom = prompt.match(/new Canopy message in #\S+ from (.+?)\.\n/)?.[1];
   const body = prompt.match(/Message text:\n([\s\S]*?)\n(?:Attachments on this message:|canopy_messages_read returns)/)?.[1]?.trim() || "";
+
+  if (process.env.FAKE_CLAUDE_PROMPT_LOG) fs.appendFileSync(process.env.FAKE_CLAUDE_PROMPT_LOG, `\n===== @${me} ${sid}\n${prompt}\n`);
+  if (await reportsStory(prompt, body, state)) return;
 
   let m;
   if ((m = prompt.match(/Handoff ID: (ho_\S+)/))) return review(m[1]);
