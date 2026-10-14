@@ -37,10 +37,29 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     # the steps as a strip: send-back and sign-off marked
     assert has_element?(view, "#playbook-strip-#{playbook.id} li", "Review")
     assert has_element?(view, "#playbook-strip-#{playbook.id} [title='waits for you']")
+
+    assert has_element?(
+             view,
+             "#playbook-strip-#{playbook.id} li:last-child [title='can send work back to fix']"
+           )
+
     menu = "#playbook-menu-#{playbook.id}"
     assert has_element?(view, "#{menu} #duplicate-playbook-#{playbook.id}", "Duplicate")
     assert has_element?(view, "#{menu} #export-playbook-#{playbook.id}", "Export")
     assert has_element?(view, "#{menu} li:last-child #delete-playbook-#{playbook.id}", "Delete")
+  end
+
+  test "the feature-build starter's card ends in User sign-off, marked send-back and waits for you",
+       %{conn: conn} do
+    {:ok, playbook} = Playbooks.create(%{body: Playbooks.feature_build_text()})
+    {:ok, view, html} = live(conn, ~p"/playbooks")
+    last = "#playbook-strip-#{playbook.id} li:last-child"
+
+    assert has_element?(view, last, "User sign-off")
+    assert has_element?(view, "#{last} [title='can send work back to build']")
+    assert has_element?(view, "#{last} [title='waits for you']")
+    assert html =~ "ending in user sign-off"
+    refute html =~ "Tell the user it"
   end
 
   test "new: copy a playbook, start blank, or describe it to an agent", %{conn: conn} do

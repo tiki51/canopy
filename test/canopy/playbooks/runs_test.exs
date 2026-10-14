@@ -1323,5 +1323,87 @@ defmodule Canopy.Playbooks.RunsTest do
     end
   end
 
+  describe "the feature-build starter" do
+    setup ctx do
+      for name <- ~w(designer frontend backend reviewer test),
+          do: Canopy.Agents.get_by_name(name) || agent_fixture(name: name)
+
+      {:ok, playbook} = Canopy.Playbooks.create(%{body: Canopy.Playbooks.feature_build_text()})
+      {run, false} = start!(ctx, playbook)
+      coord = {:agent, ctx.agent.id}
+
+      {:ok, run, _} = Runs.advance(run, coord, result: "captured")
+      {:ok, run, _} = Runs.advance(run, coord, result: "three designs")
+      # the user waives the design gate: an accept would wake the coordinator, and
+      # the stub engine never ends that turn, so a later wake would queue behind it
+      {:ok, run, _} = Runs.advance(run, :user, result: "pick one", skip: true)
+
+      run =
+        Enum.reduce(~w(tech-design tech-review build verify design-check), run, fn id, run ->
+          assert run.current_step == id
+          {:ok, run, _} = Runs.advance(run, coord, result: "#{id} done")
+          run
+        end)
+
+      assert run.current_step == "sign-off"
+
+      {:ok, run, :awaiting_approval} =
+        Runs.advance(run, coord,
+          result: "The button is green.",
+          signoff: %{question: "Accept the green button?"}
+        )
+
+      Map.merge(ctx, %{run: run, coord: coord, card: Signoffs.pending_for_run(run.id)})
+    end
+
+    test "a run ends held on User sign-off with a pending card", ctx do
+      assert step(ctx.run, "sign-off").status == "awaiting_approval"
+
+      assert %{
+               status: "pending",
+               title: "User sign-off",
+               question: "Accept the green button?",
+               summary: "The button is green.",
+               step_id: "sign-off"
+             } = ctx.card
+
+      assert Signoffs.badge(ctx.card) == "feature-build · step 9 of 9"
+    end
+
+    test "Reject on the sign-off wakes the coordinator naming build", ctx do
+      drain = fn drain ->
+        receive do
+          {:prompted, _, _} -> drain.(drain)
+        after
+          0 -> :ok
+        end
+      end
+
+      drain.(drain)
+      assert {:ok, %{status: "rejected"}} = Signoffs.reject(ctx.card, "Make it blue")
+
+      run = Runs.get!(ctx.run.id)
+      assert run.status == "active"
+      assert step(run, "sign-off").status == "active"
+
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ "The playbook sends this step back to build."
+      assert text =~ "Make it blue"
+
+      # the loop the section text tells the coordinator to take
+      assert {:ok, run, _} = Runs.advance(run, ctx.coord, next: "build", result: "redo")
+      assert run.current_step == "build"
+    end
+
+    test "Accept on the sign-off completes the run", ctx do
+      assert {:ok, %{status: "accepted"}} = Signoffs.accept(ctx.card, nil, nil)
+
+      run = Runs.get!(ctx.run.id)
+      assert run.status == "completed"
+      assert run.outcome =~ "The button is green."
+    end
+  end
+
   defp step(run, id), do: Enum.find(run.steps, &(&1.step_id == id))
 end

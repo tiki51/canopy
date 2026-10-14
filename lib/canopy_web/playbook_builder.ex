@@ -473,7 +473,7 @@ defmodule CanopyWeb.PlaybookBuilder do
   end
 
   @doc """
-  The send-back rails, per step uid: `[%{lane, kind, label}]`, where kind is
+  The send-back rails, per step uid: `[%{lane, kind}]`, where kind is
   `:start` (the target), `:mid`, or `:end` (the sender). Overlapping loops
   get their own lanes; at most 3 are drawn.
   """
@@ -503,7 +503,7 @@ defmodule CanopyWeb.PlaybookBuilder do
 
     placed
     |> Enum.filter(fn {lane, _, _, _} -> lane < 3 end)
-    |> Enum.flat_map(fn {lane, t, i, sender} ->
+    |> Enum.flat_map(fn {lane, t, i, _sender} ->
       for row <- t..i do
         kind =
           cond do
@@ -512,12 +512,7 @@ defmodule CanopyWeb.PlaybookBuilder do
             true -> :mid
           end
 
-        {Enum.at(draft.steps, row).uid,
-         %{
-           lane: lane,
-           kind: kind,
-           label: "#{title(sender)} sends it back here when changes are requested"
-         }}
+        {Enum.at(draft.steps, row).uid, %{lane: lane, kind: kind}}
       end
     end)
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
@@ -528,6 +523,18 @@ defmodule CanopyWeb.PlaybookBuilder do
       "" -> "Untitled step"
       t -> t
     end
+  end
+
+  @doc """
+  Step titles as a list in prose: "A", "A and B", "A, B, and C". The serial
+  comma keeps titles that contain "and" themselves ("Test and code review") apart.
+  """
+  def join_titles([title]), do: title
+  def join_titles([a, b]), do: "#{a} and #{b}"
+
+  def join_titles(titles) do
+    {rest, [last]} = Enum.split(titles, -1)
+    Enum.join(rest, ", ") <> ", and " <> last
   end
 
   # -- Problems -------------------------------------------------------------------------

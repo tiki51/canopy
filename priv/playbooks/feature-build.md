@@ -1,6 +1,6 @@
 ---
 name: feature-build
-description: Take a feature from request to done with design, technical design, build, test, and review, ending with the user told it is ready. Use for new features, not bugs.
+description: Take a feature from request to done with design, technical design, build, test, and review, ending in user sign-off. Use for new features, not bugs.
 roles:
   designer: designer
   frontend: frontend
@@ -40,9 +40,11 @@ steps:
     title: Designer approves the result
     owner: designer
     on_reject: build
-  - id: notify
-    title: Tell the user it's done
+  - id: sign-off
+    title: User sign-off
     owner: coordinator
+    approval: user
+    on_reject: build
 ---
 
 # Feature build
@@ -131,10 +133,15 @@ back through verify.
 
 Done when: the designer approves the screenshots against the approved design.
 
-## notify
+## sign-off
 
-As channel owner, post one summary for the user: the feature, the approved design, files changed, tests
-and test plan results, screenshots (document ids), review and design outcomes, and anything left open.
-@mention nobody else. Set the channel task to completed.
+Hold the run for the user's sign-off with `canopy_playbook_advance`. The `result` is the summary on the
+sign-off card, so write it for the user: the feature, the approved design, files changed, test plan
+results, review and design-check outcomes, and anything left open. Give the card a `question`
+("Accept <feature>?") and attach the test report, the screenshots and the approved design
+(`attachments`, doc ids). Don't post the summary separately, and @mention nobody. Canopy wakes you
+with their answer. On approval, set the channel task to completed. On reject, advance with
+`next: "build"` and carry their note into the build delegations; the fix goes back through verify and
+design-check before it returns here.
 
-Done when: the summary is posted and the task is completed.
+Done when: the user accepts, and the task is completed.

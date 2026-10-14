@@ -51,6 +51,35 @@ defmodule CanopyWeb.PlaybookBuilderTest do
     assert {:ok, _} = PlaybookBuilder.parse(draft)
   end
 
+  test "join_titles/1 lists step titles with a serial comma from three on" do
+    assert PlaybookBuilder.join_titles(["Review"]) == "Review"
+    assert PlaybookBuilder.join_titles(["Review", "User sign-off"]) == "Review and User sign-off"
+
+    assert PlaybookBuilder.join_titles(["Test and code review", "Design check", "User sign-off"]) ==
+             "Test and code review, Design check, and User sign-off"
+
+    assert PlaybookBuilder.join_titles(["A", "B", "C", "D"]) == "A, B, C, and D"
+  end
+
+  test "rails/1: bug-fix's Fix starts two loops, each in its own lane" do
+    draft = bug_fix()
+    rails = PlaybookBuilder.rails(draft)
+
+    starts =
+      rails
+      |> Map.fetch!(uid(draft, "fix"))
+      |> Enum.filter(&(&1.kind == :start))
+      |> Enum.map(& &1.lane)
+      |> Enum.sort()
+
+    assert starts == [0, 1]
+    # sign-off's loop passes Review on the outer lane
+    assert [%{kind: :end, lane: 0}, %{kind: :mid, lane: 1}] =
+             Map.fetch!(rails, uid(draft, "review"))
+
+    assert [%{kind: :end, lane: 1}] = Map.fetch!(rails, uid(draft, "sign-off"))
+  end
+
   test "plain_words/1 says lead and channel name" do
     assert PlaybookBuilder.plain_words(
              "a DM keeps its agents and this run needs others (the coordinator or the roster); start it with channel_name to run it in a new channel"

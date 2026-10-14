@@ -1858,8 +1858,8 @@ each run by `@project-manager` in a new channel:
 - **bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your
   sign-off, with `@bugfix-team`.
 - **feature-build**: three designs for you to choose from, technical designs and their
-  review, build, test and code review, a design check of the screenshots, and a summary
-  when it is ready, with `@designer`, `@frontend`, `@backend`, `@test`, and `@reviewer`.
+  review, build, test and code review, a design check of the screenshots, and your
+  sign-off, with `@designer`, `@frontend`, `@backend`, `@test`, and `@reviewer`.
 
 ### The library and the builder
 
@@ -1992,6 +1992,7 @@ steps:
     title: User sign-off
     owner: coordinator
     approval: user
+    on_reject: fix
 ---
 
 # Bug fix

@@ -31,6 +31,7 @@ steps:
     title: User sign-off
     owner: coordinator
     approval: user
+    on_reject: fix
 ---
 
 # Bug fix
@@ -90,7 +91,13 @@ Done when: the reviewer approves, or lists only optional nits.
 
 ## sign-off
 
-Post one summary for the user: the bug, root cause, the fix (files), tests added and run, review
-outcome, anything left. Then call `canopy_playbook_advance`: Canopy holds the step for the user's
-approval and wakes you with their answer. On approval, set the channel task to completed. On "changes
-requested", advance with `next:` the step that fits their note.
+Hold the run for the user's sign-off with `canopy_playbook_advance`. The `result` is the summary on the
+sign-off card, so write it for the user: the bug, the root cause, the fix (files), tests added and run,
+the review outcome, and anything left open. Give the card a `question` ("Accept the fix for
+<symptom>?") and attach the test output from verify (`attachments`: share it with
+`canopy_document_share` first, or pass its path). Don't post the summary separately, and @mention
+nobody. Canopy wakes you with their answer. On approval, set the channel task to completed. On reject,
+advance with `next: "fix"` and carry their note into the fix delegation; the fix goes back through
+verify and review before it returns here.
+
+Done when: the user accepts, and the task is completed.

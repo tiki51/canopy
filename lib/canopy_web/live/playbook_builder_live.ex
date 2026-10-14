@@ -837,14 +837,42 @@ defmodule CanopyWeb.PlaybookBuilderLive do
         "Deleted step #{position} · #{PlaybookBuilder.title(step)}."
 
       uids ->
-        names =
+        titles =
           draft.steps
           |> Enum.filter(&(&1.uid in uids))
-          |> Enum.map_join(" and ", &PlaybookBuilder.title/1)
+          |> Enum.map(&PlaybookBuilder.title/1)
 
-        "Deleted #{PlaybookBuilder.title(step)}. #{names} no longer sends work back."
+        "Deleted #{PlaybookBuilder.title(step)}. #{senders(titles, "no longer send")} work back."
     end
   end
+
+  # "Review sends", "Review and User sign-off send"; `verb` is the plural form, last word
+  defp senders([_] = titles, verb), do: "#{PlaybookBuilder.join_titles(titles)} #{verb}s"
+  defp senders(titles, verb), do: "#{PlaybookBuilder.join_titles(titles)} #{verb}"
+
+  # the titles of the later steps that send work back to `step`, in step order
+  defp sent_back_by(_draft, %{id: id}, _index) when id in [nil, ""], do: []
+
+  defp sent_back_by(draft, step, index) do
+    for s <- Enum.drop(draft.steps, index + 1), s.on_reject == step.id do
+      PlaybookBuilder.title(s)
+    end
+  end
+
+  # keeps "sign-off" from breaking at its hyphen in a narrow label
+  defp nowrap_hyphenated(text) do
+    text
+    |> String.split(" ")
+    |> Enum.map(fn word ->
+      if String.contains?(word, "-"),
+        do: ~s(<span class="whitespace-nowrap">#{html_escape_to_string(word)}</span>),
+        else: html_escape_to_string(word)
+    end)
+    |> Enum.join(" ")
+    |> raw()
+  end
+
+  defp html_escape_to_string(text), do: text |> html_escape() |> safe_to_string()
 
   defp display_title(%{draft: %{title: title, name: name}}) do
     case String.trim(title || "") do
@@ -2035,6 +2063,8 @@ defmodule CanopyWeb.PlaybookBuilderLive do
       |> assign(:last?, assigns.index + 1 == assigns.total)
       |> assign(:targets, targets)
       |> assign(:target, target)
+      |> assign(:sent_back_by, sent_back_by(assigns.draft, step, assigns.index))
+      |> assign(:label_lane, assigns.rails |> Enum.map(& &1.lane) |> Enum.max(fn -> 0 end))
       |> assign(:send_back_problem, Enum.find(assigns.problems, &(&1[:kind] == :send_back)))
       |> assign(:owner_problem, Enum.any?(assigns.problems, &(&1[:kind] == :owner)))
 
@@ -2059,12 +2089,14 @@ defmodule CanopyWeb.PlaybookBuilderLive do
         style={"--lane: #{rail.lane}"}
         aria-hidden="true"
       ></span>
+      <%!-- one label naming every step that sends back here, even past the 3 drawn rails;
+           it sits outside the row's outermost rail --%>
       <p
-        :for={rail <- Enum.filter(@rails, &(&1.kind == :start))}
-        class="absolute right-[calc(100%+34px)] top-1/2 hidden w-32 -translate-y-1/2 text-right text-[11px] leading-snug text-secondary lg:block"
-        style={"margin-right: #{rail.lane * 10}px"}
+        :if={@sent_back_by != []}
+        class="send-back-label absolute right-[calc(100%+34px+var(--label-lane)*10px)] top-1/2 hidden w-32 -translate-y-1/2 text-right text-[11px] leading-snug text-secondary lg:block"
+        style={"--label-lane: #{@label_lane}"}
       >
-        {rail.label}
+        {nowrap_hyphenated(senders(@sent_back_by, "send"))} it back here when changes are requested
       </p>
 
       <%!-- the gap above: "+ Add step here" --%>
