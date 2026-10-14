@@ -10,6 +10,10 @@ export const shotsDir = process.env.SITE_SHOTS_DIR || "../../canopy_site/src/ass
 /** Where the recordings go: served as-is from canopy_site/public/images. */
 export const mediaDir = process.env.SITE_MEDIA_DIR || "../../canopy_site/public/images";
 
+/** The brief the site's Feature build run starts with (site-shots, site-video). */
+export const BRIEF =
+  "Add a CSV export to the Reports page. People copy report numbers into spreadsheets by hand today; let them download what the table shows.";
+
 export const db = process.env.CANOPY_DB || path.resolve("../canopy_e2e.db");
 
 export type Theme = "dark" | "light";
