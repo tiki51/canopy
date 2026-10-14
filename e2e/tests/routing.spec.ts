@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, gotoLive, send, timeline, uniq } from "./helpers";
 
 // Model routing (experimental, off by default). The spec turns it on for an
 // agent of its own, so no seeded agent changes; the agent is deactivated at
@@ -17,7 +17,7 @@ async function modelsOf(page: Page, title: string): Promise<(string | null)[]> {
 
 test.describe("model routing", () => {
   test("off by default and labelled experimental on the agent form", async ({ page }) => {
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await page.locator("#active-agents").getByText("@backend", { exact: true }).click({ force: true }); // the row's overlay link takes it
     await expect(page).toHaveURL(/\/agents\/agt_/);
     await expect(page.locator("#agent-routing")).toContainText("off");
@@ -33,7 +33,7 @@ test.describe("model routing", () => {
 
     try {
       // an agent of its own, on a main model, with routing on and a light model
-      await page.goto("/agents/new");
+      await gotoLive(page, "/agents/new");
       await page.getByLabel("Name (slug, used as @name)").fill(name);
       await page.getByLabel("Role (one line)").fill("Routes cheap wakes");
       await page.locator("#agent-form select[name='agent[model_provider]']").selectOption("opencode");
@@ -65,13 +65,13 @@ test.describe("model routing", () => {
       ]);
 
       // the Costs page counts the routed agent and its light turn
-      await page.goto("/costs?period=today");
+      await gotoLive(page, "/costs?period=today");
       await expect(page.locator("#routing-agents")).toContainText("1");
       await expect(page.locator("#routing-escalated")).toContainText("100%");
     } finally {
       // leave the agents as they were: routing off, the spec's agent out of the way
       if (id) {
-        await page.goto(`/agents/${id}/edit`);
+        await gotoLive(page, `/agents/${id}/edit`);
         await page.locator("#agent-routing-enabled").uncheck();
         await page.locator("#save-agent").click();
         await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));

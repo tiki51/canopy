@@ -1,4 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
+import { gotoLive, reload } from "./helpers";
 import fs from "node:fs";
 import path from "node:path";
 import { iso, sql } from "./site-helpers";
@@ -87,7 +88,7 @@ test.describe("first-run setup", () => {
 
   test("walks a fresh install through the modal, step by step, to its first channel", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto("/");
+    await gotoLive(page, "/");
     // the normal home, with setup over it
     await expect(page).toHaveURL(/\/(channels\/ch_|repositories)/);
     await connected(page);
@@ -125,7 +126,7 @@ test.describe("first-run setup", () => {
     await expect(name).toHaveValue("Priya");
 
     // still a fresh install after a reload: the modal again, with what was chosen
-    await page.reload();
+    await reload(page);
     await connected(page);
     await expect(dialog(page)).toBeVisible();
     await expect(html).toHaveAttribute("data-palette", "moss");
@@ -220,11 +221,10 @@ test.describe("first-run setup", () => {
     await expect(page.getByLabel("Repository")).toHaveValue(repositoryId);
 
     // setup is done: no modal any more
-    await page.goto("/");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, "/");
     await expect(dialog(page)).toHaveCount(0);
 
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await expect(page.locator("#profile-form").getByLabel("Display name")).toHaveValue("Priya");
     await expect(page.locator("#chatter-presets-careful")).toHaveAttribute("aria-checked", "true");
 
@@ -239,7 +239,7 @@ test.describe("first-run setup", () => {
 
   test("is a full-screen sheet on a phone, walked with Next to the summary", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/");
+    await gotoLive(page, "/");
     await connected(page);
     await expect(dialog(page)).toBeVisible();
 
@@ -285,7 +285,7 @@ test.describe("first-run setup", () => {
   });
 
   test("an old /welcome?step= link opens the modal at its step, and closing drops ?setup=", async ({ page }) => {
-    await page.goto("/welcome?step=team");
+    await gotoLive(page, "/welcome?step=team");
     await expect(page).toHaveURL(/\/(channels\/ch_[^?]+|repositories)\?setup=pace$/);
     await connected(page);
     await expect(current(page)).toHaveAttribute("id", "setup-step-pace");
@@ -298,8 +298,7 @@ test.describe("first-run setup", () => {
 
   test("Run setup again opens it over Settings, and focus comes back after", async ({ page }) => {
     onboarded();
-    await page.goto("/settings");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, "/settings");
     await expect(dialog(page)).toHaveCount(0);
 
     await page.locator("#run-setup").click();
@@ -323,7 +322,7 @@ test.describe("first-run setup", () => {
 
   test("turns desktop notifications on, and the summary says so", async ({ context, page }) => {
     await stubNotifications(context);
-    await page.goto("/");
+    await gotoLive(page, "/");
     await connected(page);
     await page.locator("#setup-step-notify").click();
 
@@ -348,7 +347,7 @@ test.describe("first-run setup", () => {
     const blocked = await browser.newContext({ baseURL: test.info().project.use.baseURL });
     await stubNotifications(blocked, { answer: "denied" });
     const page = await blocked.newPage();
-    await page.goto("/");
+    await gotoLive(page, "/");
     await connected(page);
     await page.locator("#setup-step-notify").click();
     await page.locator("#notify-enabled").click();
@@ -364,7 +363,7 @@ test.describe("first-run setup", () => {
     const lan = await browser.newContext({ baseURL: test.info().project.use.baseURL });
     await stubNotifications(lan, { unsupported: true });
     const other = await lan.newPage();
-    await other.goto("/welcome?step=notifications");
+    await gotoLive(other, "/welcome?step=notifications");
     await connected(other);
     await expect(other.locator("#notify-prefs")).toHaveAttribute("data-state", "unsupported");
     await expect(other.locator("#notify-unsupported")).toContainText("http://127.0.0.1");
@@ -372,7 +371,7 @@ test.describe("first-run setup", () => {
   });
 
   test("Skip setup finishes it and closes the modal on the page", async ({ page }) => {
-    await page.goto("/");
+    await gotoLive(page, "/");
     await connected(page);
     const url = page.url();
     await page.locator("#skip-setup").click();
@@ -380,8 +379,7 @@ test.describe("first-run setup", () => {
     expect(page.url()).toBe(url);
     await expect(page.locator("#flash-info")).toContainText("Setup skipped");
 
-    await page.goto("/");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, "/");
     await expect(dialog(page)).toHaveCount(0);
   });
 });

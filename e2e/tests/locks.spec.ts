@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader } from "./helpers";
+import { clickHeader, createChannel, send, timeline } from "./helpers";
 
 // Locks on a repository's shared resources. The fake OpenCode asks for a lock
 // when a message says "take the <name> lock" (and holds it across turns with

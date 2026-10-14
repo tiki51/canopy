@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader, openDetails } from "./helpers";
+import { clickHeader, createChannel, gotoLive, openDetails, send, timeline } from "./helpers";
 
 // Agent Interrupt (experimental, off by default): with "Mentioning a working
 // agent interrupts it" on, a mention of @backend while it runs the slow
@@ -11,9 +11,7 @@ const STORY = "Run the checkout suite slowly.";
 const NUDGE = "@backend skip the payment tests";
 
 async function setInterrupt(page: Page, on: boolean) {
-  await page.goto("/settings");
-  // a click before LiveView connects is lost to the remount
-  await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+  await gotoLive(page, "/settings");
   const box = page.locator("#chatter-form input[type=checkbox][name='setting[interrupt_on_mention]']");
   if (on) await box.check();
   else await box.uncheck();

@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
+import { clickHeader, createChannel, send, timeline, uniq } from "./helpers";
 
 const layer = (page: Page) => page.locator("#composer-highlight");
 const chips = (page: Page, kind: string) => layer(page).locator(`[data-kind="${kind}"]`);

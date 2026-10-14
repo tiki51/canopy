@@ -2,6 +2,7 @@ defmodule Canopy.Runtime.ChannelServerTest do
   use Canopy.DataCase, async: false
 
   import Mox
+  import Canopy.RuntimeHelpers, only: [settle: 0]
 
   alias Canopy.{AgentSessions, Delegations, Handoffs, Messages, PermissionRequests, Timeline}
   alias Canopy.Fixtures
@@ -157,12 +158,14 @@ defmodule Canopy.Runtime.ChannelServerTest do
         attachments: [shot.id]
       )
 
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
 
     # the owner's turn ends: one wake for the reviewer, carrying both posts
     emit(owner_sid, :agent_completed, %{})
     assert_receive {:prompted, _reviewer_sid, body}, 2_000
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
 
     [%{type: "text", text: text}, image_part] = body.parts
     assert text =~ "Here it is, @#{reviewer.name}."
@@ -233,7 +236,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
                    2_000
 
     assert note =~ "Paused after 2 agent turns"
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
     assert Runtime.paused?(ctx.channel.id)
 
     # Continue runs what was held
@@ -270,7 +274,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     # arrives while the owner works: queued behind the turn
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "and this")
-    refute_receive {:prompted, _, _}, 200
+    settle()
+    refute_receive {:prompted, _, _}, 20
 
     expect(OC, :abort, fn _dir, ^owner_sid, _opts -> {:ok, true} end)
     assert {:ok, %{aborted: 1, dropped: 1}} = Runtime.stop_all(ctx.channel.id)
@@ -297,12 +302,14 @@ defmodule Canopy.Runtime.ChannelServerTest do
     # changes nothing
     emit(owner_sid, :agent_error, %{error: %{"data" => %{"message" => "Aborted"}}})
     emit(owner_sid, :agent_completed, %{})
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
     refute_received {:timeline, %{event_type: "agent_turn_completed"}}
 
     # agents talking among themselves wake nobody while stopped
     {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "one more thought")
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
     assert Runtime.stopped?(ctx.channel.id)
 
     # the user's own message lifts the stop and wakes the owner as usual
@@ -345,7 +352,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
     assert payload["final_text"] == "Posted my findings. Summary: the index."
-    refute_receive {:timeline, %{event_type: "message", message: %{kind: "reply"}}}, 300
+    settle()
+    refute_receive {:timeline, %{event_type: "message", message: %{kind: "reply"}}}, 20
   end
 
   test "resetting a session deletes it, is refused mid-turn, and the next wake creates a new one",
@@ -481,7 +489,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.reviewer.name} you too")
     assert_receive {:agent_status, reviewer_id, :queued}, 2_000
     assert reviewer_id == ctx.reviewer.id
-    refute_receive {:prompted, ^reviewer_sid}, 300
+    settle()
+    refute_receive {:prompted, ^reviewer_sid}, 20
     assert Runtime.status(ctx.channel.id)[ctx.reviewer.id] == :queued
 
     emit(owner_sid, :agent_completed, %{})
@@ -501,7 +510,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "second thing")
     {:ok, third} = Runtime.post_user_message(ctx.channel.id, "third thing")
-    refute_receive {:prompted, _, _}, 200
+    settle()
+    refute_receive {:prompted, _, _}, 20
 
     assert %{queues: %{^owner_sid => [wake]}} = :sys.get_state(ctx.pid)
     assert wake.text =~ "Message ID: #{third.id}"
@@ -512,7 +522,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert [%{text: text}] = body.parts
     assert text =~ "Message ID: #{third.id}"
     emit(owner_sid, :agent_completed, %{})
-    refute_receive {:prompted, _, _}, 300
+    settle()
+    refute_receive {:prompted, _, _}, 20
   end
 
   test "an agent waiting for its turn is listed once however often it is woken", ctx do
@@ -541,7 +552,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     emit(owner_sid, :agent_completed, %{})
     assert_receive {:prompted, ^reviewer_sid}, 2_000
     emit(reviewer_sid, :agent_completed, %{})
-    refute_receive {:prompted, ^reviewer_sid}, 300
+    settle()
+    refute_receive {:prompted, ^reviewer_sid}, 20
   end
 
   test "with serialization off, agents woken together run at once", ctx do
@@ -647,7 +659,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert_receive {:prompted, ^reviewer_sid, _}, 2_000
 
       delegation = delegate_to_reviewer(ctx)
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
       assert %{queues: %{^reviewer_sid => [wake]}} = :sys.get_state(ctx.pid)
       assert wake.delegation_ids == [delegation.id]
       # marked working when it goes out, not while it waits
@@ -674,7 +687,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
       first = delegate_to_reviewer(ctx)
       second = delegate_to_reviewer(ctx, "and every retry path")
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
 
       emit(reviewer_sid, :agent_completed, %{})
       assert_receive {:prompted, ^reviewer_sid, body}, 2_000
@@ -721,7 +735,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
         )
 
       emit(owner_sid, :agent_completed, %{})
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
       assert %{queues: %{^reviewer_sid => [_]}, waiting: []} = :sys.get_state(ctx.pid)
 
       emit(reviewer_sid, :agent_completed, %{})
@@ -731,7 +746,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert text =~ "You have a pending delegation in ##{ctx.channel.name}:"
       assert text =~ ~s{- #{delegation.id} from @#{ctx.agent.name} ("trace every enqueue path")}
       emit(reviewer_sid, :agent_completed, %{})
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
 
       # done: the next prompt carries no reminder
       {:ok, _} = Delegations.complete(Delegations.get!(delegation.id), "two paths")
@@ -763,7 +779,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
           "@#{ctx.reviewer.name} please also check the retries in #{String.slice(delegation.id, 0, 11)}."
         )
 
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
       assert [{{:root, _}, _}] = :sys.get_state(ctx.pid).waiting
 
       emit(owner_sid, :agent_completed, %{})
@@ -776,7 +793,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       refute text =~ "canopy_pass"
 
       emit(reviewer_sid, :agent_completed, %{})
-      refute_receive {:prompted, _, _}, 300
+      settle()
+      refute_receive {:prompted, _, _}, 20
     end
   end
 
@@ -837,13 +855,15 @@ defmodule Canopy.Runtime.ChannelServerTest do
     # while held: no prompt, one note, even across several wakes
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello?")
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "anyone?")
-    refute_receive :prompted, 500
+    settle()
+    refute_receive :prompted, 20
 
     assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: note}}},
                    2_000
 
     assert note =~ "on hold: Insufficient balance"
-    refute_receive {:timeline, %{event_type: "message", message: %{kind: "system"}}}, 300
+    settle()
+    refute_receive {:timeline, %{event_type: "message", message: %{kind: "system"}}}, 20
 
     :ok = Canopy.Hold.release()
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "back")
@@ -912,7 +932,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
     emit(sid, :agent_completed, %{})
     assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
-    refute_receive {:timeline, %{event_type: "session_compacted"}}, 300
+    settle()
+    refute_receive {:timeline, %{event_type: "session_compacted"}}, 20
   end
 
   test "a turn summary records what woke it, its model calls, and tokens", ctx do
@@ -1018,7 +1039,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
                    2_000
 
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello?")
-    refute_receive {:timeline, %{event_type: "spend_limit_reached"}}, 300
+    settle()
+    refute_receive {:timeline, %{event_type: "spend_limit_reached"}}, 20
     refute :busy in Map.values(Runtime.status(ctx.channel.id))
 
     # raising the limit lets the next message through
@@ -1077,7 +1099,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
       assert_receive {:reactions, _}
       quiet!(ctx)
-      refute_receive {:prompted, _, _}, 200
+      settle()
+      refute_receive {:prompted, _, _}, 20
     end
 
     test "a reaction on a thread reply wakes neither the reply's author nor the root's", ctx do
@@ -1091,7 +1114,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert_receive {:reactions, %{thread_id: thread_id}}
       assert thread_id == root.id
       quiet!(ctx)
-      refute_receive {:prompted, _, _}, 200
+      settle()
+      refute_receive {:prompted, _, _}, 20
     end
 
     test "a reaction leaves a chatter pause in place; the user's next message lifts it", ctx do
@@ -1114,8 +1138,9 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert_receive {:reactions, _}
       _ = :sys.get_state(ctx.pid)
       assert Runtime.paused?(ctx.channel.id)
+      settle()
       refute_received {:chatter, :resumed}
-      refute_receive {:prompted, _, _}, 200
+      refute_receive {:prompted, _, _}, 20
 
       {:ok, _} = Runtime.post_user_message(ctx.channel.id, "carry on")
       assert_receive {:chatter, :resumed}, 1_000
@@ -1175,7 +1200,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
 
       assert_receive {:turn_thread, ^agent_id, nil}, 1_000
       assert ChannelServer.turn_threads(ctx.pid) == %{}
-      refute_receive {:prompted, _, _}, 200
+      settle()
+      refute_receive {:prompted, _, _}, 20
     end
 
     test "wakes merged from two threads make a channel turn; from one thread, a thread turn",
@@ -1309,7 +1335,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
     assert payload["passed"] == true
     assert payload["note"] == "just an acknowledgement"
-    refute_receive {:timeline, %{event_type: "message", message: %{kind: "reply"}}}, 300
+    settle()
+    refute_receive {:timeline, %{event_type: "message", message: %{kind: "reply"}}}, 20
     assert_receive {:agent_status, _, :idle}, 1_000
   end
 
@@ -1370,7 +1397,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert t1 =~ m1.id
 
     {:ok, m2} = Runtime.post_user_message(ctx.channel.id, "second")
-    refute_receive {:prompted, ^sid, _}, 300
+    settle()
+    refute_receive {:prompted, ^sid, _}, 20
 
     emit(sid, :agent_completed, %{})
     assert_receive {:prompted, ^sid, %{parts: [%{text: t2}]}}, 2_000
@@ -1740,7 +1768,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "@#{reviewer.name} please review")
 
     assert_receive {:prompted, "ses_rev_2", _}, 2_000
-    refute_receive {:prompted, _, _}, 200
+    settle()
+    refute_receive {:prompted, _, _}, 20
   end
 
   describe "default models" do
@@ -1839,8 +1868,10 @@ defmodule Canopy.Runtime.ChannelServerTest do
       big_turn(sid)
 
       assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
-      refute_receive :compacted, 300
-      refute_receive {:timeline, %{event_type: "session_compacted"}}, 100
+      settle()
+      refute_receive :compacted, 20
+      settle()
+      refute_receive {:timeline, %{event_type: "session_compacted"}}, 20
     end
   end
 
@@ -1937,7 +1968,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
         Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "@#{ctx.team.name} again")
 
       assert_receive {:chatter, :paused}, 2_000
-      refute_receive {:prompted, _}, 300
+      settle()
+      refute_receive {:prompted, _}, 20
     end
 
     test "with turns serialized, team wakes queue in order and never pause the team", ctx do
@@ -1949,7 +1981,8 @@ defmodule Canopy.Runtime.ChannelServerTest do
       for agent <- ctx.team_members do
         sid = ctx.sids[agent.id]
         assert_receive {:prompted, ^sid}, 2_000
-        refute_receive {:prompted, _}, 100
+        settle()
+        refute_receive {:prompted, _}, 20
         emit(sid, :agent_completed, %{})
       end
 
@@ -2160,6 +2193,7 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
   use Canopy.DataCase, async: false
 
   import Mox
+  import Canopy.RuntimeHelpers, only: [settle: 0]
 
   alias Canopy.{Fixtures, Runtime, Timeline}
   alias Canopy.OpenCode.ClientMock, as: OC
@@ -2212,7 +2246,8 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
     emit(sid, :tool_completed, %{call_id: "c2", tool: "read", status: :ok, input: %{}})
     emit(sid, :text_delta, %{delta: "late", message_id: "m", part_id: "p"})
 
-    refute_receive {:telemetry, _, _}, 300
+    settle()
+    refute_receive {:telemetry, _, _}, 20
     assert Runtime.telemetry(ctx.channel.id, agent_id).entries == []
   end
 
@@ -2256,7 +2291,9 @@ defmodule Canopy.Runtime.ChannelServerErrorsTest do
                     %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
                    2_000
 
-    refute_receive {:timeline, %{event_type: "agent_error"}}, 300
-    refute_receive {:timeline, %{event_type: "agent_turn_completed"}}, 100
+    settle()
+    refute_receive {:timeline, %{event_type: "agent_error"}}, 20
+    settle()
+    refute_receive {:timeline, %{event_type: "agent_turn_completed"}}, 20
   end
 end

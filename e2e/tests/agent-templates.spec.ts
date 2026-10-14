@@ -3,16 +3,17 @@
 // so the agents this spec creates are deactivated at the end: later specs
 // see the same active agents as before.
 import { test, expect, Page } from "@playwright/test";
+import { gotoLive } from "./helpers";
 
 async function agentIdByName(page: Page, name: string): Promise<string> {
-  await page.goto("/agents");
+  await gotoLive(page, "/agents");
   const row = page.locator('#active-agents li[id^="agent-agt_"]', { hasText: `@${name}` }).first();
   return (await row.getAttribute("id"))!.replace(/^agent-/, "");
 }
 
 async function deactivate(page: Page, name: string) {
   const id = await agentIdByName(page, name);
-  await page.goto(`/agents/${id}`);
+  await gotoLive(page, `/agents/${id}`);
   // Deactivate sits last in the page's ⋯ menu
   await page.locator("#agent-menu-toggle").click();
   await page.locator(`#deactivate-agent-${id}`).click();
@@ -25,7 +26,7 @@ test.describe("agent templates", () => {
   test("export an agent, import the file as a copy, and add one from the gallery", async ({ page }, testInfo) => {
     // export @reviewer from its page
     const reviewerId = await agentIdByName(page, "reviewer");
-    await page.goto(`/agents/${reviewerId}`);
+    await gotoLive(page, `/agents/${reviewerId}`);
     await page.locator("#agent-menu-toggle").click();
     await page.locator(`#export-agent-${reviewerId}`).click();
     await expect(page.locator("#export-agent-download")).toBeVisible();
@@ -38,7 +39,7 @@ test.describe("agent templates", () => {
     await download.saveAs(file);
 
     // import it: it's identical to the one here, so it starts skipped; rename it
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await page.locator("#agents-import").click();
     await expect(page).toHaveURL(/\/agents\/import$/);
     await page.locator("#import-upload-form input[type=file]").setInputFiles(file);

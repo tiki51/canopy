@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, gotoLive, reload, send, timeline, uniq } from "./helpers";
 
 // The app shell is exactly the window: the page itself never scrolls, only the
 // columns inside it. And the channel header fits its one row to its width
@@ -63,8 +63,7 @@ test.describe("layout", () => {
   test.afterEach(async ({ page }) => {
     if (!channelPath) return;
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(channelPath);
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, channelPath);
     const chip = page.locator("#lock-chip-tests");
     if ((await chip.count()) > 0) {
       await chip.click();
@@ -140,12 +139,11 @@ test.describe("layout", () => {
     // remembered open from lg up
     await page.locator("#toggle-details").click();
     await expect(page.locator("#details-panel")).toBeVisible();
-    await page.reload();
+    await reload(page);
     await expect(page.locator("#details-panel")).toBeVisible();
 
     await page.setViewportSize({ width: 800, height: 900 });
-    await page.goto(path);
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, path);
     await expect(page.locator("#details-panel")).toBeHidden();
     await expectHeaderFits(page);
 
@@ -198,8 +196,7 @@ test.describe("layout", () => {
       await expectNoPageScroll(page);
 
       for (const path of ["/settings", "/agents", "/search?q=filler"]) {
-        await page.goto(path);
-        await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+        await gotoLive(page, path);
         await expectNoPageScroll(page);
       }
     }

@@ -52,6 +52,6 @@ defmodule Canopy.Environment.BackupTest do
     path = Backup.path(~N[2026-10-13 11:12:00])
     db = Path.expand(Canopy.Repo.config()[:database])
     assert Path.dirname(path) == Path.dirname(db)
-    assert Path.basename(path) =~ ~r/^canopy_test\.2026-10-13T1112(-\d+)?\.db$/
+    assert Path.basename(path) =~ ~r/^canopy_test\d*\.2026-10-13T1112(-\d+)?\.db$/
   end
 end

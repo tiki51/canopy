@@ -115,7 +115,9 @@ defmodule Canopy.Engine.ClaudeCodeTest do
 
     on_exit(fn ->
       Application.put_env(:canopy, :claude_code, previous)
-      File.rm_rf!(dir)
+      # not rm_rf!: a fake turn still exiting can write its log while the tree
+      # goes, and a leftover under _build/test/tmp is harmless
+      File.rm_rf(dir)
     end)
 
     coder =

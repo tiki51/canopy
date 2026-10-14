@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
+import { clickHeader, createChannel, reload, send, timeline, uniq } from "./helpers";
 
 const fake = `http://127.0.0.1:${process.env.FAKE_OPENCODE_PORT || 4396}`;
 const working = (page: Page) => page.locator('section[id^="telemetry-"]');
@@ -24,8 +24,7 @@ async function saveBrief(page: Page, text: string) {
 }
 
 async function reloaded(page: Page) {
-  await page.reload();
-  await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+  await reload(page);
 }
 
 test.describe("channel brief", () => {

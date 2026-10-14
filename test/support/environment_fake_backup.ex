@@ -7,7 +7,9 @@ defmodule Canopy.Environment.FakeBackup do
 
   @behaviour Canopy.Environment.Backup
 
-  def dir, do: Path.expand("../../_build/test/tmp/backups", __DIR__)
+  def dir,
+    do:
+      Path.expand("../../_build/test/tmp/backups#{System.get_env("MIX_TEST_PARTITION")}", __DIR__)
 
   @impl true
   def path(now) do

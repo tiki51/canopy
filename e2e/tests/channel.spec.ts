@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, uniq, clickHeader, openDetails } from "./helpers";
+import { clickHeader, createChannel, openDetails, send, timeline, uniq } from "./helpers";
 
 test.describe("channel collaboration", () => {
   test("a user message wakes the owner: telemetry, an agent post via MCP, the reply, and a turn summary", async ({ page }) => {

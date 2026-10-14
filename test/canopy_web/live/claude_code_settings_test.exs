@@ -211,14 +211,16 @@ defmodule CanopyWeb.ClaudeCodeSettingsTest do
       fake = Path.expand("../../support/fake_claude.sh", __DIR__)
       {:ok, view, _html} = live(conn, ~p"/settings")
 
-      config_dir = Path.join(System.tmp_dir!(), "canopy-claude-check")
+      config_dir =
+        Path.join(System.tmp_dir!(), "canopy-claude-check-" <> Fixtures.unique_suffix())
 
       view
       |> form("#claude-form", setting: %{claude_binary: fake, claude_config_dir: config_dir})
       |> render_change()
 
       view |> element("#check-claude") |> render_click()
-      render_async(view)
+      # the check spawns the fake binary: well over the default 100 ms on a busy machine
+      render_async(view, 2_000)
 
       assert has_element?(view, "#claude-check-result", "9.9.9")
       assert has_element?(view, "#claude-check-result", "logged in (max) as fake@example.com")

@@ -1,7 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createChannel } from "./helpers";
+import { createChannel, gotoLive } from "./helpers";
 
 // The repository page's MCP inventory. The fake OpenCode reports the
 // repository's own servers from `GET /config` (a local one with a fake secret
@@ -35,7 +35,7 @@ test("a repository's MCP servers: status, secrets masked, re-register and reconn
   // a channel makes OpenCode (the seeded agents' engine) in use here
   await createChannel(page);
 
-  await page.goto("/repositories");
+  await gotoLive(page, "/repositories");
   const row = page.locator("#repositories li", { hasText: "e2e-repo" });
   await row.locator("[id^=repository-mcp-]").click();
   await expect(page).toHaveURL(/\/repositories\/.+/);

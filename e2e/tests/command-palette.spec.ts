@@ -3,7 +3,7 @@
 // leak to the page underneath.
 import { test, expect, Page } from "@playwright/test";
 import path from "node:path";
-import { createChannel, send, timeline, uniq, clickHeader } from "./helpers";
+import { attach, clickHeader, createChannel, gotoLive, send, timeline, uniq } from "./helpers";
 import { iso, sql } from "./site-helpers";
 
 const dialog = (page: Page) => page.locator("#cmdk-dialog");
@@ -67,7 +67,7 @@ test.describe("command palette", () => {
     const name = uniq("jumpto");
     const id = await createChannel(page, name);
 
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await openPalette(page);
     await page.keyboard.type(name.slice(0, -2));
     await expect(active(page)).toContainText(name);
@@ -80,7 +80,7 @@ test.describe("command palette", () => {
     await expect(options(page).filter({ hasText: name })).toHaveCount(0);
     await page.keyboard.press("Escape");
 
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await openPalette(page);
     const recent = page.locator("#cmdk-list [role=group]").first();
     await expect(recent).toContainText("Recent");
@@ -132,7 +132,7 @@ test.describe("command palette", () => {
   });
 
   test("> commands: theme and a new channel in a repository", async ({ page }) => {
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await openPalette(page);
     await page.keyboard.type(">theme dark");
     await expect(page.locator("#cmdk-chip")).toHaveText("> commands");
@@ -178,7 +178,7 @@ test.describe("command palette", () => {
     const name = uniq("slashto");
     const id = await createChannel(page, name);
 
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await openPalette(page);
     await page.keyboard.type("/delegate");
     await expect(active(page)).toContainText("choose a channel");
@@ -190,7 +190,7 @@ test.describe("command palette", () => {
     await expect(page).toHaveURL(`/channels/${id}`);
     await expect(composer(page)).toHaveValue("/delegate @");
 
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await openPalette(page);
     await page.keyboard.type("/stop");
     await page.keyboard.press("Enter");
@@ -203,7 +203,7 @@ test.describe("command palette", () => {
 
   test("@ mode: Enter opens an agent's page, Shift+Enter messages it", async ({ page }) => {
     await createChannel(page);
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await openPalette(page);
     await page.keyboard.type("@backend");
     await expect(page.locator("#cmdk-chip")).toHaveText("@ agents");
@@ -220,12 +220,11 @@ test.describe("command palette", () => {
 
   test("files are searched by name; Shift+Enter in a channel attaches one", async ({ page }) => {
     await createChannel(page);
-    await page.locator("#upload-form input[type=file]").setInputFiles([png]);
-    await expect(page.locator("#composer-files")).toContainText("red.png");
+    await attach(page, [png]);
     await send(page, "Here is the red square. No need to reply.");
     await expect(timeline(page).locator('[id^="attachment-"]')).toHaveCount(1);
 
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await openPalette(page);
     await page.keyboard.type("red.pn");
     await expect(options(page).filter({ hasText: "red.png" }).first()).toContainText("image");
@@ -241,8 +240,7 @@ test.describe("command palette", () => {
 
   test("on a phone the sidebar button opens it full width over the closed drawer", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/agents");
-    await connected(page);
+    await gotoLive(page, "/agents");
     await page.locator('label[for="app-drawer"][aria-label="Open the menu"]').first().click();
     await expect(page.locator("#app-drawer")).toBeChecked();
     await page.locator("#cmdk-open").click();
@@ -257,8 +255,7 @@ test.describe("command palette", () => {
     // a fresh install, put back however the test ends
     sql("UPDATE settings SET onboarded_at = NULL");
     try {
-      await page.goto("/agents");
-      await connected(page);
+      await gotoLive(page, "/agents");
       await expect(page.locator("#setup-dialog")).toBeVisible();
       await page.keyboard.press("ControlOrMeta+k");
       await expect(dialog(page)).toBeHidden();

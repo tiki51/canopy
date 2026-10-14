@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, gotoLive, send, timeline, uniq } from "./helpers";
 
 // Clickable cards (assets/js/card_links.js): a click on the card follows its
 // link, its controls keep their own behaviour, closing a menu or selecting
 // text doesn't navigate, and ⌘/Ctrl-click opens a new tab.
 
 test("a playbook card opens its editor; its controls and text stay usable", async ({ page, context }) => {
-  await page.goto("/playbooks");
+  await gotoLive(page, "/playbooks");
   const card = page
     .locator("#playbooks > li[data-card]")
     .filter({ has: page.locator("span.font-mono", { hasText: /^bug-fix$/ }) });
@@ -67,7 +67,7 @@ test("a thread row opens its thread", async ({ page }) => {
   await page.locator("#thread-composer-input").press("Enter");
   await expect(page.locator("#thread-replies")).toContainText("Per request, I think.");
 
-  await page.goto("/threads?tab=active");
+  await gotoLive(page, "/threads?tab=active");
   const row = page.locator("#threads > li[data-card]", { hasText: rootText });
   await expect(row).toHaveCSS("cursor", "pointer");
   await row.getByText(rootText).click();

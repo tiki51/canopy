@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, gotoLive, reload, send, timeline } from "./helpers";
 
 const panel = (page: Page) => page.locator("#thread-panel");
 const replies = (page: Page) => page.locator("#thread-replies");
@@ -72,7 +72,7 @@ test.describe("threads", () => {
     await openThread(page, "Does the reload keep the thread?");
     const url = page.url();
 
-    await page.reload();
+    await reload(page);
     await expect(page).toHaveURL(url);
     await expect(panel(page)).toBeVisible();
     await expect(panel(page)).toContainText("Does the reload keep the thread?");
@@ -98,7 +98,7 @@ test.describe("threads", () => {
     const url = page.url();
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(url);
+    await gotoLive(page, url);
     await expect(panel(page)).toBeVisible();
 
     // it slides in from the right, then covers the whole screen

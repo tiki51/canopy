@@ -1,6 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
-import { notes, open, setVisible, stubNotifications, turnOn, waiting } from "./notify-helpers";
+import { createChannel, reload, send, timeline } from "./helpers";
+import { gotoLive, notes, setVisible, stubNotifications, turnOn, waiting } from "./notify-helpers";
 
 // Desktop notifications (assets/js/notify.js, CanopyWeb.Notify). The browser's
 // Notification API and the tab's visibility are stubbed (notify-helpers.ts).
@@ -26,7 +26,7 @@ async function answer(page: Page) {
 test.describe("desktop notifications", () => {
   test("Settings: unsupported without the Notification API", async ({ context, page }) => {
     await stubNotifications(context, { unsupported: true });
-    await open(page, "/settings");
+    await gotoLive(page, "/settings");
     await expect(page.locator("#notify-prefs")).toHaveAttribute("data-state", "unsupported");
     await expect(page.locator("#notify-unsupported")).toBeVisible();
     await expect(page.locator("#notify-enabled")).toBeHidden();
@@ -34,7 +34,7 @@ test.describe("desktop notifications", () => {
 
   test("Settings: off by default; the switch asks only when clicked, and is remembered", async ({ context, page }) => {
     await stubNotifications(context);
-    await open(page, "/settings");
+    await gotoLive(page, "/settings");
 
     const prefs = page.locator("#notify-prefs");
     await expect(prefs).toHaveAttribute("data-state", "off");
@@ -58,7 +58,7 @@ test.describe("desktop notifications", () => {
     await expect(page.locator("#notify-needs_you")).toBeDisabled();
     await expect(page.locator("#notify-needs_you")).toBeChecked();
 
-    await page.reload();
+    await reload(page);
     await expect(prefs).toHaveAttribute("data-state", "off");
     await expect(page.locator("#notify-work")).not.toBeChecked();
     await page.locator("#notify-enabled").check();
@@ -72,7 +72,7 @@ test.describe("desktop notifications", () => {
 
   test("Settings: a browser that says no shows how to allow it", async ({ context, page }) => {
     await stubNotifications(context, { answer: "denied" });
-    await open(page, "/settings");
+    await gotoLive(page, "/settings");
     await page.locator("#notify-enabled").click();
     await expect(page.locator("#notify-prefs")).toHaveAttribute("data-state", "blocked");
     await expect(page.locator("#notify-blocked")).toContainText("blocked for this site");
@@ -92,9 +92,9 @@ test.describe("desktop notifications", () => {
     await answer(page);
 
     // elsewhere (visible and focused, another page): shown, silent while sound is off
-    await open(page, "/settings");
+    await gotoLive(page, "/settings");
     const other = await context.newPage();
-    await open(other, `/channels/${id}`);
+    await gotoLive(other, `/channels/${id}`);
     await setVisible(other, false);
     await send(other, "ask me once more");
     await expect.poll(() => ofKind(page, /needs you/)).toHaveLength(1);
@@ -122,10 +122,10 @@ test.describe("desktop notifications", () => {
     await turnOn(page);
     await page.locator("#notify-needs_you").uncheck();
     const id = await createChannel(page);
-    await open(page, "/settings");
+    await gotoLive(page, "/settings");
 
     const other = await context.newPage();
-    await open(other, `/channels/${id}`);
+    await gotoLive(other, `/channels/${id}`);
     await setVisible(other, false);
     await send(other, "ask me about the retry key");
     await expect(card(other)).toBeVisible();
@@ -138,10 +138,10 @@ test.describe("desktop notifications", () => {
     await stubNotifications(context);
     await turnOn(page);
     const second = await context.newPage();
-    await open(second, "/settings");
+    await gotoLive(second, "/settings");
     await expect(second.locator("#notify-prefs")).toHaveAttribute("data-state", "on");
 
-    await open(page, "/agents");
+    await gotoLive(page, "/agents");
     await page.locator("#cmdk-open").click();
     await page.keyboard.type(">notifications");
     await expect(page.locator("#cmdk-list [aria-selected='true']")).toContainText("Turn desktop notifications off");
@@ -173,9 +173,9 @@ test.describe("desktop notifications", () => {
     await stubNotifications(context);
     await turnOn(page);
     const id = await createChannel(page);
-    await open(page, "/agents");
+    await gotoLive(page, "/agents");
     const second = await context.newPage();
-    await open(second, `/channels/${id}`);
+    await gotoLive(second, `/channels/${id}`);
 
     await setVisible(page, false);
     await setVisible(second, false);
@@ -255,7 +255,7 @@ test.describe("desktop notifications", () => {
     const asleep = await browser.newContext({ baseURL });
     await stubNotifications(asleep, { permission: "granted", hidden: true });
     const first = await asleep.newPage();
-    await open(first, "/settings");
+    await gotoLive(first, "/settings");
     await first.evaluate(() => (window as any).canopyNotifier.setPrefs({ enabled: true }));
     await first.close();
 
@@ -269,10 +269,10 @@ test.describe("desktop notifications", () => {
     // the sleeping browser's tab comes back: one note for what it missed
     // (earlier specs' cards from the last half hour are in it too), once
     const page = await asleep.newPage();
-    await open(page, "/agents");
+    await gotoLive(page, "/agents");
     await expect.poll(() => notes(page)).toHaveLength(1);
     expect((await notes(page))[0].title).toMatch(/needs you|things are waiting on you/);
-    await open(page, "/files");
+    await gotoLive(page, "/files");
     await page.waitForTimeout(800);
     expect(await notes(page)).toEqual([]);
 
@@ -290,9 +290,9 @@ test.describe("desktop notifications", () => {
     await expect(card(page)).toBeVisible();
     await expect(page).toHaveTitle(prefix(before + 1));
 
-    await open(page, "/files");
+    await gotoLive(page, "/files");
     await expect(page).toHaveTitle(prefix(before + 1));
-    await open(page, `/channels/${id}`);
+    await gotoLive(page, `/channels/${id}`);
     await expect(page).toHaveTitle(prefix(before + 1));
 
     await answer(page);

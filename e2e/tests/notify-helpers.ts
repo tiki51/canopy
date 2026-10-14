@@ -1,4 +1,7 @@
 import { BrowserContext, Page, expect } from "@playwright/test";
+import { gotoLive } from "./helpers";
+
+export { gotoLive };
 
 // A stand-in for the browser's Notification API and page visibility, so the
 // specs can see what Canopy would show (assets/js/notify.js) and pretend the
@@ -88,11 +91,6 @@ export async function setVisible(page: Page, visible: boolean, focused = visible
 export const notes = (page: Page) =>
   page.evaluate(() => (window as any).__notes as { title: string; body: string; tag: string; silent: boolean }[]);
 
-/** Loads a page and waits for its LiveView to connect. */
-export async function open(page: Page, path: string) {
-  await page.goto(path);
-  await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
-}
 
 /** What waits on the user across channels, as the shell knows it. */
 export const waiting = async (page: Page) =>
@@ -100,7 +98,7 @@ export const waiting = async (page: Page) =>
 
 /** Turns desktop notifications on through Settings, as the user would. */
 export async function turnOn(page: Page) {
-  await open(page, "/settings");
+  await gotoLive(page, "/settings");
   await page.locator("#notify-enabled").check();
   await expect(page.locator("#notify-prefs")).toHaveAttribute("data-state", "on");
 }
