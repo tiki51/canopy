@@ -870,6 +870,44 @@ defmodule CanopyWeb.TimelineComponentsTest do
                "routine"
     end
 
+    test "agent-written markdown in a line is stripped, not shown raw" do
+      assert line("playbook_completed", %{"outcome" => "- **Design:** Option B\n- `a.py`"}) ==
+               "the bug-fix playbook is complete: Design: Option B · a.py"
+
+      # Runs flattens the outcome to one line before it reaches the event.
+      assert line("playbook_completed", %{"outcome" => "- **Design:** B - **Tests:** 16 pass"}) ==
+               "the bug-fix playbook is complete: Design: B · Tests: 16 pass"
+
+      assert line("playbook_step_completed", %{
+               "title" => "Fix",
+               "result" => "Fixed - **5** files"
+             }) ==
+               "bug-fix: Fix done: Fixed - 5 files"
+
+      assert line("playbook_completed", %{"outcome" => "**  **"}) ==
+               "the bug-fix playbook is complete"
+
+      # A cut that lands on a space leaves none before the ellipsis.
+      long = String.duplicate("a", 158) <> " " <> String.duplicate("b", 10)
+
+      assert line("playbook_completed", %{"outcome" => long}) ==
+               "the bug-fix playbook is complete: " <> String.duplicate("a", 158) <> "…"
+
+      assert TimelineComponents.event_text(
+               %{
+                 event_type: "delegation_created",
+                 agent_id: "agt_pm",
+                 payload: %{
+                   "from_agent_id" => "agt_pm",
+                   "to_agent_id" => "agt_be",
+                   "description" => "Fix `export_csv` (**reports.py:25**)"
+                 }
+               },
+               @names,
+               "Steven"
+             ) == "@pm delegated to @backend: Fix export_csv (reports.py:25)"
+    end
+
     test "a watch firing" do
       assert TimelineComponents.event_text(
                %{
