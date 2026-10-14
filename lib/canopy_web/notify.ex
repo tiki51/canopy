@@ -11,8 +11,7 @@ defmodule CanopyWeb.Notify do
 
   A note is `%{id, kind, channel_id, place, tag, title, body, url}`:
 
-    * `kind` — `"needs_you"` (a question or permission card, or a playbook
-      step held for sign-off), `"mention"` (an agent mentioned the user, or
+    * `kind` — `"needs_you"` (a question, permission or sign-off card), `"mention"` (an agent mentioned the user, or
       wrote in a DM), or `"work"` (the channel went quiet after a run, or its
       task was completed);
     * `id` — the same in every tab, so tabs can agree on one note; a card's
@@ -89,6 +88,30 @@ defmodule CanopyWeb.Notify do
       body: String.trim("#{permission} permission: #{patterns}")
     )
   end
+
+  # A sign-off card: one note per card. A run's held step is announced by
+  # its card, so its `playbook_approval_requested` (carrying the card's id)
+  # is not announced again.
+  defp note(%Event{event_type: "signoff_requested", payload: p} = event, channel, _ctx) do
+    asker =
+      case event do
+        %Event{agent: %{name: name}} when is_binary(name) -> "@" <> name
+        _ -> Map.get(p, "playbook") || "An agent"
+      end
+
+    card(event, channel, "signoff",
+      title: "#{asker} wants your sign-off#{in_channel(channel)}",
+      body: Map.get(p, "question") || Map.get(p, "title") || "A sign-off is waiting for you."
+    )
+  end
+
+  defp note(
+         %Event{event_type: "playbook_approval_requested", payload: %{"signoff_id" => id}},
+         _channel,
+         _ctx
+       )
+       when is_binary(id),
+       do: nil
 
   defp note(%Event{event_type: "playbook_approval_requested"} = event, channel, _ctx) do
     p = event.payload

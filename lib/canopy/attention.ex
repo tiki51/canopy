@@ -1,7 +1,8 @@
 defmodule Canopy.Attention do
   @moduledoc """
   What is waiting on the user, per channel: pending question and permission
-  cards, and playbook steps held for the user's sign-off. The sidebar shows
+  cards, and sign-off cards (freestanding, or a playbook step held for the
+  user's approval). The sidebar shows
   it so a question asked in a channel the user is not looking at does not go
   unseen. A detached card (the agent moved on, but the answer still reaches
   it) counts for a day, like its card stays undimmed; after that it stays
@@ -13,11 +14,12 @@ defmodule Canopy.Attention do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Canopy.{PermissionRequests, QuestionRequests, Repo}
+  alias Canopy.{PermissionRequests, QuestionRequests, Repo, Signoffs}
   alias Canopy.Channels.Channel
   alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.Playbooks.Runs
   alias Canopy.QuestionRequests.QuestionRequest
+  alias Canopy.Signoffs.SignoffRequest
   alias Canopy.Timeline.Event
 
   @type entry :: %{
@@ -36,29 +38,35 @@ defmodule Canopy.Attention do
     fresh_since = DateTime.add(DateTime.utc_now(), -@detached_fresh_hours, :hour)
     questions = QuestionRequests.pending_counts(fresh_since)
     permissions = PermissionRequests.pending_counts(fresh_since)
+    # a held playbook step counts once, through its card
+    approvals = Signoffs.pending_counts()
     runs = Runs.live_by_channel()
 
-    (Map.keys(questions) ++ Map.keys(permissions) ++ Map.keys(runs))
+    (Map.keys(questions) ++ Map.keys(permissions) ++ Map.keys(approvals) ++ Map.keys(runs))
     |> Enum.uniq()
     |> Map.new(fn id ->
       {id,
        %{
          questions: Map.get(questions, id, 0),
          permissions: Map.get(permissions, id, 0),
-         approvals: if(Map.get(runs, id) == "awaiting_approval", do: 1, else: 0),
+         approvals: Map.get(approvals, id, 0),
          playbook: Map.has_key?(runs, id)
        }}
     end)
   end
 
   @doc """
-  The `question_requested` and `permission_requested` events of the cards
+  The `question_requested`, `permission_requested` and `signoff_requested` events of the cards
   still waiting on the user that were raised (or raised again) since
   `since`, in open channels, oldest first, with the asking agent. Desktop
   notifications use them to catch up after a page reconnects.
   """
   def pending_card_events(%DateTime{} = since) do
-    [{QuestionRequest, "question_requested"}, {PermissionRequest, "permission_requested"}]
+    [
+      {QuestionRequest, "question_requested"},
+      {PermissionRequest, "permission_requested"},
+      {SignoffRequest, "signoff_requested"}
+    ]
     |> Enum.flat_map(fn {schema, type} ->
       Repo.all(
         from e in Event,

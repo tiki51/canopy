@@ -143,6 +143,15 @@ window.addEventListener("phx:page-loading-stop", _info => {
   if (drawer) drawer.checked = false
 })
 
+// The run panel's "Show card": once Details is out of the way (below lg it
+// covers the feed), bring the sign-off card into view and focus it.
+window.addEventListener("phx:signoff:show", ({detail: {id}}) => {
+  const card = document.getElementById(id)
+  if (!card) return
+  card.scrollIntoView({block: "center"})
+  card.focus({preventScroll: true})
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

@@ -24,7 +24,7 @@ defmodule Canopy.Environment.Clear do
   # Children before their parents (foreign keys are deferred to the commit anyway).
   @cleared ~w(message_attachments message_reactions message_reads thread_reads channel_reads
               search_entries timeline_events turn_activity_details permission_requests
-              question_requests lock_claims routing_pauses watch_items schedules tasks
+              question_requests signoff_requests lock_claims routing_pauses watch_items schedules tasks
               delegations handoffs playbook_steps playbook_runs playbooks documents messages
               channel_agents agent_memories agent_sessions team_members teams channels agents)
 

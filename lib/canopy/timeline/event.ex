@@ -24,6 +24,7 @@ defmodule Canopy.Timeline.Event do
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
     permission_requested permission_resolved permission_detached
     question_requested question_resolved question_detached
+    signoff_requested signoff_resolved signoff_withdrawn
     lock_granted lock_queued lock_released
     playbook_started playbook_step_started playbook_step_completed playbook_step_skipped
     playbook_approval_requested playbook_approval_resolved playbook_completed playbook_cancelled

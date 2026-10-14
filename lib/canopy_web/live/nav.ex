@@ -332,6 +332,10 @@ defmodule CanopyWeb.Nav do
   defp handle_info({:timeline_any, %{event_type: "permission_" <> _} = event}, socket),
     do: {:halt, socket |> refresh_attention() |> notify(event)}
 
+  # Sign-off cards too: a freestanding card has no run broadcast to refresh the badge.
+  defp handle_info({:timeline_any, %{event_type: "signoff_" <> _} = event}, socket),
+    do: {:halt, socket |> refresh_attention() |> notify(event)}
+
   # A sign-off requested or a task completed: a desktop notification may say
   # so. The page may want the event too.
   defp handle_info({:timeline_any, %{event_type: type} = event}, socket)

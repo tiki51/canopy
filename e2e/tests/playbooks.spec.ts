@@ -3,8 +3,8 @@ import { createChannel, gotoLive, reload, send, timeline, uniq } from "./helpers
 
 // Playbooks: the library and the builder, then a run the fake OpenCode drives.
 // Asked to "run the <name> playbook", the fake agent starts it as the lead and
-// advances through to the step held for the user's sign-off; Approve wakes it
-// to close the run. Watches stay out of e2e (no gh here); ExUnit covers them.
+// advances through to the step held for the user's sign-off; the card's
+// Accept wakes it to close the run. Watches stay out of e2e (no gh here); ExUnit covers them.
 
 test.describe("playbooks", () => {
   test("build a playbook, run it in a channel, and approve its sign-off", async ({ page }) => {
@@ -76,7 +76,8 @@ test.describe("playbooks", () => {
 
     await expect(timeline(page)).toContainText(`@backend started the ${name} playbook · 3 steps`);
     await expect(timeline(page)).toContainText(`${name}: Plan done → Build (@frontend)`);
-    await expect(timeline(page)).toContainText(`${name} is waiting for your sign-off on Sign-off`);
+    await expect(timeline(page)).toContainText("@backend asked for your sign-off on Sign-off");
+    await expect(timeline(page)).not.toContainText(`${name} is waiting for your sign-off on Sign-off`);
     await expect(timeline(page)).toContainText("Ready for your sign-off: README.md updated.");
 
     const chip = page.locator("#playbook-chip");
@@ -99,9 +100,29 @@ test.describe("playbooks", () => {
     await chip.click();
     await expect(page.locator("#playbook-panel")).toBeVisible();
 
-    // Approve completes the run and wakes the coordinator
-    await page.locator("#approve-playbook-step").click();
-    await expect(timeline(page)).toContainText(`approved Sign-off of ${name}`);
+    // the gate's card is in the timeline, and its compact twin in the panel
+    const card = page.locator('section[id^="signoff-so_"]');
+    await expect(card).toBeVisible();
+    await expect(card.locator('[id$="-badge"]')).toContainText(`${name} · step 3 of 3`);
+    await expect(page.locator("#playbook-signoff")).toBeVisible();
+
+    // below lg Details covers the feed: Show card closes it and brings the card up
+    const desktop = page.viewportSize()!;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await chip.click();
+    await page.locator("#playbook-signoff-show").click();
+    await expect(page.locator("#details-panel")).toHaveCount(0);
+    await expect(card).toBeInViewport();
+    await expect(card).toBeFocused();
+    await page.setViewportSize(desktop);
+    await chip.click();
+    await expect(page.locator("#playbook-signoff")).toBeVisible();
+
+    // the card's Accept completes the run and wakes the coordinator
+    await card.locator('[id$="-accept"]').click();
+    await expect(card).toHaveCount(0);
+    await expect(page.locator("#playbook-signoff")).toHaveCount(0);
+    await expect(timeline(page)).toContainText(`You accepted @backend's Sign-off`);
     await expect(timeline(page)).toContainText(`the ${name} playbook is complete`);
     await expect(timeline(page)).toContainText("Signed off; closing the run.");
     await expect(chip).toBeHidden();

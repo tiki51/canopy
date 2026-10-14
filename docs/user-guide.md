@@ -2070,18 +2070,36 @@ accepted, the coordinator role follows it.
 ### Sign-off
 
 A step with `approval: user` waits for you. When the coordinator advances past it, the
-chip turns amber ("waiting for you"), the timeline says "bug-fix is waiting for your
-sign-off", and the channel gets a "needs you" badge in the sidebar (and, with
-[desktop notifications](#notifications) on, a notification). In the panel:
+chip turns amber ("waiting for you"), the timeline says "@project-manager asked for your
+sign-off on User sign-off", and the channel gets a "needs you" badge in the sidebar (and,
+with [desktop notifications](#notifications) on, a notification). A sign-off card appears
+at the foot of the timeline, where you are reading, with a `bug-fix · step 6 of 6` badge
+and the step's result:
 
-- **Approve** completes the step and moves the run on (to the step the coordinator asked
+- **Accept** completes the step and moves the run on (to the step the coordinator asked
   for, else the next one, or completes it), and wakes the coordinator with your answer.
-- **Request changes** (with a note) reopens the step and wakes the coordinator with the
-  note, so it can go back to the step that fits (`next: "fix"`).
+- **Reject** reopens the step and wakes the coordinator with your answer, so it can go back
+  to the step that fits (`next: "fix"`).
+- When the coordinator offers options (say, three header designs), each option has its own
+  **Accept** (solid on the one it recommends) and **Reject all** replaces Reject. Accepting
+  an option records your choice in the step's result and moves the run on as a plain
+  Accept does.
+- The **note** is optional on every press and goes to the coordinator with your answer.
+  Enter in the note answers nothing; press a button.
+
+Once answered, the card collapses to one line ("You accepted B · Banner for
+@project-manager's User sign-off — "keep it grey""). The held step in the run panel carries
+a compact copy of the card whose buttons work the same; **Show card ↓** takes you to the
+full one (on a narrow window it closes Details first).
+
+Any agent can ask for your sign-off this way outside a playbook too
+(`canopy_signoff_request`): the same card, with Accept and Reject or options and Reject
+all. Your answer is posted in the channel as your message to that agent, with your note,
+and wakes it.
 
 An agent can never skip a sign-off step or jump past one you have not approved; if the
-run goes back before a step you approved, that step needs your approval again. Both
-buttons reset the chatter budget. The chatter budget is otherwise unchanged during a run: a
+run goes back before a step you approved, that step needs your approval again. Every
+answer resets the chatter budget. The chatter budget is otherwise unchanged during a run: a
 bug fix takes a dozen agent turns or so, so expect to press Continue now and then.
 
 ### Stalled runs
@@ -2424,7 +2442,7 @@ Reactions leave no line: they show as chips under the message.
 | `<you> took the tests lock back from @agent` / `… was taken back from @agent: not used within 3 minutes` | A Force release, or the lease passing an unused or overlong lock on |
 | `@agent started the bug-fix playbook · 6 steps` | A playbook run began |
 | `bug-fix: Reproduce done → Fix (@backend, @frontend)` / `bug-fix: skipped …` | The coordinator advanced the run |
-| `bug-fix is waiting for your sign-off on …` / `<you> approved …` / `<you> asked for changes on …` | A sign-off step |
+| `@agent asked for your sign-off on …` / `You accepted @agent's …` / `You rejected …` | A sign-off card (a playbook step's, or an agent's own) and your answer |
 | `the bug-fix playbook is complete` / `@agent cancelled the bug-fix playbook` | The run ended |
 | `bug-fix: coordinator @a → @b` | The coordinator changed (a handoff, or you reassigned it) |
 | `bug-fix has been on Fix for 30 min with no activity; nudged @agent` | A stall nudge |

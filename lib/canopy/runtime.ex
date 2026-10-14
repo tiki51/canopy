@@ -57,8 +57,13 @@ defmodule Canopy.Runtime do
   end
 
   defp do_post_user_message(channel_id, body, opts) do
-    {:ok, _pid} = ensure_channel(channel_id)
+    case ensure_channel(channel_id) do
+      {:ok, _pid} -> post_in_channel(channel_id, body, opts)
+      {:error, :resetting} -> {:error, "Canopy is resetting. Try again when it finishes."}
+    end
+  end
 
+  defp post_in_channel(channel_id, body, opts) do
     attachments? = Keyword.get(opts, :attachments, []) != []
     {thread_id, opts} = Keyword.pop(opts, :thread_id)
     {to_channel, opts} = Keyword.pop(opts, :to_channel, false)
@@ -486,11 +491,14 @@ defmodule Canopy.Runtime do
   the user did (Approve, Request changes, a run started from the UI), which
   resets the chatter budget like a user action; `reset: false` for Canopy's
   own wakes (a stall nudge), counted against it. `:trigger` attributes the
-  turn (default "playbook").
+  turn (default "playbook"). While Canopy resets, nobody is woken and
+  `{:error, :resetting}` is returned: the run has already changed, and the
+  reset is about to clear it.
   """
   def wake_playbook(channel_id, agent_id, text, opts \\ []) do
-    {:ok, pid} = ensure_channel(channel_id)
-    ChannelServer.wake(pid, agent_id, text, Keyword.put_new(opts, :trigger, "playbook"))
+    with {:ok, pid} <- ensure_channel(channel_id) do
+      ChannelServer.wake(pid, agent_id, text, Keyword.put_new(opts, :trigger, "playbook"))
+    end
   end
 
   @doc "True when the channel has hit its chatter budget and is holding wakeups."

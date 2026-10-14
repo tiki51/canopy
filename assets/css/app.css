@@ -518,4 +518,14 @@
 .new-card:focus-within .new-card-go:not(:disabled) {
   --btn-color: var(--color-primary); --btn-fg: var(--color-primary-content); border-color: var(--color-primary);
 }
+/* Sign-off cards: while a press is in flight LiveView disables every button
+   in the form (they grey out) and marks only the pressed one
+   .phx-submit-loading, which stays in its colour (solid, even an outline
+   option) with a spinner for its icon. */
+.signoff-verdict .signoff-spinner { display: none; }
+.signoff-verdict.phx-submit-loading .signoff-spinner { display: inline-block; }
+.signoff-verdict.phx-submit-loading .signoff-icon { display: none; }
+.signoff-verdict.btn-success.phx-submit-loading { --btn-fg: var(--color-success-content); }
+.signoff-verdict.btn-error.phx-submit-loading { --btn-fg: var(--color-error-content); }
+.signoff-verdict.phx-submit-loading { background-color: var(--btn-color); --btn-border: var(--btn-color); }
 @media (prefers-reduced-motion: reduce) { .step-flash { animation: none; } .step-drag { transform: none; } }
