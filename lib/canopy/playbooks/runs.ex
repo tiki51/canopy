@@ -139,13 +139,16 @@ defmodule Canopy.Playbooks.Runs do
 
     * `:playbook` — the `%Playbook{}` (enabled)
     * `:channel` — where it was asked for; the run happens there, or in a new
-      channel on the same repository when the playbook says `channel: new` or
-      `:channel_name` is given
+      channel on the same repository when `:channel_name` is given
     * `:coordinator` — the agent that coordinates it
     * `:started_by_agent_id` — nil when the user (or a watch) started it
-    * `:brief` — what the run is about
+    * `:brief` — what the run is about; optional (blank is stored as `""`, and
+      the coordinator works from the playbook alone)
     * `:assign` — role overrides: `%{role => agent name}` or `"fix=@fullstack, test=@qa"`
     * `:trigger` — for a run a watch started
+    * `:new_channel_via` — how the starter would open a new channel instead,
+      for the busy and DM refusals: `"with channel_name"` (an agent, the
+      default) or, say, `"from the Playbooks page"`
 
   The roster: an `assign` override wins, then a team member whose role label
   on the playbook's team is the role, then a team member named like the role,
@@ -173,8 +176,8 @@ defmodule Canopy.Playbooks.Runs do
          {:ok, overrides} <- parse_assign(Map.get(attrs, :assign), definition),
          team = definition.team && Teams.get_by_name(definition.team),
          {:ok, roster} <- resolve_roster(definition, team, overrides),
-         new? = definition.channel == "new" or present?(Map.get(attrs, :channel_name)),
-         :ok <- check_target(origin, new?, roster, team, coordinator),
+         new? = present?(Map.get(attrs, :channel_name)),
+         :ok <- check_target(origin, new?, roster, team, coordinator, new_channel_via(attrs)),
          {:ok, %{run: run} = changes} <-
            commit_start(attrs, playbook, definition, origin, new?, brief, roster, team) do
       broadcast_events(changes)
@@ -195,6 +198,9 @@ defmodule Canopy.Playbooks.Runs do
     end
   end
 
+  # how whoever started it opens a new channel instead, for the refusals
+  defp new_channel_via(attrs), do: Map.get(attrs, :new_channel_via) || "with channel_name"
+
   defp check_enabled(%Playbook{enabled: true}), do: :ok
 
   defp check_enabled(%Playbook{name: name}),
@@ -210,16 +216,13 @@ defmodule Canopy.Playbooks.Runs do
     end
   end
 
+  # no brief is fine: the playbook is then the whole context
   defp check_brief(brief) do
-    case brief && String.trim(brief) do
-      text when is_binary(text) and text != "" ->
-        if String.length(text) > @max_brief,
-          do: {:error, "the brief is too long (at most #{@max_brief} characters)"},
-          else: {:ok, text}
+    text = String.trim(brief || "")
 
-      _ ->
-        {:error, "brief is empty: say what this run is about"}
-    end
+    if String.length(text) > @max_brief,
+      do: {:error, "the brief is too long (at most #{@max_brief} characters)"},
+      else: {:ok, text}
   end
 
   defp check_active(%Agent{active: true}, _what), do: :ok
@@ -355,19 +358,24 @@ defmodule Canopy.Playbooks.Runs do
 
   # Where the run happens: the channel it was asked for (checked here), or a
   # new one on the same repository (created when the run commits).
-  defp check_target(_origin, true, _roster, _team, _coordinator), do: :ok
+  defp check_target(_origin, true, _roster, _team, _coordinator, _via), do: :ok
 
-  defp check_target(origin, false, roster, team, coordinator) do
+  # a stand-in channel (only a repository) is for a new channel; without a
+  # name it is no channel at all
+  defp check_target(%{id: nil}, false, _roster, _team, _coordinator, _via),
+    do: {:error, "pick a channel"}
+
+  defp check_target(origin, false, roster, team, coordinator, via) do
     cond do
       Channels.archived?(origin) ->
         {:error, "##{origin.name} is archived"}
 
       active = active_for_channel(origin.id) ->
-        {:error, already_running(origin, active)}
+        {:error, already_running(origin, active, via)}
 
       Channels.dm?(origin) and not dm_has?(origin, roster, team, coordinator) ->
         {:error,
-         "a DM keeps its agents and this run needs others (the coordinator or the roster); start it with channel_name to run it in a new channel"}
+         "a DM keeps its agents and this run needs others (the coordinator or the roster); start it in a channel, or in a new one #{via}"}
 
       true ->
         :ok
@@ -380,9 +388,9 @@ defmodule Canopy.Playbooks.Runs do
     Enum.all?([coordinator.id | Map.values(roster) ++ team_ids], &MapSet.member?(members, &1))
   end
 
-  defp already_running(channel, run) do
+  defp already_running(channel, run, via) do
     "##{channel.name} already has a playbook run in progress (#{run.playbook_name}, #{run.id}); " <>
-      "finish or cancel it first, or start in a new channel with channel_name"
+      "finish or cancel it first, or start in a new channel #{via}"
   end
 
   @doc """
@@ -392,16 +400,18 @@ defmodule Canopy.Playbooks.Runs do
   repository yet, the base as it is.
   """
   def channel_name(repository_id, given, playbook_name, brief) do
-    if present?(given) do
-      given
+    typed =
+      (given || "")
       |> String.trim()
       |> String.trim_leading("#")
       |> String.downcase()
       |> String.slice(0, 50)
       |> String.trim("-")
-    else
-      free_channel_name(repository_id, channel_name_base(playbook_name, brief))
-    end
+
+    # a name that cleans to nothing (`#`, `---`) is as good as none given
+    if typed != "",
+      do: typed,
+      else: free_channel_name(repository_id, channel_name_base(playbook_name, brief))
   end
 
   @doc "The playbook's name and the brief's first four words, as a channel name (not checked for being free)."
@@ -455,15 +465,21 @@ defmodule Canopy.Playbooks.Runs do
         name =
           channel_name(origin.repository_id, Map.get(attrs, :channel_name), playbook.name, brief)
 
+        # with no brief, the playbook's own description says what the channel is for
+        about =
+          "#{playbook.name}: " <>
+            if(brief == "", do: single_line(definition.description), else: single_line(brief))
+
         case Channels.create(%{
                repository_id: origin.repository_id,
                name: name,
-               topic: "#{playbook.name}: " <> String.slice(single_line(brief), 0, 200),
+               topic: String.slice(about, 0, 200),
                owner_agent_id: coordinator.id,
                agent_ids: Map.values(roster),
                team_ids: if(team, do: [team.id], else: []),
-               task_title: String.slice(single_line(brief), 0, 120),
-               task_description: brief
+               task_title:
+                 String.slice(if(brief == "", do: about, else: single_line(brief)), 0, 120),
+               task_description: if(brief != "", do: brief)
              }) do
           {:ok, channel} ->
             {:ok, channel}
@@ -489,7 +505,8 @@ defmodule Canopy.Playbooks.Runs do
           {:error,
            already_running(
              channel,
-             active_for_channel(channel.id) || %{playbook_name: "?", id: "?"}
+             active_for_channel(channel.id) || %{playbook_name: "?", id: "?"},
+             new_channel_via(attrs)
            )}
         else
           {:error, "could not start: " <> Canopy.MCP.Tool.changeset_reason(changeset)}

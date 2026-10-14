@@ -8,7 +8,6 @@ roles:
   reviewer: reviewer
   test: test
 coordinator: project-manager
-channel: new
 stall_after: 1h
 inputs: What the feature should do and for whom, as a description or a link to an asset (issue, doc, mockup, screenshot), plus any constraints.
 steps:

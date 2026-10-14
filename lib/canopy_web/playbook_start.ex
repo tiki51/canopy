@@ -38,7 +38,7 @@ defmodule CanopyWeb.PlaybookStart do
         "brief" => params["brief"] || "",
         "assign" => params["assign"] || "",
         "inputs" => definition && definition.inputs,
-        "hint" => hint(definition, channel)
+        "hint" => hint(definition)
       },
       as: :start,
       id: "start-playbook-form"
@@ -48,10 +48,15 @@ defmodule CanopyWeb.PlaybookStart do
   @doc """
   Starts the run the form describes. `{:ok, run}` or `{:error, reason}`.
 
-  From the Start page, `runs_in: "new"` runs it in a new channel on
-  `repository_id`, named `channel_name` when given (Canopy picks a free name
-  otherwise), and `roles` (`%{role => agent name}`) overrides the roster
-  where it differs from who would fill the role anyway.
+  From the Start page (`channel` nil), `runs_in: "new"` runs it in a new
+  channel on `repository_id`, named `channel_name` when given (Canopy picks a
+  free name otherwise); any other `runs_in` (`"existing"`, or the older
+  `"current"`) runs it in `channel_id`. A channel with a run in progress is
+  refused, and a DM or archived one counts as none picked. A typed name
+  that's taken, archived channels included, is refused. `roles` (`%{role => agent name}`) overrides the roster where it
+  differs from who would fill the role anyway.
+
+  From the run panel, the run always happens in `channel`.
   """
   def start(params, channel \\ nil)
 
@@ -59,33 +64,85 @@ defmodule CanopyWeb.PlaybookStart do
     case present?(params["repository_id"]) &&
            Enum.find(Canopy.Repositories.list(), &(&1.id == params["repository_id"])) do
       %{} = repository ->
-        # a name is always given, so the run gets a new channel even when the
-        # playbook itself runs where it's started
+        # a name is always given, so `Runs.start` makes a new channel; a typed
+        # one is normalised the way `Runs` does before it is looked up
         name =
-          blank_to_nil(params["channel_name"]) ||
-            Runs.channel_name(
-              repository.id,
-              nil,
-              playbook_name(params["playbook_id"]),
-              params["brief"]
-            )
+          Runs.channel_name(
+            repository.id,
+            blank_to_nil(params["channel_name"]),
+            playbook_name(params["playbook_id"]),
+            params["brief"]
+          )
 
-        params
-        |> Map.delete("runs_in")
-        |> Map.put("channel_name", name)
-        |> do_start(%Canopy.Channels.Channel{repository_id: repository.id})
+        if Channels.get_by_name(repository.id, name) do
+          {:error,
+           "##{name} already exists in #{repository.name}; pick another name, or choose Existing channel"}
+        else
+          params
+          |> Map.delete("runs_in")
+          |> Map.put("channel_name", name)
+          |> do_start(%Canopy.Channels.Channel{repository_id: repository.id})
+        end
 
       _ ->
         {:error, "pick a repository"}
     end
   end
 
-  def start(params, channel) do
-    channel = channel || (present?(params["channel_id"]) && Channels.get(params["channel_id"]))
-    do_start(params, channel && Channels.get!(channel.id))
+  def start(params, nil) do
+    # only what `channel_groups/0` offers: a DM or an archived channel is
+    # treated as no channel at all
+    channel =
+      with true <- present?(params["channel_id"]),
+           %{} = channel <- Channels.get(params["channel_id"]),
+           false <- Channels.dm?(channel) or Channels.archived?(channel) do
+        channel
+      else
+        _ -> nil
+      end
+
+    # said in the page's words before `Runs.start`, which stays the race-safe check
+    case channel && Runs.active_for_channel(channel.id) do
+      %{playbook_name: playbook} ->
+        {:error,
+         "##{channel.name} already has a run in progress (#{playbook}); pick another channel or start a new one"}
+
+      _ ->
+        params |> Map.delete("channel_name") |> do_start(channel)
+    end
   end
 
-  defp do_start(params, channel) do
+  # the run panel: never a new channel, whatever the post says
+  def start(params, %Canopy.Channels.Channel{} = channel) do
+    params
+    |> Map.delete("channel_name")
+    |> do_start(Channels.get!(channel.id), "from the Playbooks page")
+  end
+
+  @doc """
+  The Start page's existing channels, `[{repository name, [%{id, name,
+  run_active?}]}]`: open channels (no DMs), repositories and channels by
+  name, no repository without one. `run_active?` is a run in progress
+  (active or awaiting approval), which the page shows but can't pick.
+  """
+  def channel_groups do
+    live = Runs.live_by_channel()
+
+    channels =
+      Channels.list()
+      |> Enum.reject(&(Channels.dm?(&1) or Channels.archived?(&1)))
+      |> Enum.group_by(& &1.repository_id)
+
+    for repository <- Canopy.Repositories.list(),
+        list = Map.get(channels, repository.id, []),
+        list != [] do
+      {repository.name,
+       Enum.map(list, &%{id: &1.id, name: &1.name, run_active?: Map.has_key?(live, &1.id)})}
+    end
+  end
+
+  # `via`: how this page's user opens a new channel instead, for the refusals
+  defp do_start(params, channel, via \\ "by choosing New channel") do
     with {:playbook, %{} = playbook} <- {:playbook, Playbooks.get(params["playbook_id"] || "")},
          {:channel, %{} = channel} <- {:channel, channel},
          {:coordinator, %{} = coordinator} <-
@@ -99,7 +156,8 @@ defmodule CanopyWeb.PlaybookStart do
              coordinator: coordinator,
              started_by_agent_id: nil,
              brief: params["brief"],
-             assign: assign(params, playbook)
+             assign: assign(params, playbook),
+             new_channel_via: via
            }) do
       {:ok, run}
     else
@@ -176,30 +234,12 @@ defmodule CanopyWeb.PlaybookStart do
     end
   end
 
-  defp hint(nil, _channel), do: nil
+  # the run panel's line: a run started there always runs there
+  defp hint(nil), do: nil
 
-  defp hint(definition, channel) do
-    where =
-      cond do
-        definition.channel == "new" and channel ->
-          "Runs in a new channel on #{channel_repository(channel)}, owned by the lead."
-
-        definition.channel == "new" ->
-          "Runs in a new channel on the chosen channel's repository, owned by the lead."
-
-        true ->
-          "Runs in this channel."
-      end
-
+  defp hint(definition) do
     team = if definition.team, do: " @#{definition.team} joins it.", else: ""
-    where <> team
-  end
-
-  defp channel_repository(channel) do
-    case Canopy.Repo.preload(channel, :repository).repository do
-      %{name: name} -> name
-      _ -> "its repository"
-    end
+    "Runs in this channel." <> team
   end
 
   defp present?(value), do: is_binary(value) and value != ""

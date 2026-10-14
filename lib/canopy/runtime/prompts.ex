@@ -618,8 +618,7 @@ defmodule Canopy.Runtime.Prompts do
 
     """
     You are coordinating the #{args.playbook} playbook in ##{args.channel} (run #{args.run_id}). #{where}
-    Brief:
-    #{args.brief}
+    #{run_brief(args.brief)}
     #{guidance}
     Step 1: #{args.title} (#{args.step}), owners #{owner_text(args.owners)}.#{section}
     Follow each step's instructions, delegate each step to its owner, and advance with canopy_playbook_advance when the step is done, putting the evidence in result.
@@ -664,8 +663,7 @@ defmodule Canopy.Runtime.Prompts do
 
     """
     The user made you the coordinator of the #{args.playbook} playbook in ##{args.channel} (run #{args.run_id}).
-    Brief:
-    #{args.brief}
+    #{run_brief(args.brief, :reassigned)}
 
     It is on step #{args.position} of #{args.total}: #{args.title} (#{args.step}), owners #{owner_text(args.owners)}.#{section}
     Read the run with canopy_playbook_get (every step's result and delegations), then carry on from there and advance with canopy_playbook_advance.
@@ -680,6 +678,20 @@ defmodule Canopy.Runtime.Prompts do
     Look at where it stands (canopy_playbook_get, the step's delegations), then nudge its owner, advance it, or cancel the run with canopy_playbook_cancel. If it is waiting on the user, say so once and stop.
     #{time_line()}
     """
+  end
+
+  # a run started without a brief works from the playbook alone
+  defp run_brief(brief, at \\ :started) do
+    cond do
+      present?(brief) ->
+        "Brief:\n" <> brief
+
+      at == :started ->
+        "No brief was given: the playbook is the context. Start on step 1, and ask in the channel only if a step needs something the playbook doesn't say."
+
+      true ->
+        "No brief was given: the playbook is the context."
+    end
   end
 
   defp upcase_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest

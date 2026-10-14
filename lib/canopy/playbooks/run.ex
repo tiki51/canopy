@@ -17,7 +17,8 @@ defmodule Canopy.Playbooks.Run do
   schema "playbook_runs" do
     field :playbook_name, :string
     field :definition, :string
-    field :brief, :string
+    # "" when the run was started without one (the column is NOT NULL)
+    field :brief, :string, default: ""
     field :roster, :map, default: %{}
     field :status, :string, default: "active"
     field :current_step, :string
@@ -55,7 +56,6 @@ defmodule Canopy.Playbooks.Run do
       :channel_id,
       :coordinator_agent_id,
       :started_by_agent_id,
-      :brief,
       :roster,
       :status,
       :current_step,
@@ -66,9 +66,11 @@ defmodule Canopy.Playbooks.Run do
       :last_activity_at,
       :nudged_at
     ])
-    |> update_change(:brief, &String.trim/1)
-    |> validate_required([:playbook_name, :definition, :channel_id, :brief, :status])
-    |> validate_length(:brief, min: 1, max: 8_000)
+    # cast on its own so a blank brief stays "" rather than becoming nil
+    |> cast(attrs, [:brief], empty_values: [])
+    |> update_change(:brief, &String.trim(&1 || ""))
+    |> validate_required([:playbook_name, :definition, :channel_id, :status])
+    |> validate_length(:brief, max: 8_000)
     |> validate_inclusion(:status, @statuses)
     |> unique_constraint(:channel_id,
       message: "already has a playbook run in progress"

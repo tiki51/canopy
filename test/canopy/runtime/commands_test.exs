@@ -35,16 +35,18 @@ defmodule Canopy.Runtime.CommandsTest do
     assert Commands.help() =~ "/i @agent|@team"
   end
 
-  test "/playbook takes a playbook name and the brief, which may start with a coordinator" do
+  test "/playbook takes a playbook name and an optional brief, which may start with a coordinator" do
     assert {:command, :playbook, "bug-fix", "@project-manager login is broken"} =
              Commands.parse("/playbook bug-fix @project-manager login is broken")
 
     assert {:command, :playbook, "bug-fix", "login is broken"} =
              Commands.parse("/Playbook Bug-Fix login is broken")
 
-    assert {:error, "usage: /playbook" <> _} = Commands.parse("/playbook bug-fix")
-    assert {:error, "usage: /playbook" <> _} = Commands.parse("/playbook")
-    assert Commands.help() =~ "/playbook name brief"
+    # the brief is optional
+    assert {:command, :playbook, "bug-fix", ""} = Commands.parse("/playbook bug-fix")
+    assert {:command, :playbook, "bug-fix", "@lead"} = Commands.parse("/playbook bug-fix  @lead ")
+    assert {:error, "usage: /playbook name [@coordinator] [" <> _} = Commands.parse("/playbook")
+    assert Commands.help() =~ "/playbook name [brief]"
   end
 
   test "/stop takes no arguments and ignores any given" do

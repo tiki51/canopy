@@ -98,7 +98,11 @@ defmodule CanopyWeb.PlaybookComponents do
           </button>
         </div>
 
-        <p id="playbook-run-brief" class="mb-2 whitespace-pre-wrap text-sm text-base-content/80">
+        <p
+          :if={@run.brief != ""}
+          id="playbook-run-brief"
+          class="mb-2 whitespace-pre-wrap text-sm text-base-content/80"
+        >
           {@run.brief}
         </p>
 
@@ -173,7 +177,6 @@ defmodule CanopyWeb.PlaybookComponents do
           form={@start_form}
           playbooks={@playbooks}
           agents={@agents}
-          channels={[]}
         />
         <p :if={@playbooks == []} id="playbooks-none" class="text-xs text-base-content/60">
           No playbooks are enabled. <.link navigate={~p"/playbooks"} class="link link-primary">Open the library</.link>.
@@ -289,14 +292,13 @@ defmodule CanopyWeb.PlaybookComponents do
   end
 
   @doc """
-  Starting a run: the playbook, the channel (on the Playbooks page), the
-  coordinator, the brief, and role overrides. Emits `start_validate` and
-  `start_playbook` with `start[...]` params.
+  Starting a run in this channel: the playbook, the coordinator, the brief,
+  and role overrides. Emits `start_validate` and `start_playbook` with
+  `start[...]` params.
   """
   attr :form, :any, required: true
   attr :playbooks, :list, required: true
   attr :agents, :list, required: true
-  attr :channels, :list, default: [], doc: "`[{label, id}]`; empty when the channel is fixed"
   attr :hint, :string, default: nil
 
   def start_form(assigns) do
@@ -309,21 +311,13 @@ defmodule CanopyWeb.PlaybookComponents do
       phx-submit="start_playbook"
       class="flex flex-col gap-2"
     >
-      <div class="grid gap-2 sm:grid-cols-3">
+      <div class="grid gap-2 sm:grid-cols-2">
         <.input
           field={@form[:playbook_id]}
           type="select"
           id="start-playbook"
           label="Playbook"
           options={Enum.map(@playbooks, &{&1.name, &1.id})}
-        />
-        <.input
-          :if={@channels != []}
-          field={@form[:channel_id]}
-          type="select"
-          id="start-channel"
-          label="Channel"
-          options={@channels}
         />
         <.input
           field={@form[:coordinator_id]}
@@ -337,9 +331,9 @@ defmodule CanopyWeb.PlaybookComponents do
         field={@form[:brief]}
         type="textarea"
         id="start-brief"
-        label="Brief"
+        label="Brief (optional)"
         rows="3"
-        placeholder={@form[:inputs].value || "What this run is about"}
+        placeholder={@form[:inputs].value || "Leave empty to let the playbook speak for itself"}
       />
       <.input
         field={@form[:assign]}

@@ -160,7 +160,7 @@ defmodule Canopy.Playbooks.RunsTest do
       assert reason =~ "has no role nope"
     end
 
-    test "disabled playbooks and empty briefs are refused", ctx do
+    test "disabled playbooks and over-long briefs are refused", ctx do
       playbook = roles_playbook()
       {:ok, disabled} = Canopy.Playbooks.set_enabled(playbook, false)
 
@@ -174,13 +174,53 @@ defmodule Canopy.Playbooks.RunsTest do
 
       assert reason =~ "disabled"
 
-      assert {:error, "brief is empty" <> _} =
+      assert {:error, "the brief is too long" <> _} =
                Runs.start(%{
                  playbook: playbook,
                  channel: ctx.channel,
                  coordinator: ctx.agent,
-                 brief: " "
+                 brief: String.duplicate("x", 8_001)
                })
+    end
+
+    test "the brief is optional: missing, empty and blank are all stored as \"\"", ctx do
+      playbook = roles_playbook()
+
+      for brief <- [nil, "", "   \n "] do
+        {run, false} = start!(ctx, playbook, %{brief: brief})
+        assert run.status == "active"
+        assert run.brief == ""
+        assert Repo.reload!(run).brief == ""
+        {:ok, _, :cancelled} = Runs.cancel(run, :user, "again")
+      end
+
+      {run, false} = start!(ctx, playbook, %{brief: "  padded  "})
+      assert run.brief == "padded"
+    end
+
+    test "the Run changeset stores a blank brief as \"\", never nil", ctx do
+      for brief <- ["", "   ", nil] do
+        changeset =
+          Run.changeset(%Run{}, %{
+            playbook_name: "flow",
+            definition: "x",
+            channel_id: ctx.channel.id,
+            status: "completed",
+            brief: brief
+          })
+
+        assert changeset.valid?, inspect(brief)
+        assert {:ok, run} = Repo.insert(changeset)
+        assert Repo.reload!(run).brief == ""
+      end
+
+      refute Run.changeset(%Run{}, %{
+               playbook_name: "flow",
+               definition: "x",
+               channel_id: ctx.channel.id,
+               status: "completed",
+               brief: String.duplicate("x", 8_001)
+             }).valid?
     end
 
     test "one run in progress per channel: of two concurrent starts exactly one wins", ctx do
@@ -208,6 +248,35 @@ defmodule Canopy.Playbooks.RunsTest do
       assert Repo.aggregate(from(r in Run, where: r.channel_id == ^ctx.channel.id), :count) == 1
     end
 
+    test "a busy channel's refusal ends with the starter's own way to a new channel", ctx do
+      playbook = playbook_fixture("busy", [{"a", "A", "coordinator"}])
+
+      start =
+        &Runs.start(
+          Map.merge(
+            %{
+              playbook: playbook,
+              channel: ctx.channel,
+              coordinator: ctx.agent,
+              started_by_agent_id: nil,
+              brief: "x"
+            },
+            &1
+          )
+        )
+
+      {:ok, _run, false} = start.(%{})
+
+      for {via, ending} <- [
+            {nil, "or start in a new channel with channel_name"},
+            {"by choosing New channel", "or start in a new channel by choosing New channel"},
+            {"from the Playbooks page", "or start in a new channel from the Playbooks page"}
+          ] do
+        assert {:error, reason} = start.(%{new_channel_via: via})
+        assert String.ends_with?(reason, ending)
+      end
+    end
+
     test "a run the user starts here wakes the coordinator with the first step", ctx do
       stub_engine(self(), ctx.repository)
       {run, false} = start!(ctx, roles_playbook(), %{started_by_agent_id: nil})
@@ -222,17 +291,15 @@ defmodule Canopy.Playbooks.RunsTest do
       assert text =~ "Step 1: Plan (plan), owners you."
     end
 
-    test "channel: new creates a channel owned by the coordinator and wakes it there", ctx do
+    test "a channel_name creates a channel owned by the coordinator and wakes it there", ctx do
       stub_engine(self(), ctx.repository)
 
       playbook =
-        playbook_fixture(
-          "fresh",
-          @steps,
-          "channel: new\nroles:\n  dev: #{dev().name}\n  qa: #{qa().name}\n"
-        )
+        playbook_fixture("fresh", @steps, "roles:\n  dev: #{dev().name}\n  qa: #{qa().name}\n")
 
-      {run, true} = start!(ctx, playbook, %{brief: "Login button broken on Safari"})
+      brief = "Login button broken on Safari"
+      name = Runs.channel_name(ctx.repository.id, nil, "fresh", brief)
+      {run, true} = start!(ctx, playbook, %{brief: brief, channel_name: name})
       assert run.channel_id != ctx.channel.id
       channel = Channels.get!(run.channel_id)
       assert channel.name == "fresh-login-button-broken-on"
@@ -253,9 +320,67 @@ defmodule Canopy.Playbooks.RunsTest do
       assert text =~ "Playbook in progress here: fresh (run #{run.id}), step 1 of 4 \"Plan\""
 
       # a second run of it gets the next free name
-      {run2, true} = start!(ctx, playbook, %{brief: "Login button broken on Safari"})
+      name = Runs.channel_name(ctx.repository.id, nil, "fresh", brief)
+      {run2, true} = start!(ctx, playbook, %{brief: brief, channel_name: name})
       assert Channels.get!(run2.channel_id).name == "fresh-login-button-broken-on-2"
       assert_receive {:prompted, _sid, _body}, 2_000
+    end
+
+    test "an old channel: new playbook runs where it's started unless given a channel_name",
+         ctx do
+      playbook = playbook_fixture("legacy", [{"a", "A", "coordinator"}], "channel: new\n")
+      {run, false} = start!(ctx, playbook)
+      assert run.channel_id == ctx.channel.id
+      assert {:ok, _} = Canopy.Playbooks.definition(run)
+
+      {:ok, run, :completed} = Runs.advance(run, {:agent, ctx.agent.id}, result: "done")
+      assert run.status == "completed"
+
+      {run, true} = start!(ctx, playbook, %{channel_name: "legacy-elsewhere"})
+      assert Channels.get!(run.channel_id).name == "legacy-elsewhere"
+    end
+
+    test "no brief: the new channel is named and described from the playbook, and the coordinator is told",
+         ctx do
+      stub_engine(self(), ctx.repository)
+      playbook = playbook_fixture("quiet", [{"a", "A", "coordinator"}])
+
+      name = Runs.channel_name(ctx.repository.id, nil, "quiet", "")
+      assert name == "quiet"
+      {run, true} = start!(ctx, playbook, %{brief: "", channel_name: name})
+
+      channel = Channels.get!(run.channel_id)
+      assert channel.name == "quiet"
+      assert channel.topic == "quiet: The quiet process."
+      assert channel.task.title == "quiet: The quiet process."
+
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      refute text =~ "Brief:"
+      assert text =~ "No brief was given: the playbook is the context. Start on step 1"
+
+      # taken now: the next one gets -2
+      assert Runs.channel_name(ctx.repository.id, nil, "quiet", nil) == "quiet-2"
+
+      # a typed name that cleans to nothing counts as none
+      for typed <- ["#", "-", " --- ", "", " # ", "#--", nil],
+          do: assert(Runs.channel_name(ctx.repository.id, typed, "quiet", nil) == "quiet-2")
+    end
+
+    test "a stand-in channel with no name is no channel at all", ctx do
+      playbook = playbook_fixture("stand-in", [{"a", "A", "coordinator"}])
+
+      for name <- [nil, ""] do
+        assert {:error, "pick a channel"} =
+                 Runs.start(%{
+                   playbook: playbook,
+                   channel: %Channels.Channel{repository_id: ctx.repository.id},
+                   channel_name: name,
+                   coordinator: ctx.agent,
+                   started_by_agent_id: nil,
+                   brief: ""
+                 })
+      end
     end
   end
 
@@ -617,7 +742,7 @@ defmodule Canopy.Playbooks.RunsTest do
     # 4
     test "a failed start in a new channel leaves no channel behind", ctx do
       playbook =
-        playbook_fixture("orphan", [{"a", "A", "coordinator"}], "channel: new\n")
+        playbook_fixture("orphan", [{"a", "A", "coordinator"}])
 
       channels = length(Channels.list())
 
@@ -627,7 +752,8 @@ defmodule Canopy.Playbooks.RunsTest do
                  channel: ctx.channel,
                  coordinator: ctx.agent,
                  started_by_agent_id: ctx.agent.id,
-                 brief: String.duplicate("x", 8_001)
+                 brief: String.duplicate("x", 8_001),
+                 channel_name: "orphan"
                })
 
       assert reason =~ "too long"
@@ -708,6 +834,17 @@ defmodule Canopy.Playbooks.RunsTest do
       assert text =~ "Instructions for this step:\nDo Fix."
     end
 
+    test "a reassigned coordinator of a run with no brief is told the playbook is the context",
+         ctx do
+      run = gated!(ctx)
+      Repo.update_all(from(r in Run, where: r.id == ^run.id), set: [brief: ""])
+      {:ok, _, :reassigned} = Runs.reassign(Runs.get!(run.id), dev(), "user")
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      refute text =~ "Brief:"
+      assert text =~ "No brief was given: the playbook is the context."
+    end
+
     # 9
     test "a DM never gains a coordinator or roster member", ctx do
       outsider = agent_fixture(name: "outsider-" <> unique_suffix())
@@ -723,7 +860,11 @@ defmodule Canopy.Playbooks.RunsTest do
                  brief: "x"
                })
 
-      assert reason =~ "a DM keeps its agents"
+      # an agent opens a new channel with channel_name
+      assert reason ==
+               "a DM keeps its agents and this run needs others (the coordinator or the roster); " <>
+                 "start it in a channel, or in a new one with channel_name"
+
       refute Channels.member?(dm, outsider)
 
       {:ok, run, false} =
@@ -870,7 +1011,7 @@ defmodule Canopy.Playbooks.RunsTest do
     end
 
     test "channel_name/4 is the name a new run's channel gets", ctx do
-      playbook = playbook_fixture("named-run", [{"a", "A", "coordinator"}], "channel: new\n")
+      playbook = playbook_fixture("named-run", [{"a", "A", "coordinator"}])
       repo_id = ctx.repository.id
 
       assert Runs.channel_name(nil, nil, "named-run", "Fix the Login, page now!") ==
@@ -880,14 +1021,15 @@ defmodule Canopy.Playbooks.RunsTest do
 
       expected = Runs.channel_name(repo_id, nil, playbook.name, "Fix the login")
       assert expected == "named-run-fix-the-login"
-      {run, true} = start!(ctx, playbook, %{brief: "Fix the login"})
+      {run, true} = start!(ctx, playbook, %{brief: "Fix the login", channel_name: expected})
       assert Channels.get!(run.channel_id).name == expected
 
-      # taken now: the next one gets -2, here and in the start
+      # taken now: the next one gets -2
       assert Runs.channel_name(repo_id, nil, playbook.name, "Fix the login") == expected <> "-2"
-      {:ok, _, :cancelled} = Runs.cancel(run, :user, "again")
-      {run, true} = start!(ctx, playbook, %{brief: "Fix the login"})
-      assert Channels.get!(run.channel_id).name == expected <> "-2"
+
+      # no brief: the playbook's name alone
+      assert Runs.channel_name(nil, nil, "named-run", "") == "named-run"
+      assert Runs.channel_name(nil, nil, "named-run", nil) == "named-run"
     end
   end
 

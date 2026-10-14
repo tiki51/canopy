@@ -528,13 +528,21 @@ defmodule Canopy.Watches do
     :ok
   end
 
+  # Each item gets a channel of its own on the watch's repository
+  # (`bug-fix-pr-9`), so the runs of one check go side by side.
   defp start_run(watch, name, item) do
     with true <- deliverable?(watch),
          %{} = playbook <- Playbooks.get_by_name(name),
+         origin = Channels.get!(watch.channel_id),
          {:ok, run, _new?} <-
            Runs.start(%{
              playbook: playbook,
-             channel: Channels.get!(watch.channel_id),
+             channel: origin,
+             channel_name:
+               Runs.free_channel_name(
+                 origin.repository_id,
+                 Runs.channel_name_base(playbook.name, item.key)
+               ),
              coordinator: watch.agent,
              started_by_agent_id: nil,
              brief: brief(watch, item),

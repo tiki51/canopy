@@ -293,6 +293,23 @@ defmodule Canopy.Runtime.UserCommandsTest do
              Runtime.post_user_message(ctx.channel.id, "/playbook nope do it")
 
     assert {:error, reason} = Runtime.post_user_message(ctx.channel.id, "/playbook quick more")
-    assert reason =~ "already has a playbook run in progress"
+    # the user has no channel_name; a new channel is the Playbooks page's
+    assert reason ==
+             "##{ctx.channel.name} already has a playbook run in progress (quick, #{run.id}); " <>
+               "finish or cancel it first, or start in a new channel from the Playbooks page"
+
+    # no brief, with or without a coordinator named
+    {:ok, _, :cancelled} = Canopy.Playbooks.Runs.cancel(run, :user, "again")
+    assert {:ok, {:playbook, run}} = Runtime.post_user_message(ctx.channel.id, "/playbook quick")
+    assert run.brief == ""
+    assert run.coordinator_agent_id == ctx.reviewer.id
+
+    {:ok, _, :cancelled} = Canopy.Playbooks.Runs.cancel(run, :user, "again")
+
+    assert {:ok, {:playbook, run}} =
+             Runtime.post_user_message(ctx.channel.id, "/playbook quick @#{ctx.agent.name}")
+
+    assert run.brief == ""
+    assert run.coordinator_agent_id == ctx.agent.id
   end
 end

@@ -107,7 +107,7 @@ defmodule Canopy.Playbooks.WriterTest do
       assert after_.steps == before.steps
       assert after_.roles == before.roles
 
-      for key <- ~w(name description team coordinator channel stall_after inputs)a do
+      for key <- ~w(name description team coordinator stall_after inputs)a do
         assert Map.get(after_, key) == Map.get(before, key), "#{key}"
       end
 
@@ -161,11 +161,27 @@ defmodule Canopy.Playbooks.WriterTest do
       |> String.split("\n")
       |> Enum.flat_map(&(Regex.run(~r/\A([a-z_]+):/, &1, capture: :all_but_first) || []))
 
-    assert keys == ~w(name description team roles coordinator channel inputs steps)
+    assert keys == ~w(name description team roles coordinator inputs steps)
     refute text =~ "stall_after"
     assert text =~ "    owner: [backend, frontend]\n"
     assert text =~ "  - id: review\n    title: Review\n    owner: reviewer\n    on_reject: fix\n"
     assert text =~ "\n# Bug fix\n\nGround rules for the whole run:"
+  end
+
+  test "an old channel line is read and not written back" do
+    text =
+      Playbooks.bug_fix_text()
+      |> String.replace(
+        "coordinator: project-manager\n",
+        "coordinator: project-manager\nchannel: new\n"
+      )
+
+    assert text =~ "\nchannel: new\n"
+
+    written = text |> draft!() |> Writer.to_text()
+    refute written =~ "channel:"
+    refute Map.has_key?(draft!(text), :channel)
+    refute Map.has_key?(Writer.blank(), :channel)
   end
 
   test "sections that match no step are kept at the end; earlier ones stay with the rules" do

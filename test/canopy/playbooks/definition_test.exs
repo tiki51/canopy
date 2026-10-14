@@ -24,7 +24,6 @@ defmodule Canopy.Playbooks.DefinitionTest do
     assert d.name == "bug-fix"
     assert d.team == "bugfix-team"
     assert d.coordinator == "project-manager"
-    assert d.channel == "new"
     assert d.stall_after == 30
     assert d.warnings == []
     assert Enum.map(d.steps, & &1.id) == ~w(triage reproduce fix verify review sign-off)
@@ -34,12 +33,21 @@ defmodule Canopy.Playbooks.DefinitionTest do
     assert Definition.owner_roles(d) == ~w(test backend frontend reviewer)
   end
 
-  test "defaults: the current channel, a 30 minute stall, no team" do
+  test "defaults: a 30 minute stall, no team" do
     assert {:ok, d} = Definition.parse(text(@minimal))
-    assert d.channel == "current"
+    refute Map.has_key?(d, :channel)
     assert d.stall_after == 30
     assert d.team == nil
     assert [%{id: "build", owner: ["dev"], approval: false, optional: false}] = d.steps
+  end
+
+  test "an old channel field is accepted and ignored, whatever it says" do
+    # runs keep the text they started with, and older files say `channel: new`
+    for value <- ["new", "current", "bogus", "[1, 2]"] do
+      assert {:ok, d} = Definition.parse(text(@minimal <> "channel: #{value}\n"))
+      assert d.warnings == [], "channel: #{value}"
+      refute Map.has_key?(d, :channel)
+    end
   end
 
   test "stall_after takes durations, minutes, or off" do

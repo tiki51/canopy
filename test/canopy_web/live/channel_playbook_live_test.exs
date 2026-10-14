@@ -92,6 +92,44 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     assert prompt_text(body) =~ "The user started it here."
   end
 
+  test "from the panel a run always happens here, and the brief is optional",
+       %{conn: conn} = ctx do
+    # an old `channel: new` line no longer sends it elsewhere
+    playbook = playbook_fixture("elsewhere", [{"a", "A", "coordinator"}], "channel: new\n")
+    {:ok, view, _html} = open(conn, ctx.channel)
+    view |> element("#toggle-details") |> render_click()
+    view |> element("#edit-playbook") |> render_click()
+
+    view
+    |> form("#start-playbook-form", start: %{playbook_id: playbook.id})
+    |> render_change()
+
+    assert has_element?(view, "label[for=start-brief]", "Brief (optional)")
+    assert has_element?(view, "#start-hint", "Runs in this channel.")
+
+    # a hand-made post naming a new channel still runs here
+    view
+    |> element("#start-playbook-form")
+    |> render_submit(%{
+      "start" => %{
+        "playbook_id" => playbook.id,
+        "coordinator_id" => ctx.agent.id,
+        "brief" => "",
+        "channel_name" => "somewhere-else"
+      }
+    })
+
+    run = Runs.active_for_channel(ctx.channel.id)
+    assert run.playbook_name == "elsewhere"
+    assert run.brief == ""
+    assert has_element?(view, "#playbook-chip", "elsewhere")
+    refute has_element?(view, "#playbook-run-brief")
+    refute Canopy.Channels.get_by_name(ctx.repository.id, "somewhere-else")
+
+    assert_receive {:prompted, _sid, body}, 2_000
+    assert prompt_text(body) =~ "No brief was given"
+  end
+
   test "progress shows as the run moves; Approve completes the gate and wakes the coordinator, resetting the budget",
        %{conn: conn} = ctx do
     run = start_run(ctx)

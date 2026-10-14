@@ -40,7 +40,6 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     assert has_element?(view, "#edit-name", "bug-fix")
     assert has_element?(view, "#setting-lead", "@project-manager")
     assert has_element?(view, "#setting-team", "@bugfix-team")
-    assert has_element?(view, "#runs-in-new[aria-pressed='true']")
     assert has_element?(view, "#role-chip-reviewer", "Reviewer")
 
     assert has_element?(view, "li[data-title='Fix']", "in parallel")
@@ -204,12 +203,12 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     assert %{owner: ["coordinator", "writer"]} = Definition.step(d, "write")
   end
 
-  test "settings popovers: lead, nudge, runs in", %{conn: conn} do
+  test "settings popovers: lead, nudge", %{conn: conn} do
     lead = Fixtures.agent_fixture(name: "boss")
     playbook = playbook_fixture("tiny", [{"a", "A", "coordinator"}])
     {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
 
-    # three or more settings at their defaults: the compact variant
+    # two or more settings at their defaults: the compact variant
     assert has_element?(view, "#more-settings")
     view |> element("#more-settings") |> render_click()
 
@@ -218,12 +217,27 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     view |> element("#lead-option-#{lead.name}") |> render_click()
     view |> element("#setting-nudge") |> render_click()
     view |> element("#nudge-120") |> render_click()
-    view |> element("#runs-in-new") |> render_click()
     view |> element("#builder-form") |> render_submit()
 
     d = definition!(playbook)
-    assert {d.coordinator, d.stall_after, d.channel} == {"boss", 120, "new"}
+    assert {d.coordinator, d.stall_after} == {"boss", 120}
     assert Playbooks.get!(playbook.id).body =~ "stall_after: 2h\n"
+  end
+
+  test "where a run happens is not a playbook setting: an old channel line is dropped on save", %{
+    conn: conn
+  } do
+    playbook = playbook_fixture("old", [{"a", "A", "coordinator"}], "channel: new\n")
+    assert playbook.body =~ "channel: new\n"
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    view |> element("#more-settings") |> render_click()
+
+    refute has_element?(view, "#runs-in-new")
+    refute has_element?(view, "#runs-in-current")
+
+    edit(view, %{"title" => "Old one"})
+    view |> element("#builder-form") |> render_submit()
+    refute Playbooks.get!(playbook.id).body =~ "channel:"
   end
 
   test "a change made elsewhere while editing: load theirs, or save mine as a copy", %{conn: conn} do
