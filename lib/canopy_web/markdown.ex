@@ -121,6 +121,27 @@ defmodule CanopyWeb.Markdown do
   def plain(_text), do: ""
 
   @doc """
+  `plain/1` for a one-line summary (a timeline event, a run's outcome), with
+  a list's items joined by " · ". Event payloads arrive already flattened
+  ("- a - b"), so text that opens with a bullet is split on its bullets
+  wherever they sit.
+  """
+  @spec plain_line(term) :: String.t()
+  def plain_line(text) when is_binary(text) do
+    if text =~ ~r/\A\s*[-*+]\s/ do
+      text
+      |> String.split(~r/(?:\A|\s)[-*+]\s+/)
+      |> Enum.map(&plain/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(" · ")
+    else
+      plain(text)
+    end
+  end
+
+  def plain_line(_text), do: ""
+
+  @doc """
   A one-line preview as safe HTML: `plain/1`'s stripping, everything escaped,
   inline code as `<code>`, and text between the `{open, close}` match markers
   (`Canopy.Search.marks/0`) as `<mark>`. Markers never pair across a code

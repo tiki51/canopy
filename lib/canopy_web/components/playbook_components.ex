@@ -104,9 +104,8 @@ defmodule CanopyWeb.PlaybookComponents do
           :if={@run.brief != ""}
           id="playbook-run-brief"
           class="mb-2 whitespace-pre-wrap text-sm text-base-content/80"
-        >
-          {@run.brief}
-        </p>
+          phx-no-format
+        >{@run.brief}</p>
 
         <p
           :if={Runs.definition_changed?(@run)}
@@ -187,7 +186,7 @@ defmodule CanopyWeb.PlaybookComponents do
           <li :for={run <- @recent} id={"playbook-recent-#{run.id}"} class="text-base-content/60">
             <span class="font-mono">{run.playbook_name}</span>
             {status_label(run.status)} · {Canopy.Schedules.relative(run.inserted_at)}
-            <span :if={run.outcome}>: {truncate(run.outcome, 120)}</span>
+            <span :if={run.outcome}>: {truncate(CanopyWeb.Markdown.plain_line(run.outcome), 120)}</span>
           </li>
         </ul>
       <% end %>
@@ -240,7 +239,7 @@ defmodule CanopyWeb.PlaybookComponents do
             id={"playbook-step-#{step.step_id}-result"}
             class="mt-0.5 whitespace-pre-wrap break-words text-xs text-base-content/75"
             phx-no-format
-          >{truncate(step.result, 400)}</p>
+          >{truncate(CanopyWeb.Markdown.plain_line(step.result), 400)}</p>
           <ul
             :if={Runs.round_delegations(step) != []}
             id={"playbook-step-#{step.step_id}-delegations"}
@@ -250,7 +249,7 @@ defmodule CanopyWeb.PlaybookComponents do
               <.icon name="hero-arrow-uturn-right-micro" class="size-3" />
               <span class="font-mono">@{d.to_agent && d.to_agent.name}</span>
               <span class={delegation_tone(d.status)}>{d.status}</span>
-              — {truncate(d.description, 100)}
+              — {truncate(CanopyWeb.Markdown.plain_line(d.description), 100)}
             </li>
           </ul>
           <%!-- the card that releases the step; between a sign-off's answer
@@ -427,6 +426,8 @@ defmodule CanopyWeb.PlaybookComponents do
   defp truncate(nil, _max), do: ""
 
   defp truncate(text, max) do
-    if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
+    if String.length(text) > max,
+      do: String.trim_trailing(String.slice(text, 0, max - 1)) <> "…",
+      else: text
   end
 end

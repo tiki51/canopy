@@ -2679,10 +2679,12 @@ defmodule CanopyWeb.TimelineComponents do
         "#{agent} hit an error: #{p["reason"]}"
 
       "delegation_created" ->
+        description = CanopyWeb.Markdown.plain_line(p["description"])
+
         cond do
-          p["by"] != "user" -> "#{from} delegated to #{to}: #{p["description"]}"
-          is_nil(p["from_agent_id"]) -> "#{user} delegated to #{to}: #{p["description"]}"
-          true -> "#{user} delegated to #{to} for #{from}: #{p["description"]}"
+          p["by"] != "user" -> "#{from} delegated to #{to}: #{description}"
+          is_nil(p["from_agent_id"]) -> "#{user} delegated to #{to}: #{description}"
+          true -> "#{user} delegated to #{to} for #{from}: #{description}"
         end
 
       "delegation_completed" ->
@@ -3289,11 +3291,20 @@ defmodule CanopyWeb.TimelineComponents do
 
   defp suffix(nil), do: ""
   defp suffix(""), do: ""
-  defp suffix(text) when is_binary(text), do: ": " <> truncate(text, 160)
+  # Event lines are plain text, so agent-written markdown is stripped rather than shown raw.
+  defp suffix(text) when is_binary(text) do
+    case CanopyWeb.Markdown.plain_line(text) do
+      "" -> ""
+      plain -> ": " <> truncate(plain, 160)
+    end
+  end
+
   defp suffix(other), do: ": " <> truncate(inspect(other), 160)
 
   defp truncate(text, max) do
-    if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
+    if String.length(text) > max,
+      do: String.trim_trailing(String.slice(text, 0, max - 1)) <> "…",
+      else: text
   end
 
   defp task_changes(%{"changes" => changes}) when is_map(changes) and map_size(changes) > 0 do
