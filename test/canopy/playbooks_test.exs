@@ -54,14 +54,18 @@ defmodule Canopy.PlaybooksTest do
     assert "is already a playbook's name" in errors_on(changeset).name
   end
 
-  test "seeding creates bug-fix once and leaves an edited one alone" do
-    assert [{:created, "bug-fix"}] = Playbooks.seed()
+  test "seeding creates the starter playbooks once and leaves an edited one alone" do
+    assert [{:created, "bug-fix"}, {:created, "feature-build"}] = Playbooks.seed()
     playbook = Playbooks.get_by_name("bug-fix")
     assert playbook.source == "seed"
 
+    assert %{source: "seed", enabled: true, body: body} = Playbooks.get_by_name("feature-build")
+    assert body == Playbooks.feature_build_text()
+
     edited = String.replace(playbook.body, "Triage and scope", "Triage")
     {:ok, _} = Playbooks.update(playbook, %{body: edited})
-    assert [{:exists, "bug-fix"}] = Playbooks.seed()
+    assert [{:exists, "bug-fix"}, {:exists, "feature-build"}] = Playbooks.seed()
+    assert Enum.map(Playbooks.seed(), &elem(&1, 1)) == Playbooks.seed_names()
     assert Playbooks.get_by_name("bug-fix").body =~ "title: Triage\n"
   end
 

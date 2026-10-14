@@ -1,6 +1,6 @@
 defmodule Canopy.Seeds do
   @moduledoc """
-  Creates Canopy's initial settings, user, default agents, starter team, and starter playbook.
+  Creates Canopy's initial settings, user, default agents, starter team, and starter playbooks.
 
   `run/0` does the work and returns a report; it does no IO, so Settings can
   show it (`Canopy.Environment.seed/0`). `print/1` writes the report as the
@@ -114,17 +114,21 @@ defmodule Canopy.Seeds do
   end
 
   # The report keeps created and existing apart; the lines interleave them as
-  # the seeder met them: agents in starter order, then teams, then playbooks.
+  # the seeder met them: agents in starter order, then teams, then playbooks in
+  # seed order.
   defp items_in_seed_order(report) do
-    agent_rank = agent_names() |> Enum.with_index() |> Map.new()
+    rank = %{
+      agent: agent_names() |> Enum.with_index() |> Map.new(),
+      playbook: Canopy.Playbooks.seed_names() |> Enum.with_index() |> Map.new()
+    }
+
     kind_rank = %{agent: 0, team: 1, playbook: 2}
 
     [:created, :existing, :skipped]
     |> Enum.flat_map(fn bucket -> Enum.map(Map.fetch!(report, bucket), &{bucket, &1}) end)
     |> Enum.with_index()
     |> Enum.sort_by(fn {{_bucket, item}, i} ->
-      {kind_rank[item.kind],
-       if(item.kind == :agent, do: Map.get(agent_rank, item.name, i), else: i)}
+      {kind_rank[item.kind], Map.get(rank[item.kind] || %{}, item.name, i)}
     end)
     |> Enum.map(fn {pair, _i} -> pair end)
   end

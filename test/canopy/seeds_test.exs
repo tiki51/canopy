@@ -14,7 +14,11 @@ defmodule Canopy.SeedsTest do
 
     assert report.created ==
              Enum.map(Seeds.agent_names(), &%{kind: :agent, name: &1}) ++
-               [%{kind: :team, name: "bugfix-team"}, %{kind: :playbook, name: "bug-fix"}]
+               [
+                 %{kind: :team, name: "bugfix-team"},
+                 %{kind: :playbook, name: "bug-fix"},
+                 %{kind: :playbook, name: "feature-build"}
+               ]
 
     assert report.existing == []
     assert report.skipped == []
@@ -58,8 +62,9 @@ defmodule Canopy.SeedsTest do
     # agents take locks themselves; the project manager never brokers them
     assert Agents.get_by_name("project-manager").system_prompt =~ "Don't assign\nor pass locks"
 
-    # the starter playbook, with the project manager told how to run one
+    # the starter playbooks, with the project manager told how to run one
     assert %{source: "seed", enabled: true} = Canopy.Playbooks.get_by_name("bug-fix")
+    assert %{source: "seed", enabled: true} = Canopy.Playbooks.get_by_name("feature-build")
     assert Agents.get_by_name("project-manager").system_prompt =~ "canopy_playbook_start"
 
     team = Canopy.Teams.get_by_name("bugfix-team")
@@ -74,13 +79,13 @@ defmodule Canopy.SeedsTest do
 
     assert {:ok, report} = Seeds.run()
     assert report.created == []
-    assert length(report.existing) == length(Seeds.agent_names()) + 2
+    assert length(report.existing) == length(Seeds.agent_names()) + 3
     assert report.cost_auditor == {:unchanged, "custom-auditor"}
 
     assert Agents.get_by_name("backend").role == "Customized role"
     assert Canopy.Teams.get_by_name("bugfix-team").description == "Ours now"
     assert length(Canopy.Teams.list()) == 1
-    assert length(Canopy.Playbooks.list()) == 1
+    assert length(Canopy.Playbooks.list()) == 2
     assert Settings.get().auditor_agent_id == custom_auditor.id
     assert Repo.aggregate(Setting, :count) == 1
     assert Repo.aggregate(User, :count) == 1
@@ -96,9 +101,10 @@ defmodule Canopy.SeedsTest do
     assert output =~ "created agent @backend\n"
     assert output =~ "created team @bugfix-team\n"
     assert output =~ "created playbook bug-fix\n"
+    assert output =~ "created playbook feature-build\n"
     assert output =~ "assigned @finops as the cost auditor\n"
 
-    # agents in starter order, then the team, then the playbook
+    # agents in starter order, then the team, then the playbooks
     lines = String.split(output, "\n", trim: true)
     agent_lines = Enum.filter(lines, &String.starts_with?(&1, "created agent @"))
     assert agent_lines == Enum.map(Seeds.agent_names(), &"created agent @#{&1}")
@@ -109,7 +115,19 @@ defmodule Canopy.SeedsTest do
     assert output =~ "agent @backend already exists\n"
     assert output =~ "team @bugfix-team already exists\n"
     assert output =~ "playbook bug-fix already exists\n"
+    assert output =~ "playbook feature-build already exists\n"
     refute output =~ "cost auditor"
+  end
+
+  test "print/1 keeps the playbooks in seed order when only some are new" do
+    {:ok, _} = Canopy.Playbooks.create(%{body: Canopy.Playbooks.bug_fix_text(), source: "seed"})
+
+    lines =
+      capture_io(fn -> Seeds.print(Seeds.run()) end)
+      |> String.split("\n", trim: true)
+      |> Enum.filter(&(&1 =~ "playbook"))
+
+    assert lines == ["playbook bug-fix already exists", "created playbook feature-build"]
   end
 
   describe "a failure" do

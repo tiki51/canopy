@@ -19,9 +19,12 @@ defmodule Canopy.Playbooks do
   @prompt_entries 20
   @prompt_chars 2_000
 
-  @seed_path Application.app_dir(:canopy, "priv/playbooks/bug-fix.md")
-  @external_resource @seed_path
-  @bug_fix File.read!(@seed_path)
+  @bug_fix_path Application.app_dir(:canopy, "priv/playbooks/bug-fix.md")
+  @feature_build_path Application.app_dir(:canopy, "priv/playbooks/feature-build.md")
+  @external_resource @bug_fix_path
+  @external_resource @feature_build_path
+  @bug_fix File.read!(@bug_fix_path)
+  @feature_build File.read!(@feature_build_path)
 
   # -- Reading ------------------------------------------------------------------
 
@@ -282,9 +285,15 @@ defmodule Canopy.Playbooks do
   @doc "The text of the seeded `bug-fix` playbook."
   def bug_fix_text, do: @bug_fix
 
+  @doc "The text of the seeded `feature-build` playbook."
+  def feature_build_text, do: @feature_build
+
+  @doc "The names of the starter playbooks, in seed order."
+  def seed_names, do: ~w(bug-fix feature-build)
+
   @doc "Seeds the starter playbooks that are missing by name; existing ones are left alone."
   def seed do
-    for text <- [@bug_fix] do
+    for text <- [@bug_fix, @feature_build] do
       {:ok, definition} = Definition.parse(text)
 
       case get_by_name(definition.name) do

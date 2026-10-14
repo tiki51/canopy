@@ -1852,9 +1852,14 @@ restarts: every prompt to the coordinator in that channel ends with a line sayin
 step the run is on.
 
 Playbooks are global to Canopy (they live in its database, not in a repository); a run
-happens in a channel, so it works in that channel's repository. The seed step adds one,
-**bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your sign-off,
-run by `@project-manager` with `@bugfix-team` in a new channel.
+happens in a channel, so it works in that channel's repository. The seed step adds two,
+each run by `@project-manager` in a new channel:
+
+- **bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your
+  sign-off, with `@bugfix-team`.
+- **feature-build**: three designs for you to choose from, technical designs and their
+  review, build, test and code review, a design check of the screenshots, and a summary
+  when it is ready, with `@designer`, `@frontend`, `@backend`, `@test`, and `@reviewer`.
 
 ### The library and the builder
 

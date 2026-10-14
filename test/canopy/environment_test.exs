@@ -131,7 +131,7 @@ defmodule Canopy.EnvironmentTest do
       assert %{id: ^id, status: :done, backup_path: backup, seed: seed} = result
       assert String.starts_with?(id, "rst_")
       assert File.exists?(backup)
-      assert length(seed.created) == length(Seeds.agent_names()) + 2
+      assert length(seed.created) == length(Seeds.agent_names()) + 3
       assert Environment.last_reset() == result
       assert Environment.status() == :idle
       refute Environment.resetting?()
