@@ -28,8 +28,14 @@ defmodule CanopyWeb.EnvironmentLiveTest do
     stub(OC, :agents, fn _dir, _opts -> {:ok, []} end)
 
     Resetter.forget()
-    # a test that started a reset never leaves it running for the next one
-    on_exit(fn -> await_reset() end)
+    # a test that started a reset never leaves it running for the next one, nor
+    # its outcome: a recent reset sends a missing agent's or channel's page to
+    # the banner (CanopyWeb.Nav), whichever test opens one next
+    on_exit(fn ->
+      await_reset()
+      Resetter.forget()
+    end)
+
     :ok
   end
 

@@ -124,7 +124,14 @@ defmodule Canopy.MixProject do
         "esbuild canopy --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      # the suite runs as parallel partitions (scripts/test-partitioned.sh);
+      # `mix test` alone still runs it in one VM
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "cmd scripts/test-partitioned.sh"
+      ]
     ]
   end
 end

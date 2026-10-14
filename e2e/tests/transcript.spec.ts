@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader, openDetails } from "./helpers";
+import { clickHeader, createChannel, openDetails, send, timeline } from "./helpers";
 
 // The session transcript: the fake OpenCode keeps each session's history
 // (every prompt with its system text, every part it emitted) and serves it

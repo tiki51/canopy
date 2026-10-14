@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, gotoLive, send, timeline, uniq } from "./helpers";
 
 // Question cards from a Claude Code agent (e2e/fake-claude/claude.mjs asks
 // through AskUserQuestion, which blocks on Canopy's permission tool). The
@@ -9,7 +9,7 @@ import { createChannel, send, timeline, uniq } from "./helpers";
 /** Creates an active Claude Code agent through the Agents page and returns its name. */
 async function createClaudeAgent(page: Page): Promise<string> {
   const name = uniq("asker").replace(/[^a-z0-9-]/g, "");
-  await page.goto("/agents/new");
+  await gotoLive(page, "/agents/new");
   await page.getByLabel("Name (slug, used as @name)").fill(name);
   await page.getByLabel("Display name").fill("Asker");
   await page.getByLabel("Role (one line)").fill("Asks before acting");

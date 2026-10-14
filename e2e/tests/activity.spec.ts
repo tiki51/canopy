@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader } from "./helpers";
+import { clickHeader, createChannel, reload, send, timeline } from "./helpers";
 
 // The fake agent's "activity demo" turn (e2e/fake-opencode.mjs): narration,
 // two steps, a failing `mix test` (exit 1), an edit to activity-demo.txt with
@@ -143,7 +143,7 @@ test.describe("activity cards", () => {
     await expect(panel).toBeVisible();
     await expect(panel.locator("li[data-row]").filter({ hasText: "exit 1" })).toBeVisible();
 
-    await page.reload();
+    await reload(page);
     await expect(panel).toBeVisible();
     await expect(panel).toContainText("mix test test/billing");
     // (Esc is the panel's hook: wait for the page to be live)

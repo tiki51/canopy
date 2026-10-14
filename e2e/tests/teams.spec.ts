@@ -1,9 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { send, timeline, uniq, clickHeader, openDetails } from "./helpers";
+import { clickHeader, gotoLive, openDetails, send, timeline, uniq } from "./helpers";
 
 /** Creates a channel whose only member (and owner) is @backend; returns its id. */
 async function backendOnlyChannel(page: Page, name = uniq("solo")): Promise<string> {
-  await page.goto("/channels/new");
+  await gotoLive(page, "/channels/new");
   await page.getByLabel("Repository").selectOption({ label: "e2e-repo" });
   await page.getByLabel("Name (slug, shown as #name)").fill(name);
   await page.locator("#toggle-all-members").click();
@@ -24,7 +24,7 @@ test.describe("teams", () => {
     const team = uniq("qa");
 
     // create @qa-… on /teams with @test and @reviewer, @reviewer leading
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     await page.locator("#agents-teams").click();
     await expect(page).toHaveURL(/\/teams$/);
     await page.locator("#new-team").click();

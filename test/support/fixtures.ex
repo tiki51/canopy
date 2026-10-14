@@ -138,6 +138,10 @@ defmodule Canopy.Fixtures do
   end
 
   def unique_suffix do
-    System.unique_integer([:positive]) |> Integer.to_string(36) |> String.downcase()
+    # partitions (`mix test --partitions`) share _build/test/tmp: the partition
+    # number keeps their names apart
+    partition = System.get_env("MIX_TEST_PARTITION", "")
+    id = System.unique_integer([:positive]) |> Integer.to_string(36) |> String.downcase()
+    "#{partition}p#{id}"
   end
 end

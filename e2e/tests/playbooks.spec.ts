@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, uniq } from "./helpers";
+import { createChannel, gotoLive, reload, send, timeline, uniq } from "./helpers";
 
 // Playbooks: the library and the builder, then a run the fake OpenCode drives.
 // Asked to "run the <name> playbook", the fake agent starts it as the lead and
@@ -11,7 +11,7 @@ test.describe("playbooks", () => {
     const name = uniq("e2e-check");
 
     // the library lists the seeded bug-fix playbook
-    await page.goto("/playbooks");
+    await gotoLive(page, "/playbooks");
     await expect(page.locator("#playbooks")).toContainText("bug-fix");
     await expect(page.locator("#playbooks")).toContainText("starter");
 
@@ -93,8 +93,7 @@ test.describe("playbooks", () => {
     await expect(page.locator("#playbook-step-sign-off")).toHaveAttribute("data-status", "awaiting_approval");
 
     // seen once: after a reload the panel starts collapsed, and the chip opens it in Details
-    await page.reload();
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await reload(page);
     await expect(chip).toBeVisible();
     await expect(page.locator("#playbook-panel")).toBeHidden();
     await chip.click();
@@ -110,7 +109,7 @@ test.describe("playbooks", () => {
   });
 
   test("a review moved above what it sends back to is a problem with a one-click fix", async ({ page }) => {
-    await page.goto("/playbooks");
+    await gotoLive(page, "/playbooks");
     await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='edit-playbook-']").click();
     await expect(page.locator("#about-title")).toHaveValue("Bug fix");
     await expect(page.locator("li[data-title='Fix'] .rail-start")).toBeAttached();
@@ -137,7 +136,7 @@ test.describe("playbooks", () => {
   });
 
   test("start a run from the Start page, in a new channel", async ({ page }) => {
-    await page.goto("/playbooks");
+    await gotoLive(page, "/playbooks");
     await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
     await expect(page.locator("#start-preview")).toContainText("What will happen");
     await expect(page.locator("#start-inputs")).toContainText("The symptom");

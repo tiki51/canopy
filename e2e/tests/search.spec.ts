@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, gotoLive, reload, send, timeline } from "./helpers";
 import { iso, sql } from "./site-helpers";
 
 // The Search page over the fake agent's "activity demo" turn
@@ -72,7 +72,7 @@ test.describe("search", () => {
     await page.locator("#search-filters_channel").selectOption(channelId);
     await expect(page).toHaveURL(new RegExp(`channel=${channelId}`));
     await expect(results(page).locator('a[id^="result-evt_"]')).toHaveCount(1);
-    await page.reload();
+    await reload(page);
     await expect(results(page).locator('a[id^="result-evt_"]')).toHaveCount(1);
     await expect(page.locator("#search-filters_channel")).toHaveValue(channelId);
 
@@ -82,7 +82,7 @@ test.describe("search", () => {
     await expect(page.locator("#activity-panel")).toBeVisible();
 
     // the message opens at its row, flashed
-    await page.goto(`/search?q=${marker}`);
+    await gotoLive(page, `/search?q=${marker}`);
     const hit = results(page).locator('a[id^="result-msg_"]').first();
     const messageId = (await hit.getAttribute("id"))!.replace("result-", "");
     await hit.click();
@@ -99,7 +99,7 @@ test.describe("search", () => {
     await expect(timeline(page)).toContainText("Acknowledged: looking into it now.");
     fillChannel(channelId, 120);
 
-    await page.goto(`/search?q=${marker}`);
+    await gotoLive(page, `/search?q=${marker}`);
     const hit = results(page).locator('a[id^="result-msg_"]').first();
     const messageId = (await hit.getAttribute("id"))!.replace("result-", "");
     await hit.click();
@@ -116,8 +116,7 @@ test.describe("search", () => {
   });
 
   test("the command palette hands a query over to Search", async ({ page }) => {
-    await page.goto("/settings");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, "/settings");
 
     const open = async () => {
       await page.locator("#cmdk-open").click();
@@ -142,7 +141,7 @@ test.describe("search", () => {
 
   test("at phone width the filters fold into a disclosure", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/search?q=billing&sort=newest");
+    await gotoLive(page, "/search?q=billing&sort=newest");
 
     await expect(page.locator("#search-filters-body")).toBeHidden();
     await expect(page.locator("#search-filters-toggle")).toContainText("Filters (1)");

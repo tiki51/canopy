@@ -1,7 +1,7 @@
 // Shared files: upload and paste from the composer, cards in the timeline, an
 // agent publishing a report through canopy_document_share, and the library.
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { attach, createChannel, gotoLive, send, timeline } from "./helpers";
 import path from "node:path";
 
 const png = path.resolve("../test/support/files/red.png");
@@ -9,9 +9,7 @@ const md = path.resolve("../test/support/files/report.md");
 
 test("the user uploads and pastes files; they render as cards", async ({ page }) => {
   await createChannel(page);
-  await page.locator("#upload-form input[type=file]").setInputFiles([png, md]);
-  await expect(page.locator("#composer-files")).toContainText("red.png");
-  await expect(page.locator("#composer-files")).toContainText("report.md");
+  await attach(page, [png, md]);
 
   await send(page, "Here are the screenshot and the analysis. No need to reply.");
   const cards = timeline(page).locator('[id^="attachment-"]');
@@ -54,7 +52,7 @@ test("an agent publishes a report and the library shares it into another channel
   await send(page, "Sharing the report here too. No need to reply.");
   await expect(timeline(page).locator('[id^="attachment-"][data-kind="text"]')).toContainText("retry-report.md");
 
-  await page.goto("/files");
+  await gotoLive(page, "/files");
   const row = page.locator('#files li', { hasText: "retry-report.md" });
   await expect(row).toContainText("@backend");
   await expect(row.locator(`a[href="/channels/${other}"]`)).toBeVisible();

@@ -14,7 +14,7 @@
 // suite) should pass with it in its alphabetical slot.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
-import { createChannel } from "./helpers";
+import { createChannel, gotoLive } from "./helpers";
 
 test.describe("environment reset", () => {
   test.skip(process.env.ENV_RESET !== "1", "set ENV_RESET=1 to run the real reset (it wipes canopy_e2e.db)");
@@ -25,11 +25,9 @@ test.describe("environment reset", () => {
     const channelId = await createChannel(page, name);
 
     const other = await context.newPage();
-    await other.goto(`/channels/${channelId}`);
-    await expect(other.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(other, `/channels/${channelId}`);
 
-    await page.goto("/settings");
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(page, "/settings");
     await page.locator("#open-reset").click();
     await expect(page.locator("#reset-dialog")).toBeVisible();
     await expect(page.locator("#reset-confirm")).toBeFocused();

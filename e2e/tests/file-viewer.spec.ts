@@ -2,7 +2,7 @@
 // (`?file=…&in=…`), ← → move through them, Esc closes and gives focus back to
 // the tile, Download downloads, and an open thread stays open underneath.
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { attach, createChannel, send, timeline } from "./helpers";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -22,15 +22,13 @@ function scratch(files: Record<string, string | Buffer>): string[] {
 }
 
 async function share(page: Page, files: string[], text: string) {
-  await page.locator("#upload-form input[type=file]").setInputFiles(files);
-  await expect(page.locator("#composer-files")).toContainText(path.basename(files[files.length - 1]));
+  await attach(page, files);
   await send(page, text);
 }
 
 test("open an image, browse to the Markdown, close with Esc", async ({ page }) => {
   await createChannel(page);
-  await page.locator("#upload-form input[type=file]").setInputFiles([md, png]);
-  await expect(page.locator("#composer-files")).toContainText("report.md");
+  await attach(page, [md, png]);
   await send(page, "The screenshot and the analysis. No need to reply.");
 
   // images come first in the message, as in the viewer
@@ -159,8 +157,7 @@ test("→ scrolls a long unwrapped line instead of moving on", async ({ page }) 
 test("Copy copies the file that is showing, after ← → too", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await createChannel(page);
-  await page.locator("#upload-form input[type=file]").setInputFiles([md, py]);
-  await expect(page.locator("#composer-files")).toContainText("retry.py");
+  await attach(page, [md, py]);
   await send(page, "The note and the module. No need to reply.");
 
   const tiles = timeline(page).locator("[data-viewer-link]");
@@ -200,8 +197,7 @@ test("Copy copies the exact bytes: CRLFs and all", async ({ page, context }) => 
 
 test("a file opened from the feed keeps the thread panel open", async ({ page }) => {
   await createChannel(page);
-  await page.locator("#upload-form input[type=file]").setInputFiles([png]);
-  await expect(page.locator("#composer-files")).toContainText("red.png");
+  await attach(page, [png]);
   await send(page, "One chart. No need to reply.");
 
   const message = timeline(page).locator("article", { hasText: "One chart." });

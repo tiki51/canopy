@@ -2,16 +2,18 @@ import Config
 
 # Configure your database
 #
-# The MIX_TEST_PARTITION environment variable can be used
-# to provide built-in test partitioning in CI environment.
-# Run `mix help test` for more information.
+# Each partition of `mix test --partitions N` (MIX_TEST_PARTITION=1..N, see
+# scripts/test-partitioned.sh) gets its own database and files directory:
+# SQLite has a single writer, so partitions can't share one.
 config :canopy, Canopy.Repo,
-  database: Path.expand("../canopy_test.db", __DIR__),
+  database: Path.expand("../canopy_test#{System.get_env("MIX_TEST_PARTITION")}.db", __DIR__),
   pool_size: 5,
   pool: Ecto.Adapters.SQL.Sandbox
 
 # Document bytes for tests go under _build so they never mix with dev files.
-config :canopy, files_dir: Path.expand("../_build/test/tmp/files", __DIR__)
+config :canopy,
+  files_dir:
+    Path.expand("../_build/test/tmp/files#{System.get_env("MIX_TEST_PARTITION")}", __DIR__)
 
 # A reset's backup is a stub file under _build: VACUUM INTO can't run inside the
 # sandbox's transaction (Canopy.Environment.Backup has its own unboxed test).

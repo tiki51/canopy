@@ -1,22 +1,22 @@
 import { test, expect } from "@playwright/test";
-import { uniq } from "./helpers";
+import { gotoLive, uniq } from "./helpers";
 
 test.describe("repositories and agents", () => {
   test("lists the registered repository with its branch", async ({ page }) => {
-    await page.goto("/repositories");
+    await gotoLive(page, "/repositories");
     await expect(page.locator("#repositories").getByText("e2e-repo", { exact: true })).toBeVisible();
     await expect(page.locator("#repositories")).toContainText("main");
   });
 
   test("rejects a path that does not exist", async ({ page }) => {
-    await page.goto("/repositories");
+    await gotoLive(page, "/repositories");
     await page.getByLabel("Absolute path").fill("/definitely/not/here");
     await page.locator("#save-repository").click();
     await expect(page.locator("#repository-form")).toContainText(/does not exist/i);
   });
 
   test("shows the seeded agents and creates a new one", async ({ page }) => {
-    await page.goto("/agents");
+    await gotoLive(page, "/agents");
     for (const name of ["backend", "reviewer", "researcher", "test"]) {
       await expect(page.locator("#active-agents")).toContainText(`@${name}`);
     }

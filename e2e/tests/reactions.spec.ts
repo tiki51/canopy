@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { createChannel, send, timeline } from "./helpers";
+import { createChannel, gotoLive, reload, send, timeline } from "./helpers";
 
 // Finished turns, as cards (the fake's default turn runs a tool); hidden in the
 // compact timeline but still in the DOM.
@@ -43,22 +43,20 @@ test.describe("reactions", () => {
     await expect(working(page)).toHaveCount(0);
     await expect(turns(page)).toHaveCount(2);
 
-    await page.reload();
-    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await reload(page);
     const reloaded = timeline(page).locator("article", { hasText: "Acknowledged: looking into it now." }).first();
     await expect(reloaded.locator('[id^="reaction-msg_"][id$="-check"]')).toContainText("1");
 
     await reloaded.locator('[id^="reaction-msg_"][id$="-check"]').click();
     await expect(reloaded.locator('[id^="reactions-msg_"]')).toHaveCount(0);
-    await page.reload();
+    await reload(page);
     await expect(timeline(page).locator('[id^="reaction-msg_"]')).toHaveCount(0);
   });
 
   test("a reaction in one window appears in another on the same channel", async ({ page, context }) => {
     const post = await answered(page);
     const other = await context.newPage();
-    await other.goto(page.url());
-    await expect(other.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await gotoLive(other, page.url());
     const mirrored = timeline(other).locator("article", { hasText: "Acknowledged: looking into it now." }).first();
     await expect(mirrored).toBeVisible();
 
