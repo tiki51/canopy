@@ -3,9 +3,9 @@
 // the feed, and two cuts from it, each as WebM and MP4 with a poster frame,
 // written to canopy_site/public/images:
 //
-//   pb-story-03-build.{webm,mp4} + -poster.jpg   the build: @frontend's live card, its delegation to
-//                                                @backend, and @backend's edit asking first; the poster
-//                                                is its last frame (the homepage's reduced-motion state)
+//   pb-story-03-build.{webm,mp4} + -poster.jpg   the build: @frontend's live card and its delegation to
+//                                                @backend, up to the moment @backend's edit asks; the
+//                                                poster is its last frame (the homepage's reduced-motion state)
 //   pb-full-run.{webm,mp4} + -poster.jpg          the whole run, Start to sign-off; the poster is the
 //                                                design approval card
 //
@@ -111,20 +111,31 @@ test.describe("recording for canopy_site", () => {
     await park(page);
     const building = now();
     const perm = page.locator('section[id^="permission-"]').first();
-    await expect(perm).toContainText("export_csv", { timeout: 120_000 });
+    // When the ask first shows (its timeline line or the card), polled every frame:
+    // expect's polling can trail it by a second.
+    const asked = await page
+      .waitForFunction(
+        () =>
+          (document.querySelector('section[id^="permission-"]') ||
+            document.querySelector("#timeline")?.textContent?.includes("asked for Edit permission")) &&
+          Date.now() / 1000,
+        null,
+        { polling: "raf", timeout: 120_000 },
+      )
+      .then((handle) => handle.jsonValue() as Promise<number>);
+    await expect(perm).toContainText("export_csv");
     await perm.scrollIntoViewIfNeeded();
     await page.waitForTimeout(2000);
     await page.locator('[id^="permission-"][id$="-always"]').first().click();
     await park(page);
     await expect(perm).toBeHidden({ timeout: 30_000 });
-    const allowed = now();
 
     // Review sends Build back; the fix; the test report; the sign-off.
     await expect(page.locator("#timeline")).toContainText("Sent back to Build", { timeout: 240_000 });
     await follow("build");
     await expect(page.locator("#playbook-step-design-check")).toHaveAttribute("data-status", "active", { timeout: 240_000 });
-    await follow("notify");
-    const signoff = page.locator('section[id^="signoff-so_"]', { hasText: "Ship the CSV export?" }).first();
+    await follow("sign-off");
+    const signoff = page.locator('section[id^="signoff-so_"]', { hasText: "Accept the CSV export" }).first();
     await expect(signoff).toBeVisible({ timeout: 300_000 });
     await bottom(page);
     await page.waitForTimeout(2500);
@@ -149,7 +160,8 @@ test.describe("recording for canopy_site", () => {
 
     const t0 = frames[0].t;
     const cuts = {
-      "pb-story-03-build": { from: building - 0.5 - t0, to: allowed + 2.0 - t0, poster: "end" },
+      // Ends as @backend's edit asks, before the permission card: step 4 shows that.
+      "pb-story-03-build": { from: building - 0.5 - t0, to: asked - 0.1 - t0, poster: "end" },
       "pb-full-run": { from: Math.max(0, start - 0.5 - t0), to: end - t0, poster: approval + 1.5 - t0 },
     } as const;
     // The full run plays in a smaller frame on the site: 1920 wide keeps UI text sharp at a quarter of the bytes.

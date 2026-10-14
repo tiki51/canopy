@@ -504,7 +504,7 @@ async function scheduledCheck(instruction) {
 // done"), so a wake that arrives late or twice finds the run already moved on
 // and passes. The delegates know their part from the step line of their
 // delegation ("This is step `build` of the feature-build playbook").
-const FB_STEPS = ["intake", "design", "design-approval", "tech-design", "tech-review", "build", "verify", "design-check", "notify"];
+const FB_STEPS = ["intake", "design", "design-approval", "tech-design", "tech-review", "build", "verify", "design-check", "sign-off"];
 
 const PAGE_TOOLBAR_OLD = `      toolbar={<FilterChips value={filters} onChange={setFilters} />}`;
 const PAGE_TOOLBAR_NEW = `      toolbar={
@@ -643,9 +643,7 @@ All 9 plan cases pass, including #4 (an empty report exports the header row only
 
 Screens: the Export menu open in the toolbar, light and dark.`;
 
-const SUMMARY = `**CSV export on the Reports page is ready for your sign-off.**
-
-- **Design:** Option B, an Export menu in the table toolbar ("CSV, current view" and "CSV, all rows").
+const SUMMARY = `- **Design:** Option B, an Export menu in the table toolbar ("CSV, current view" and "CSV, all rows").
 - **Changes, 5 files:** \`ReportsPage.tsx\`, \`api/reports.ts\`, \`reports.py\`, \`api.py\`, \`test_reports.py\`.
 - **Review:** sent back once (empty reports exported nothing); fixed, then approved.
 - **Tests:** 16 unit and 5 e2e pass; the report is attached.`;
@@ -669,6 +667,11 @@ const saveStory = (story) => {
 async function coordinate(prompt, body) {
   const note = prompt.match(/Playbook in progress here: feature-build \(run \S+\), step (\d+) of \d+ "[^"]*"( is waiting for the user's approval)?(?: \(round (\d+)\))?/);
   const started = /You are coordinating the feature-build playbook/.test(prompt);
+  // Priya accepted the sign-off: the run completed with it, so this wake carries no step note.
+  if (/The user approved "User sign-off" \(sign-off\) of feature-build/.test(prompt)) {
+    await canopy("task_update", { status: "completed", result: "CSV export on the Reports page: design B, 5 files, signed off." });
+    return finish("Signed off; the run is complete.");
+  }
   if ((!note && !started) || note?.[2]) {
     await canopy("pass", {});
     return finish("Nothing to do: the run is waiting for Priya, or done.");
@@ -771,20 +774,14 @@ async function coordinate(prompt, body) {
 
   if (step === "design-check" && allDone) {
     await canopy("playbook_advance", { result: "@designer approved: it matches design B." });
-    await canopy("message_send", { text: SUMMARY });
-    await canopy("signoff_request", {
-      title: "CSV export on Reports",
-      question: "Ship the CSV export?",
-      summary: "Design B, 5 files changed, review and tests pass. The test report is attached; Changes shows the diff.",
+    // The sign-off step: the summary is the card's own text, and nothing else is posted.
+    await canopy("playbook_advance", {
+      result: SUMMARY,
+      question: "Accept the CSV export on the Reports page?",
       attachments: ".canopy/out/test-report.md",
     });
-    return finish("Summary posted; waiting for Priya's sign-off.");
-  }
-
-  if (step === "notify" && /Accepted your sign-off/.test(body)) {
-    await canopy("playbook_advance", { result: "Priya signed off on the CSV export." });
-    await canopy("task_update", { status: "completed", result: "CSV export on the Reports page: design B, 5 files, signed off." });
-    return finish("Signed off; the run is complete.");
+    await canopy("pass", {});
+    return finish("The CSV export is waiting for Priya's sign-off.");
   }
 
   await canopy("pass", {});

@@ -223,15 +223,14 @@ test.describe("stills for canopy_site", () => {
     await park(page);
     await shot(page, "pb-documents", () => cardCrop(report));
 
-    // -- Step 7: the sign-off card, and Changes · 5 files ------------------------------------------------
-    const signoff = page.locator('section[id^="signoff-so_"]', { hasText: "Ship the CSV export?" }).first();
+    // -- Step 7: the User sign-off card, and Changes · 5 files -------------------------------------------
+    const signoff = page.locator('section[id^="signoff-so_"]', { hasText: "Accept the CSV export" }).first();
     await expect(signoff).toBeVisible({ timeout: 180_000 });
     await bottom(page);
     await park(page);
     await shot(page, "pb-story-07-signoff-card", () => cardCrop(signoff));
-    const ready = timeline(page).locator('[id^="message-"]', { hasText: "ready for your sign-off" }).last();
-    // Window top sits in the gap just above the PM's message so the whole sign-off card fits.
-    await storyShot(page, "pb-story-07-signoff", ready, [signoff], 10);
+    // The summary is on the card itself, so the card is the anchor.
+    await storyShot(page, "pb-story-07-signoff", signoff, [signoff]);
     await bottom(page);
     await clickHeader(page, "open-changes");
     await expect(page.locator("#changes-modal")).toBeVisible();
@@ -243,14 +242,16 @@ test.describe("stills for canopy_site", () => {
     await shot(page, "pb-story-07-changes-modal", () => around(page.locator("#changes-dialog"), 0));
     await page.locator("#close-changes").click();
 
-    // Sign off: the coordinator closes the run.
+    // Sign off: accepting the last step completes the run; the coordinator closes the task.
     await signoff.locator('[id$="-accept"]').click();
     await expect(timeline(page)).toContainText("the feature-build playbook is complete", { timeout: 60_000 });
     await expect(page.locator(`#telemetry-${backend}`)).toBeHidden({ timeout: 60_000 });
     await expect(page.locator(`#telemetry-${pm}`)).toBeHidden({ timeout: 60_000 });
     const closing = timeline(page).locator('[id^="message-"]', { hasText: "Signed off; the run is complete" }).last();
     await expect(closing).toBeVisible({ timeout: 60_000 });
-    const accepted = timeline(page).locator('[id^="message-"]', { hasText: "Accepted your sign-off" }).last();
+    // The accepted card stays in place, collapsed to "You accepted @project-manager's User sign-off".
+    const accepted = timeline(page).locator('[id^="signoff-resolved-"]', { hasText: "User sign-off" }).last();
+    await expect(accepted).toBeVisible({ timeout: 30_000 });
     const complete = timeline(page).locator('[id^="line-"]', { hasText: "the feature-build playbook is complete" }).last();
     await storyShot(page, "pb-story-08-done", accepted, [complete, closing]);
     await bottom(page);
