@@ -36,6 +36,7 @@ defmodule CanopyWeb.ChannelLive do
   use CanopyWeb, :live_view
 
   import CanopyWeb.TimelineComponents
+  import CanopyWeb.SignoffComponents, only: [signoff_card: 1, asker: 1]
 
   alias Canopy.{
     Agents,
@@ -54,6 +55,7 @@ defmodule CanopyWeb.ChannelLive do
     Runtime,
     Schedules,
     Settings,
+    Signoffs,
     Tasks,
     Teams,
     Threads,
@@ -144,8 +146,7 @@ defmodule CanopyWeb.ChannelLive do
   # `playbook_start.ex`, which answer 503 during a reset anyway).
   @runtime_events ~w(send send_thread abort interrupt_now stop_all switch_repository
                      reset_session respond_permission answer_question reject_question
-                     continue_chatter start_playbook approve_playbook_step
-                     request_playbook_changes reassign_coordinator)
+                     continue_chatter start_playbook answer_signoff reassign_coordinator)
 
   @doc false
   def runtime_events, do: @runtime_events
@@ -236,13 +237,13 @@ defmodule CanopyWeb.ChannelLive do
 
   # `?file=<doc id>&in=<message id>` opens the file viewer on one of a
   # message's files; the message must be in this channel (a thread reply
-  # counts).
+  # counts). `in=<sign-off id>` opens one of a sign-off card's files.
   defp viewer_from_params(socket, %{"file" => doc_id, "in" => message_id})
        when is_binary(doc_id) and is_binary(message_id) do
     channel = socket.assigns.channel
 
     with %{channel_id: channel_id} = message when channel_id == channel.id <-
-           Messages.get(message_id),
+           viewer_source(message_id),
          {:ok, viewer} <-
            FileViewer.load(message, doc_id,
              channel: channel,
@@ -258,6 +259,9 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   defp viewer_from_params(socket, _params), do: assign(socket, :viewer, nil)
+
+  defp viewer_source("so_" <> _ = id), do: Signoffs.get(id)
+  defp viewer_source(id), do: Messages.get(id)
 
   # A newly loaded channel's feed goes in once the params have had their say:
   # a link to an old message replaces the first page with history around it.
@@ -666,6 +670,8 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
     |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
     |> assign(:question_drafts, %{})
+    |> assign(:pending_signoffs, Signoffs.pending_for_channel(id))
+    |> assign(:signoff_notes, %{})
     |> assign_cards()
     |> assign(:editing_task?, false)
     |> close_brief_form()
@@ -1526,6 +1532,10 @@ defmodule CanopyWeb.ChannelLive do
 
   defp react_to(socket, %{event_type: "permission_" <> _}), do: refresh_permissions(socket)
   defp react_to(socket, %{event_type: "question_" <> _}), do: refresh_questions(socket)
+
+  defp react_to(socket, %{event_type: "signoff_" <> _}),
+    do: socket |> refresh_signoffs() |> assign_run()
+
   defp react_to(socket, _event), do: socket
 
   defp refresh_channel(socket) do
@@ -1655,6 +1665,46 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:question_drafts, Map.delete(socket.assigns.question_drafts, id))
     |> assign_cards()
   end
+
+  defp refresh_signoffs(socket) do
+    pending = Signoffs.pending_for_channel(cid(socket))
+    ids = MapSet.new(pending, & &1.id)
+
+    socket
+    |> assign(:pending_signoffs, pending)
+    |> assign(:signoff_notes, Map.filter(socket.assigns.signoff_notes, &(elem(&1, 0) in ids)))
+  end
+
+  defp drop_signoff(socket, id) do
+    socket
+    |> assign(:pending_signoffs, Enum.reject(socket.assigns.pending_signoffs, &(&1.id == id)))
+    |> assign(:signoff_notes, Map.delete(socket.assigns.signoff_notes, id))
+  end
+
+  # "pick an option" → "Pick an option.", as the old approve flash read;
+  # String.capitalize/1 would lowercase the rest ("Unarchive (Reopen)").
+  defp sentence(<<first::utf8, rest::binary>>) do
+    text = String.upcase(<<first::utf8>>) <> rest
+    if String.ends_with?(text, [".", "!", "?"]), do: text, else: text <> "."
+  end
+
+  # The run's pending sign-off, for the compact card on its held step.
+  defp run_signoff(_signoffs, nil), do: nil
+  defp run_signoff(signoffs, %{id: run_id}), do: Enum.find(signoffs, &(&1.run_id == run_id))
+
+  # `accept`, `accept:<index>` (in range for the card's options) or `reject`;
+  # anything else is :error and does nothing.
+  defp parse_verdict("accept", _signoff), do: {:accept, nil}
+  defp parse_verdict("reject", _signoff), do: :reject
+
+  defp parse_verdict("accept:" <> index, %{options: options}) do
+    case Integer.parse(index) do
+      {i, ""} when i >= 0 and i < length(options) -> {:accept, i}
+      _ -> :error
+    end
+  end
+
+  defp parse_verdict(_verdict, _signoff), do: :error
 
   defp drop_permission(socket, id) do
     socket
@@ -2310,24 +2360,76 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
-  def handle_event("approve_playbook_step", %{"id" => id}, socket) do
-    with %Run{} = run <- Runs.get(id),
-         {:ok, _run, _what} <- Runs.approve(run) do
-      {:noreply, assign_run(socket)}
+  # One event for the timeline card and the run panel's. A card no longer
+  # here (answered in another tab, withdrawn) refreshes quietly; an error on
+  # a card that is still pending is worth a flash.
+  def handle_event("answer_signoff", %{"signoff_id" => id} = params, socket) do
+    # a blank note on the press falls back to one reported on blur (typed in
+    # the other card, or a submit that raced the blur)
+    note =
+      case params["note"] do
+        note when is_binary(note) and note != "" -> note
+        _ -> socket.assigns.signoff_notes[id] || params["note"]
+      end
+
+    with %{} = signoff <- Enum.find(socket.assigns.pending_signoffs, &(&1.id == id)),
+         verdict when verdict != :error <- parse_verdict(params["verdict"], signoff) do
+      result =
+        case verdict do
+          # a freestanding accept would wake an agent in an archived channel;
+          # a held run's step stays releasable
+          {:accept, _index}
+          when is_nil(signoff.run_id) and socket.assigns.channel.status == "archived" ->
+            {:error, @archived_answer}
+
+          {:accept, index} ->
+            Signoffs.accept(signoff, index, note)
+
+          :reject ->
+            Signoffs.reject(signoff, note)
+        end
+
+      case result do
+        {:ok, _signoff} ->
+          {:noreply,
+           socket
+           |> drop_signoff(id)
+           |> assign_run()
+           |> push_event("composer:focus", %{id: "composer-input"})}
+
+        {:error, message} ->
+          socket = socket |> refresh_signoffs() |> assign_run()
+
+          {:noreply,
+           if(Enum.any?(socket.assigns.pending_signoffs, &(&1.id == id)),
+             do: put_flash(socket, :error, sentence(message)),
+             else: socket
+           )}
+      end
     else
-      {:error, reason} -> {:noreply, put_flash(socket, :error, reason)}
-      _ -> {:noreply, assign_run(socket)}
+      nil -> {:noreply, socket |> refresh_signoffs() |> assign_run()}
+      :error -> {:noreply, socket}
     end
   end
 
-  def handle_event("request_playbook_changes", %{"run_id" => id, "note" => note}, socket) do
-    with %Run{} = run <- Runs.get(id),
-         {:ok, _run, _what} <- Runs.request_changes(run, note) do
-      {:noreply, assign_run(socket)}
-    else
-      {:error, reason} -> {:noreply, put_flash(socket, :error, String.capitalize(reason) <> ".")}
-      _ -> {:noreply, assign_run(socket)}
-    end
+  def handle_event("answer_signoff", _params, socket), do: {:noreply, socket}
+
+  def handle_event("signoff_note", %{"signoff_id" => id, "note" => note}, socket),
+    do:
+      {:noreply, assign(socket, :signoff_notes, Map.put(socket.assigns.signoff_notes, id, note))}
+
+  def handle_event("signoff_note", _params, socket), do: {:noreply, socket}
+
+  # The run panel's "Show card": below lg, Details covers the feed, so it
+  # steps aside (as when another panel takes the slot) before the card is
+  # scrolled to.
+  def handle_event("show_signoff", %{"id" => id}, socket) do
+    socket =
+      if socket.assigns.details? and not socket.assigns.details_wide?,
+        do: stow_details(socket),
+        else: socket
+
+    {:noreply, push_event(socket, "signoff:show", %{id: "signoff-#{id}"})}
   end
 
   def handle_event("reassign_coordinator", %{"run_id" => id, "agent_id" => agent_id}, socket) do
@@ -2854,6 +2956,11 @@ defmodule CanopyWeb.ChannelLive do
               names={@names}
               draft={Map.get(@question_drafts, request.id, %{})}
             />
+            <.signoff_card
+              :for={signoff <- @pending_signoffs}
+              signoff={signoff}
+              note={Map.get(@signoff_notes, signoff.id, "")}
+            />
           </div>
 
           <div :if={@window == :history} class="relative z-10 h-0">
@@ -2876,7 +2983,11 @@ defmodule CanopyWeb.ChannelLive do
             spent={@spent}
           />
           <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
-          <.awaiting_bar :if={!Channels.archived?(@channel)} waiting={@waiting_on_user} />
+          <.awaiting_bar
+            :if={!Channels.archived?(@channel)}
+            waiting={@waiting_on_user}
+            signoffs={@pending_signoffs}
+          />
           <.composer
             :if={!Channels.archived?(@channel)}
             id="composer"
@@ -2982,6 +3093,8 @@ defmodule CanopyWeb.ChannelLive do
           lock_form={@lock_form}
           taking_lock?={@taking_lock?}
           run={@run}
+          signoff={run_signoff(@pending_signoffs, @run)}
+          signoff_notes={@signoff_notes}
           editing_playbook?={@editing_playbook?}
           start_form={@start_form}
           playbooks={@run_playbooks}
@@ -3545,6 +3658,8 @@ defmodule CanopyWeb.ChannelLive do
   attr :lock_form, :any, required: true
   attr :taking_lock?, :boolean, default: false
   attr :run, :any, default: nil
+  attr :signoff, :any, default: nil, doc: "the run's pending sign-off"
+  attr :signoff_notes, :map, default: %{}
   attr :editing_playbook?, :boolean, default: false
   attr :start_form, :any, default: nil
   attr :playbooks, :list, default: []
@@ -3737,6 +3852,8 @@ defmodule CanopyWeb.ChannelLive do
               </:value>
               <PlaybookComponents.run_panel
                 run={@run}
+                signoff={@signoff}
+                signoff_note={@signoff && Map.get(@signoff_notes, @signoff.id, "")}
                 names={@names}
                 user_name={@user_name}
                 start_form={@start_form}
@@ -4291,20 +4408,41 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   attr :waiting, :list, required: true, doc: "`[{agent_name, card_dom_id}]`"
+  attr :signoffs, :list, default: [], doc: "pending sign-offs (they block nobody)"
 
-  # Agents blocked on a card in this channel. Without it, an agent waiting on
-  # the user looks the same as one at work.
+  # Agents blocked on a card in this channel, and the sign-offs asked here.
+  # Without it, an agent waiting on the user looks the same as one at work.
   defp awaiting_bar(assigns) do
     ~H"""
     <div
-      :if={@waiting != []}
+      :if={@waiting != [] or @signoffs != []}
       id="awaiting-bar"
-      class="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-info/40 bg-info/10 px-3 py-2 text-sm"
+      class={
+        [
+          "flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t px-3 py-2 text-sm",
+          # sign-offs alone take the card's warning tone; any blocked agent keeps it info
+          if(@waiting == [],
+            do: "border-warning/30 bg-warning/10",
+            else: "border-info/40 bg-info/10"
+          )
+        ]
+      }
     >
       <span :for={{name, dom_id} <- @waiting} class="flex items-center gap-2">
         <.icon name="hero-question-mark-circle-mini" class="size-4 text-info" />
         <span>@{name} is waiting on your answer</span>
         <a href={"#" <> dom_id} id={"awaiting-show-#{dom_id}"} class="btn btn-xs btn-info btn-soft">
+          Show
+        </a>
+      </span>
+      <span :for={signoff <- @signoffs} class="flex items-center gap-2">
+        <.icon name="hero-hand-raised-mini" class="size-4 text-warning" />
+        <span>{asker(signoff)} wants your sign-off</span>
+        <a
+          href={"#signoff-#{signoff.id}"}
+          id={"awaiting-show-signoff-#{signoff.id}"}
+          class="btn btn-xs btn-warning btn-soft"
+        >
           Show
         </a>
       </span>

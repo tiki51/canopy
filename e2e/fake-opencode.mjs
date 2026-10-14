@@ -594,6 +594,33 @@ async function runTurn(sessionID, text, cwd) {
     return finishTurn(sessionID, messageID, part, "Closed.", 0.0003);
   }
 
+  // Sign-off cards (e2e/tests/signoffs.spec.ts): "ask me to sign off on
+  // <thing> with options A, B, C" puts up a card with three options, B
+  // recommended; the user's answer comes back as a message that mentions the
+  // agent, and the agent echoes what it heard.
+  const said = text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "";
+  const signoffAsk = said.match(/ask me to sign off on (.+?) with options/i);
+  if (signoffAsk && /new Canopy message/.test(text)) {
+    const reply = await mcpCall("signoff_request", {
+      canopy_session_id: sessionID,
+      title: signoffAsk[1],
+      question: `Which ${signoffAsk[1]} should we build?`,
+      summary: "Three takes, written up.",
+      options: [
+        { label: "Totals on top", description: "Logo left, amount top-right." },
+        { label: "Banner", recommended: true },
+        { label: "Minimal", description: "Text only." },
+      ],
+    });
+    return finishTurn(sessionID, messageID, part, /^Sign-off card/.test(reply) ? "Waiting for your sign-off." : `Could not ask: ${reply}`, 0.0004);
+  }
+  const signoffAnswer = said.match(/(Accepted|Rejected) your sign-off "[^"]*"(?:: ([A-Z]) ·)?/);
+  if (signoffAnswer && /new Canopy message/.test(text)) {
+    const heard = signoffAnswer[1] === "Accepted" ? `accepted ${signoffAnswer[2] || "it"}` : "rejected it";
+    await mcpCall("message_send", { canopy_session_id: sessionID, text: `Heard: you ${heard}.` });
+    return finishTurn(sessionID, messageID, part, "Noted.", 0.0003);
+  }
+
   // Locks (e2e/tests/locks.spec.ts): "take the tests lock [and keep it]" asks
   // Canopy for the lock; queued, the agent passes and ends its turn, the way
   // the system prompt tells it to. The grant wake runs the work and ends, which

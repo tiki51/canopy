@@ -106,6 +106,33 @@ defmodule CanopyWeb.NotifyTest do
       assert note.url == "/channels/ch_1#evt-evt_1"
     end
 
+    test "a sign-off card, once per card; its run's approval line is not announced again" do
+      note =
+        Notify.classify(
+          event("signoff_requested",
+            ref_id: "so_1",
+            payload: %{"title" => "Header", "question" => "Which header?", "playbook" => nil}
+          ),
+          ctx()
+        )
+
+      assert %{kind: "needs_you", tag: "card:so_1", id: "card:so_1"} = note
+      assert note.title == "@pm wants your sign-off in #site-review"
+      assert note.body == "Which header?"
+      assert note.url == "/channels/ch_1#signoff-so_1"
+
+      assert Notify.classify(
+               event("playbook_approval_requested",
+                 ref_id: "pbr_1",
+                 payload: %{"run_id" => "pbr_1", "signoff_id" => "so_1"}
+               ),
+               ctx()
+             ) == nil
+
+      for type <- ~w(signoff_resolved signoff_withdrawn),
+          do: assert(Notify.classify(event(type, ref_id: "so_1"), ctx()) == nil, type)
+    end
+
     test "detached, resolved, and other card events say nothing" do
       for type <- ~w(question_detached question_resolved permission_detached permission_resolved
                      playbook_approval_resolved agent_turn_completed),

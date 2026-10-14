@@ -7,6 +7,8 @@ defmodule Canopy.Playbooks.RunsTest do
 
   alias Canopy.{Channels, Delegations, Handoffs, Repo, Teams, Timeline}
   alias Canopy.Playbooks.{Run, Runs}
+  alias Canopy.Signoffs
+  alias Canopy.Signoffs.SignoffRequest
 
   setup :set_mox_global
 
@@ -529,8 +531,6 @@ defmodule Canopy.Playbooks.RunsTest do
       {:ok, run, :awaiting_approval} =
         Runs.advance(ctx.run, {:agent, ctx.agent.id}, result: "ok?")
 
-      assert {:error, "say what should change"} = Runs.request_changes(run, "  ")
-
       assert {:ok, run, :changes_requested} =
                Runs.request_changes(run, "the button is still blue")
 
@@ -570,6 +570,296 @@ defmodule Canopy.Playbooks.RunsTest do
     test "approve is only for a run that waits", ctx do
       assert {:error, reason} = Runs.approve(ctx.run)
       assert reason =~ "not waiting for approval"
+    end
+  end
+
+  describe "sign-off cards" do
+    setup ctx do
+      stub_engine(self(), ctx.repository)
+
+      playbook =
+        playbook_fixture(
+          "carded",
+          [
+            {"fix", "Fix", "dev"},
+            {"design", "Design approval", "coordinator", "approval: user\non_reject: fix"},
+            {"wrap", "Wrap up", "coordinator"}
+          ],
+          "roles:\n  dev: #{dev().name}\n"
+        )
+
+      {run, false} = start!(ctx, playbook)
+      {:ok, run, {:step, "design"}} = Runs.advance(run, {:agent, ctx.agent.id}, result: "fixed")
+      Map.put(ctx, :run, run)
+    end
+
+    @options [
+      %{label: "Totals on top"},
+      %{label: "Totals below", description: "Sum last", recommended: true},
+      %{label: "Minimal"}
+    ]
+
+    defp hold!(ctx, signoff \\ nil) do
+      {:ok, run, :awaiting_approval} =
+        Runs.advance(ctx.run, {:agent, ctx.agent.id}, result: "three headers", signoff: signoff)
+
+      {run, Signoffs.pending_for_run(run.id)}
+    end
+
+    test "holding a step puts up one card with the result, options and docs", ctx do
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: "mock.md",
+          source: {:binary, "x"},
+          agent_id: ctx.agent.id
+        })
+
+      {run, card} =
+        hold!(ctx, %{question: "Which header?", options: @options, document_ids: [doc.id]})
+
+      assert %{
+               status: "pending",
+               title: "Design approval",
+               question: "Which header?",
+               summary: "three headers",
+               step_id: "design",
+               agent_id: agent_id
+             } = card
+
+      assert agent_id == ctx.agent.id
+      assert card.run_id == run.id
+      assert card.playbook_step_id == step(run, "design").id
+      assert Enum.map(card.options, & &1["label"]) == ["Totals on top", "Totals below", "Minimal"]
+      assert Enum.map(card.documents, & &1.id) == [doc.id]
+      assert Signoffs.badge(card) == "carded · step 2 of 3"
+
+      assert_receive {:timeline,
+                      %{event_type: "signoff_requested", payload: %{"playbook" => "carded"}}}
+
+      assert_receive {:timeline,
+                      %{event_type: "playbook_approval_requested", payload: %{"signoff_id" => id}}}
+
+      assert id == card.id
+    end
+
+    test "the default question names the step", ctx do
+      {_run, card} = hold!(ctx)
+      assert card.question == ~s(Is "Design approval" done?)
+      assert card.options == []
+    end
+
+    test "invalid options fail the advance and leave the run as it was", ctx do
+      assert {:error, reason} =
+               Runs.advance(ctx.run, {:agent, ctx.agent.id},
+                 result: "x",
+                 signoff: %{options: [%{label: "one"}]}
+               )
+
+      assert reason =~ "give 2–6 options"
+      run = Runs.get!(ctx.run.id)
+      assert run.status == "active"
+      assert step(run, "design").status == "active"
+      assert Signoffs.pending_for_run(run.id) == nil
+    end
+
+    test "a long step title is cut to fit the card; the hold never fails on it", ctx do
+      long = String.duplicate("very long title ", 10)
+
+      Repo.update_all(
+        from(s in Canopy.Playbooks.Step, where: s.id == ^step(ctx.run, "design").id),
+        set: [title: long]
+      )
+
+      {:ok, _run, :awaiting_approval} =
+        Runs.advance(Runs.get!(ctx.run.id), {:agent, ctx.agent.id}, result: "r")
+
+      card = Signoffs.pending_for_run(ctx.run.id)
+      assert String.length(card.title) == 80
+      assert String.ends_with?(card.title, "…")
+      assert String.length(card.question) <= 300
+    end
+
+    test "accepting an option: the step is done, the run moves on, the coordinator hears the pick",
+         ctx do
+      {_run, card} = hold!(ctx, %{options: @options})
+
+      assert {:ok, %{status: "accepted", choice: "Totals below", choice_index: 1}} =
+               Signoffs.accept(card, 1, "ship it")
+
+      run = Runs.get!(ctx.run.id)
+      assert run.status == "active"
+      assert run.current_step == "wrap"
+      design = step(run, "design")
+      assert %{status: "done", approved_at: %DateTime{}} = design
+      assert design.result == "three headers\n\nChosen: Totals below\nSign-off note: ship it"
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "signoff_resolved",
+                        payload: %{
+                          "status" => "accepted",
+                          "choice" => "Totals below",
+                          "choice_index" => 1,
+                          "playbook" => "carded",
+                          "step" => "design"
+                        }
+                      }}
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "playbook_approval_resolved",
+                        payload: %{"signoff_id" => id, "choice" => "Totals below"}
+                      }}
+
+      assert id == card.id
+
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ ~s(They chose: "Totals below" — Sum last.)
+      assert text =~ "Their note: ship it"
+    end
+
+    test "approving directly resolves the card; with no card the approval goes ahead", ctx do
+      {run, card} = hold!(ctx)
+      assert {:ok, run, {:step, "wrap"}} = Runs.approve(run)
+      assert %{status: "accepted", resolved_by: "user"} = Signoffs.get(card.id)
+
+      # a held step whose card is gone (none was ever made) still approves
+      playbook = playbook_fixture("bare", [{"sign", "Sign", "coordinator", "approval: user"}])
+      {:ok, _, :cancelled} = Runs.cancel(run, :user, "next")
+      {run2, false} = start!(ctx, playbook)
+      {:ok, run2, :awaiting_approval} = Runs.advance(run2, {:agent, ctx.agent.id}, result: "ok")
+      Repo.delete_all(from s in SignoffRequest, where: s.run_id == ^run2.id)
+      assert {:ok, _run, :completed} = Runs.approve(run2)
+    end
+
+    test "a card that is not the step's pending card is refused", ctx do
+      {run, card} = hold!(ctx)
+      other = %{card | id: "so_00000000000000000000000000"}
+      assert {:error, "already answered"} = Runs.approve(run, nil, signoff: other)
+      assert {:error, "already answered"} = Runs.request_changes(run, nil, signoff: other)
+
+      assert {:ok, _, _} = Runs.approve(run, nil, signoff: card)
+      assert {:error, _} = Runs.approve(Runs.get!(run.id), nil, signoff: card)
+    end
+
+    test "a second press on a run card is refused, and the run does not move twice", ctx do
+      {_run, card} = hold!(ctx)
+      assert {:ok, _} = Signoffs.accept(card.id, nil, nil)
+      assert {:error, "already answered"} = Signoffs.accept(card.id, nil, nil)
+      assert {:error, "already answered"} = Signoffs.reject(card, "late")
+      assert Runs.get!(ctx.run.id).current_step == "wrap"
+    end
+
+    test "a stale run leaves the card pending, with a user-facing reason", ctx do
+      {_run, card} = hold!(ctx)
+
+      Repo.update_all(from(r in Run, where: r.id == ^ctx.run.id), inc: [lock_version: 1])
+      # the card the context reads is fresh, but a stale run read beforehand loses
+      stale_run = Runs.get!(ctx.run.id)
+      Repo.update_all(from(r in Run, where: r.id == ^ctx.run.id), inc: [lock_version: 1])
+
+      assert {:error, reason} = Runs.approve(stale_run, nil, signoff: card)
+      assert reason =~ "changed meanwhile"
+      assert %{status: "pending"} = Signoffs.get(card.id)
+    end
+
+    test "rejecting with no note reopens the step and asks the coordinator to find out what changes",
+         ctx do
+      {_run, card} = hold!(ctx, %{options: @options})
+      assert {:ok, %{status: "rejected", note: nil}} = Signoffs.reject(card, nil)
+
+      run = Runs.get!(ctx.run.id)
+      assert run.status == "active"
+      assert step(run, "design").status == "active"
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "playbook_approval_resolved",
+                        payload: %{"approved" => false, "rejected_all" => true}
+                      }}
+
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ ~s(The user rejected all options on "Design approval")
+      assert text =~ "They gave no note"
+      assert text =~ "The playbook sends this step back to fix."
+    end
+
+    test "with the reset gate up, a run card's accept commits and returns without a wake", ctx do
+      {_run, card} = hold!(ctx)
+      stop_channels()
+      Canopy.EnvironmentHelpers.raise_gate()
+
+      assert {:ok, %{status: "accepted"}} = Signoffs.accept(card, nil, nil)
+      assert Runs.get!(ctx.run.id).current_step == "wrap"
+      refute_receive {:prompted, _, _}, 300
+    end
+
+    test "accepting the last step completes the run with the signed result as its outcome",
+         ctx do
+      playbook = playbook_fixture("last", [{"sign", "Sign", "coordinator", "approval: user"}])
+      {:ok, _, :cancelled} = Runs.cancel(ctx.run, :user, "next")
+      {run, false} = start!(ctx, playbook)
+
+      {:ok, _run, :awaiting_approval} =
+        Runs.advance(run, {:agent, ctx.agent.id},
+          result: "signed",
+          signoff: %{options: [%{label: "A"}, %{label: "B"}]}
+        )
+
+      {:ok, _} = Signoffs.accept(Signoffs.pending_for_run(run.id), 0, "fine")
+
+      run = Runs.get!(run.id)
+      assert run.status == "completed"
+      assert run.outcome == "signed\n\nChosen: A\nSign-off note: fine"
+      assert run.outcome == step(run, "sign").result
+    end
+
+    test "re-holding after a reject puts up a fresh card", ctx do
+      {_run, first} = hold!(ctx)
+      {:ok, _} = Signoffs.reject(first, "redo")
+
+      {:ok, run, :awaiting_approval} =
+        Runs.advance(Runs.get!(ctx.run.id), {:agent, ctx.agent.id}, result: "again")
+
+      second = Signoffs.pending_for_run(run.id)
+      assert second.id != first.id
+      assert %{status: "rejected"} = Signoffs.get(first.id)
+    end
+
+    test "cancelling the run withdraws its card", ctx do
+      {run, card} = hold!(ctx)
+      {:ok, _run, :cancelled} = Runs.cancel(run, :user, "not now")
+
+      assert %{status: "withdrawn", resolved_by: "system"} = Signoffs.get(card.id)
+
+      assert_receive {:timeline,
+                      %{
+                        event_type: "signoff_withdrawn",
+                        payload: %{"reason" => "run cancelled", "agent" => name}
+                      }}
+
+      assert name == ctx.agent.name
+    end
+
+    test "after a reassignment, accepting wakes the new coordinator", ctx do
+      {run, card} = hold!(ctx)
+      new = agent_fixture(name: "new-coord-" <> unique_suffix())
+      new_session = session_fixture(%{channel: ctx.channel, agent_id: new.id})
+      {:ok, _run, :reassigned} = Runs.reassign(run, new, "user")
+
+      assert {:ok, _} = Signoffs.accept(card, nil, nil)
+      assert_receive {:prompted, sid, body}, 2_000
+      assert prompt_text(body) =~ "The user approved"
+      assert sid == new_session.engine_session_id
+    end
+
+    test "in an archived channel a held run can still be released", ctx do
+      {_run, card} = hold!(ctx)
+      {:ok, _} = Channels.archive(ctx.channel)
+      assert {:ok, %{status: "accepted"}} = Signoffs.accept(card, nil, nil)
+      assert Runs.get!(ctx.run.id).current_step == "wrap"
     end
   end
 

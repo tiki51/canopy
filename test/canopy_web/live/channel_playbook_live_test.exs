@@ -146,7 +146,7 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     {:ok, _run, :awaiting_approval} = Runs.advance(run, {:agent, ctx.agent.id}, result: "summary")
     assert has_element?(view, "#playbook-chip[data-status='awaiting_approval']")
     assert has_element?(view, "#attention-#{ctx.channel.id}")
-    assert has_element?(view, "#playbook-approval #approve-playbook-step")
+    assert has_element?(view, "#playbook-signoff #playbook-signoff-accept")
 
     # spend the chatter budget, then let a counted wake pause the channel
     {:ok, _} = Canopy.Settings.update(%{chatter_limit: 1})
@@ -157,7 +157,7 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     _ = :sys.get_state(Runtime.Supervisor.whereis(ctx.channel.id))
     assert Runtime.paused?(ctx.channel.id)
 
-    view |> element("#approve-playbook-step") |> render_click()
+    view |> element("#playbook-signoff-form") |> render_submit(%{"verdict" => "accept"})
     assert_receive {:prompted, _sid, body}, 2_000
     assert prompt_text(body) =~ "The user approved \"Sign-off\""
     refute Runtime.paused?(ctx.channel.id)
@@ -177,8 +177,8 @@ defmodule CanopyWeb.ChannelPlaybookLiveTest do
     view |> element("#playbook-chip") |> render_click()
 
     view
-    |> form("#request-changes-form", %{run_id: run.id, note: "still blue"})
-    |> render_submit()
+    |> element("#playbook-signoff-form")
+    |> render_submit(%{"verdict" => "reject", "note" => "still blue"})
 
     assert_receive {:prompted, _sid, body}, 2_000
     assert prompt_text(body) =~ "Their note: still blue"

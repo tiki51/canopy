@@ -36,6 +36,8 @@ defmodule Canopy.Playbooks.Runs do
   alias Canopy.Playbooks
   alias Canopy.Playbooks.{Definition, Playbook, Run, StallWorker, Step}
   alias Canopy.Runtime.Prompts
+  alias Canopy.Signoffs
+  alias Canopy.Signoffs.SignoffRequest
   alias Ecto.Multi
 
   @topic "playbook_runs"
@@ -688,11 +690,10 @@ defmodule Canopy.Playbooks.Runs do
            {:ok, current} <- fetch_current(run),
            {:ok, next} <- next_step(run, current, requested),
            :ok <- check_skip(current, skip?, result, actor),
-           backward? = next != nil and next.position <= current.position,
-           holding? = current.approval and not skip? and not backward?,
+           holding? = holds_step?(current, next, skip?),
            :ok <- check_gates(run, current, next, actor, holding?) do
         if holding? do
-          request_approval(run, current, result, requested && next, actor)
+          request_approval(run, current, result, requested && next, actor, opts[:signoff])
         else
           status =
             cond do
@@ -705,6 +706,28 @@ defmodule Canopy.Playbooks.Runs do
         end
       end
     end)
+  end
+
+  @doc """
+  Whether `advance/3` with these `opts` (`:next`, `:skip`) would hold the
+  run's current step for the user's sign-off, judged on `run` as given.
+  """
+  def holds?(%Run{} = run, opts) do
+    skip? = Keyword.get(opts, :skip, false) == true
+    requested = opts |> Keyword.get(:next) |> blank_to_nil()
+
+    with {:ok, current} <- fetch_current(run),
+         {:ok, next} <- next_step(run, current, requested) do
+      holds_step?(current, next, skip?)
+    else
+      _ -> false
+    end
+  end
+
+  # going back from an approval step leaves it pending instead
+  defp holds_step?(current, next, skip?) do
+    backward? = next != nil and next.position <= current.position
+    current.approval and not skip? and not backward?
   end
 
   defp fetch_current(run) do
@@ -799,8 +822,27 @@ defmodule Canopy.Playbooks.Runs do
   defp cleared?(%Step{status: "skipped"}), do: true
   defp cleared?(_step), do: false
 
-  defp request_approval(run, step, result, next, actor) do
+  # The step is held, and a sign-off card goes up for it in the same commit:
+  # the card is what the user presses. `signoff` carries what the coordinator
+  # gave for the card (`question`, `options`, `document_ids`); its title is
+  # the step's, cut to fit, so a long title never fails the hold.
+  defp request_approval(run, step, result, next, actor, signoff) do
     now = DateTime.utc_now()
+    signoff = signoff || %{}
+    title = signoff_title(step.title)
+
+    card = %{
+      channel_id: run.channel_id,
+      agent_id: run.coordinator_agent_id,
+      run_id: run.id,
+      playbook_step_id: step.id,
+      step_id: step.step_id,
+      title: title,
+      question: signoff[:question] || cut(~s(Is "#{title}" done?), SignoffRequest.max_question()),
+      summary: result,
+      options: signoff[:options] || [],
+      document_ids: signoff[:document_ids] || []
+    }
 
     multi =
       Multi.new()
@@ -813,16 +855,29 @@ defmodule Canopy.Playbooks.Runs do
           approval_next: next && next.step_id
         })
       )
-      |> Timeline.multi_record(:event, fn _ ->
+      |> Signoffs.multi_request(card, run)
+      |> Timeline.multi_record(:event, fn %{signoff: card} ->
         event(run, actor_id(actor), "playbook_approval_requested", %{
           "step" => step.step_id,
           "title" => step.title,
           "result" => excerpt(result),
-          "next" => next && next.step_id
+          "next" => next && next.step_id,
+          "signoff_id" => card.id
         })
       end)
 
     {:ok, multi, :awaiting_approval}
+  end
+
+  defp signoff_title(title) do
+    title
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> cut(SignoffRequest.max_title())
+  end
+
+  defp cut(text, max) do
+    if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
   end
 
   # Advancing to the step already current enters it again (another round).
@@ -944,25 +999,39 @@ defmodule Canopy.Playbooks.Runs do
   the step the coordinator asked for (else the following one, or completes),
   and the coordinator is woken with the answer. A user action, so it resets
   the channel's chatter budget.
+
+  The step's sign-off card is resolved in the same commit. Options:
+  `:signoff` (the card the user pressed: it must still be the step's
+  pending card, read again inside the transaction, else `"already
+  answered"`), `:choice` (the chosen option, `%{"label", "description"}`)
+  and `:choice_index`. Without `:signoff`, the step's pending card, if any,
+  is resolved; a step with none is approved all the same.
   """
-  def approve(%Run{} = run, note \\ nil) do
+  def approve(%Run{} = run, note \\ nil, opts \\ []) do
     note = blank_to_nil(note)
     approved = current_step(run)
+    choice = opts[:choice]
 
     run
     |> transition(fn run ->
       with :ok <- check_awaiting(run),
-           {:ok, step} <- fetch_current(run) do
+           {:ok, step} <- fetch_current(run),
+           {:ok, card} <- step_signoff(step, opts[:signoff]) do
         next =
           Enum.find(run.steps, &(&1.step_id == step.approval_next)) ||
             Enum.find(run.steps, &(&1.position == step.position + 1))
 
-        approve_multi(run, step, next, note)
+        approve_multi(run, step, next, note, card, choice, opts[:choice_index])
       end
     end)
     |> case do
       {:ok, run, what} ->
-        wake(run, Prompts.playbook_approved(approval_args(run, approved, note, what)),
+        wake(
+          run,
+          Prompts.playbook_approved(
+            approval_args(run, approved, note, what)
+            |> Map.put(:choice, choice)
+          ),
           reset: true
         )
 
@@ -973,8 +1042,25 @@ defmodule Canopy.Playbooks.Runs do
     end
   end
 
-  defp approve_multi(run, step, next, note) do
+  # The step's pending card as it is now, inside the transaction. A card
+  # passed in must still be it: answered meanwhile (another tab, the other
+  # surface) or belonging to another step, the press is refused.
+  defp step_signoff(step, nil), do: {:ok, Signoffs.pending_for_step(step.id)}
+
+  defp step_signoff(step, %SignoffRequest{id: id}) do
+    case Signoffs.pending_for_step(step.id) do
+      %SignoffRequest{id: ^id, playbook_step_id: step_pk} = card when step_pk == step.id ->
+        {:ok, card}
+
+      _ ->
+        {:error, "already answered"}
+    end
+  end
+
+  defp approve_multi(run, step, next, note, card, choice, choice_index) do
     now = DateTime.utc_now()
+    label = choice && choice["label"]
+    result = signed_result(step.result, label, note)
 
     multi =
       Multi.new()
@@ -984,15 +1070,25 @@ defmodule Canopy.Playbooks.Runs do
           status: "done",
           approved_at: now,
           completed_at: now,
-          approval_next: nil
+          approval_next: nil,
+          result: result
         })
       )
+      |> resolve_signoff(card, run, %{
+        status: "accepted",
+        choice: label,
+        choice_index: label && choice_index,
+        note: note
+      })
       |> Timeline.multi_record(:approval_event, fn _ ->
         event(run, nil, "playbook_approval_resolved", %{
           "step" => step.step_id,
           "title" => step.title,
           "approved" => true,
-          "note" => note
+          "note" => note,
+          "signoff_id" => card && card.id,
+          "choice" => label,
+          "rejected_all" => false
         })
       end)
 
@@ -1003,12 +1099,12 @@ defmodule Canopy.Playbooks.Runs do
           |> update_run(run, %{
             status: "completed",
             current_step: nil,
-            outcome: step.result,
+            outcome: result,
             finished_at: now,
             last_activity_at: now
           })
           |> Timeline.multi_record(:event, fn _ ->
-            event(run, nil, "playbook_completed", %{"outcome" => excerpt(step.result)})
+            event(run, nil, "playbook_completed", %{"outcome" => excerpt(result)})
           end)
 
         {:ok, multi, :completed}
@@ -1034,17 +1130,46 @@ defmodule Canopy.Playbooks.Runs do
     end
   end
 
+  defp resolve_signoff(multi, nil, _run, _attrs), do: multi
+
+  defp resolve_signoff(multi, card, run, attrs),
+    do: Signoffs.multi_resolve(multi, card, attrs, run)
+
+  # The pick and the note go on the step's result, where later steps and the
+  # user read it; the result keeps room for them under the step's limit.
+  defp signed_result(result, nil, nil), do: result
+
+  defp signed_result(result, label, note) do
+    suffix =
+      [label && "Chosen: #{label}", note && "Sign-off note: #{note}"]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    case result do
+      nil ->
+        suffix
+
+      text ->
+        String.slice(text, 0, max(20_000 - String.length(suffix) - 2, 0)) <> "\n\n" <> suffix
+    end
+  end
+
   @doc """
-  The user asks for changes on the step held for approval: it is active
-  again, and the coordinator is woken with the note to advance (`next:`) to
-  the step that fits it. Resets the chatter budget.
+  The user rejects the step held for approval (all its options, when the
+  card has some): it is active again, and the coordinator is woken with the
+  note, which is optional, to advance (`next:`) to the step that fits it.
+  Resets the chatter budget. `opts`: `:signoff`, as for `approve/3`.
   """
-  def request_changes(%Run{} = run, note) do
-    with {:ok, note} <- required_note(note),
-         {:ok, run, what} <-
+  def request_changes(%Run{} = run, note, opts \\ []) do
+    note = blank_to_nil(note)
+
+    with {:ok, run, what} <-
            transition(run, fn run ->
              with :ok <- check_awaiting(run),
-                  {:ok, step} <- fetch_current(run) do
+                  {:ok, step} <- fetch_current(run),
+                  {:ok, card} <- step_signoff(step, opts[:signoff]) do
+               rejected_all = match?(%SignoffRequest{options: [_ | _]}, card)
+
                multi =
                  Multi.new()
                  |> update_run(run, %{
@@ -1056,37 +1181,53 @@ defmodule Canopy.Playbooks.Runs do
                    :current,
                    Step.changeset(step, %{status: "active", approval_next: nil})
                  )
+                 |> resolve_signoff(card, run, %{status: "rejected", note: note})
                  |> Timeline.multi_record(:event, fn _ ->
                    event(run, nil, "playbook_approval_resolved", %{
                      "step" => step.step_id,
                      "title" => step.title,
                      "approved" => false,
-                     "note" => note
+                     "note" => note,
+                     "signoff_id" => card && card.id,
+                     "choice" => nil,
+                     "rejected_all" => rejected_all
                    })
                  end)
 
-               {:ok, multi, :changes_requested}
+               {:ok, multi, {:changes_requested, rejected_all}}
              end
            end) do
+      {:changes_requested, rejected_all} = what
+      step = current_step(run)
+
       wake(
         run,
-        Prompts.playbook_changes_requested(approval_args(run, current_step(run), note, what)),
+        Prompts.playbook_changes_requested(
+          approval_args(run, step, note, :changes_requested)
+          |> Map.merge(%{rejected_all: rejected_all, on_reject: on_reject(run, step)})
+        ),
         reset: true
       )
 
-      {:ok, run, what}
+      {:ok, run, :changes_requested}
     end
   end
+
+  # where the playbook sends this step back to on a reject, if it says
+  defp on_reject(run, %Step{step_id: step_id}) do
+    with {:ok, definition} <- Playbooks.definition(run),
+         %{on_reject: target} when is_binary(target) <-
+           Enum.find(definition.steps, &(&1.id == step_id)) do
+      target
+    else
+      _ -> nil
+    end
+  end
+
+  defp on_reject(_run, _step), do: nil
 
   defp check_awaiting(%Run{status: "awaiting_approval"}), do: :ok
   defp check_awaiting(run), do: {:error, "run #{run.id} is not waiting for approval"}
-
-  defp required_note(note) do
-    case blank_to_nil(note) do
-      nil -> {:error, "say what should change"}
-      text -> {:ok, text}
-    end
-  end
 
   # -- Cancelling and the coordinator ---------------------------------------------
 
@@ -1113,6 +1254,7 @@ defmodule Canopy.Playbooks.Runs do
               "step" => run.current_step
             })
           end)
+          |> Signoffs.multi_withdraw_for_run(run)
 
         {:ok, multi, :cancelled}
       end

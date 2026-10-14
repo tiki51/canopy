@@ -574,6 +574,11 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("#playbook-panel")).toBeVisible();
     await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0, { timeout: 30_000 });
     await shot(page, "playbook-run");
+    // accept the card, so it isn't pinned under the feed in the later shots
+    await page.locator('[id^="signoff-"][id$="-accept"]').click();
+    await expect(page.locator('#playbook-chip[data-status="awaiting_approval"]')).toHaveCount(0);
+    await expect(timeline(page)).toContainText("Signed off; closing the run.", { timeout: 30_000 });
+    await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0, { timeout: 30_000 });
     // the panel opened in Details; close Details
     await page.locator("#toggle-details").click();
     await expect(page.locator("#details-panel")).toBeHidden();

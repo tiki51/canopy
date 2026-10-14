@@ -148,7 +148,7 @@ defmodule Canopy.MCP.Tools.PlaybooksTest do
     assert text =~ "step 3/3 sign-off"
 
     assert {:ok, text} = call(PlaybookAdvance, %{result: "summary posted"}, ctx)
-    assert text =~ "is waiting for the user's approval"
+    assert text =~ "is waiting for the user's sign-off: the card [so_"
     assert text =~ "end your turn"
 
     assert {:error, reason} = call(PlaybookAdvance, %{result: "again"}, ctx)

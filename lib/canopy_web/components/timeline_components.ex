@@ -148,6 +148,25 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  # An answered sign-off: the card collapses to one row in the feed.
+  def timeline_item(%{event: %{event_type: "signoff_resolved"}} = assigns) do
+    ~H"""
+    <CanopyWeb.SignoffComponents.signoff_line id={@id} event={@event} />
+    """
+  end
+
+  # A run's approval step asked through a sign-off card: the signoff_* rows
+  # already say it. Older runs' events carry no signoff_id and show as before.
+  def timeline_item(
+        %{event: %{event_type: "playbook_approval_" <> _, payload: %{"signoff_id" => id}}} =
+          assigns
+      )
+      when is_binary(id) do
+    ~H"""
+    <div id={@id} hidden></div>
+    """
+  end
+
   # The session the reset dropped is still the engine's: one click reads it.
   def timeline_item(
         %{event: %{event_type: "session_reset", payload: %{"engine_session_id" => sid}}} =
@@ -2785,6 +2804,13 @@ defmodule CanopyWeb.TimelineComponents do
       "question_detached" ->
         "#{agent} stopped waiting for an answer"
 
+      "signoff_" <> _ ->
+        CanopyWeb.SignoffComponents.event_line(
+          type,
+          p,
+          event.agent_id && Map.get(names, event.agent_id, p["agent"])
+        )
+
       "lock_" <> _ ->
         lock_text(type, p, if(p["user"], do: user, else: agent), user, names, user_name)
 
@@ -3312,6 +3338,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("lock_released"), do: "hero-lock-open-mini"
   defp event_icon("lock_" <> _), do: "hero-lock-closed-mini"
   defp event_icon("playbook_approval_" <> _), do: "hero-hand-raised-mini"
+  defp event_icon("signoff_" <> _), do: "hero-hand-raised-mini"
   defp event_icon("playbook_stalled"), do: "hero-bell-alert-mini"
   defp event_icon("playbook_" <> _), do: "hero-book-open-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
@@ -3333,7 +3360,7 @@ defmodule CanopyWeb.TimelineComponents do
        do: "success"
 
   defp event_tone(%{event_type: type})
-       when type in ~w(playbook_approval_requested playbook_stalled),
+       when type in ~w(playbook_approval_requested playbook_stalled signoff_requested),
        do: "warning"
 
   defp event_tone(_), do: "muted"

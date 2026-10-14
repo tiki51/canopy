@@ -533,7 +533,8 @@ defmodule Canopy.Runtime.RouterTest do
     for type <-
           ~w(playbook_started playbook_step_started playbook_step_completed playbook_step_skipped
                    playbook_approval_requested playbook_approval_resolved playbook_completed
-                   playbook_cancelled playbook_coordinator_changed playbook_stalled) do
+                   playbook_cancelled playbook_coordinator_changed playbook_stalled
+                   signoff_requested signoff_resolved signoff_withdrawn) do
       event = %Event{event_type: type, ref_id: "pbr_1", payload: %{"run_id" => "pbr_1"}}
       assert Router.wakeups(event, ctx()) == [], type
     end

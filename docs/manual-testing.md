@@ -525,11 +525,22 @@ to: researcher …" as in the README demo prompt.
 - [ ] Ask @test (not the coordinator) to advance the run → `canopy_playbook_advance` refuses:
       only @project-manager can. Ask the coordinator to skip sign-off, or to jump past it
       (`next:` a later step) → refused: it needs your approval.
-- [ ] At sign-off: the chip turns amber ("waiting for you"), the timeline says `bug-fix is
-      waiting for your sign-off`, the sidebar shows a "needs you" badge. **Request changes**
-      with a note → the coordinator wakes with the note and goes back to a step. Later,
-      **Approve** → `the bug-fix playbook is complete`, the chip goes, and the panel lists the
-      run as completed. With the chatter budget used up, Approve still wakes the coordinator.
+- [ ] At sign-off: the chip turns amber ("waiting for you"), the timeline says `@project-manager
+      asked for your sign-off on User sign-off`, the sidebar shows a "needs you" badge, and a
+      sign-off card (badge `bug-fix · step 6 of 6`) sits at the foot of the timeline, with a
+      compact copy in the run panel's held step. **Reject** with a note → the card collapses
+      to `You rejected … — "note"`, the coordinator wakes with the note and goes back to a
+      step. Later, **Accept** (in the card or the panel) → `the bug-fix playbook is complete`,
+      the chip goes, and the panel lists the run as completed. With the chatter budget used
+      up, Accept still wakes the coordinator.
+- [ ] Ask an agent for a sign-off with options ("ask me to sign off on the header with
+      options A, B, C") → one Accept per option (solid on the recommended one) plus **Reject
+      all**, and one optional note. Enter in the note does nothing. Accept B with a note →
+      your answer is posted as your message to the agent, with the note, and it wakes. A
+      second tab drops its card at once; pressing Accept in both at the same moment answers
+      once.
+- [ ] On a narrow window (below lg) with Details open on a held run, **Show card ↓** closes
+      Details and brings the card into view.
 - [ ] Start a run yourself: **Details › Automation › Playbook** (or **Start…** on the Playbooks
       page) → pick the playbook, a coordinator, a brief → the coordinator wakes with it.
       `/playbook bug-fix @backend the login form loses its input` does the same from the

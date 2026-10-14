@@ -28,11 +28,13 @@ defmodule CanopyWeb.PlaybookComponents do
 
   @doc """
   The channel's run panel: where the run is, every step, and what the user
-  can do (Approve or Request changes on a step held for them, reassign the
+  can do (the sign-off card on a step held for them, reassign the
   coordinator, Cancel). Without a run, the start form.
   """
   attr :run, :any, default: nil
   attr :names, :map, required: true
+  attr :signoff, :any, default: nil, doc: "the run's pending `SignoffRequest`, if any"
+  attr :signoff_note, :string, default: "", doc: "the note typed for it so far"
   attr :user_name, :string, required: true
   attr :members, :list, default: []
   attr :start_form, :any, default: nil
@@ -159,7 +161,7 @@ defmodule CanopyWeb.PlaybookComponents do
           </.form>
         </div>
 
-        <.step_list run={@run} names={@names} />
+        <.step_list run={@run} names={@names} signoff={@signoff} signoff_note={@signoff_note} />
       <% else %>
         <div class="mb-2 flex items-center gap-2">
           <span
@@ -193,9 +195,11 @@ defmodule CanopyWeb.PlaybookComponents do
     """
   end
 
-  @doc "A run's steps, with the Approve and Request changes controls on a held step."
+  @doc "A run's steps, with the sign-off card on a held step."
   attr :run, :map, required: true
   attr :names, :map, required: true
+  attr :signoff, :any, default: nil
+  attr :signoff_note, :string, default: ""
 
   def step_list(assigns) do
     ~H"""
@@ -235,9 +239,8 @@ defmodule CanopyWeb.PlaybookComponents do
             :if={step.result}
             id={"playbook-step-#{step.step_id}-result"}
             class="mt-0.5 whitespace-pre-wrap break-words text-xs text-base-content/75"
-          >
-            {truncate(step.result, 400)}
-          </p>
+            phx-no-format
+          >{truncate(step.result, 400)}</p>
           <ul
             :if={Runs.round_delegations(step) != []}
             id={"playbook-step-#{step.step_id}-delegations"}
@@ -250,41 +253,22 @@ defmodule CanopyWeb.PlaybookComponents do
               — {truncate(d.description, 100)}
             </li>
           </ul>
-          <div
-            :if={step.status == "awaiting_approval"}
-            id="playbook-approval"
-            class="mt-2 flex flex-wrap items-center gap-2"
-          >
-            <button
-              type="button"
-              id="approve-playbook-step"
-              class="btn btn-xs btn-primary"
-              phx-click="approve_playbook_step"
-              phx-value-id={@run.id}
+          <%!-- the card that releases the step; between a sign-off's answer
+               and the run's own update there may briefly be none --%>
+          <%= if step.status == "awaiting_approval" do %>
+            <CanopyWeb.SignoffComponents.signoff_compact
+              :if={@signoff}
+              signoff={@signoff}
+              note={@signoff_note}
+            />
+            <p
+              :if={!@signoff}
+              id="playbook-signoff-waiting"
+              class="mt-1 text-xs text-base-content/60"
             >
-              <.icon name="hero-check-mini" class="size-4" /> Approve
-            </button>
-            <.form
-              for={%{}}
-              as={:changes}
-              id="request-changes-form"
-              phx-submit="request_playbook_changes"
-              class="flex flex-1 items-center gap-1.5"
-            >
-              <input type="hidden" name="run_id" value={@run.id} />
-              <input
-                type="text"
-                name="note"
-                id="request-changes-note"
-                placeholder="What should change?"
-                class="input input-xs min-w-40 flex-1"
-                aria-label="What should change"
-              />
-              <button type="submit" id="request-playbook-changes" class="btn btn-xs btn-ghost">
-                Request changes
-              </button>
-            </.form>
-          </div>
+              Waiting for your sign-off…
+            </p>
+          <% end %>
         </div>
       </li>
     </ol>

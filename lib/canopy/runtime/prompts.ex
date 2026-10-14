@@ -367,6 +367,41 @@ defmodule Canopy.Runtime.Prompts do
   end
 
   @doc """
+  The channel message, from the user, that carries their answer to a
+  freestanding sign-off card. It mentions the agent, so it wakes it like
+  any message. `answer`: `:status` (`"accepted"`/`"rejected"`), `:choice`
+  (the chosen label, or nil), `:choice_index`, `:note`.
+  """
+  def signoff_answer_message(agent_name, %{title: title, options: options}, answer) do
+    verdict =
+      case answer do
+        %{status: "accepted", choice: label, choice_index: i} when is_binary(label) ->
+          ~s(Accepted your sign-off "#{title}": #{option_letter(i)} · #{label}.)
+
+        %{status: "accepted"} ->
+          ~s(Accepted your sign-off "#{title}".)
+
+        %{status: "rejected"} when options != [] ->
+          ~s(Rejected your sign-off "#{title}" \(all options\).)
+
+        %{status: "rejected"} ->
+          ~s(Rejected your sign-off "#{title}".)
+      end
+
+    note =
+      cond do
+        is_binary(answer[:note]) -> "\nNote: " <> answer.note
+        answer.status == "rejected" -> "\nNo note."
+        true -> ""
+      end
+
+    "@#{agent_name} #{verdict}#{note}"
+  end
+
+  defp option_letter(i) when is_integer(i) and i >= 0 and i < 26, do: <<?A + i>>
+  defp option_letter(i), do: "##{i}"
+
+  @doc """
   The channel message, from the user, that carries an approval the asking
   agent's permission prompt could no longer take. The approval cannot reach
   the call that asked, so the agent is told to do it now.
@@ -569,7 +604,7 @@ defmodule Canopy.Runtime.Prompts do
   def playbook_in_progress(%{status: "awaiting_approval"} = args) do
     """
 
-    Playbook in progress here: #{args.playbook} (run #{args.run_id}), step #{args.position} of #{args.total} "#{args.title}" is waiting for the user's approval; you coordinate it. Canopy wakes you with their answer; until then there is nothing to advance.
+    Playbook in progress here: #{args.playbook} (run #{args.run_id}), step #{args.position} of #{args.total} "#{args.title}" is waiting for the user's approval; you coordinate it. The user answers on the sign-off card in the channel; if they reply in chat instead, ask them to press Accept or Reject on the card. You cannot approve it for them. Canopy wakes you with their answer; until then there is nothing to advance.
     """
   end
 
@@ -628,6 +663,16 @@ defmodule Canopy.Runtime.Prompts do
 
   @doc "Wakes the coordinator with the user's approval of a step held for it."
   def playbook_approved(args) do
+    choice =
+      case Map.get(args, :choice) do
+        %{"label" => label} = option ->
+          description = if option["description"], do: " — #{option["description"]}", else: ""
+          "\nThey chose: \"#{label}\"#{description}."
+
+        _ ->
+          ""
+      end
+
     note = if args.note, do: "\nTheir note: #{args.note}", else: ""
 
     next =
@@ -637,17 +682,37 @@ defmodule Canopy.Runtime.Prompts do
         else: "The run moved on to step #{args.next}; canopy_playbook_get shows its instructions."
 
     """
-    The user approved "#{args.title}" (#{args.step}) of #{args.playbook} in ##{args.channel} (run #{args.run_id}).#{note}
+    The user approved "#{args.title}" (#{args.step}) of #{args.playbook} in ##{args.channel} (run #{args.run_id}).#{choice}#{note}
     #{next}
     #{time_line()}
     """
   end
 
-  @doc "Wakes the coordinator when the user asks for changes on a step held for approval."
+  @doc """
+  Wakes the coordinator when the user rejects a step held for approval (all
+  its options, with `rejected_all`). The note may be nil; `on_reject` is
+  the step the playbook sends this one back to, when it names one.
+  """
   def playbook_changes_requested(args) do
+    what =
+      if Map.get(args, :rejected_all),
+        do: "The user rejected all options on",
+        else: "The user asked for changes on"
+
+    note =
+      if args.note,
+        do: "Their note: #{args.note}",
+        else: "They gave no note: ask them in the channel what should change before you redo it."
+
+    back =
+      case Map.get(args, :on_reject) do
+        target when is_binary(target) -> "\nThe playbook sends this step back to #{target}."
+        _ -> ""
+      end
+
     """
-    The user asked for changes on "#{args.title}" (#{args.step}) of #{args.playbook} in ##{args.channel} (run #{args.run_id}).
-    Their note: #{args.note}
+    #{what} "#{args.title}" (#{args.step}) of #{args.playbook} in ##{args.channel} (run #{args.run_id}).
+    #{note}#{back}
 
     Advance with canopy_playbook_advance and next: the step that fits their note (or work on it here and advance again for another approval).
     #{time_line()}

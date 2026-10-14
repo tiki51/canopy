@@ -60,6 +60,7 @@ defmodule Canopy.MCP.Server do
   component(Tools.PlaybookAdvance, name: "playbook_advance")
   component(Tools.PlaybookCancel, name: "playbook_cancel")
   component(Tools.PlaybookSave, name: "playbook_save")
+  component(Tools.SignoffRequest, name: "signoff_request")
   component(Tools.WatchCreate, name: "watch_create")
 
   @tool_names ~w(
@@ -71,7 +72,7 @@ defmodule Canopy.MCP.Server do
     dm_switch_repository costs_report documents_list document_get document_share permission
     lock_acquire lock_release locks_list
     playbooks_list playbook_get playbook_start playbook_advance playbook_cancel playbook_save
-    watch_create
+    signoff_request watch_create
   )
 
   @doc "The names of every tool this server exposes, in registration order."
