@@ -8,8 +8,9 @@ defmodule Canopy.Playbooks.Definition do
   sentence, at most 200 chars), `steps` (1–20 of `id`, `title`, `owner`, and
   optionally `approval: user`, `optional: true`, `on_reject: <earlier id>`),
   and optionally `roles` (role => default agent name), `team`, `coordinator`,
-  `channel` (`current` or `new`), `inputs`, and `stall_after` (`30m`, `2h`, a
-  number of minutes, or `off`; default 30 minutes).
+  `inputs`, and `stall_after` (`30m`, `2h`, a number of minutes, or `off`;
+  default 30 minutes). Where a run happens is chosen when it starts; an old
+  `channel:` field is accepted and ignored.
 
   `owner` is a role, a list of roles (they work in parallel), or the reserved
   role `coordinator`. Pure: `parse/1` returns `{:ok, %Definition{}}` or
@@ -21,6 +22,8 @@ defmodule Canopy.Playbooks.Definition do
   alias Canopy.Frontmatter
 
   @name_regex ~r/^[a-z0-9]+(-[a-z0-9]+)*$/
+  # `channel` is accepted and ignored, whatever its value: runs started
+  # before it went keep it in their stored text, and so do older files
   @top_keys ~w(name description steps roles team coordinator channel inputs stall_after)
   @step_keys ~w(id title owner approval optional on_reject)
   @max_steps 20
@@ -36,7 +39,6 @@ defmodule Canopy.Playbooks.Definition do
             roles: %{},
             team: nil,
             coordinator: nil,
-            channel: "current",
             inputs: nil,
             stall_after: @default_stall_minutes,
             body: "",
@@ -58,7 +60,6 @@ defmodule Canopy.Playbooks.Definition do
           roles: %{String.t() => String.t()},
           team: String.t() | nil,
           coordinator: String.t() | nil,
-          channel: String.t(),
           inputs: String.t() | nil,
           stall_after: pos_integer() | nil,
           body: String.t(),
@@ -126,7 +127,6 @@ defmodule Canopy.Playbooks.Definition do
       |> Kernel.++(check_optional_string(data, "team"))
       |> Kernel.++(check_optional_string(data, "coordinator"))
       |> Kernel.++(check_optional_string(data, "inputs"))
-      |> Kernel.++(check_channel(data["channel"]))
 
     {roles, role_errors} = roles(data["roles"])
     {stall, stall_errors} = stall_after(Map.get(data, "stall_after", :default))
@@ -142,7 +142,6 @@ defmodule Canopy.Playbooks.Definition do
         roles: roles,
         team: team && String.trim_leading(team, "@"),
         coordinator: blank_to_nil(data["coordinator"]) |> strip_at(),
-        channel: data["channel"] || "current",
         inputs: blank_to_nil(data["inputs"]),
         stall_after: stall,
         body: String.trim(body)
@@ -197,10 +196,6 @@ defmodule Canopy.Playbooks.Definition do
       _ -> ["#{key} must be text"]
     end
   end
-
-  defp check_channel(nil), do: []
-  defp check_channel(value) when value in ["current", "new"], do: []
-  defp check_channel(_), do: ["channel must be current or new"]
 
   defp roles(nil), do: {%{}, []}
 

@@ -7,7 +7,7 @@ defmodule Canopy.Runtime.Commands do
       /i @agent [message]            (also /invite) adds the agent to the channel
       /i @team [message]             adds the team's active members
       /stop                          aborts every turn and holds the channel
-      /playbook name [@coordinator] brief   starts a playbook run
+      /playbook name [@coordinator] [brief]   starts a playbook run
 
   `parse/1` returns `{:command, name, target, text}`, `{:error, reason}` for a
   malformed command, or `:text` when the input is a normal message. Anything that
@@ -82,8 +82,8 @@ defmodule Canopy.Runtime.Commands do
     %{
       name: "playbook",
       aliases: [],
-      usage: "/playbook name [@coordinator] brief",
-      hint: "/playbook name brief",
+      usage: "/playbook name [@coordinator] [brief]",
+      hint: "/playbook name [brief]",
       summary: "Start a playbook run in the channel",
       prefill: "/playbook ",
       dm?: true
@@ -113,11 +113,12 @@ defmodule Canopy.Runtime.Commands do
   # /stop takes nothing: whatever follows it is ignored.
   defp parse_args(:stop, _args), do: {:command, :stop, "", ""}
 
-  # /playbook names a playbook (no @), then the brief, which may start with
-  # an @coordinator.
+  # /playbook names a playbook (no @), then an optional brief, which may
+  # start with an @coordinator.
   defp parse_args(:playbook, args) do
-    case Regex.run(~r/\A([A-Za-z0-9][\w-]*)\s+(\S.*)\z/s, String.trim(args)) do
+    case Regex.run(~r/\A([A-Za-z0-9][\w-]*)(?:\s+(\S.*))?\z/s, String.trim(args)) do
       [_, name, brief] -> {:command, :playbook, String.downcase(name), String.trim(brief)}
+      [_, name] -> {:command, :playbook, String.downcase(name), ""}
       nil -> {:error, usage(:playbook)}
     end
   end
@@ -139,5 +140,5 @@ defmodule Canopy.Runtime.Commands do
   defp usage(:handoff), do: "usage: /handoff @agent reason for the handoff"
   defp usage(:delegate), do: "usage: /delegate @agent what the agent should do"
   defp usage(:invite), do: "usage: /i @agent-or-team [message for them]"
-  defp usage(:playbook), do: "usage: /playbook name [@coordinator] what the run is about"
+  defp usage(:playbook), do: "usage: /playbook name [@coordinator] [what the run is about]"
 end

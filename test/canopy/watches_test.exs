@@ -405,7 +405,7 @@ defmodule Canopy.WatchesTest do
         playbook_fixture(
           "triage",
           [{"look", "Look", "coordinator"}],
-          "channel: new\nroles:\n  dev: #{dev.name}\n"
+          "roles:\n  dev: #{dev.name}\n"
         )
 
       Map.put(ctx, :playbook, playbook)
@@ -430,6 +430,11 @@ defmodule Canopy.WatchesTest do
              )
 
       assert hd(runs).brief =~ "external data from GitHub"
+
+      # each item gets a channel of its own on the watch's repository
+      channels = Enum.map(runs, &Canopy.Channels.get!(&1.channel_id))
+      assert Enum.map(channels, & &1.name) == ["triage-pr-1", "triage-pr-2", "triage-pr-3"]
+      assert Enum.all?(channels, &(&1.repository_id == ctx.channel.repository_id))
       assert Watches.seen_count(watch.id) == 3
       assert watch.check_state["etag"] == nil
       assert_receive {:timeline, %{event_type: "schedule_fired", payload: %{"runs" => 3}}}
@@ -441,15 +446,10 @@ defmodule Canopy.WatchesTest do
       for _ <- 1..2, do: assert_receive({:prompted, _sid, _body}, 2_000)
     end
 
-    test "a run already in progress in the channel sends the item to the agent instead", ctx do
-      {:ok, current} =
-        Canopy.Playbooks.update(ctx.playbook, %{
-          body: String.replace(ctx.playbook.body, "channel: new\n", "")
-        })
-
+    test "a run in progress in the watch's channel doesn't stop the item's own run", ctx do
       {:ok, _run, false} =
         Runs.start(%{
-          playbook: current,
+          playbook: ctx.playbook,
           channel: ctx.channel,
           coordinator: ctx.agent,
           started_by_agent_id: ctx.agent.id,
@@ -458,6 +458,36 @@ defmodule Canopy.WatchesTest do
 
       expect(GH, :probe, fn _check, nil -> result([]) end)
       watch = create!(ctx, %{playbook: "triage"})
+
+      expect(GH, :probe, fn _check, _ -> result([pr(9)], "etag-2") end)
+      sweep(watch)
+
+      assert [run] =
+               Repo.all(
+                 from r in Run, where: r.playbook_name == "triage" and not is_nil(r.trigger)
+               )
+
+      assert Canopy.Channels.get!(run.channel_id).name == "triage-pr-9"
+      assert_receive {:prompted, _sid, _body}, 2_000
+    end
+
+    test "an item whose channel name is taken gets the next free one", ctx do
+      channel_fixture(%{repository_id: ctx.channel.repository_id, name: "triage-pr-9"})
+      expect(GH, :probe, fn _check, nil -> result([]) end)
+      watch = create!(ctx, %{playbook: "triage"})
+
+      expect(GH, :probe, fn _check, _ -> result([pr(9)], "etag-2") end)
+      sweep(watch)
+
+      assert [run] = Repo.all(from r in Run, where: r.playbook_name == "triage")
+      assert Canopy.Channels.get!(run.channel_id).name == "triage-pr-9-2"
+      assert_receive {:prompted, _sid, _body}, 2_000
+    end
+
+    test "an item no run could take goes to the agent instead", ctx do
+      expect(GH, :probe, fn _check, nil -> result([]) end)
+      watch = create!(ctx, %{playbook: "triage"})
+      {:ok, _} = Canopy.Playbooks.set_enabled(ctx.playbook, false)
 
       expect(GH, :probe, fn _check, _ -> result([pr(9)], "etag-2") end)
       sweep(watch)

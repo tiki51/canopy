@@ -21,7 +21,7 @@ defmodule CanopyWeb.PlaybooksLive do
 
   import CanopyWeb.PlaybookComponents, only: [avatar: 1]
 
-  alias Canopy.{Agents, Channels, Playbooks, Repositories}
+  alias Canopy.{Agents, Playbooks, Repositories}
   alias Canopy.Playbooks.{Definition, Playbook, Runs, Writer}
   alias CanopyWeb.{PlaybookAsk, PlaybookBuilder, PlaybookStart}
 
@@ -217,8 +217,14 @@ defmodule CanopyWeb.PlaybooksLive do
 
   # -- Start ---------------------------------------------------------------------------
 
-  def handle_event("start_validate", %{"start" => params}, socket),
-    do: {:noreply, assign_start(socket, params)}
+  def handle_event("start_validate", %{"start" => params} = event, socket) do
+    socket =
+      if event["_target"] == ["start", "channel_name"],
+        do: assign(socket, :start_name_typed, true),
+        else: socket
+
+    {:noreply, assign_start(socket, params)}
+  end
 
   def handle_event("start_playbook", %{"start" => params}, socket) do
     params = start_params(socket, params)
@@ -305,27 +311,19 @@ defmodule CanopyWeb.PlaybooksLive do
     socket
     |> assign(:definition, definition)
     |> assign(:start_title, title(playbook, definition))
-    # a `channel: new` playbook always gets a new channel (`Runs.start`)
-    |> assign(:always_new, definition && definition.channel == "new")
     |> assign(:start_rows, if(definition, do: Runs.roster_preview(definition), else: []))
     |> assign(:start_repositories, Repositories.list())
-    |> assign(:start_channels, channel_options())
+    |> assign(:start_channel_groups, PlaybookStart.channel_groups())
     |> assign(:start_coordinator_id, coordinator_id)
     |> assign(:start_channel_name, nil)
+    |> assign(:start_name_typed, false)
   end
 
   # The start form's state: the playbook's defaults, then what was typed.
   defp assign_start(socket, params) do
-    %{
-      playbook: playbook,
-      always_new: always_new,
-      start_rows: rows,
-      start_repositories: repositories,
-      start_channels: channels
-    } = socket.assigns
+    %{playbook: playbook, start_rows: rows, start_repositories: repositories} = socket.assigns
 
-    runs_in =
-      if always_new, do: "new", else: params["runs_in"] || "current"
+    runs_in = params["runs_in"] || "new"
 
     repository_id =
       params["repository_id"] || (List.first(repositories) && List.first(repositories).id)
@@ -335,12 +333,20 @@ defmodule CanopyWeb.PlaybooksLive do
         {row.role, get_in(params, ["roles", row.role]) || (row.agent && row.agent.name) || ""}
       end)
 
-    name_touched = params["channel_name_touched"] == "true"
+    name_typed = name_typed?(socket, params["channel_name"])
+    socket = assign(socket, :start_name_typed, name_typed)
 
     {channel_name, socket} =
-      if name_touched,
-        do: {params["channel_name"] || "", socket},
+      if name_typed,
+        do: {params["channel_name"], socket},
         else: suggested_channel_name(socket, playbook, params["brief"], repository_id)
+
+    # what the channel will really be called: a typed name cleaned the way
+    # `Runs` cleans it, or the suggestion when it cleans to nothing
+    new_name =
+      if name_typed,
+        do: Runs.channel_name(repository_id, channel_name, playbook.name, params["brief"]),
+        else: channel_name
 
     form =
       to_form(
@@ -349,10 +355,8 @@ defmodule CanopyWeb.PlaybooksLive do
           "brief" => params["brief"] || "",
           "runs_in" => runs_in,
           "repository_id" => repository_id,
-          "channel_id" =>
-            params["channel_id"] || (List.first(channels) && elem(List.first(channels), 1)),
+          "channel_id" => params["channel_id"] || "",
           "channel_name" => channel_name,
-          "channel_name_touched" => to_string(name_touched),
           "coordinator_id" => params["coordinator_id"] || socket.assigns.start_coordinator_id,
           "roles" => roles
         },
@@ -360,7 +364,23 @@ defmodule CanopyWeb.PlaybooksLive do
         id: "start-run-form"
       )
 
-    assign(socket, :start_form, form)
+    socket
+    |> assign(:start_form, form)
+    |> assign(:start_new_name, new_name)
+  end
+
+  # The name field was typed in when it was ever the change's target, or
+  # holds something other than the name we last suggested. Kept on the
+  # server: a JS-command flag on the form is lost when a change in flight
+  # patches it (see NOTES, LiveView gotcha).
+  defp name_typed?(_socket, nil), do: false
+
+  defp name_typed?(socket, name) do
+    socket.assigns.start_name_typed or
+      case socket.assigns.start_channel_name do
+        {_key, ^name} -> false
+        _ -> true
+      end
   end
 
   # The name `Runs.start` would give the new channel. Looking for a free one
@@ -384,15 +404,8 @@ defmodule CanopyWeb.PlaybooksLive do
     params
     |> Map.put("playbook_id", socket.assigns.playbook.id)
     |> then(fn p ->
-      if p["channel_name_touched"] == "true", do: p, else: Map.delete(p, "channel_name")
+      if name_typed?(socket, p["channel_name"]), do: p, else: Map.delete(p, "channel_name")
     end)
-  end
-
-  # open channels, by repository; DMs keep their agents, so they are left out
-  defp channel_options do
-    Channels.list()
-    |> Enum.reject(&(Channels.dm?(&1) or Channels.archived?(&1)))
-    |> Enum.map(&{"##{&1.name} · #{&1.repository.name}", &1.id})
   end
 
   # The `# Title` the builder shows, from the parsed body; the name, in
@@ -445,10 +458,6 @@ defmodule CanopyWeb.PlaybooksLive do
           else: "Led by whoever starts it"
         ),
         definition.team && "@#{definition.team}",
-        if(definition.channel == "new",
-          do: "runs in a new channel",
-          else: "runs in the channel it's started from"
-        ),
         if(last_run, do: "last run #{Canopy.Schedules.relative(last_run)}", else: "never run")
       ]
       |> Enum.filter(& &1)
@@ -485,20 +494,32 @@ defmodule CanopyWeb.PlaybooksLive do
     |> Enum.join(" + ")
   end
 
-  defp consequence(form, agents, definition) do
+  defp consequence(form, new_name, agents, definition, channel_groups) do
     lead =
       case Enum.find(agents, &(&1.id == form[:coordinator_id].value)) do
         nil -> "The lead"
         agent -> "@" <> agent.name
       end
 
+    woken =
+      if String.trim(form[:brief].value || "") == "",
+        do: "is woken",
+        else: "is woken with your brief"
+
+    channel =
+      Enum.find_value(channel_groups, fn {_repo, channels} ->
+        Enum.find(channels, &(&1.id == form[:channel_id].value))
+      end)
+
     where =
-      if form[:runs_in].value == "new",
-        do: "and opens ##{form[:channel_name].value}",
-        else: "in the channel you picked"
+      cond do
+        form[:runs_in].value == "new" -> "#{woken} and opens ##{new_name}"
+        channel -> "is woken in ##{channel.name}"
+        true -> "is woken in the channel you pick"
+      end
 
     team = if definition && definition.team, do: " @#{definition.team} joins it.", else: ""
-    "#{lead} is woken with your brief #{where}.#{team}"
+    "#{lead} #{where}.#{team}"
   end
 
   @impl true
@@ -960,7 +981,10 @@ defmodule CanopyWeb.PlaybooksLive do
           phx-submit="start_playbook"
           class="rounded-box border border-base-300 bg-base-200 p-5 sm:p-6"
         >
-          <label for="start-brief" class="block font-semibold">What's this run about?</label>
+          <label for="start-brief" class="block font-semibold">
+            What's this run about?
+            <span class="text-sm font-normal text-base-content/60">Optional</span>
+          </label>
           <p
             :if={@definition.inputs}
             id="start-inputs"
@@ -974,16 +998,13 @@ defmodule CanopyWeb.PlaybooksLive do
             rows="4"
             phx-debounce="300"
             class="textarea mt-2 w-full text-[15px]"
-            placeholder="What this run is about"
+            placeholder="Leave empty to let the playbook speak for itself"
           >{@start_form[:brief].value}</textarea>
 
           <dl class="mt-5 grid gap-x-4 gap-y-4 text-sm md:grid-cols-[112px_1fr] md:items-center">
             <dt class="text-base-content/60">Runs in</dt>
             <dd class="flex flex-col gap-2">
-              <span :if={@always_new} id="start-runs-in-new" class="text-sm">
-                <input type="hidden" name="start[runs_in]" value="new" /> A new channel
-              </span>
-              <div :if={!@always_new} class="join" role="radiogroup" aria-label="Runs in">
+              <div class="join" role="radiogroup" aria-label="Runs in">
                 <label class={[
                   "btn join-item btn-sm border-base-300",
                   @start_form[:runs_in].value == "new" &&
@@ -997,22 +1018,22 @@ defmodule CanopyWeb.PlaybooksLive do
                     value="new"
                     checked={@start_form[:runs_in].value == "new"}
                     class="sr-only"
-                  /> A new channel
+                  /> New channel
                 </label>
                 <label class={[
                   "btn join-item btn-sm border-base-300",
-                  @start_form[:runs_in].value == "current" &&
+                  @start_form[:runs_in].value != "new" &&
                     "btn-active bg-base-200 font-medium shadow-sm",
-                  @start_form[:runs_in].value != "current" &&
+                  @start_form[:runs_in].value == "new" &&
                     "bg-base-100 font-normal text-base-content/70"
                 ]}>
                   <input
                     type="radio"
                     name="start[runs_in]"
-                    value="current"
-                    checked={@start_form[:runs_in].value == "current"}
+                    value="existing"
+                    checked={@start_form[:runs_in].value != "new"}
                     class="sr-only"
-                  /> A channel that exists
+                  /> Existing channel
                 </label>
               </div>
               <div
@@ -1022,11 +1043,6 @@ defmodule CanopyWeb.PlaybooksLive do
                 <span class="flex min-w-0 flex-1 items-center gap-2">
                   <span class="text-base-content/45">#</span>
                   <input
-                    type="hidden"
-                    name="start[channel_name_touched]"
-                    value={@start_form[:channel_name_touched].value}
-                  />
-                  <input
                     id="start-channel-name"
                     name="start[channel_name]"
                     type="text"
@@ -1034,12 +1050,9 @@ defmodule CanopyWeb.PlaybooksLive do
                     phx-debounce="300"
                     aria-label="New channel name"
                     class="input input-sm min-w-0 flex-1 font-medium"
-                    phx-focus={
-                      JS.set_attribute({"value", "true"}, to: "[name='start[channel_name_touched]']")
-                    }
                   />
                 </span>
-                <span class="text-xs text-base-content/50">new, in</span>
+                <span class="text-xs text-base-content/50">in</span>
                 <select
                   id="start-repository"
                   name="start[repository_id]"
@@ -1062,13 +1075,19 @@ defmodule CanopyWeb.PlaybooksLive do
                 class="select select-sm w-80 max-w-full"
                 aria-label="Channel"
               >
-                <option
-                  :for={{label, id} <- @start_channels}
-                  value={id}
-                  selected={id == @start_form[:channel_id].value}
-                >
-                  {label}
+                <option value="" disabled selected={@start_form[:channel_id].value in [nil, ""]}>
+                  Pick a channel
                 </option>
+                <optgroup :for={{repo, channels} <- @start_channel_groups} label={repo}>
+                  <option
+                    :for={channel <- channels}
+                    value={channel.id}
+                    disabled={channel.run_active?}
+                    selected={channel.id == @start_form[:channel_id].value}
+                  >
+                    #{channel.name}{if channel.run_active?, do: " · run active"}
+                  </option>
+                </optgroup>
               </select>
             </dd>
 
@@ -1151,7 +1170,13 @@ defmodule CanopyWeb.PlaybooksLive do
             </button>
             <.link navigate={~p"/playbooks"} class="btn btn-ghost">Cancel</.link>
             <p id="start-consequence" class="min-w-0 flex-1 text-xs text-base-content/60">
-              {consequence(@start_form, @active_agents, @definition)}
+              {consequence(
+                @start_form,
+                @start_new_name,
+                @active_agents,
+                @definition,
+                @start_channel_groups
+              )}
             </p>
           </div>
         </.form>

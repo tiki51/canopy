@@ -3,10 +3,10 @@ defmodule Canopy.MCP.Tools.PlaybookStart do
   Start a playbook run. You coordinate it: follow each step's instructions,
   delegate each step to its owner, and advance with canopy_playbook_advance.
   Canopy fills the roles (from the playbook's team and roles; `assign`
-  overrides them) and adds anyone missing to the channel. A playbook that
-  runs in a new channel (or a `channel_name`) gets one, owned by you, and
-  you are woken there; otherwise this call returns the first step's
-  instructions. One run at a time per channel.
+  overrides them) and adds anyone missing to the channel. With a
+  `channel_name` the run gets a new channel, owned by you, and you are woken
+  there; otherwise it runs in this channel and this call returns the first
+  step's instructions. One run at a time per channel.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -19,12 +19,13 @@ defmodule Canopy.MCP.Tools.PlaybookStart do
     field :canopy_session_id, :string, description: Tool.identity_description()
     field :name, {:required, :string}, description: "The playbook's name."
 
-    field :brief, {:required, :string},
+    field :brief, :string,
       description:
-        "What this run is about, self-contained: everything the playbook's inputs ask for."
+        "What this run is about, self-contained: everything the playbook's inputs ask for. Leave it out when the playbook is context enough."
 
     field :channel_name, :string,
-      description: "Run it in a new channel with this name (you own it) instead of this one."
+      description:
+        "Run it in a new channel with this name (you own it). Without it, the run happens in this channel."
 
     field :assign, :string,
       description: "Role overrides, comma separated: \"fix=@fullstack, test=@qa\"."

@@ -191,6 +191,40 @@ defmodule Canopy.MCP.Tools.PlaybooksTest do
     assert prompt_text(body) =~ "You are coordinating the ship-it playbook in #ship-v3"
   end
 
+  test "a channel_name that cleans to nothing gets the generated name, not this channel", ctx do
+    stub_engine(self(), ctx.repository)
+
+    for {typed, name} <- [{"#", "ship-it-v3"}, {"---", "ship-it-v3-2"}] do
+      assert {:ok, text} =
+               call(PlaybookStart, %{name: "ship-it", brief: "v3", channel_name: typed}, ctx)
+
+      assert text =~ "in the new channel ##{name}"
+    end
+
+    assert Runs.active_for_channel(ctx.channel.id) == nil
+    refute Canopy.Channels.get_by_name(ctx.repository.id, "")
+  end
+
+  test "start: the brief is optional, and an old channel: new runs here without channel_name",
+       ctx do
+    {:ok, _} =
+      Canopy.Playbooks.create(%{
+        body: playbook_text("old-new", [{"a", "A", "coordinator"}], "channel: new\n")
+      })
+
+    assert {:ok, list} = call(PlaybooksList, %{}, ctx)
+    refute list =~ "runs in a new channel"
+
+    assert {:ok, text} = call(PlaybookStart, %{name: "old-new"}, ctx)
+    assert text =~ "started old-new ["
+    assert text =~ "in ##{ctx.channel.name}; you coordinate it"
+
+    run = Runs.active_for_channel(ctx.channel.id)
+    assert run.brief == ""
+    assert {:ok, text} = call(PlaybookGet, %{}, ctx)
+    assert text =~ "Brief: (none; the playbook is the context)"
+  end
+
   test "identity comes from the session: a Claude Code token works the same", ctx do
     assert {:ok, text} =
              call_as_session(PlaybookStart, %{"name" => "ship-it", "brief" => "v4"}, ctx.session)

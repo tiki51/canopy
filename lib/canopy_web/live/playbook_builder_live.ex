@@ -280,9 +280,6 @@ defmodule CanopyWeb.PlaybookBuilderLive do
     {:noreply, socket |> assign(:popover, nil) |> change(&%{&1 | team: team})}
   end
 
-  def handle_event("set_channel", %{"value" => value}, socket) when value in ~w(new current),
-    do: {:noreply, change(socket, &%{&1 | channel: value})}
-
   def handle_event("set_nudge", %{"minutes" => minutes}, socket) do
     stall =
       case Integer.parse(to_string(minutes)) do
@@ -882,7 +879,6 @@ defmodule CanopyWeb.PlaybookBuilderLive do
       [
         is_nil(draft.coordinator),
         is_nil(draft.team),
-        draft.channel == "current",
         draft.stall_after == Definition.default_stall_minutes(),
         is_nil(draft.inputs)
       ],
@@ -890,7 +886,7 @@ defmodule CanopyWeb.PlaybookBuilderLive do
     )
   end
 
-  defp compact?(assigns), do: not assigns.show_all_settings and defaults_count(assigns.draft) >= 3
+  defp compact?(assigns), do: not assigns.show_all_settings and defaults_count(assigns.draft) >= 2
 
   defp team_size(teams, name) do
     case Enum.find(teams, &(&1.name == name)) do
@@ -1522,42 +1518,6 @@ defmodule CanopyWeb.PlaybookBuilderLive do
               <.icon name="hero-chevron-down-micro" class="size-3 text-base-content/40" />
             </button>
             <.team_popover :if={@popover == "team"} draft={@draft} teams={@teams} />
-          </dd>
-        <% end %>
-
-        <%= if !compact?(assigns) or @draft.channel == "new" do %>
-          <dt class="text-base-content/55">Runs in</dt>
-          <dd>
-            <div class="join" role="group" aria-label="Runs in">
-              <button
-                type="button"
-                id="runs-in-new"
-                class={[
-                  "btn join-item btn-sm border-base-300",
-                  @draft.channel == "new" && "btn-active bg-base-200 font-medium shadow-sm",
-                  @draft.channel != "new" && "bg-base-100 font-normal text-base-content/70"
-                ]}
-                aria-pressed={to_string(@draft.channel == "new")}
-                phx-click="set_channel"
-                phx-value-value="new"
-              >
-                A new channel
-              </button>
-              <button
-                type="button"
-                id="runs-in-current"
-                class={[
-                  "btn join-item btn-sm border-base-300",
-                  @draft.channel == "current" && "btn-active bg-base-200 font-medium shadow-sm",
-                  @draft.channel != "current" && "bg-base-100 font-normal text-base-content/70"
-                ]}
-                aria-pressed={to_string(@draft.channel == "current")}
-                phx-click="set_channel"
-                phx-value-value="current"
-              >
-                The channel it's started from
-              </button>
-            </div>
           </dd>
         <% end %>
 

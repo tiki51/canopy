@@ -90,7 +90,7 @@ defmodule Canopy.MCP.PlaybookText do
 
     head <>
       changed <>
-      "\nBrief: #{run.brief}" <>
+      "\nBrief: #{if run.brief in [nil, ""], do: "(none; the playbook is the context)", else: run.brief}" <>
       "\nRoster: #{if roster == "", do: "(coordinator only)", else: roster}" <>
       "\nSteps:\n" <> steps <> tail
   end
@@ -153,9 +153,8 @@ defmodule Canopy.MCP.PlaybookText do
       {:ok, d} ->
         roles = Definition.owner_roles(d)
         team = if d.team, do: "; team @#{d.team}", else: ""
-        channel = if d.channel == "new", do: "; runs in a new channel", else: ""
 
-        "- #{d.name} — #{d.description}\n  roles: #{if roles == [], do: "(coordinator only)", else: Enum.join(roles, ", ")}#{team}#{channel}\n  steps: " <>
+        "- #{d.name} — #{d.description}\n  roles: #{if roles == [], do: "(coordinator only)", else: Enum.join(roles, ", ")}#{team}\n  steps: " <>
           Enum.map_join(d.steps, " → ", & &1.title)
 
       {:error, _} ->

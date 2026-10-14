@@ -155,4 +155,53 @@ test.describe("playbooks", () => {
     await expect(page.locator("#channel-name")).toContainText(channel.slice(0, 20));
     await expect(page.locator("#playbook-chip")).toContainText("bug-fix");
   });
+
+  test("a channel name typed right after picking the lead is kept and used", async ({ page }) => {
+    await gotoLive(page, "/playbooks");
+    await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
+    await expect(page.locator("#start-preview")).toContainText("What will happen");
+    await page.locator("#start-repository").selectOption({ label: "e2e-repo" });
+
+    // no pause: the lead's change is still in flight when the name is typed
+    const typed = uniq("typed-fast");
+    await page.locator("#start-coordinator").selectOption({ label: "@backend" });
+    await page.locator("#start-channel-name").fill(`#${typed.toUpperCase()}`);
+    await page.locator("#start-brief").fill("Checkout button misaligned");
+    await expect(page.locator("#start-consequence")).toContainText(`opens #${typed}.`);
+    await expect(page.locator("#start-channel-name")).toHaveValue(`#${typed.toUpperCase()}`);
+
+    await page.locator("#start-playbook-submit").click();
+    await expect(page).toHaveURL(/\/channels\/ch_/);
+    await expect(page.locator("#channel-name")).toContainText(typed);
+  });
+
+  test("start a run in an existing channel with no brief; that channel then shows as busy", async ({ page }) => {
+    const name = uniq("existing");
+    const channelId = await createChannel(page, name);
+
+    const openStart = async () => {
+      await gotoLive(page, "/playbooks");
+      await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
+      await expect(page.locator("#start-preview")).toContainText("What will happen");
+      await page.locator("label", { hasText: "Existing channel" }).click();
+      await expect(page.locator("#start-channel")).toBeVisible();
+    };
+
+    await openStart();
+    await expect(page.locator("#start-channel-name")).toHaveCount(0);
+    await page.locator("#start-channel").selectOption(channelId);
+    await page.locator("#start-coordinator").selectOption({ label: "@backend" });
+    await expect(page.locator("#start-brief")).toHaveValue("");
+    await expect(page.locator("#start-consequence")).toContainText(`@backend is woken in #${name}.`);
+
+    await page.locator("#start-playbook-submit").click();
+    await expect(page).toHaveURL(new RegExp(`/channels/${channelId}$`));
+    await expect(page.locator("#playbook-chip")).toContainText("bug-fix");
+
+    // back on the Start page, that channel can't be picked while its run is live
+    await openStart();
+    const option = page.locator(`#start-channel option[value='${channelId}']`);
+    await expect(option).toBeDisabled();
+    await expect(option).toContainText(`#${name} · run active`);
+  });
 });

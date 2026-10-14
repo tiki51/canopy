@@ -8,7 +8,6 @@ roles:
   frontend: frontend
   reviewer: reviewer
 coordinator: project-manager
-channel: new
 stall_after: 30m
 inputs: The symptom, where it happens, steps to reproduce if known, expected vs actual, links or screenshots.
 steps:

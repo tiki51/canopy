@@ -147,14 +147,15 @@ defmodule Canopy.Runtime do
     end
   end
 
-  # `/playbook name [@coordinator] brief`: the user starts a run. The
+  # `/playbook name [@coordinator] [brief]`: the user starts a run here. The
   # coordinator is the one named, else the playbook's own, else the owner.
   defp user_playbook(channel_id, name, text) do
     channel = Channels.get!(channel_id)
 
     {coordinator_name, brief} =
-      case Regex.run(~r/\A@([A-Za-z0-9][\w-]*)\s+(\S.*)\z/s, text) do
+      case Regex.run(~r/\A@([A-Za-z0-9][\w-]*)(?:\s+(\S.*))?\z/s, text) do
         [_, who, rest] -> {String.downcase(who), String.trim(rest)}
+        [_, who] -> {String.downcase(who), ""}
         nil -> {nil, text}
       end
 
@@ -166,7 +167,9 @@ defmodule Canopy.Runtime do
              channel: channel,
              coordinator: coordinator,
              started_by_agent_id: nil,
-             brief: brief
+             brief: brief,
+             # the user opens a new channel for a run there, not with channel_name
+             new_channel_via: "from the Playbooks page"
            }) do
       {:ok, {:playbook, run}}
     end
@@ -184,7 +187,7 @@ defmodule Canopy.Runtime do
 
   defp coordinator_for(playbook, nil, channel) do
     case Canopy.Playbooks.Runs.default_coordinator(playbook, channel) do
-      nil -> {:error, "name an active coordinator: /playbook #{playbook.name} @agent brief"}
+      nil -> {:error, "name an active coordinator: /playbook #{playbook.name} @agent"}
       agent -> {:ok, agent}
     end
   end

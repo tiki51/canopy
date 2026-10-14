@@ -197,7 +197,7 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     view
     |> form("#start-run-form",
       start: %{
-        runs_in: "current",
+        runs_in: "existing",
         coordinator_id: ctx.agent.id,
         brief: "Ship the onboarding"
       }
@@ -258,8 +258,7 @@ defmodule CanopyWeb.PlaybooksLiveTest do
         roles: %{dev: other.name}
       }
     )
-    # the name field was typed in (the page marks that on focus)
-    |> render_submit(%{"start" => %{"channel_name_touched" => "true"}})
+    |> render_submit()
 
     {path, _flash} = assert_redirect(view)
     "/channels/" <> channel_id = path
@@ -270,15 +269,331 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     assert_receive {:prompted, _sid, _body}, 2_000
   end
 
-  test "start: a channel: new playbook offers no existing channel", %{conn: conn} do
+  test "start: every playbook offers a new or an existing channel, new first; busy ones can't be picked",
+       %{conn: conn} do
+    ctx = Fixtures.scenario()
+    on_exit(&stop_channels/0)
+    stub_engine(self(), ctx.repository)
+    other_repo = Fixtures.repository_fixture()
+    free = Fixtures.channel_fixture(%{repository_id: other_repo.id, name: "free-one"})
+    busy = playbook_fixture("busy", [{"a", "A", "coordinator"}])
+
+    {:ok, _run, false} =
+      Runs.start(%{
+        playbook: busy,
+        channel: ctx.channel,
+        coordinator: ctx.agent,
+        started_by_agent_id: ctx.agent.id,
+        brief: "b"
+      })
+
+    # an old `channel: new` line no longer decides anything
     playbook = playbook_fixture("fresh", [{"a", "A", "coordinator"}], "channel: new\n")
     {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
 
-    assert has_element?(view, "#start-runs-in-new input[name='start[runs_in]'][value='new']")
-    refute has_element?(view, "[role=radiogroup][aria-label='Runs in']")
-    refute has_element?(view, "input[name='start[runs_in]'][value='current']")
-    refute has_element?(view, "#start-channel")
+    assert has_element?(view, "[role=radiogroup][aria-label='Runs in']")
+    assert has_element?(view, "input[name='start[runs_in]'][value='new'][checked]")
+    assert has_element?(view, "input[name='start[runs_in]'][value='existing']:not([checked])")
     assert has_element?(view, "#start-channel-name")
+    refute has_element?(view, "#start-channel")
+
+    view
+    |> form("#start-run-form", start: %{runs_in: "existing", coordinator_id: ctx.agent.id})
+    |> render_change()
+
+    refute has_element?(view, "#start-channel-name")
+
+    assert has_element?(
+             view,
+             "#start-channel option[value=''][disabled][selected]",
+             "Pick a channel"
+           )
+
+    assert has_element?(view, "#start-consequence", "is woken in the channel you pick.")
+
+    in_repo = "#start-channel optgroup[label='#{ctx.repository.name}']"
+
+    assert has_element?(
+             view,
+             "#{in_repo} option[value='#{ctx.channel.id}'][disabled]",
+             "· run active"
+           )
+
+    in_other = "#start-channel optgroup[label='#{other_repo.name}']"
+
+    assert has_element?(
+             view,
+             "#{in_other} option[value='#{free.id}']:not([disabled])",
+             "#free-one"
+           )
+
+    view |> form("#start-run-form", start: %{channel_id: free.id}) |> render_change()
+    assert has_element?(view, "#start-consequence", "@#{ctx.agent.name} is woken in #free-one.")
+
+    # a busy channel posted anyway (the page was stale); the old "current" still means existing
+    html =
+      view
+      |> element("#start-run-form")
+      |> render_submit(%{
+        "start" => %{
+          "runs_in" => "current",
+          "channel_id" => ctx.channel.id,
+          "coordinator_id" => ctx.agent.id,
+          "brief" => ""
+        }
+      })
+
+    assert html =~
+             "##{ctx.channel.name} already has a run in progress (busy); pick another channel or start a new one"
+
+    assert Runs.active_for_channel(ctx.channel.id).playbook_name == "busy"
+  end
+
+  test "start: with no brief, the new channel is named after the playbook and the run starts", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+    on_exit(&stop_channels/0)
+    stub_engine(self(), ctx.repository)
+    playbook = playbook_fixture("quiet", [{"a", "A", "coordinator"}])
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+    assert has_element?(view, "label[for=start-brief]", "Optional")
+
+    assert has_element?(
+             view,
+             "#start-brief[placeholder='Leave empty to let the playbook speak for itself']"
+           )
+
+    params = %{runs_in: "new", repository_id: ctx.repository.id, coordinator_id: ctx.agent.id}
+    view |> form("#start-run-form", start: Map.put(params, :brief, "Go")) |> render_change()
+
+    assert has_element?(
+             view,
+             "#start-consequence",
+             "is woken with your brief and opens #quiet-go."
+           )
+
+    view |> form("#start-run-form", start: Map.put(params, :brief, "  ")) |> render_change()
+    assert has_element?(view, "#start-channel-name[value='quiet']")
+
+    assert has_element?(
+             view,
+             "#start-consequence",
+             "@#{ctx.agent.name} is woken and opens #quiet."
+           )
+
+    view |> form("#start-run-form", start: Map.put(params, :brief, "")) |> render_submit()
+
+    {path, _flash} = assert_redirect(view)
+    "/channels/" <> channel_id = path
+    assert Canopy.Channels.get!(channel_id).name == "quiet"
+    assert Runs.active_for_channel(channel_id).brief == ""
+    assert_receive {:prompted, _sid, _body}, 2_000
+  end
+
+  test "start: a channel name already taken is refused and stays in the field to edit", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+    Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "launch"})
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    html =
+      view
+      |> form("#start-run-form",
+        start: %{
+          runs_in: "new",
+          repository_id: ctx.repository.id,
+          channel_name: "#Launch",
+          coordinator_id: ctx.agent.id
+        }
+      )
+      |> render_submit()
+
+    assert html =~
+             "#launch already exists in #{ctx.repository.name}; pick another name, or choose Existing channel"
+
+    assert has_element?(view, "#start-channel-name[value='#Launch']")
+  end
+
+  # a JS flag set on focus was lost when a change in flight patched the form;
+  # the server now knows a typed name by its differing from the suggestion
+  test "start: a name typed while another field's change is in flight is kept and used", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+    on_exit(&stop_channels/0)
+    stub_engine(self(), ctx.repository)
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    params = %{"runs_in" => "new", "repository_id" => ctx.repository.id, "brief" => "Go"}
+    view |> form("#start-run-form", start: params) |> render_change()
+    assert has_element?(view, "#start-channel-name[value='ship-go']")
+
+    # the lead's change carries the name typed meanwhile; then the brief changes
+    view
+    |> element("#start-run-form")
+    |> render_change(%{
+      "_target" => ["start", "coordinator_id"],
+      "start" =>
+        Map.merge(params, %{"channel_name" => "my-launch", "coordinator_id" => ctx.agent.id})
+    })
+
+    assert has_element?(view, "#start-channel-name[value='my-launch']")
+
+    view
+    |> element("#start-run-form")
+    |> render_change(%{
+      "_target" => ["start", "brief"],
+      "start" =>
+        Map.merge(params, %{
+          "brief" => "Go live now",
+          "channel_name" => "my-launch",
+          "coordinator_id" => ctx.agent.id
+        })
+    })
+
+    assert has_element?(view, "#start-channel-name[value='my-launch']")
+
+    view
+    |> form("#start-run-form",
+      start: %{"brief" => "Go live now", "coordinator_id" => ctx.agent.id}
+    )
+    |> render_submit()
+
+    {path, _flash} = assert_redirect(view)
+    "/channels/" <> channel_id = path
+    assert Canopy.Channels.get!(channel_id).name == "my-launch"
+    assert_receive {:prompted, _sid, _body}, 2_000
+  end
+
+  test "start: a name typed to match the suggestion stays put when the brief changes", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    params = %{"runs_in" => "new", "repository_id" => ctx.repository.id, "brief" => "Go"}
+    view |> form("#start-run-form", start: params) |> render_change()
+
+    view
+    |> element("#start-run-form")
+    |> render_change(%{
+      "_target" => ["start", "channel_name"],
+      "start" => Map.put(params, "channel_name", "ship-go")
+    })
+
+    view
+    |> element("#start-run-form")
+    |> render_change(%{
+      "_target" => ["start", "brief"],
+      "start" => Map.merge(params, %{"brief" => "Go live", "channel_name" => "ship-go"})
+    })
+
+    assert has_element?(view, "#start-channel-name[value='ship-go']")
+  end
+
+  test "start: the footer names the channel a typed name will really make", %{conn: conn} do
+    ctx = Fixtures.scenario()
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    params = %{
+      "runs_in" => "new",
+      "repository_id" => ctx.repository.id,
+      "coordinator_id" => ctx.agent.id,
+      "brief" => "Go"
+    }
+
+    change = fn name ->
+      view
+      |> element("#start-run-form")
+      |> render_change(%{
+        "_target" => ["start", "channel_name"],
+        "start" => Map.put(params, "channel_name", name)
+      })
+    end
+
+    change.("  ##Taken-X ")
+    # the field keeps what was typed; the footer shows the cleaned name
+    assert has_element?(view, "#start-channel-name[value='  ##Taken-X ']")
+
+    assert has_element?(
+             view,
+             "#start-consequence",
+             "is woken with your brief and opens #taken-x."
+           )
+
+    refute has_element?(view, "#start-consequence", "##")
+
+    # a name that cleans to nothing: the run gets the suggested one
+    change.("#")
+    assert has_element?(view, "#start-consequence", "opens #ship-go.")
+    change.("")
+    assert has_element?(view, "#start-consequence", "opens #ship-go.")
+
+    # trimmed of dashes and cut to 50, as `Runs` names it
+    change.(" -Foo- ")
+    assert has_element?(view, "#start-consequence", "opens #foo.")
+    change.(String.duplicate("a", 49) <> "-" <> String.duplicate("b", 10))
+    assert has_element?(view, "#start-consequence", "opens ##{String.duplicate("a", 49)}.")
+  end
+
+  test "start: a name that cleans to nothing starts in the generated channel", %{conn: conn} do
+    ctx = Fixtures.scenario()
+    on_exit(&stop_channels/0)
+    stub_engine(self(), ctx.repository)
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    view
+    |> form("#start-run-form",
+      start: %{
+        runs_in: "new",
+        repository_id: ctx.repository.id,
+        channel_name: "#",
+        coordinator_id: ctx.agent.id
+      }
+    )
+    |> render_submit()
+
+    {path, _flash} = assert_redirect(view)
+    "/channels/" <> channel_id = path
+    assert Canopy.Channels.get!(channel_id).name == "ship"
+  end
+
+  test "start: a taken name typed while another field's change is in flight is refused", %{
+    conn: conn
+  } do
+    ctx = Fixtures.scenario()
+    Fixtures.channel_fixture(%{repository_id: ctx.repository.id, name: "launch"})
+    playbook = playbook_fixture("ship", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+    params = %{"runs_in" => "new", "repository_id" => ctx.repository.id}
+    view |> form("#start-run-form", start: params) |> render_change()
+
+    # only the lead's change ever reaches the server, carrying the typed name
+    view
+    |> element("#start-run-form")
+    |> render_change(%{
+      "_target" => ["start", "coordinator_id"],
+      "start" =>
+        Map.merge(params, %{"channel_name" => "#Launch", "coordinator_id" => ctx.agent.id})
+    })
+
+    html =
+      view
+      |> form("#start-run-form", start: %{"coordinator_id" => ctx.agent.id})
+      |> render_submit()
+
+    assert html =~ "#launch already exists in #{ctx.repository.name}"
+    assert has_element?(view, "#start-channel-name[value='#Launch']")
+    assert Canopy.Repo.aggregate(Canopy.Playbooks.Run, :count) == 0
   end
 
   test "start: a role nobody fills is named before the run is tried", %{conn: conn} do
@@ -290,12 +605,13 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
 
     assert has_element?(view, "#start-role-dev-agent option[value='']", "Pick an agent")
+    view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
 
     html =
       view
       |> form("#start-run-form",
         start: %{
-          runs_in: "current",
+          runs_in: "existing",
           channel_id: ctx.channel.id,
           coordinator_id: ctx.agent.id,
           brief: "Go"
@@ -313,11 +629,12 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     ctx = Fixtures.scenario()
     playbook = playbook_fixture("gone", [{"a", "A", "coordinator"}])
     {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+    view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
 
     {:ok, _} = Playbooks.set_enabled(playbook, false, playbook.lock_version)
 
     params = %{
-      runs_in: "current",
+      runs_in: "existing",
       channel_id: ctx.channel.id,
       coordinator_id: ctx.agent.id,
       brief: "Go"
@@ -395,7 +712,7 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     |> form("#start-run-form", start: %{params | brief: "Ship the onboarding flow today, please"})
     |> render_change()
 
-    view |> form("#start-run-form", start: %{params | runs_in: "current"}) |> render_change()
+    view |> form("#start-run-form", start: %{params | runs_in: "existing"}) |> render_change()
     assert view_queries(view.pid) == []
     assert has_element?(view, "#start-role-dev", "playbook default")
   end

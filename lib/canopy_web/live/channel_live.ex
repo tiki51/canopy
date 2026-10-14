@@ -2280,13 +2280,8 @@ defmodule CanopyWeb.ChannelLive do
     do: {:noreply, assign_run(socket, params)}
 
   def handle_event("start_playbook", %{"start" => params}, socket) do
+    # always this channel: `PlaybookStart.start/2` drops a posted channel_name
     case PlaybookStart.start(params, socket.assigns.channel) do
-      {:ok, %{channel_id: channel_id} = run} when channel_id != socket.assigns.channel.id ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Started #{run.playbook_name} in ##{run.channel.name}.")
-         |> push_navigate(to: ~p"/channels/#{channel_id}")}
-
       {:ok, run} ->
         {:noreply,
          socket

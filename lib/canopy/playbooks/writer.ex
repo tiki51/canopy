@@ -10,8 +10,8 @@ defmodule Canopy.Playbooks.Writer do
   A draft is a map:
 
     * `:title` — the body's `# Heading` (the human name)
-    * `:name`, `:description`, `:team`, `:coordinator`, `:channel`,
-      `:stall_after`, `:inputs` — as on the definition
+    * `:name`, `:description`, `:team`, `:coordinator`, `:stall_after`,
+      `:inputs` — as on the definition
     * `:roles` — `[%{key: role, agent: name | nil}]`, in order of first use;
       a role with no agent is kept for the builder but not written
     * `:guidance` — the ground rules, between the heading and the first step
@@ -22,9 +22,9 @@ defmodule Canopy.Playbooks.Writer do
     * `:notes` — `[{heading, text}]`, later sections that match no step,
       kept verbatim at the end of the body
 
-  Frontmatter keys come out in a fixed order, and defaults (`channel:
-  current`, a 30 minute `stall_after`) are left out. YAML comments are not
-  kept. Pure.
+  Frontmatter keys come out in a fixed order, and defaults (a 30 minute
+  `stall_after`) are left out. An old `channel:` line is not written back.
+  YAML comments are not kept. Pure.
   """
 
   alias Canopy.Frontmatter
@@ -48,7 +48,6 @@ defmodule Canopy.Playbooks.Writer do
       description: definition.description,
       team: definition.team,
       coordinator: definition.coordinator,
-      channel: definition.channel,
       stall_after: definition.stall_after,
       inputs: definition.inputs,
       roles: roles(definition),
@@ -80,7 +79,6 @@ defmodule Canopy.Playbooks.Writer do
       description: "",
       team: nil,
       coordinator: nil,
-      channel: "current",
       stall_after: Definition.default_stall_minutes(),
       inputs: nil,
       roles: [],
@@ -127,7 +125,6 @@ defmodule Canopy.Playbooks.Writer do
       line("team", draft.team),
       roles_block(draft.roles),
       line("coordinator", draft.coordinator),
-      if(draft.channel == "new", do: "channel: new\n"),
       stall_line(draft.stall_after),
       line("inputs", draft.inputs),
       steps_block(draft.steps)
