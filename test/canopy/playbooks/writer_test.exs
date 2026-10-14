@@ -147,8 +147,9 @@ defmodule Canopy.Playbooks.WriterTest do
            } = hd(draft.steps)
 
     sign_off = List.last(draft.steps)
-    assert sign_off.done_when == ""
-    assert sign_off.instructions =~ "Post one summary for the user"
+    assert sign_off.done_when == "the user accepts, and the task is completed."
+    assert sign_off.instructions =~ "Hold the run for the user's sign-off"
+    refute sign_off.instructions =~ "Done when"
     assert draft.notes == []
   end
 

@@ -29,8 +29,29 @@ defmodule Canopy.Playbooks.DefinitionTest do
     assert Enum.map(d.steps, & &1.id) == ~w(triage reproduce fix verify review sign-off)
     assert %{owner: ["backend", "frontend"]} = Definition.step(d, "fix")
     assert %{on_reject: "fix"} = Definition.step(d, "review")
-    assert %{approval: true, owner: ["coordinator"]} = Definition.step(d, "sign-off")
+
+    assert %{approval: true, owner: ["coordinator"], on_reject: "fix"} =
+             Definition.step(d, "sign-off")
+
     assert Definition.owner_roles(d) == ~w(test backend frontend reviewer)
+  end
+
+  test "the seeded feature-build playbook parses, ending in a sign-off that sends work back to build" do
+    assert {:ok, d} = Definition.parse(Playbooks.feature_build_text())
+    assert d.name == "feature-build"
+    assert d.coordinator == "project-manager"
+    assert d.warnings == []
+    assert d.description =~ ~r/ending in user sign-off\. Use for new features, not bugs\.\z/
+
+    assert Enum.map(d.steps, & &1.id) ==
+             ~w(intake design design-approval tech-design tech-review build verify design-check sign-off)
+
+    assert %{approval: true, on_reject: "design"} = Definition.step(d, "design-approval")
+
+    assert %{title: "User sign-off", approval: true, owner: ["coordinator"], on_reject: "build"} =
+             Definition.step(d, "sign-off")
+
+    assert Definition.step_section(d, "sign-off") =~ "Don't post the summary separately"
   end
 
   test "defaults: a 30 minute stall, no team" do

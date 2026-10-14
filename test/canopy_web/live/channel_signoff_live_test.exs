@@ -242,6 +242,60 @@ defmodule CanopyWeb.ChannelSignoffLiveTest do
     assert Repo.reload(so).status == "rejected"
   end
 
+  test "a feature-build run held on User sign-off: the card shows; Reject with a note puts it back and names build",
+       %{conn: conn} = ctx do
+    for name <- ~w(designer frontend backend reviewer test),
+        do: Canopy.Agents.get_by_name(name) || Fixtures.agent_fixture(name: name)
+
+    {:ok, playbook} = Canopy.Playbooks.create(%{body: Canopy.Playbooks.feature_build_text()})
+    coord = {:agent, ctx.agent.id}
+
+    {:ok, run, false} =
+      Runs.start(%{
+        playbook: playbook,
+        channel: ctx.channel,
+        coordinator: ctx.agent,
+        started_by_agent_id: ctx.agent.id,
+        brief: "A green button"
+      })
+
+    {:ok, run, _} = Runs.advance(run, coord, result: "captured")
+    {:ok, run, _} = Runs.advance(run, coord, result: "three designs")
+    # the user waives the design gate: an accept would wake the coordinator, and
+    # the stub engine never ends that turn, so the reject's wake would queue behind it
+    {:ok, run, _} = Runs.advance(run, :user, result: "pick one", skip: true)
+
+    run =
+      Enum.reduce(1..5, run, fn _, run ->
+        {:ok, run, _} = Runs.advance(run, coord, result: "done")
+        run
+      end)
+
+    {:ok, run, :awaiting_approval} =
+      Runs.advance(run, coord,
+        result: "The button is green.",
+        signoff: %{question: "Accept the green button?"}
+      )
+
+    so = Signoffs.pending_for_run(run.id)
+    drain_prompts()
+    {:ok, view, _html} = open(conn, ctx.channel)
+    open_panel(view)
+
+    assert has_element?(view, "#playbook-step-sign-off[data-status='awaiting_approval']")
+    assert has_element?(view, "#signoff-#{so.id}", "User sign-off")
+    assert has_element?(view, "#signoff-#{so.id}", "Accept the green button?")
+    assert has_element?(view, "#signoff-#{so.id}", "The button is green.")
+
+    submit(view, "#signoff-#{so.id}-form", so, "reject", "Make it blue")
+
+    assert_receive {:prompted, _sid, body}, 2_000
+    assert prompt_text(body) =~ "The playbook sends this step back to build."
+    assert prompt_text(body) =~ "Make it blue"
+    assert has_element?(view, "#playbook-step-sign-off[data-status='active']")
+    refute has_element?(view, "#signoff-#{so.id}")
+  end
+
   test "a run card answered in another tab: this one drops both cards with no flash, and a stale press says nothing",
        %{conn: conn} = ctx do
     {_run, so} = hold!(ctx)

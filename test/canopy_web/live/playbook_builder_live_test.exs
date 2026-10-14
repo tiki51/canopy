@@ -133,13 +133,164 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     view |> element("#open-step-#{fix}") |> render_click()
     view |> element("#delete-step-#{fix}") |> render_click()
 
-    assert has_element?(view, "#undo-toast", "Deleted Fix. Review no longer sends work back.")
+    assert has_element?(
+             view,
+             "#undo-toast",
+             "Deleted Fix. Review and User sign-off no longer send work back."
+           )
+
     refute has_element?(view, "li[data-title='Fix']")
     refute has_element?(view, "li[data-title='Review']", "can send back")
+    refute has_element?(view, "li[data-title='User sign-off']", "can send back")
 
     view |> element("#undo-delete") |> render_click()
     assert has_element?(view, "li[data-title='Review']", "can send back to Fix")
+    assert has_element?(view, "li[data-title='User sign-off']", "can send back to Fix")
     assert has_element?(view, "#save-state", "Saved")
+  end
+
+  test "a step with two send-backs gets one label naming both", %{conn: conn} do
+    playbook = seed!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    fix = view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query("li[data-title='Fix']")
+    labels = LazyHTML.query(fix, ".send-back-label")
+
+    # both loops keep their own rail
+    assert fix |> LazyHTML.query(".rail-start") |> Enum.count() == 2
+    assert Enum.count(labels) == 1
+
+    assert LazyHTML.text(labels) =~
+             "Review and User sign-off send it back here when changes are requested"
+
+    # clear of the second rail
+    assert LazyHTML.attribute(labels, "style") == ["--label-lane: 1"]
+  end
+
+  defp seed_feature_build! do
+    {:ok, playbook} = Playbooks.create(%{body: Playbooks.feature_build_text(), source: "seed"})
+    playbook
+  end
+
+  defp labels(view, title) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("li[data-title='#{title}'] .send-back-label")
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.split() |> Enum.join(" ")))
+  end
+
+  defp delete_step(view, title) do
+    id = uid(view, title)
+    view |> element("#open-step-#{id}") |> render_click()
+    view |> element("#delete-step-#{id}") |> render_click()
+  end
+
+  # b, c, d and e all send work back to a
+  defp four_senders! do
+    playbook_fixture("four-back", [
+      {"a", "A", "coordinator"},
+      {"b", "B", "coordinator", "on_reject: a"},
+      {"c", "C", "coordinator", "on_reject: a"},
+      {"d", "D", "coordinator", "on_reject: a"},
+      {"e", "E", "coordinator", "on_reject: a"}
+    ])
+  end
+
+  test "a target with one sender: its label says sends", %{conn: conn} do
+    playbook = seed_feature_build!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    assert labels(view, "Clarify and propose 3 designs") == [
+             "User approves a design sends it back here when changes are requested"
+           ]
+
+    assert labels(view, "Technical design docs") == [
+             "Review technical designs sends it back here when changes are requested"
+           ]
+  end
+
+  test "a target with three senders: one label, serial comma", %{conn: conn} do
+    playbook = seed_feature_build!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    assert labels(view, "Implement, and write the test plan") == [
+             "Test and code review, Designer approves the result, and User sign-off send it back here when changes are requested"
+           ]
+
+    build =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("li[data-title='Implement, and write the test plan'] .rail-start")
+
+    assert Enum.count(build) == 3
+
+    # clear of the third rail
+    assert has_element?(
+             view,
+             "li[data-title='Implement, and write the test plan'] .send-back-label[style='--label-lane: 2']"
+           )
+  end
+
+  test "four senders to one target: the label names all four", %{conn: conn} do
+    playbook = four_senders!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    assert labels(view, "A") == [
+             "B, C, D, and E send it back here when changes are requested"
+           ]
+  end
+
+  test "deleting a step one step sends back to: the toast says sends", %{conn: conn} do
+    playbook = seed_feature_build!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    delete_step(view, "Clarify and propose 3 designs")
+
+    assert has_element?(
+             view,
+             "#undo-toast",
+             "Deleted Clarify and propose 3 designs. User approves a design no longer sends work back."
+           )
+  end
+
+  test "deleting Build clears three send-backs, and Undo restores all three", %{conn: conn} do
+    playbook = seed_feature_build!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    delete_step(view, "Implement, and write the test plan")
+
+    assert has_element?(
+             view,
+             "#undo-toast",
+             "Deleted Implement, and write the test plan. Test and code review, Designer approves the result, and User sign-off no longer send work back."
+           )
+
+    senders = ["Test and code review", "Designer approves the result", "User sign-off"]
+    for t <- senders, do: refute(has_element?(view, "li[data-title='#{t}']", "can send back"))
+
+    view |> element("#undo-delete") |> render_click()
+
+    for t <- senders,
+        do:
+          assert(
+            has_element?(
+              view,
+              "li[data-title='#{t}']",
+              "can send back to Implement, and write the test plan"
+            )
+          )
+  end
+
+  test "deleting a step four steps send back to: the toast names all four", %{conn: conn} do
+    playbook = four_senders!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    delete_step(view, "A")
+
+    assert has_element?(
+             view,
+             "#undo-toast",
+             "Deleted A. B, C, D, and E no longer send work back."
+           )
   end
 
   test "a blank playbook: name, description, a step with the lead; Create", %{conn: conn} do

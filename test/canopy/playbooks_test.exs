@@ -4,7 +4,7 @@ defmodule Canopy.PlaybooksTest do
   import Canopy.Fixtures
 
   alias Canopy.Playbooks
-  alias Canopy.Playbooks.Runs
+  alias Canopy.Playbooks.{Definition, Runs}
 
   def playbook_text(name, extra \\ "") do
     """
@@ -67,6 +67,25 @@ defmodule Canopy.PlaybooksTest do
     assert [{:exists, "bug-fix"}, {:exists, "feature-build"}] = Playbooks.seed()
     assert Enum.map(Playbooks.seed(), &elem(&1, 1)) == Playbooks.seed_names()
     assert Playbooks.get_by_name("bug-fix").body =~ "title: Triage\n"
+  end
+
+  test "seeding never replaces an older feature-build, and a run on it keeps the old ending" do
+    older =
+      String.replace(
+        Playbooks.feature_build_text(),
+        "    approval: user\n    on_reject: build\n---",
+        "---"
+      )
+
+    assert older != Playbooks.feature_build_text()
+    {:ok, _} = Playbooks.create(%{body: older, source: "seed"})
+
+    assert {:exists, "feature-build"} in Playbooks.seed()
+    playbook = Playbooks.get_by_name("feature-build")
+    assert playbook.body == older
+
+    {:ok, d} = Playbooks.definition(playbook)
+    assert %{approval: false, on_reject: nil} = Definition.step(d, "sign-off")
   end
 
   test "duplicate makes a disabled copy under a free name" do

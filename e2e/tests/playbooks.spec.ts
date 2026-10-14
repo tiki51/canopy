@@ -133,7 +133,8 @@ test.describe("playbooks", () => {
     await gotoLive(page, "/playbooks");
     await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='edit-playbook-']").click();
     await expect(page.locator("#about-title")).toHaveValue("Bug fix");
-    await expect(page.locator("li[data-title='Fix'] .rail-start")).toBeAttached();
+    // Review and User sign-off both send back to Fix
+    await expect(page.locator("li[data-title='Fix'] .rail-start")).toHaveCount(2);
 
     // Fix goes down two places, below Review
     const fix = page.locator("li[data-title='Fix'] [data-grip]");
