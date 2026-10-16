@@ -90,10 +90,33 @@ defmodule Canopy.MCP.PlaybookText do
 
     head <>
       changed <>
-      "\nBrief: #{if run.brief in [nil, ""], do: "(none; the playbook is the context)", else: run.brief}" <>
+      "\nBrief: #{brief_text(run)}" <>
+      brief_files(run) <>
       "\nRoster: #{if roster == "", do: "(coordinator only)", else: roster}" <>
       "\nSteps:\n" <> steps <> tail
   end
+
+  defp brief_text(%Run{brief: brief, kickoff_message_id: id}) when brief in [nil, ""],
+    do:
+      if(id,
+        do: "(no text; the files below are the brief)",
+        else: "(none; the playbook is the context)"
+      )
+
+  defp brief_text(%Run{brief: brief}), do: brief
+
+  # the files posted with the brief, loaded only for a run that has them
+  defp brief_files(%Run{kickoff_message_id: id}) when is_binary(id) do
+    case Canopy.Messages.get(id) do
+      %{documents: [_ | _] = documents} ->
+        "\nBrief files (#{id}): " <> Enum.map_join(documents, ", ", &Format.document_ref/1)
+
+      _ ->
+        ""
+    end
+  end
+
+  defp brief_files(_run), do: ""
 
   defp status_text(%Run{status: "active"}), do: "active"
   defp status_text(%Run{status: "awaiting_approval"}), do: "waiting for the user's approval"

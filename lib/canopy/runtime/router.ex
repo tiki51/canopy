@@ -72,6 +72,11 @@ defmodule Canopy.Runtime.Router do
   # Notes left by user commands never wake anyone; the command's own event does.
   defp do_wakeups(%Event{event_type: "message", message: %{kind: "system"}}, _ctx), do: []
 
+  # A run's kickoff post wakes nobody: the run's own start wakes the coordinator with its files.
+  defp do_wakeups(%Event{event_type: "message", payload: %{"kickoff_run_id" => id}}, _ctx)
+       when is_binary(id),
+       do: []
+
   defp do_wakeups(%Event{event_type: "message", message: message}, ctx)
        when not is_nil(message) do
     sender_agent_id = message.agent_id

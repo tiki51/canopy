@@ -6,14 +6,17 @@ import { createChannel, gotoLive, reload, send, timeline, uniq } from "./helpers
 // advances through to the step held for the user's sign-off; the card's
 // Accept wakes it to close the run. Watches stay out of e2e (no gh here); ExUnit covers them.
 
+// a 1×1 PNG, for the pasted screenshot
+const ONE_PIXEL_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 test.describe("playbooks", () => {
   test("build a playbook, run it in a channel, and approve its sign-off", async ({ page }) => {
     const name = uniq("e2e-check");
 
-    // the library lists the seeded bug-fix playbook
+    // the library lists the seeded bug-fix playbook by its title
     await gotoLive(page, "/playbooks");
-    await expect(page.locator("#playbooks")).toContainText("bug-fix");
-    await expect(page.locator("#playbooks")).toContainText("starter");
+    await expect(page.locator("#playbooks li[data-playbook='bug-fix']")).toContainText("Bug fix");
 
     // New → Start blank opens the builder with one empty step
     await page.locator("#new-playbook").click();
@@ -131,7 +134,10 @@ test.describe("playbooks", () => {
 
   test("a review moved above what it sends back to is a problem with a one-click fix", async ({ page }) => {
     await gotoLive(page, "/playbooks");
-    await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='edit-playbook-']").click();
+    // Edit is in the row's ⋯ menu
+    const row = page.locator("#playbooks li[data-playbook='bug-fix']");
+    await row.locator("[id^='playbook-menu-'][id$='-toggle']").click();
+    await row.locator("a[id^='edit-playbook-']").click();
     await expect(page.locator("#about-title")).toHaveValue("Bug fix");
     // Review and User sign-off both send back to Fix
     await expect(page.locator("li[data-title='Fix'] .rail-start")).toHaveCount(2);
@@ -159,7 +165,7 @@ test.describe("playbooks", () => {
 
   test("start a run from the Start page, in a new channel", async ({ page }) => {
     await gotoLive(page, "/playbooks");
-    await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
+    await page.locator("#playbooks li[data-playbook='bug-fix'] a[id^='start-playbook-']").click();
     await expect(page.locator("#start-preview")).toContainText("What will happen");
     await expect(page.locator("#start-inputs")).toContainText("The symptom");
 
@@ -180,7 +186,7 @@ test.describe("playbooks", () => {
 
   test("a channel name typed right after picking the lead is kept and used", async ({ page }) => {
     await gotoLive(page, "/playbooks");
-    await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
+    await page.locator("#playbooks li[data-playbook='bug-fix'] a[id^='start-playbook-']").click();
     await expect(page.locator("#start-preview")).toContainText("What will happen");
     await page.locator("#start-repository").selectOption({ label: "e2e-repo" });
 
@@ -197,13 +203,109 @@ test.describe("playbooks", () => {
     await expect(page.locator("#channel-name")).toContainText(typed);
   });
 
+  test("the library filters as you type; Copy's filter keeps Enter on the page", async ({ page }) => {
+    await gotoLive(page, "/playbooks");
+    const count = page.locator("#playbook-count");
+    const input = page.locator("#playbook-filter-input");
+    await input.fill("bug f");
+    await expect(count).toContainText(/\d+ of \d+ playbooks/);
+    await expect(page.locator("#playbooks li[data-playbook='bug-fix'] mark").first()).toHaveText("Bug f");
+    await expect(page.locator("#playbooks li[data-playbook='feature-build']")).toHaveCount(0);
+    // one clear control: ours, not the browser's beside it
+    await expect(page.locator("#playbook-filter-clear")).toBeVisible();
+    const nativeClear = await input.evaluate(
+      (el) => getComputedStyle(el, "::-webkit-search-cancel-button").appearance,
+    );
+    expect(nativeClear).toBe("none");
+    await input.press("Escape");
+    await expect(input).toHaveValue("");
+    await expect(page.locator("#playbooks li[data-playbook='feature-build']")).toBeVisible();
+
+    // copies of bug-fix make sure the Copy card has eight or more to filter
+    for (let n = 0; n < 6; n++) {
+      await gotoLive(page, "/playbooks");
+      const row = page.locator("#playbooks li[data-playbook='bug-fix']");
+      await row.locator("[id^='playbook-menu-'][id$='-toggle']").click();
+      await row.locator("[id^='duplicate-playbook-']").click();
+      await expect(page).toHaveURL(/\/playbooks\/pb_[^/]+\/edit$/);
+    }
+
+    // unfiltered, the long list still leaves Copy on screen
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoLive(page, "/playbooks/new");
+    expect(await page.locator("#copy-list li").count()).toBeGreaterThanOrEqual(8);
+    await expect(page.locator("#copy-playbook")).toBeInViewport();
+
+    const filter = page.locator("#copy-filter");
+    await filter.fill("feature");
+    await expect(page.locator("#copy-list li")).toHaveCount(1);
+    await page.locator("#copy-list li", { hasText: "Feature build" }).locator("input").check();
+    await filter.press("Enter");
+    await expect(page).toHaveURL(/\/playbooks\/new$/);
+    await expect(filter).toHaveValue("feature");
+    await expect(page.locator("#copy-playbook")).toBeInViewport();
+    await expect(page.locator("#copy-playbook")).toContainText("Copy Feature build");
+  });
+
+  test("the Start page's brief takes files by attach, drop and paste", async ({ page }) => {
+    await gotoLive(page, "/playbooks");
+    await page.locator("#playbooks li[data-playbook='bug-fix'] a[id^='start-playbook-']").click();
+    await expect(page.locator("#start-preview")).toContainText("What will happen");
+
+    // attach
+    await page.locator("#start-upload-form input[type=file]").setInputFiles({
+      name: "notes.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# Notes\n"),
+    });
+    await expect(page.locator("#start-brief-files")).toContainText("notes.md");
+    await expect(page.locator("#start-brief-count")).toContainText("1 of 10 files");
+
+    // drop on the form
+    const dropped = await page.evaluateHandle(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(["dropped"], "dropped.txt", { type: "text/plain" }));
+      return dt;
+    });
+    await page.locator("#start-run-form").dispatchEvent("dragenter", { dataTransfer: dropped });
+    await expect(page.locator("#start-brief-box")).toHaveCSS("border-top-style", "dashed");
+    await page.locator("#start-run-form").dispatchEvent("drop", { dataTransfer: dropped });
+    await expect(page.locator("#start-brief-box")).toHaveCSS("border-top-style", "solid");
+    await expect(page.locator("#start-brief-files")).toContainText("dropped.txt");
+
+    // paste a screenshot into the brief: its generic name is replaced
+    await page.locator("#start-brief").evaluate((el, PNG) => {
+      const dt = new DataTransfer();
+      const png = Uint8Array.from(atob(PNG), (c) => c.charCodeAt(0));
+      dt.items.add(new File([png], "image.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, ONE_PIXEL_PNG);
+    await expect(page.locator("#start-brief-files")).toContainText(/paste-\d{8}-\d{6}\.png/);
+    await expect(page.locator("#start-brief-count")).toContainText("3 of 10 files");
+
+    await page.locator("#start-repository").selectOption({ label: "e2e-repo" });
+    await page.locator("#start-coordinator").selectOption({ label: "@backend" });
+    await expect(page.locator("#start-consequence strong")).toHaveText("3 files");
+    await expect(page.locator("#start-consequence")).toContainText(", and opens #");
+
+    // the run channel opens with the brief and its files as the first message
+    const brief = `Files on the brief ${uniq("e2e")}`;
+    await page.locator("#start-brief").fill(brief);
+    await page.locator("#start-playbook-submit").click();
+    await expect(page).toHaveURL(/\/channels\/ch_/);
+    const kickoff = timeline(page).locator("article", { hasText: brief }).first();
+    await expect(kickoff.locator('[id^="attachment-"]')).toHaveCount(3);
+    await expect(kickoff).toContainText("notes.md");
+    await expect(kickoff).toContainText("dropped.txt");
+  });
+
   test("start a run in an existing channel with no brief; that channel then shows as busy", async ({ page }) => {
     const name = uniq("existing");
     const channelId = await createChannel(page, name);
 
     const openStart = async () => {
       await gotoLive(page, "/playbooks");
-      await page.locator("#playbooks li", { hasText: "bug-fix" }).locator("a[id^='start-playbook-']").click();
+      await page.locator("#playbooks li[data-playbook='bug-fix'] a[id^='start-playbook-']").click();
       await expect(page.locator("#start-preview")).toContainText("What will happen");
       await page.locator("label", { hasText: "Existing channel" }).click();
       await expect(page.locator("#start-channel")).toBeVisible();

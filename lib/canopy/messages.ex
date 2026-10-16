@@ -478,66 +478,13 @@ defmodule Canopy.Messages do
   end
 
   defp insert(attrs, opts) do
-    {mentions, team_mentions} =
-      case Keyword.fetch(opts, :mentions) do
-        {:ok, mentions} when is_list(mentions) ->
-          {mentions, Keyword.get(opts, :team_mentions, [])}
-
-        _ ->
-          resolve_mentions(attrs.body)
-      end
-
-    attrs =
-      attrs
-      |> Map.put(:mentions, mentions)
-      |> Map.put(:team_mentions, team_mentions)
-      |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
-      |> Map.put(:mentions_user, Canopy.Unread.mentions?(attrs.body, Canopy.Users.local()))
-      |> Map.put(:interrupt, interrupt?(attrs, opts))
+    attrs = prepare_attrs(attrs, opts)
 
     with {:ok, document_ids} <- check_attachments(Keyword.get(opts, :attachments, [])) do
       Multi.new()
-      |> Multi.insert(
-        :message,
-        Message.changeset(%Message{id: Keyword.get(opts, :id)}, attrs,
-          attachments: document_ids != []
-        )
-      )
-      |> Multi.run(:attachments, fn repo, %{message: message} ->
-        document_ids
-        |> Enum.with_index()
-        |> Enum.reduce_while({:ok, []}, fn {document_id, position}, {:ok, acc} ->
-          case repo.insert(
-                 Attachment.changeset(%Attachment{}, %{
-                   message_id: message.id,
-                   document_id: document_id,
-                   position: position
-                 })
-               ) do
-            {:ok, attachment} -> {:cont, {:ok, [attachment | acc]}}
-            {:error, changeset} -> {:halt, {:error, changeset}}
-          end
-        end)
-      end)
-      # a thread reply stays out of the channel feed unless also sent there
-      |> Timeline.multi_record(:event, fn %{message: message} ->
-        %{
-          channel_id: message.channel_id,
-          agent_id: message.agent_id,
-          event_type: "message",
-          ref_id: message.id,
-          thread_id: message.thread_id,
-          in_channel: is_nil(message.thread_id) or message.sent_to_channel,
-          payload: %{
-            "kind" => message.kind,
-            "thread_id" => message.thread_id,
-            "sent_to_channel" => message.sent_to_channel,
-            "user_id" => message.user_id,
-            "mentions" => message.mentions,
-            "attachments" => document_ids,
-            "interrupt" => message.interrupt
-          }
-        }
+      |> message_steps(:message, %Message{id: Keyword.get(opts, :id)}, attrs, document_ids)
+      |> Timeline.multi_record(:event, fn changes ->
+        event_attrs(Map.fetch!(changes, :message), document_ids, %{})
       end)
       # before the broadcast, so a view that hears of the reply sees the follow
       |> Multi.run(:follow, fn repo, %{message: message} ->
@@ -555,6 +502,124 @@ defmodule Canopy.Messages do
           {:error, changeset}
       end
     end
+  end
+
+  @doc """
+  Adds a post to a multi, for a message Canopy writes as part of a larger
+  commit (a playbook run's kickoff): the message as `{key, :message}` and its
+  attachments as `{key, :attachments}`, built exactly as `post_user_message/4`
+  builds them. `attrs` are the message's (`channel_id`, `user_id` or
+  `agent_id`, `body`, `kind`), plus `:mentions` and `:team_mentions` to
+  override the ones in the body. `document_ids` must already be checked (they
+  exist, at most #{@max_attachments}, no duplicates). Add the timeline row
+  with `post_event_multi/3`, and broadcast it after the commit.
+  """
+  def post_multi(%Multi{} = multi, key, attrs, document_ids) when is_list(document_ids) do
+    opts = Enum.flat_map([:mentions, :team_mentions, :interrupt], &opt(attrs, &1))
+    attrs = attrs |> Map.drop([:mentions, :team_mentions, :interrupt]) |> prepare_attrs(opts)
+
+    multi
+    |> message_steps({key, :message}, %Message{}, attrs, document_ids)
+    |> Multi.run({key, :documents}, fn _repo, _ -> {:ok, document_ids} end)
+  end
+
+  @doc """
+  Adds the timeline row of a post added with `post_multi/4` as `{key,
+  :event}`: the same `"message"` event a composer post writes, with
+  `extra_payload` merged into its payload (a map, or a function of the
+  multi's changes so far that returns one).
+  """
+  def post_event_multi(%Multi{} = multi, key, extra_payload \\ %{}) do
+    Timeline.multi_record(multi, {key, :event}, fn changes ->
+      extra = if is_function(extra_payload, 1), do: extra_payload.(changes), else: extra_payload
+
+      event_attrs(
+        Map.fetch!(changes, {key, :message}),
+        Map.fetch!(changes, {key, :documents}),
+        extra
+      )
+    end)
+  end
+
+  defp opt(attrs, key) do
+    case Map.fetch(attrs, key) do
+      {:ok, value} -> [{key, value}]
+      :error -> []
+    end
+  end
+
+  # Mentions (unless overridden), whether the user is mentioned, and whether
+  # the post interrupts a working agent.
+  defp prepare_attrs(attrs, opts) do
+    {mentions, team_mentions} =
+      case Keyword.fetch(opts, :mentions) do
+        {:ok, mentions} when is_list(mentions) ->
+          {mentions, Keyword.get(opts, :team_mentions, [])}
+
+        _ ->
+          resolve_mentions(attrs.body)
+      end
+
+    attrs
+    |> Map.put(:mentions, mentions)
+    |> Map.put(:team_mentions, team_mentions)
+    |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
+    |> Map.put(:mentions_user, Canopy.Unread.mentions?(attrs.body, Canopy.Users.local()))
+    |> Map.put(:interrupt, interrupt?(attrs, opts))
+  end
+
+  # The message (a blank body is fine with attachments) and its attachments
+  # in order, as `name` and its attachments step.
+  defp message_steps(multi, name, %Message{} = message, attrs, document_ids) do
+    multi
+    |> Multi.insert(name, Message.changeset(message, attrs, attachments: document_ids != []))
+    |> Multi.run(attachments_name(name), fn repo, changes ->
+      message = Map.fetch!(changes, name)
+
+      document_ids
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {document_id, position}, {:ok, acc} ->
+        case repo.insert(
+               Attachment.changeset(%Attachment{}, %{
+                 message_id: message.id,
+                 document_id: document_id,
+                 position: position
+               })
+             ) do
+          {:ok, attachment} -> {:cont, {:ok, [attachment | acc]}}
+          {:error, changeset} -> {:halt, {:error, changeset}}
+        end
+      end)
+    end)
+  end
+
+  defp attachments_name({key, :message}), do: {key, :attachments}
+  defp attachments_name(:message), do: :attachments
+
+  # A message's timeline row; a thread reply stays out of the channel feed
+  # unless also sent there.
+  defp event_attrs(%Message{} = message, document_ids, extra_payload) do
+    %{
+      channel_id: message.channel_id,
+      agent_id: message.agent_id,
+      event_type: "message",
+      ref_id: message.id,
+      thread_id: message.thread_id,
+      in_channel: is_nil(message.thread_id) or message.sent_to_channel,
+      payload:
+        Map.merge(
+          %{
+            "kind" => message.kind,
+            "thread_id" => message.thread_id,
+            "sent_to_channel" => message.sent_to_channel,
+            "user_id" => message.user_id,
+            "mentions" => message.mentions,
+            "attachments" => document_ids,
+            "interrupt" => message.interrupt
+          },
+          extra_payload
+        )
+    }
   end
 
   # Only the user's own posts and thread replies may interrupt a working agent.

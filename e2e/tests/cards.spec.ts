@@ -3,53 +3,34 @@ import { createChannel, gotoLive, send, timeline, uniq } from "./helpers";
 
 // Clickable cards (assets/js/card_links.js): a click on the card follows its
 // link, its controls keep their own behaviour, closing a menu or selecting
-// text doesn't navigate, and ⌘/Ctrl-click opens a new tab.
+// text doesn't navigate, and ⌘/Ctrl-click opens a new tab. Playbook rows are
+// not cards: they open in place.
 
-test("a playbook card opens its editor; its controls and text stay usable", async ({ page, context }) => {
+test("a playbook row opens in place; its star doesn't open it", async ({ page }) => {
   await gotoLive(page, "/playbooks");
-  const card = page
-    .locator("#playbooks > li[data-card]")
-    .filter({ has: page.locator("span.font-mono", { hasText: /^bug-fix$/ }) });
-  const description = card.locator("p").first();
-  await expect(card).toHaveCSS("cursor", "pointer");
+  const row = page.locator("#playbooks li[data-playbook='bug-fix']");
+  const expand = row.locator("[id^='expand-playbook-']");
+  const detail = row.locator("[id^='playbook-detail-']");
 
-  // the Enabled toggle flips the playbook and stays on the page
-  const toggle = card.locator("input[id^='toggle-playbook-']");
-  await toggle.click();
-  await expect(card).toHaveAttribute("data-enabled", "false");
-  await toggle.click();
-  await expect(card).toHaveAttribute("data-enabled", "true");
+  // a click on the row opens it, a second closes it; the page stays put
+  await expect(detail).toHaveCount(0);
+  await expand.click();
+  await expect(expand).toHaveAttribute("aria-expanded", "true");
+  await expect(row.locator("[id^='playbook-strip-'] li").first()).toBeVisible();
+  await expand.click();
+  await expect(expand).toHaveAttribute("aria-expanded", "false");
+  await expect(detail).toHaveCount(0);
   await expect(page).toHaveURL(/\/playbooks$/);
 
-  // the ⋯ menu opens; a click on the card then only closes it
-  await card.locator("[id$='-toggle']").click();
-  await expect(card.locator("[role=menu]")).toBeVisible();
-  await description.click();
-  await expect(card.locator("[role=menu]")).toBeHidden();
+  // the star moves the row to Starred without opening it, and back
+  await row.locator("[id^='star-playbook-']").click();
+  await expect(page.locator("#playbooks-starred li[data-playbook='bug-fix']")).toBeVisible();
+  await expect(row).toHaveAttribute("data-starred", "true");
+  await expect(detail).toHaveCount(0);
+  await row.locator("[id^='star-playbook-']").click();
+  await expect(row).toHaveAttribute("data-starred", "false");
+  await expect(page.locator("#playbooks-starred")).toHaveCount(0);
   await expect(page).toHaveURL(/\/playbooks$/);
-
-  // selecting text in the card doesn't navigate
-  const box = (await description.boundingBox())!;
-  await page.mouse.move(box.x + 2, box.y + 6);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width - 2, box.y + 6, { steps: 5 });
-  await page.mouse.up();
-  expect(await page.evaluate(() => window.getSelection()!.toString().length)).toBeGreaterThan(0);
-  await expect(page).toHaveURL(/\/playbooks$/);
-
-  // ⌘/Ctrl-click opens the editor in a new tab
-  const [tab] = await Promise.all([
-    context.waitForEvent("page"),
-    description.click({ modifiers: ["ControlOrMeta"] }),
-  ]);
-  await expect(tab).toHaveURL(/\/playbooks\/[^/]+\/edit$/);
-  await tab.close();
-  await expect(page).toHaveURL(/\/playbooks$/);
-
-  // a plain click anywhere else on the card opens the editor
-  await description.click();
-  await expect(page).toHaveURL(/\/playbooks\/[^/]+\/edit$/);
-  await expect(page.locator("#playbook-builder")).toBeVisible();
 });
 
 test("a thread row opens its thread", async ({ page }) => {

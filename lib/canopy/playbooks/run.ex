@@ -35,6 +35,8 @@ defmodule Canopy.Playbooks.Run do
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :coordinator, Canopy.Agents.Agent, foreign_key: :coordinator_agent_id
     belongs_to :started_by, Canopy.Agents.Agent, foreign_key: :started_by_agent_id
+    # the post with the brief and its files, when the run started with files
+    belongs_to :kickoff_message, Canopy.Messages.Message
     has_many :steps, Canopy.Playbooks.Step, preload_order: [asc: :position]
 
     timestamps(type: :utc_datetime_usec)
@@ -56,6 +58,7 @@ defmodule Canopy.Playbooks.Run do
       :channel_id,
       :coordinator_agent_id,
       :started_by_agent_id,
+      :kickoff_message_id,
       :roster,
       :status,
       :current_step,

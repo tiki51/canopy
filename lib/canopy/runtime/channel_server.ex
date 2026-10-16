@@ -303,12 +303,14 @@ defmodule Canopy.Runtime.ChannelServer do
   false` it is an agent wake, counted against the budget and held when the
   channel is paused; and `:check` (a stall nudge's `{run_id, step_id,
   round}`): the wake is dropped if, when its prompt would go out, the run has
-  moved on.
+  moved on; and `:attachments` (a `Canopy.Documents.prompt_plan/1`): files
+  materialised and sent along as for a message wake.
   """
   def wake(server, agent_id, text, opts) do
     wake =
       %{text: text, trigger: Keyword.get(opts, :trigger, "scheduled")}
       |> then(&if check = opts[:check], do: Map.put(&1, :playbook_check, check), else: &1)
+      |> then(&if plan = opts[:attachments], do: Map.put(&1, :attachments, plan), else: &1)
 
     if Keyword.get(opts, :reset, true),
       do: GenServer.cast(server, {:wake, {:root, agent_id}, wake}),

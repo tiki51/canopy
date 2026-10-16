@@ -12,7 +12,7 @@ defmodule Canopy.Playbooks do
 
   import Ecto.Query, warn: false
 
-  alias Canopy.Playbooks.{Definition, Playbook, Run}
+  alias Canopy.Playbooks.{Definition, Playbook, Run, Step}
   alias Canopy.Repo
 
   @topic "playbooks"
@@ -59,6 +59,40 @@ defmodule Canopy.Playbooks do
         select: {r.playbook_id, count(r.id)}
     )
     |> Map.new()
+  end
+
+  @doc """
+  Runs in progress per playbook id, oldest first, for the library page:
+  `%{playbook_id => [%{run_id, channel_id, channel_name, status, position, steps}]}`
+  where `position` is the current step's position (nil when the run has no
+  current step) and `steps` the run's step count.
+  """
+  def active_runs do
+    steps =
+      from s in Step,
+        group_by: s.run_id,
+        select: %{run_id: s.run_id, count: count(s.id)}
+
+    Repo.all(
+      from r in Run,
+        join: c in assoc(r, :channel),
+        left_join: s in Step,
+        on: s.run_id == r.id and s.step_id == r.current_step,
+        left_join: n in subquery(steps),
+        on: n.run_id == r.id,
+        where: r.status in ^Run.live_statuses() and not is_nil(r.playbook_id),
+        order_by: [asc: r.inserted_at, asc: r.id],
+        select: %{
+          playbook_id: r.playbook_id,
+          run_id: r.id,
+          channel_id: c.id,
+          channel_name: c.name,
+          status: r.status,
+          position: s.position,
+          steps: coalesce(n.count, 0)
+        }
+    )
+    |> Enum.group_by(& &1.playbook_id, &Map.delete(&1, :playbook_id))
   end
 
   @doc """
@@ -122,6 +156,47 @@ defmodule Canopy.Playbooks do
     end
   end
 
+  @doc """
+  Stars or unstars a playbook for the index's Starred section. A star is the
+  user's preference, not part of the playbook: it isn't in the text, so export,
+  import and duplicate ignore it, and it doesn't count as an edit (no
+  `lock_version` or `updated_at` bump, so an open editor isn't made stale).
+  A draft (disabled) can't be starred; unstarring always works. Starring a
+  starred playbook keeps its first `starred_at`. Disabling keeps the star
+  (the page hides it until the playbook is enabled again), and so does an
+  agent replacing its own disabled draft.
+  """
+  def set_starred(%Playbook{id: id}, starred?) when is_boolean(starred?) do
+    # the enabled test sits in the WHERE, so a star can't land on a playbook
+    # disabled a moment ago
+    query =
+      if starred?,
+        do:
+          from(p in Playbook, where: p.id == ^id and p.enabled == true and is_nil(p.starred_at)),
+        else: from(p in Playbook, where: p.id == ^id)
+
+    {count, _} =
+      Repo.update_all(query,
+        set: [starred_at: if(starred?, do: DateTime.utc_now())]
+      )
+
+    case {count, get(id)} do
+      {_, nil} ->
+        {:error, "that playbook no longer exists"}
+
+      {0, %Playbook{enabled: false}} when starred? ->
+        {:error, "drafts can't be starred; enable it first"}
+
+      {0, %Playbook{} = playbook} ->
+        {:ok, playbook}
+
+      {_, %Playbook{} = playbook} ->
+        notify({:ok, playbook})
+    end
+  end
+
+  # The star is never written here, so the result carries the stored one,
+  # not the caller's possibly older copy.
   defp locked_update(changeset) do
     changeset
     |> Ecto.Changeset.optimistic_lock(:lock_version)
@@ -129,6 +204,16 @@ defmodule Canopy.Playbooks do
       stale_error_field: :lock_version,
       stale_error_message: "changed since you opened it; reload and try again"
     )
+    |> case do
+      {:ok, playbook} ->
+        starred_at =
+          Repo.one(from p in Playbook, where: p.id == ^playbook.id, select: p.starred_at)
+
+        {:ok, %{playbook | starred_at: starred_at}}
+
+      error ->
+        error
+    end
   end
 
   @doc """

@@ -26,15 +26,19 @@ defmodule CanopyWeb.PlaybooksLiveTest do
              "#export-playbook-#{playbook.id}[href='/playbooks/#{playbook.id}/export']"
            )
 
-    # the name opens the builder, Start is labelled; the rest sit in the ⋯ menu, delete last
+    # the row names it and offers Start; the rest sit in the ⋯ menu, Edit first, delete last
+    assert has_element?(view, "#expand-playbook-#{playbook.id}", "Bug fix")
+    assert has_element?(view, "#start-playbook-#{playbook.id}", "Start")
+
     assert has_element?(
              view,
-             "#edit-playbook-#{playbook.id}[href='/playbooks/#{playbook.id}/edit']",
-             "Bug fix"
+             "#playbook-menu-#{playbook.id} li:first-child #edit-playbook-#{playbook.id}[href='/playbooks/#{playbook.id}/edit']",
+             "Edit"
            )
 
-    assert has_element?(view, "#start-playbook-#{playbook.id}", "Start")
-    # the steps as a strip: send-back and sign-off marked
+    # the steps as a strip, once the row is open: send-back and sign-off marked
+    refute has_element?(view, "#playbook-strip-#{playbook.id}")
+    view |> element("#expand-playbook-#{playbook.id}") |> render_click()
     assert has_element?(view, "#playbook-strip-#{playbook.id} li", "Review")
     assert has_element?(view, "#playbook-strip-#{playbook.id} [title='waits for you']")
 
@@ -53,6 +57,7 @@ defmodule CanopyWeb.PlaybooksLiveTest do
        %{conn: conn} do
     {:ok, playbook} = Playbooks.create(%{body: Playbooks.feature_build_text()})
     {:ok, view, html} = live(conn, ~p"/playbooks")
+    view |> element("#expand-playbook-#{playbook.id}") |> render_click()
     last = "#playbook-strip-#{playbook.id} li:last-child"
 
     assert has_element?(view, last, "User sign-off")
@@ -79,6 +84,74 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     refute copy.enabled
     assert_redirect(view, ~p"/playbooks/#{copy.id}/edit")
     assert playbook
+  end
+
+  test "new: the copy list puts starred playbooks first and preselects the first row", %{
+    conn: conn
+  } do
+    names = ~w(alpha bravo charlie delta echo foxtrot)
+    [alpha | _] = playbooks = Enum.map(names, &playbook_fixture(&1, [{"a", "A", "coordinator"}]))
+    echo = Enum.at(playbooks, 4)
+    delta = Enum.at(playbooks, 3)
+    {:ok, _} = Playbooks.set_starred(echo, true)
+    # a starred playbook that is now a draft gets no star and no place up front
+    {:ok, _} = Playbooks.set_starred(delta, true)
+    {:ok, _} = Playbooks.set_enabled(Playbooks.get!(delta.id), false, nil)
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/new")
+    assert has_element?(view, "#copy-list > li:first-child[id='copy-row-#{echo.id}']")
+    assert has_element?(view, "#copy-row-#{echo.id} input[checked]")
+    assert has_element?(view, "#copy-row-#{echo.id} .hero-star-solid")
+    refute has_element?(view, "#copy-row-#{delta.id} .hero-star-solid")
+    assert has_element?(view, "#copy-list > li:nth-child(2)[id='copy-row-#{alpha.id}']")
+    assert has_element?(view, "#copy-playbook.btn-primary", "Copy Echo")
+    # only the picked row shows its chain of steps
+    assert has_element?(view, "#copy-row-#{echo.id} p", "A")
+    refute has_element?(view, "#copy-row-#{alpha.id} p")
+
+    # the filter narrows the list
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => "CHAR"})
+    assert has_element?(view, "#copy-list li", "Charlie")
+    refute has_element?(view, "#copy-row-#{alpha.id}")
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => "xyz"})
+    assert has_element?(view, "#copy-no-match", ~s(No playbooks match "xyz"))
+    # Enter in the filter is a no-op on the server, never a page load
+    assert view |> element("#new-playbook-form") |> render_submit(%{"copy_q" => "xyz"})
+  end
+
+  test "new: a filter that hides the picked row keeps the pick", %{conn: conn} do
+    names = ~w(alpha bravo charlie delta echo foxtrot)
+    [_, bravo | _] = Enum.map(names, &playbook_fixture(&1, [{"a", "A", "coordinator"}]))
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/new")
+    view |> element("#new-playbook-form") |> render_change(%{"copy_id" => bravo.id})
+    assert has_element?(view, "#copy-row-#{bravo.id} input[checked]")
+
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => "char"})
+    refute has_element?(view, "#copy-row-#{bravo.id}")
+    refute has_element?(view, "#copy-list input[checked]")
+    assert has_element?(view, "#copy-playbook.btn-primary", "Copy Bravo")
+
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => "zzz"})
+    assert has_element?(view, "#copy-no-match")
+    assert has_element?(view, "#copy-playbook.btn-primary", "Copy Bravo")
+
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => ""})
+    assert has_element?(view, "#copy-row-#{bravo.id} input[checked]")
+
+    view |> element("#new-playbook-form") |> render_change(%{"copy_q" => "char"})
+    view |> element("#copy-playbook") |> render_click()
+    copy = Playbooks.get_by_name("bravo-copy")
+    assert_redirect(view, ~p"/playbooks/#{copy.id}/edit")
+  end
+
+  test "new: no copy filter for five playbooks or fewer", %{conn: conn} do
+    for n <- ~w(one two three four five), do: playbook_fixture(n, [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks/new")
+    refute has_element?(view, "#copy-filter")
+    assert has_element?(view, "#copy-list li", "Five")
+    # the first row as shown is preselected (alphabetical with nothing starred)
+    assert has_element?(view, "#copy-playbook", "Copy Five")
   end
 
   test "new: describing a playbook asks the agent in a DM to draft it", %{conn: conn} do
@@ -108,27 +181,35 @@ defmodule CanopyWeb.PlaybooksLiveTest do
   test "edit, disable and enable, duplicate, and delete", %{conn: conn} do
     playbook = playbook_fixture("weekly", [{"a", "A", "coordinator"}])
     {:ok, view, _html} = live(conn, ~p"/playbooks")
-    assert has_element?(view, "#playbook-#{playbook.id}[data-enabled='true']", "weekly")
+    assert has_element?(view, "#playbooks-other #playbook-#{playbook.id}[data-enabled='true']")
+    assert has_element?(view, "#playbook-#{playbook.id}[data-playbook='weekly']")
     assert has_element?(view, "#start-playbook-#{playbook.id}")
-    assert has_element?(view, "#show-enabled", "1")
-    assert has_element?(view, "#show-drafts", "0")
+    refute has_element?(view, "#toggle-drafts")
 
-    view |> element("#toggle-playbook-#{playbook.id}") |> render_click()
-    assert has_element?(view, "#playbook-#{playbook.id}[data-enabled='false']")
-    refute has_element?(view, "#start-playbook-#{playbook.id}")
+    # disabled, it moves into Drafts, which is closed until opened
+    view |> element("#toggle-playbook-#{playbook.id}", "Disable") |> render_click()
     refute Playbooks.get!(playbook.id).enabled
+    refute has_element?(view, "#playbook-#{playbook.id}")
+    assert has_element?(view, "#toggle-drafts[aria-expanded='false']", "1")
+    view |> element("#toggle-drafts") |> render_click()
+    assert has_element?(view, "#playbooks-drafts #playbook-#{playbook.id}[data-enabled='false']")
+    refute has_element?(view, "#start-playbook-#{playbook.id}")
+    assert has_element?(view, "#review-playbook-#{playbook.id}", "Edit")
+
+    # an old ?show=drafts link opens Drafts
     {:ok, drafts, _html} = live(conn, ~p"/playbooks?show=drafts")
-    assert has_element?(drafts, "#playbook-#{playbook.id}")
-    {:ok, enabled, _html} = live(conn, ~p"/playbooks?show=enabled")
-    refute has_element?(enabled, "#playbook-#{playbook.id}")
-    view |> element("#toggle-playbook-#{playbook.id}") |> render_click()
+    assert has_element?(drafts, "#playbooks-drafts #playbook-#{playbook.id}")
+
+    view |> element("#toggle-playbook-#{playbook.id}", "Enable") |> render_click()
     assert Playbooks.get!(playbook.id).enabled
+    assert has_element?(view, "#playbooks-other #playbook-#{playbook.id}")
 
     view |> element("#duplicate-playbook-#{playbook.id}") |> render_click()
     copy = Playbooks.get_by_name("weekly-copy")
     assert_redirect(view, ~p"/playbooks/#{copy.id}/edit")
 
-    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    # the copy is a draft
+    {:ok, view, _html} = live(conn, ~p"/playbooks?show=drafts")
     view |> element("#delete-playbook-#{copy.id}") |> render_click()
     refute has_element?(view, "#playbook-#{copy.id}")
   end
@@ -176,29 +257,197 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     assert Playbooks.get!(draft.id).enabled
   end
 
-  test "a playbook card opens its editor: Edit is the card's link", %{conn: conn} do
-    {:ok, playbook} = Playbooks.create(%{body: Playbooks.bug_fix_text()})
+  test "a row opens in place to show its steps; one open at a time", %{conn: conn} do
+    {:ok, bug} = Playbooks.create(%{body: Playbooks.bug_fix_text()})
+    other = playbook_fixture("weekly", [{"a", "A", "coordinator"}])
     {:ok, view, _html} = live(conn, ~p"/playbooks")
 
-    card = "#playbook-#{playbook.id}[data-card]"
-    assert has_element?(view, "#{card} #edit-playbook-#{playbook.id}[data-card-link]")
-    # only Edit: Start, the toggle and the menu stay controls of their own
-    refute has_element?(view, "#{card} [data-card-link]:not(#edit-playbook-#{playbook.id})")
+    refute has_element?(view, "#playbook-#{bug.id}[data-card]")
+    assert has_element?(view, "#expand-playbook-#{bug.id}[aria-expanded='false']")
 
-    assert {:error, {:live_redirect, %{to: to}}} =
-             view |> element("#{card} [data-card-link]") |> render_click()
+    view |> element("#expand-playbook-#{bug.id}") |> render_click()
+    assert has_element?(view, "#expand-playbook-#{bug.id}[aria-expanded='true']")
+    assert has_element?(view, "#playbook-detail-#{bug.id}", "Edit playbook")
+    assert has_element?(view, "#start-playbook-#{bug.id}.btn-primary")
 
-    assert to == ~p"/playbooks/#{playbook.id}/edit"
+    # another row moves the open one; a second click closes it
+    view |> element("#expand-playbook-#{other.id}") |> render_click()
+    refute has_element?(view, "#playbook-strip-#{bug.id}")
+    assert has_element?(view, "#playbook-strip-#{other.id}")
+    view |> element("#expand-playbook-#{other.id}") |> render_click()
+    refute has_element?(view, "#playbook-detail-#{other.id}")
   end
 
-  test "an agent's draft is labelled and starts disabled", %{conn: conn} do
+  test "an agent's draft is flagged for review, with Drafts open", %{conn: conn} do
     agent = Fixtures.agent_fixture(name: "drafter")
 
     {:ok, draft} =
       Playbooks.save_draft(agent, playbook_text("agent-made", [{"a", "A", "coordinator"}]))
 
     {:ok, view, _html} = live(conn, ~p"/playbooks")
-    assert has_element?(view, "#playbook-#{draft.id}[data-enabled='false']", "draft by @drafter")
+    row = "#playbooks-drafts #playbook-#{draft.id}[data-enabled='false']"
+    assert has_element?(view, row, "by @drafter")
+    assert has_element?(view, "#{row} #review-playbook-#{draft.id}", "Review")
+    # drafts can't be starred
+    refute has_element?(view, "#star-playbook-#{draft.id}")
+
+    assert has_element?(view, "#playbook-draft-notice", "@drafter drafted")
+    assert has_element?(view, "#playbook-draft-notice", "Agent made")
+
+    assert has_element?(
+             view,
+             "#playbook-draft-notice a[href='/playbooks/#{draft.id}/edit']",
+             "Review"
+           )
+
+    {:ok, _} =
+      Playbooks.save_draft(agent, playbook_text("agent-two", [{"a", "A", "coordinator"}]))
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    assert has_element?(view, "#playbook-draft-notice", "2 drafts from agents to review")
+    view |> element("#toggle-drafts") |> render_click()
+    refute has_element?(view, "#playbooks-drafts")
+    view |> element("#playbook-draft-notice button", "Review") |> render_click()
+    assert has_element?(view, "#playbooks-drafts")
+
+    # a filter hiding every draft is cleared, so Review always shows them
+    view |> element("#playbook-filter") |> render_change(%{"q" => "nothing like it"})
+    refute has_element?(view, "#playbooks-drafts")
+    view |> element("#playbook-draft-notice button", "Review") |> render_click()
+    assert has_element?(view, "#playbooks-drafts li[data-playbook='agent-made']")
+  end
+
+  test "rows show who does the steps: five fit, past that four and the rest counted", %{
+    conn: conn
+  } do
+    names = for n <- 1..6, do: Fixtures.agent_fixture(name: "owner#{n}").name
+
+    roles = Enum.map_join(Enum.with_index(names, 1), "\n", fn {n, i} -> "  r#{i}: #{n}\n" end)
+
+    playbook =
+      playbook_fixture(
+        "crowded",
+        for(i <- 1..6, do: {"s#{i}", "S#{i}", "r#{i}"}) ++ [{"s7", "S7", "r1"}],
+        "roles:\n" <> roles
+      )
+
+    {:ok, view, html} = live(conn, ~p"/playbooks")
+    row = "#playbook-#{playbook.id}"
+    assert has_element?(view, row, "+2")
+    # four avatars and the "+2", so the count never runs into "7 steps"
+    assert has_element?(view, "#{row} span[title] > :nth-child(5)", "+2")
+    refute has_element?(view, "#{row} span[title] > :nth-child(6)")
+    assert html =~ Enum.map_join(names, ", ", &("@" <> &1))
+    assert has_element?(view, row, "7 steps")
+  end
+
+  test "star: a playbook moves to Starred and back", %{conn: conn} do
+    bug = playbook_fixture("bug", [{"a", "A", "coordinator"}])
+    playbook_fixture("weekly", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+
+    # nothing starred: one list, "All playbooks", and the hint
+    refute has_element?(view, "#playbooks-starred")
+    assert has_element?(view, "#playbooks-other-heading", "All playbooks")
+    assert has_element?(view, "#playbook-star-hint")
+
+    view |> element("#star-playbook-#{bug.id}") |> render_click()
+    assert Playbooks.get!(bug.id).starred_at
+
+    assert has_element?(
+             view,
+             "#playbooks-starred #playbook-#{bug.id}[data-starred='true'].pb-moved"
+           )
+
+    assert has_element?(view, "#star-playbook-#{bug.id}[aria-pressed='true'][title='Unstar']")
+    refute has_element?(view, "#playbooks-other #playbook-#{bug.id}")
+    assert has_element?(view, "#playbooks-other-heading", "Other playbooks")
+    refute has_element?(view, "#playbook-star-hint")
+
+    # the tint goes with the next action
+    view |> element("#expand-playbook-#{bug.id}") |> render_click()
+    refute has_element?(view, "#playbook-#{bug.id}.pb-moved")
+
+    view |> element("#star-playbook-#{bug.id}") |> render_click()
+    refute Playbooks.get!(bug.id).starred_at
+    assert has_element?(view, "#playbooks-other #playbook-#{bug.id}[data-starred='false']")
+    refute has_element?(view, "#playbooks-starred")
+
+    # disabled from ⋯ right after a star, it lands in Drafts untinted
+    view |> element("#star-playbook-#{bug.id}") |> render_click()
+    view |> element("#toggle-playbook-#{bug.id}", "Disable") |> render_click()
+    view |> element("#toggle-drafts") |> render_click()
+    assert has_element?(view, "#playbooks-drafts #playbook-#{bug.id}")
+    refute has_element?(view, "#playbook-#{bug.id}.pb-moved")
+  end
+
+  test "the count reads one playbook, not one playbooks", %{conn: conn} do
+    playbook_fixture("solo", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    assert render(element(view, "#playbook-count")) =~ ~r/>\s*1 playbook\s*</
+  end
+
+  test "star: another tab's star moves the row here too", %{conn: conn} do
+    bug = playbook_fixture("bug", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    {:ok, _} = Playbooks.set_starred(bug, true)
+    assert has_element?(view, "#playbooks-starred #playbook-#{bug.id}")
+  end
+
+  test "star: a starred playbook disabled shows in Drafts without a star", %{conn: conn} do
+    bug = playbook_fixture("bug", [{"a", "A", "coordinator"}])
+    {:ok, _} = Playbooks.set_starred(bug, true)
+    {:ok, _} = Playbooks.set_enabled(Playbooks.get!(bug.id), false, nil)
+    {:ok, view, _html} = live(conn, ~p"/playbooks?show=drafts")
+
+    assert has_element?(view, "#playbooks-drafts #playbook-#{bug.id}[data-starred='false']")
+    refute has_element?(view, "#star-playbook-#{bug.id}")
+    refute has_element?(view, "#playbooks-starred")
+  end
+
+  test "star: a playbook disabled or deleted meanwhile is refused in plain words", %{conn: conn} do
+    bug = playbook_fixture("bug", [{"a", "A", "coordinator"}])
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+
+    {:ok, _} = Playbooks.set_enabled(Playbooks.get!(bug.id), false, nil)
+    html = render_click(view, "star", %{"id" => bug.id})
+    assert html =~ "Drafts can&#39;t be starred; enable it first."
+    refute Playbooks.get!(bug.id).starred_at
+    refute has_element?(view, "#playbooks-other #playbook-#{bug.id}")
+
+    {:ok, _} = Playbooks.delete(Playbooks.get!(bug.id))
+    html = render_click(view, "star", %{"id" => bug.id})
+    assert html =~ "That playbook no longer exists."
+  end
+
+  test "filter: narrows every section, with counts, marks and a way back", %{conn: conn} do
+    flaky = playbook_fixture("flaky-test-hunt", [{"a", "A", "coordinator"}])
+    bug = playbook_fixture("bug", [{"a", "A", "coordinator"}])
+    weekly = playbook_fixture("weekly", [{"a", "A", "coordinator"}])
+    {:ok, _} = Playbooks.set_starred(bug, true)
+    {:ok, _} = Playbooks.set_enabled(weekly, false, nil)
+    {:ok, view, _html} = live(conn, ~p"/playbooks")
+    assert has_element?(view, "#playbook-count", "3 playbooks")
+
+    view |> element("#playbook-filter") |> render_change(%{"q" => "TEST"})
+    assert has_element?(view, "#playbook-count", "1 of 3 playbooks")
+    assert has_element?(view, "#playbooks-other #playbook-#{flaky.id}")
+    assert has_element?(view, "#playbooks-other-heading", "1 of 1")
+    assert has_element?(view, "#expand-playbook-#{flaky.id} mark", "test")
+    refute has_element?(view, "#playbooks-starred")
+    refute has_element?(view, "#toggle-drafts")
+
+    # a match among the drafts shows them, even though Drafts was closed
+    view |> element("#playbook-filter") |> render_change(%{"q" => "week"})
+    assert has_element?(view, "#playbooks-drafts #playbook-#{weekly.id}")
+    assert has_element?(view, "#toggle-drafts", "1 of 1")
+
+    view |> element("#playbook-filter") |> render_change(%{"q" => "xyz"})
+    assert has_element?(view, "#playbooks-no-match", ~s(No playbooks match "xyz"))
+    view |> element("#playbooks-no-match button", "Clear filter") |> render_click()
+    refute has_element?(view, "#playbooks-no-match")
+    assert has_element?(view, "#playbooks-starred #playbook-#{bug.id}")
+    assert has_element?(view, "#playbook-count", "3 playbooks")
   end
 
   test "start: the brief, where it runs, the lead; the run starts and the channel opens", %{
@@ -242,6 +491,194 @@ defmodule CanopyWeb.PlaybooksLiveTest do
     assert_receive {:prompted, _sid, body}, 2_000
     assert prompt_text(body) =~ "The user started it here."
     assert prompt_text(body) =~ "Ship the onboarding"
+  end
+
+  describe "start: files on the brief" do
+    @png File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    test "uploads and picks post with the brief as the run's first message", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      on_exit(&stop_channels/0)
+      stub_engine(self(), ctx.repository)
+      playbook = playbook_fixture("filed", [{"a", "A", "coordinator"}])
+      picked = shared_doc("spec.md")
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      refute has_element?(view, "#start-brief-files")
+
+      upload_files(view, [{"shot.png", @png}])
+      assert has_element?(view, "#start-brief-files [id^=start-upload-]", "shot.png")
+      assert has_element?(view, "#start-brief-count", "1 of 10 files")
+
+      # the library dialog says where a pick goes
+      view |> element("#start-brief-library") |> render_click()
+      assert has_element?(view, "#library-dialog", "Pick one to add it to the brief.")
+      view |> element("#library-#{picked.id}") |> render_click()
+      refute has_element?(view, "#library-picker")
+      assert has_element?(view, "#start-picked-#{picked.id}", "spec.md")
+      assert has_element?(view, "#start-brief-count", "2 of 10 files")
+
+      view
+      |> form("#start-run-form", start: %{runs_in: "existing", brief: "Fix the login"})
+      |> render_change()
+
+      assert has_element?(view, "#start-consequence strong", "2 files")
+
+      assert view |> element("#start-consequence") |> render() =~
+               "The lead is woken in the channel you pick with <strong>2 files</strong>. " <>
+                 "The files post with the brief as the run&#39;s first message."
+
+      view
+      |> form("#start-run-form", start: %{runs_in: "new", brief: "Fix the login"})
+      |> render_change()
+
+      assert view |> element("#start-consequence") |> render() =~
+               ~r"is woken with your brief and <strong>2 files</strong>, and opens #[\w-]+\. The files post"
+
+      view
+      |> form("#start-run-form", start: %{runs_in: "existing", brief: "Fix the login"})
+      |> render_change()
+
+      view
+      |> form("#start-run-form",
+        start: %{channel_id: ctx.channel.id, coordinator_id: ctx.agent.id, brief: "Fix the login"}
+      )
+      |> render_submit()
+
+      assert_redirect(view, ~p"/channels/#{ctx.channel.id}")
+      run = Runs.active_for_channel(ctx.channel.id)
+      kickoff = Canopy.Messages.get!(run.kickoff_message_id)
+      assert kickoff.body == "Fix the login"
+      # uploads first, then picks
+      assert [%{filename: "shot.png"}, %{id: picked_id}] = kickoff.documents
+      assert picked_id == picked.id
+    end
+
+    test "with no files the footer is unchanged", %{conn: conn} do
+      playbook = playbook_fixture("plain", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      view |> form("#start-run-form", start: %{runs_in: "new", brief: "Go"}) |> render_change()
+      refute has_element?(view, "#start-consequence strong")
+      assert has_element?(view, "#start-consequence", "is woken with your brief and opens #")
+    end
+
+    test "a refused start keeps the stored files as picks; one deleted meanwhile drops out", %{
+      conn: conn
+    } do
+      Fixtures.scenario()
+      playbook = playbook_fixture("kept", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      upload_files(view, [{"a.md", "first"}, {"b.md", "second"}])
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
+
+      # no channel picked: the start is refused after the files were stored
+      html = view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_submit()
+      assert html =~ "pick a channel"
+      # the reply itself shows each file once, before the stored uploads drop
+      assert html =~ ~r/id="start-brief-count"[^>]*>\s*2 of 10 files/
+      [a, b] = Canopy.Documents.list(search: "", limit: 10) |> Enum.sort_by(& &1.filename)
+      assert has_element?(view, "#start-picked-#{a.id}", "a.md")
+      assert has_element?(view, "#start-picked-#{b.id}", "b.md")
+      refute has_element?(view, "#start-brief-files [id^=start-upload-]")
+
+      {:ok, _} = Canopy.Documents.delete(b)
+      count = doc_count()
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_submit()
+      assert has_element?(view, "#start-picked-#{a.id}")
+      refute has_element?(view, "#start-picked-#{b.id}")
+      # a retry sends the same files rather than storing them again
+      assert doc_count() == count
+    end
+
+    test "an unfinished upload is refused before anything is stored", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      playbook = playbook_fixture("slow", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+      upload =
+        file_input(view, "#start-upload-form", :brief_files, [
+          %{name: "big.md", content: String.duplicate("x", 1000)}
+        ])
+
+      render_upload(upload, "big.md", 50)
+      count = doc_count()
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
+
+      html =
+        view
+        |> form("#start-run-form", start: %{runs_in: "existing", channel_id: ctx.channel.id})
+        |> render_submit()
+
+      assert html =~ "A file is still uploading, or failed"
+      assert doc_count() == count
+      assert Runs.active_for_channel(ctx.channel.id) == nil
+    end
+
+    test "uploads and picks over ten are refused before anything is stored", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      playbook = playbook_fixture("full", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+
+      for n <- 1..4, do: render_click(view, "pick_document", %{"id" => shared_doc("p#{n}.md").id})
+      upload_files(view, for(n <- 1..7, do: {"u#{n}.md", "upload #{n}"}))
+      assert has_element?(view, "#start-brief-count", "11 of 10 files")
+      count = doc_count()
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
+
+      html =
+        view
+        |> form("#start-run-form",
+          start: %{runs_in: "existing", channel_id: ctx.channel.id, coordinator_id: ctx.agent.id}
+        )
+        |> render_submit()
+
+      assert html =~ "At most 10 files on a brief; remove some."
+      assert doc_count() == count
+      assert Runs.active_for_channel(ctx.channel.id) == nil
+    end
+
+    test "at ten files, attach and the library are off and a pick is refused", %{conn: conn} do
+      playbook = playbook_fixture("ten", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      assert has_element?(view, "#start-brief-attach[for]")
+
+      for n <- 1..10,
+          do: render_click(view, "pick_document", %{"id" => shared_doc("p#{n}.md").id})
+
+      assert has_element?(view, "#start-brief-attach[aria-disabled='true'].btn-disabled")
+      refute has_element?(view, "#start-brief-attach[for]")
+      assert has_element?(view, "#start-brief-library[disabled]")
+
+      html = render_click(view, "pick_document", %{"id" => shared_doc("p11.md").id})
+      assert html =~ "At most 10 files on a brief."
+      assert has_element?(view, "#start-brief-count", "10 of 10 files")
+    end
+
+    test "a file that can't be stored stops the start; the stored ones stay", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      playbook = playbook_fixture("unsaved", [{"a", "A", "coordinator"}])
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      upload_files(view, [{"tiny.md", "tiny"}, {"large.md", "more than eight bytes"}])
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
+
+      # the upload passed the page's limit, but the store's is lower now
+      Application.put_env(:canopy, :max_upload_bytes, 8)
+      on_exit(fn -> Application.delete_env(:canopy, :max_upload_bytes) end)
+
+      html =
+        view
+        |> form("#start-run-form",
+          start: %{runs_in: "existing", channel_id: ctx.channel.id, coordinator_id: ctx.agent.id}
+        )
+        |> render_submit()
+
+      assert html =~ "A file couldn&#39;t be saved; try attaching it again."
+      assert Runs.active_for_channel(ctx.channel.id) == nil
+      [tiny] = Canopy.Documents.list(search: "", limit: 10)
+      assert tiny.filename == "tiny.md"
+      assert has_element?(view, "#start-picked-#{tiny.id}", "tiny.md")
+      refute has_element?(view, "#start-brief-files [id^=start-upload-]")
+    end
   end
 
   test "start: in a new channel with a name you choose, and a role you swap", %{conn: conn} do
@@ -682,10 +1119,10 @@ defmodule CanopyWeb.PlaybooksLiveTest do
           |> String.replace("---\n\nGround rules", "---\n\n# Ship it\n\nGround rules")
       })
 
-    {:ok, view, _html} = live(conn, ~p"/playbooks")
-    assert has_element?(view, "#edit-playbook-#{untitled.id}", "Rules")
-    refute has_element?(view, "#edit-playbook-#{untitled.id}", "Appendix")
-    assert has_element?(view, "#edit-playbook-#{titled.id}", "Ship it")
+    {:ok, view, _html} = live(conn, ~p"/playbooks?show=drafts")
+    assert has_element?(view, "#expand-playbook-#{untitled.id}", "Rules")
+    refute has_element?(view, "#expand-playbook-#{untitled.id}", "Appendix")
+    assert has_element?(view, "#expand-playbook-#{titled.id}", "Ship it")
 
     {:ok, _view, html} = live(conn, ~p"/playbooks/#{untitled.id}/start")
     refute html =~ "Appendix"
@@ -771,10 +1208,49 @@ defmodule CanopyWeb.PlaybooksLiveTest do
         brief: "go"
       })
 
-    assert has_element?(view, "#playbook-#{playbook.id}", "last run now")
-    assert has_element?(view, "#playbook-#{playbook.id}", "1 running")
+    assert has_element?(view, "#playbook-runs-#{playbook.id}", "1 running")
     assert has_element?(view, "#playbook-#{other.id}", "never run")
+
+    # open, the row says where it runs and which step it's on
+    view |> element("#expand-playbook-#{playbook.id}") |> render_click()
+
+    assert has_element?(
+             view,
+             "#playbook-detail-#{playbook.id} a[href='/channels/#{ctx.channel.id}']"
+           )
+
+    assert has_element?(view, "#playbook-detail-#{playbook.id}", "step 1 of 1")
+
+    {:ok, _, _} = Runs.cancel(Runs.active_for_channel(ctx.channel.id), :user, nil)
+    assert has_element?(view, "#playbook-#{playbook.id}", "now")
+    refute has_element?(view, "#playbook-runs-#{playbook.id}")
   end
+
+  defp shared_doc(name) do
+    {:ok, doc} =
+      Canopy.Documents.create(%{
+        filename: name,
+        source: {:binary, "shared #{name}"},
+        user_id: Canopy.Users.local().id
+      })
+
+    doc
+  end
+
+  defp upload_files(view, files) do
+    upload =
+      file_input(
+        view,
+        "#start-upload-form",
+        :brief_files,
+        Enum.map(files, fn {name, content} -> %{name: name, content: content} end)
+      )
+
+    for {name, _} <- files, do: render_upload(upload, name)
+    upload
+  end
+
+  defp doc_count, do: Canopy.Repo.aggregate(Canopy.Documents.Document, :count)
 
   defp view_queries(pid) do
     receive do

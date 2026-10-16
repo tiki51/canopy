@@ -1246,6 +1246,182 @@ defmodule Canopy.Playbooks.RunsTest do
     end
   end
 
+  describe "files on the brief" do
+    @png File.read!(Path.expand("../../support/files/red.png", __DIR__))
+
+    defp doc!(filename, bytes \\ "notes", mime \\ nil) do
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: filename,
+          mime: mime,
+          source: {:binary, bytes},
+          user_id: Canopy.Users.local().id
+        })
+
+      doc
+    end
+
+    defp channel_events(channel_id) do
+      channel_id
+      |> Timeline.list(limit: 50)
+      |> Enum.filter(&(&1.event_type in ["playbook_started", "message", "playbook_step_started"]))
+    end
+
+    test "the user's start in an existing channel posts the kickoff between started and step 1",
+         ctx do
+      shot = doc!("shot.png", @png, "image/png")
+      spec = doc!("spec.md", "# spec")
+
+      {run, false} =
+        start!(ctx, roles_playbook(), %{
+          started_by_agent_id: nil,
+          brief: "  Fix the login  ",
+          document_ids: [spec.id, shot.id, spec.id, 42]
+        })
+
+      assert is_binary(run.kickoff_message_id)
+      kickoff = Canopy.Messages.get!(run.kickoff_message_id)
+      assert kickoff.channel_id == ctx.channel.id
+      assert kickoff.kind == "post"
+      assert kickoff.user_id == Canopy.Users.local().id
+      assert kickoff.agent_id == nil
+      assert kickoff.body == "Fix the login"
+      assert kickoff.mentions == [] and kickoff.interrupt == false
+      # duplicates collapse, non-strings drop, order kept
+      assert Enum.map(kickoff.documents, & &1.id) == [spec.id, shot.id]
+
+      assert [
+               %{event_type: "playbook_started", payload: started},
+               %{event_type: "message", ref_id: kickoff_id, payload: message},
+               %{event_type: "playbook_step_started"}
+             ] = channel_events(ctx.channel.id)
+
+      assert kickoff_id == kickoff.id
+      assert message["kickoff_run_id"] == run.id
+      assert message["attachments"] == [spec.id, shot.id]
+      # the post right below shows the brief, so the started line doesn't
+      refute Map.has_key?(started, "brief")
+
+      # broadcast in the same order
+      assert_receive {:timeline, %{event_type: "playbook_started"}}
+      assert_receive {:timeline, %{event_type: "message", ref_id: ^kickoff_id}}
+      assert_receive {:timeline, %{event_type: "playbook_step_started"}}
+    end
+
+    test "without files there is no kickoff and the started line keeps the brief", ctx do
+      {run, false} = start!(ctx, roles_playbook(), %{document_ids: []})
+      assert run.kickoff_message_id == nil
+
+      assert [%{event_type: "playbook_started", payload: %{"brief" => "the brief"}}, _step] =
+               channel_events(ctx.channel.id)
+    end
+
+    test "in a new channel the kickoff lands there; files with a blank brief post an empty body",
+         ctx do
+      doc = doc!("notes.md")
+      name = Runs.channel_name(ctx.repository.id, nil, "flow", "")
+
+      {run, true} =
+        start!(ctx, roles_playbook(), %{brief: "", channel_name: name, document_ids: [doc.id]})
+
+      kickoff = Canopy.Messages.get!(run.kickoff_message_id)
+      assert kickoff.channel_id == run.channel_id
+      assert kickoff.body == ""
+      # an agent's start posts it as that agent
+      assert kickoff.agent_id == ctx.agent.id and kickoff.user_id == nil
+      assert Enum.map(kickoff.documents, & &1.id) == [doc.id]
+      assert Canopy.Messages.list(ctx.channel.id) |> Enum.all?(&(&1.id != kickoff.id))
+      assert_receive {:prompted, _sid, _body}, 2_000
+    end
+
+    test "too many files, or one that no longer exists, fail with nothing written", ctx do
+      playbook = roles_playbook()
+      docs = for i <- 1..11, do: doc!("f#{i}.md")
+      gone = doc!("gone.md")
+      {:ok, _} = Canopy.Documents.delete(gone)
+      channels = length(Channels.list())
+      messages = length(Canopy.Messages.list(ctx.channel.id, limit: 200))
+
+      for {ids, reason} <- [
+            {Enum.map(docs, & &1.id), "at most 10 files on a brief"},
+            {[hd(docs).id, gone.id],
+             "a file you attached no longer exists; remove it and try again"}
+          ],
+          channel_name <- [nil, "files-" <> unique_suffix()] do
+        assert {:error, ^reason} =
+                 Runs.start(%{
+                   playbook: playbook,
+                   channel: ctx.channel,
+                   coordinator: ctx.agent,
+                   brief: "x",
+                   channel_name: channel_name,
+                   document_ids: ids
+                 })
+      end
+
+      assert Runs.active_for_channel(ctx.channel.id) == nil
+      assert length(Channels.list()) == channels
+      assert length(Canopy.Messages.list(ctx.channel.id, limit: 200)) == messages
+      # the files are never deleted
+      assert Enum.all?(docs, &Canopy.Documents.get(&1.id))
+    end
+
+    test "a file deleted after the check fails the commit with the same reason", ctx do
+      doc = doc!("late.md")
+      assert {:ok, [_]} = Runs.recheck_documents(Repo, [doc.id])
+      {:ok, _} = Canopy.Documents.delete(doc)
+
+      assert {:error, "a file you attached no longer exists; remove it and try again"} =
+               Runs.recheck_documents(Repo, [doc.id])
+    end
+
+    test "the coordinator's wake carries the files; the kickoff itself wakes nobody", ctx do
+      # the channel's owner is not the coordinator: an unaddressed user post would wake it
+      shot = doc!("shot.png", @png, "image/png")
+      spec = doc!("spec.md", "# spec")
+
+      {run, false} =
+        start!(ctx, roles_playbook(), %{
+          coordinator: dev(),
+          started_by_agent_id: nil,
+          document_ids: [shot.id, spec.id]
+        })
+
+      assert_receive {:prompted, _sid, body}, 2_000
+
+      assert [%{type: "text", text: text}, %{type: "file", mime: "image/png"}, %{type: "file"}] =
+               body.parts
+
+      assert text =~ "You are coordinating the flow playbook"
+
+      assert text =~
+               "Brief:\nthe brief\nThe brief is the user's kickoff message #{run.kickoff_message_id} in this channel, with 2 files:"
+
+      assert text =~ "#{shot.id} shot.png (image, 75 B) — attached to this prompt as an image"
+      assert text =~ "#{spec.id} spec.md"
+      assert text =~ "Point step owners at them when you delegate."
+      assert File.exists?(Path.join(ctx.repository.path, ".canopy/files/#{shot.id}-shot.png"))
+
+      # one turn only: the owner gets nothing for the kickoff
+      refute_receive {:prompted, _, _}, 500
+    end
+
+    test "a user's reassignment names the kickoff and its files", ctx do
+      doc = doc!("spec.md", "# spec")
+
+      {run, false} = start!(ctx, roles_playbook(), %{document_ids: [doc.id]})
+      {:ok, _, :reassigned} = Runs.reassign(run, dev(), "user")
+      assert_receive {:prompted, _sid, body}, 2_000
+      text = prompt_text(body)
+      assert text =~ "The user made you the coordinator"
+      # the kickoff's author is the agent that started it
+      assert text =~
+               "The brief is @#{ctx.agent.name}'s kickoff message #{run.kickoff_message_id} in this channel, with 1 file:"
+
+      assert text =~ "#{doc.id} spec.md"
+    end
+  end
+
   describe "what the start page shows comes from here" do
     test "roster_preview/1 fills each role the way a start does", ctx do
       labelled = agent_fixture(name: "labelled-" <> unique_suffix())

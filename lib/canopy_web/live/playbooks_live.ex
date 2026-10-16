@@ -4,13 +4,16 @@ defmodule CanopyWeb.PlaybooksLive do
   `CanopyWeb.PlaybookBuilderLive`; a playbook's export is a plain download
   from `CanopyWeb.TemplateController`):
 
-    * `/playbooks` — a card per playbook: its steps as a strip of pills,
-      who leads it, where it runs; Enabled, Start, Duplicate, Export, Delete.
-      Filtered to all, enabled, or drafts (`?show=`).
+    * `/playbooks` — a row per playbook, starred ones first, then the rest,
+      then drafts (collapsed unless an agent's draft waits, or `?show=drafts`).
+      A row opens in place to show its steps and where it runs; a filter
+      narrows every section. Management sits in each row's ⋯ menu.
     * `/playbooks/new` — how to start: copy a playbook, start blank, or
       describe it to an agent, which drafts it (`CanopyWeb.PlaybookAsk`)
-    * `/playbooks/:id/start` — start a run: the brief, where it runs, who
-      leads it and who does what, beside what will happen
+    * `/playbooks/:id/start` — start a run: the brief and its files, where it
+      runs, who leads it and who does what, beside what will happen. Files
+      are stored as documents before the start and post with the brief as
+      the run's first message.
 
   Playbooks are global to Canopy. An enabled playbook is listed in every
   agent's system prompt, so a draft an agent saved stays disabled until the
@@ -19,11 +22,12 @@ defmodule CanopyWeb.PlaybooksLive do
 
   use CanopyWeb, :live_view
 
-  import CanopyWeb.PlaybookComponents, only: [avatar: 1]
+  import CanopyWeb.PlaybookComponents, only: [avatar: 1, playbook_row: 1]
+  import CanopyWeb.AttachmentComponents, only: [file_chips: 1, library_picker: 1]
 
-  alias Canopy.{Agents, Playbooks, Repositories}
+  alias Canopy.{Agents, Documents, Messages, Playbooks, Repositories, Users}
   alias Canopy.Playbooks.{Definition, Playbook, Runs, Writer}
-  alias CanopyWeb.{PlaybookAsk, PlaybookBuilder, PlaybookStart}
+  alias CanopyWeb.{Attachments, PlaybookAsk, PlaybookBuilder, PlaybookStart}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -39,6 +43,19 @@ defmodule CanopyWeb.PlaybooksLive do
      |> assign(:playbook, nil)
      |> assign(:active_agents, active)
      |> assign(:by_name, Map.new(active, &{&1.name, &1}))
+     |> assign(:filter, "")
+     |> assign(:open_id, nil)
+     |> assign(:moved_id, nil)
+     |> assign(:drafts_open?, false)
+     |> assign(:brief_picked, [])
+     |> assign(:consumed_refs, [])
+     |> assign(:library, nil)
+     |> allow_upload(:brief_files,
+       accept: :any,
+       max_entries: Messages.max_attachments(),
+       max_file_size: Documents.max_bytes(),
+       auto_upload: true
+     )
      |> load_list()}
   end
 
@@ -46,12 +63,16 @@ defmodule CanopyWeb.PlaybooksLive do
   def handle_params(params, _uri, socket) do
     case {socket.assigns.live_action, params} do
       {:index, _} ->
-        show = if params["show"] in ~w(enabled drafts), do: params["show"], else: "all"
+        # an agent's draft waiting for review opens Drafts; so does an old
+        # `?show=drafts` link
+        drafts_open? =
+          params["show"] == "drafts" or
+            Enum.any?(socket.assigns.playbooks, &agent_draft?/1)
 
         {:noreply,
          socket
          |> assign(:playbook, nil)
-         |> assign(:show, show)
+         |> assign(:drafts_open?, drafts_open?)
          |> assign(:page_title, "Playbooks")}
 
       {:new, _} ->
@@ -60,7 +81,11 @@ defmodule CanopyWeb.PlaybooksLive do
         {:noreply,
          socket
          |> assign(:page_title, "New playbook")
-         |> assign(:copy_id, socket.assigns.playbooks |> List.first() |> then(&(&1 && &1.id)))
+         |> assign(:copy_q, "")
+         |> assign(
+           :copy_id,
+           socket.assigns |> copy_rows("") |> List.first() |> then(&(&1 && &1.id))
+         )
          |> assign(:describe, "")
          |> assign(:drafter, lead_like(agents))}
 
@@ -90,7 +115,7 @@ defmodule CanopyWeb.PlaybooksLive do
   def handle_info({:playbook_runs, :changed, channel_id}, socket) do
     {:noreply,
      socket
-     |> assign(:run_counts, Playbooks.active_run_counts())
+     |> assign(:active_runs, Playbooks.active_runs())
      |> update(:last_runs, fn last ->
        Map.merge(last, Playbooks.last_run_at(channel_id), fn _id, a, b -> later(a, b) end)
      end)}
@@ -101,10 +126,52 @@ defmodule CanopyWeb.PlaybooksLive do
   # -- Library ---------------------------------------------------------------------
 
   @impl true
+  def handle_event("filter", %{"q" => q}, socket),
+    do: {:noreply, socket |> assign(:filter, q) |> assign(:moved_id, nil)}
+
+  def handle_event("clear_filter", _params, socket),
+    do: {:noreply, socket |> assign(:filter, "") |> assign(:moved_id, nil)}
+
+  def handle_event("expand", %{"id" => id}, socket) do
+    open_id = if socket.assigns.open_id == id, do: nil, else: id
+    {:noreply, socket |> assign(:open_id, open_id) |> assign(:moved_id, nil)}
+  end
+
+  def handle_event("toggle_drafts", _params, socket),
+    do: {:noreply, socket |> update(:drafts_open?, &(!&1)) |> assign(:moved_id, nil)}
+
+  # a filter that hides every draft would leave Review with nothing to show
+  def handle_event("open_drafts", _params, socket),
+    do: {:noreply, socket |> assign(drafts_open?: true, filter: "") |> assign(:moved_id, nil)}
+
+  # Read again rather than trusting the page: the playbook may have been
+  # disabled or deleted in another tab since.
+  def handle_event("star", %{"id" => id}, socket) do
+    result =
+      case Playbooks.get(id) do
+        nil -> {:error, "that playbook no longer exists"}
+        playbook -> Playbooks.set_starred(playbook, is_nil(playbook.starred_at))
+      end
+
+    case result do
+      {:ok, _playbook} ->
+        {:noreply, socket |> load_list() |> assign(:moved_id, id)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> load_list()
+         |> assign(:moved_id, nil)
+         |> put_flash(:error, sentence(reason))}
+    end
+  end
+
   # The toggle carries the version on the page: enabling approves the text
   # the user saw, so a draft an agent replaced since is not enabled.
   def handle_event("toggle", %{"id" => id} = params, socket) do
     seen = params |> Map.get("version") |> parse_version()
+
+    socket = assign(socket, :moved_id, nil)
 
     with %Playbook{} = playbook <- Playbooks.get(id),
          {:ok, playbook} <- Playbooks.set_enabled(playbook, not playbook.enabled, seen) do
@@ -147,6 +214,8 @@ defmodule CanopyWeb.PlaybooksLive do
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
+    socket = assign(socket, :moved_id, nil)
+
     case Playbooks.get(id) do
       nil ->
         {:noreply, socket}
@@ -177,9 +246,14 @@ defmodule CanopyWeb.PlaybooksLive do
     {:noreply,
      socket
      |> assign(:copy_id, params["copy_id"] || socket.assigns.copy_id)
+     |> assign(:copy_q, params["copy_q"] || socket.assigns.copy_q)
      |> assign(:describe, params["describe"] || socket.assigns.describe)
      |> assign(:drafter, drafter)}
   end
+
+  # Enter in the copy filter submits the form; without a phx-submit the
+  # browser would send it as a GET and reload the page.
+  def handle_event("new_noop", _params, socket), do: {:noreply, socket}
 
   def handle_event("copy", _params, socket) do
     handle_event("duplicate", %{"id" => socket.assigns.copy_id || ""}, socket)
@@ -226,26 +300,134 @@ defmodule CanopyWeb.PlaybooksLive do
     {:noreply, assign_start(socket, params)}
   end
 
+  # The brief's files: the uploads are stored as documents first, then the
+  # run starts with their ids and the picks'. Nothing is stored while an
+  # upload is unfinished or the files are over the limit; once stored, a
+  # failed start keeps them as picks, so a retry sends the same files.
   def handle_event("start_playbook", %{"start" => params}, socket) do
     params = start_params(socket, params)
+    upload = socket.assigns.uploads.brief_files
+    picked = socket.assigns.brief_picked
+    max = Messages.max_attachments()
 
-    case PlaybookStart.start(params) do
-      {:ok, run} ->
+    cond do
+      upload_errors(upload) != [] or
+          Enum.any?(upload.entries, &(not &1.done? or not &1.valid?)) ->
         {:noreply,
-         socket
-         |> put_flash(:info, "Started #{run.playbook_name} in ##{run.channel.name}.")
-         |> push_navigate(to: ~p"/channels/#{run.channel_id}")}
+         put_flash(socket, :error, "A file is still uploading, or failed; wait or remove it.")}
 
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign_start_page()
-         |> assign_start(params)
-         |> put_flash(:error, PlaybookBuilder.plain_words(reason))}
+      length(upload.entries) + length(picked) > max ->
+        {:noreply, put_flash(socket, :error, "At most #{max} files on a brief; remove some.")}
+
+      true ->
+        # consumed entries leave the upload only after this reply renders
+        refs = Enum.map(upload.entries, & &1.ref)
+        socket = update(socket, :consumed_refs, &(refs ++ &1))
+
+        case Attachments.store_uploads(socket, :brief_files, %{user_id: Users.local().id}) do
+          {:error, stored} ->
+            {:noreply,
+             socket
+             |> keep_files(stored)
+             |> put_flash(:error, "A file couldn't be saved; try attaching it again.")}
+
+          {:ok, stored} ->
+            ids = stored ++ Enum.map(picked, & &1.id)
+
+            case PlaybookStart.start(Map.put(params, "document_ids", ids)) do
+              {:ok, run} ->
+                {:noreply,
+                 socket
+                 |> put_flash(:info, "Started #{run.playbook_name} in ##{run.channel.name}.")
+                 |> push_navigate(to: ~p"/channels/#{run.channel_id}")}
+
+              {:error, reason} ->
+                {:noreply,
+                 socket
+                 |> keep_files(stored)
+                 |> assign_start_page()
+                 |> assign_start(params)
+                 |> put_flash(:error, PlaybookBuilder.plain_words(reason))}
+            end
+        end
     end
   end
 
+  # Uploads only progress through the hidden upload form's phx-change.
+  def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket),
+    do: {:noreply, cancel_upload(socket, :brief_files, ref)}
+
+  def handle_event("open_library", _params, socket),
+    do: {:noreply, load_library(socket, "")}
+
+  def handle_event("close_library", _params, socket),
+    do: {:noreply, assign(socket, :library, nil)}
+
+  def handle_event("search_library", %{"q" => q}, socket),
+    do: {:noreply, load_library(socket, q)}
+
+  def handle_event("pick_document", %{"id" => id}, socket) do
+    picked = socket.assigns.brief_picked
+
+    cond do
+      Enum.any?(picked, &(&1.id == id)) ->
+        {:noreply, assign(socket, :library, nil)}
+
+      brief_full?(socket.assigns) ->
+        {:noreply,
+         socket
+         |> assign(:library, nil)
+         |> put_flash(:error, "At most #{Messages.max_attachments()} files on a brief.")}
+
+      document = Documents.get(id) ->
+        {:noreply, socket |> assign(:brief_picked, picked ++ [document]) |> assign(:library, nil)}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("unpick_document", %{"id" => id}, socket),
+    do: {:noreply, update(socket, :brief_picked, &Enum.reject(&1, fn doc -> doc.id == id end))}
+
   # -- Helpers -------------------------------------------------------------------------
+
+  # After a failed start: the stored uploads join the picks (uploads first,
+  # as they were sent), and any file deleted meanwhile drops out.
+  defp keep_files(socket, stored_ids) do
+    kept =
+      (stored_ids ++ Enum.map(socket.assigns.brief_picked, & &1.id))
+      |> Enum.uniq()
+      |> Enum.map(&Documents.get/1)
+      |> Enum.reject(&is_nil/1)
+
+    assign(socket, :brief_picked, kept)
+  end
+
+  defp load_library(socket, q) do
+    exclude = Enum.map(socket.assigns.brief_picked, & &1.id)
+    assign(socket, :library, %{q: q, documents: Attachments.library(q, exclude)})
+  end
+
+  defp brief_files(assigns),
+    do: length(brief_upload(assigns).entries) + length(assigns.brief_picked)
+
+  # the brief's upload less the entries already stored as picks
+  defp brief_upload(%{uploads: %{brief_files: upload}, consumed_refs: refs}),
+    do: %{upload | entries: Enum.reject(upload.entries, &(&1.ref in refs))}
+
+  defp brief_full?(assigns), do: brief_files(assigns) >= Messages.max_attachments()
+
+  # "drafts can't be starred; enable it first" -> "Drafts can't … first."
+  defp sentence(reason) do
+    {first, rest} = reason |> PlaybookBuilder.plain_words() |> String.split_at(1)
+    String.upcase(first) <> rest <> "."
+  end
+
+  defp agent_draft?(%Playbook{source: "agent", enabled: false}), do: true
+  defp agent_draft?(_playbook), do: false
 
   defp parse_version(nil), do: nil
 
@@ -265,9 +447,75 @@ defmodule CanopyWeb.PlaybooksLive do
     |> assign(:playbooks, playbooks)
     |> assign(:definitions, definitions)
     |> assign(:titles, Map.new(playbooks, &{&1.id, title(&1, definitions[&1.id])}))
-    |> assign(:run_counts, Playbooks.active_run_counts())
+    |> assign(:people, Map.new(playbooks, &{&1.id, people(definitions[&1.id])}))
+    |> assign(:active_runs, Playbooks.active_runs())
     |> assign(:last_runs, Playbooks.last_run_at())
   end
+
+  # The agents a run would use with no overrides, in step order: each step's
+  # owners as the start page would fill them, the lead only where it owns a
+  # step, each agent once, roles nobody fills left out.
+  defp people(nil), do: []
+
+  defp people(definition) do
+    roster = Map.new(Runs.roster_preview(definition), &{&1.role, &1.agent})
+    lead = Runs.default_coordinator(definition, nil)
+
+    definition.steps
+    |> Enum.flat_map(& &1.owner)
+    |> Enum.map(fn
+      "coordinator" -> lead
+      role -> roster[role]
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  # The index's sections, each sorted by title and narrowed by the filter:
+  # `%{starred, other, drafts}` with `total` counts before filtering. A
+  # disabled playbook is a draft, starred or not (its star is kept, hidden).
+  defp sections(assigns) do
+    by_title = Enum.sort_by(assigns.playbooks, &String.downcase(title_of(assigns.titles, &1)))
+
+    {drafts, enabled} = Enum.split_with(by_title, &(!&1.enabled))
+    {starred, other} = Enum.split_with(enabled, &(&1.starred_at != nil))
+
+    for {key, list} <- [starred: starred, other: other, drafts: drafts], into: %{} do
+      {key, %{all: list, shown: Enum.filter(list, &matches?(&1, assigns.titles, assigns.filter))}}
+    end
+  end
+
+  # A case-insensitive substring of the title, description or name.
+  defp matches?(playbook, titles, q) do
+    case q |> to_string() |> String.trim() |> String.downcase() do
+      "" ->
+        true
+
+      q ->
+        [title_of(titles, playbook), playbook.description || "", playbook.name]
+        |> Enum.any?(&String.contains?(String.downcase(&1), q))
+    end
+  end
+
+  # The Copy card's rows as shown: starred (and enabled) first, then the
+  # rest, each by title, narrowed by the filter on title and name. The
+  # default pick is the first of them.
+  defp copy_rows(assigns, q) do
+    q = q |> to_string() |> String.trim() |> String.downcase()
+
+    assigns.playbooks
+    |> Enum.filter(fn p ->
+      q == "" or
+        Enum.any?(
+          [title_of(assigns.titles, p), p.name],
+          &String.contains?(String.downcase(&1), q)
+        )
+    end)
+    |> Enum.sort_by(&{!copy_starred?(&1), String.downcase(title_of(assigns.titles, &1))})
+  end
+
+  defp copy_starred?(%Playbook{enabled: true, starred_at: %DateTime{}}), do: true
+  defp copy_starred?(_playbook), do: false
 
   defp later(%DateTime{} = a, %DateTime{} = b),
     do: if(DateTime.compare(a, b) == :lt, do: b, else: a)
@@ -290,10 +538,6 @@ defmodule CanopyWeb.PlaybooksLive do
       ) ||
       List.first(agents)
   end
-
-  defp visible(playbooks, "enabled"), do: Enum.filter(playbooks, & &1.enabled)
-  defp visible(playbooks, "drafts"), do: Enum.reject(playbooks, & &1.enabled)
-  defp visible(playbooks, _), do: playbooks
 
   # What the start page shows that the form doesn't change: the parsed
   # definition, who fills each role, where it can run. Once per visit (and
@@ -416,55 +660,6 @@ defmodule CanopyWeb.PlaybooksLive do
   defp title_of(titles, %Playbook{id: id} = playbook),
     do: Map.get(titles, id) || PlaybookBuilder.humanize(playbook.name)
 
-  defp source_label(%Playbook{source: "agent", enabled: false, created_by: %{name: name}}),
-    do: "draft by @#{name}"
-
-  defp source_label(%Playbook{source: "agent", enabled: false}), do: "agent draft"
-  defp source_label(%Playbook{source: "agent", created_by: %{name: name}}), do: "by @#{name}"
-  defp source_label(%Playbook{source: "agent"}), do: "by an agent"
-  defp source_label(%Playbook{source: "seed"}), do: "starter"
-  defp source_label(%Playbook{}), do: "yours"
-
-  defp source_word(%Playbook{source: "seed"}), do: "starter"
-  defp source_word(%Playbook{source: "agent"}), do: "an agent's"
-  defp source_word(_), do: "yours"
-
-  defp role_agent(definition, role, by_name) do
-    case definition.roles[role] do
-      nil -> nil
-      name -> Map.get(by_name, name) || %{name: name, color: nil}
-    end
-  end
-
-  defp owner_agents(definition, step, by_name) do
-    Enum.map(step.owner, fn
-      "coordinator" -> definition.coordinator && Map.get(by_name, definition.coordinator)
-      role -> role_agent(definition, role, by_name)
-    end)
-  end
-
-  defp meta(playbook, definition, last_run) do
-    if playbook.source == "agent" and not playbook.enabled do
-      by =
-        if playbook.created_by,
-          do: "Drafted by @#{playbook.created_by.name}",
-          else: "Drafted by an agent"
-
-      "#{by} #{Canopy.Schedules.relative(playbook.updated_at)} · agents can't use it until you enable it"
-    else
-      [
-        if(definition.coordinator,
-          do: "Led by @#{definition.coordinator}",
-          else: "Led by whoever starts it"
-        ),
-        definition.team && "@#{definition.team}",
-        if(last_run, do: "last run #{Canopy.Schedules.relative(last_run)}", else: "never run")
-      ]
-      |> Enum.filter(& &1)
-      |> Enum.join(" · ")
-    end
-  end
-
   defp arrows(definition), do: Enum.map_join(definition.steps, " → ", & &1.title)
 
   defp stall_text(nil), do: "never nudges the lead"
@@ -494,17 +689,28 @@ defmodule CanopyWeb.PlaybooksLive do
     |> Enum.join(" + ")
   end
 
-  defp consequence(form, new_name, agents, definition, channel_groups) do
+  defp playbooks_count(1), do: "1 playbook"
+  defp playbooks_count(n), do: "#{n} playbooks"
+
+  # one expression, so no template whitespace lands before the punctuation
+  defp consequence_html(parts) do
+    {:safe,
+     Enum.map(parts, fn
+       {:strong, part} -> ["<strong>", Phoenix.HTML.Engine.html_escape(part), "</strong>"]
+       {:text, part} -> Phoenix.HTML.Engine.html_escape(part)
+     end)}
+  end
+
+  # The footer's line, as `{:text | :strong, part}`s: who is woken where,
+  # and with how many files.
+  defp consequence(form, new_name, agents, definition, channel_groups, files) do
     lead =
       case Enum.find(agents, &(&1.id == form[:coordinator_id].value)) do
         nil -> "The lead"
         agent -> "@" <> agent.name
       end
 
-    woken =
-      if String.trim(form[:brief].value || "") == "",
-        do: "is woken",
-        else: "is woken with your brief"
+    brief? = String.trim(form[:brief].value || "") != ""
 
     channel =
       Enum.find_value(channel_groups, fn {_repo, channels} ->
@@ -513,13 +719,39 @@ defmodule CanopyWeb.PlaybooksLive do
 
     where =
       cond do
-        form[:runs_in].value == "new" -> "#{woken} and opens ##{new_name}"
-        channel -> "is woken in ##{channel.name}"
-        true -> "is woken in the channel you pick"
+        form[:runs_in].value == "new" -> {:new, "##{new_name}"}
+        channel -> {:in, "##{channel.name}"}
+        true -> {:in, "the channel you pick"}
       end
 
     team = if definition && definition.team, do: " @#{definition.team} joins it.", else: ""
-    "#{lead} #{where}.#{team}"
+    files_word = if files == 1, do: "1 file", else: "#{files} files"
+
+    posted =
+      if brief?,
+        do: " The files post with the brief as the run's first message.",
+        else: " The files post as the run's first message."
+
+    case {where, files} do
+      {{:new, name}, 0} ->
+        woken = if brief?, do: "is woken with your brief", else: "is woken"
+        [text: "#{lead} #{woken} and opens #{name}.#{team}"]
+
+      {{:in, name}, 0} ->
+        [text: "#{lead} is woken in #{name}.#{team}"]
+
+      {{:new, name}, _} ->
+        woken = if brief?, do: "is woken with your brief and ", else: "is woken with "
+
+        [
+          text: "#{lead} #{woken}",
+          strong: files_word,
+          text: ", and opens #{name}.#{posted}#{team}"
+        ]
+
+      {{:in, name}, _} ->
+        [text: "#{lead} is woken in #{name} with ", strong: files_word, text: ".#{posted}#{team}"]
+    end
   end
 
   @impl true
@@ -555,20 +787,23 @@ defmodule CanopyWeb.PlaybooksLive do
   end
 
   defp index_page(assigns) do
+    sections = sections(assigns)
+    filtering? = String.trim(assigns.filter) != ""
+    shown = Enum.sum(for {_key, sec} <- sections, do: length(sec.shown))
+
     assigns =
       assigns
-      |> assign(:shown, visible(assigns.playbooks, assigns.show))
-      |> assign(:counts, %{
-        "all" => length(assigns.playbooks),
-        "enabled" => Enum.count(assigns.playbooks, & &1.enabled),
-        "drafts" => Enum.count(assigns.playbooks, &(!&1.enabled))
-      })
+      |> assign(:sections, sections)
+      |> assign(:filtering?, filtering?)
+      |> assign(:shown_count, shown)
+      |> assign(:agent_drafts, Enum.filter(assigns.playbooks, &agent_draft?/1))
+      |> assign(:any_starred?, sections.starred.all != [])
 
     ~H"""
     <Layouts.page
       title="Playbooks"
       subtitle="Processes your agents run step by step, with Canopy keeping track"
-      max_width="max-w-5xl"
+      max_width="max-w-6xl"
     >
       <:actions>
         <.link navigate={~p"/agents/import"} id="import-playbook" class="btn btn-ghost btn-sm">
@@ -592,206 +827,194 @@ defmodule CanopyWeb.PlaybooksLive do
         >Write one</.link>.
       </Layouts.empty_state>
 
-      <div :if={@playbooks != []} class="flex flex-wrap items-center justify-between gap-3">
-        <div class="join" role="group" aria-label="Show">
-          <.link
-            :for={{key, label} <- [{"all", "All"}, {"enabled", "Enabled"}, {"drafts", "Drafts"}]}
-            patch={if key == "all", do: ~p"/playbooks", else: ~p"/playbooks?show=#{key}"}
-            id={"show-#{key}"}
-            class={["btn join-item btn-sm font-normal", @show == key && "btn-active font-medium"]}
-            aria-current={@show == key && "page"}
-          >
-            {label} <span class="text-base-content/50">{@counts[key]}</span>
-          </.link>
-        </div>
-        <p class="text-xs text-base-content/55">
-          Agents see enabled playbooks. A run keeps the version it started with.
+      <div :if={@playbooks != []} class="flex flex-wrap items-center gap-3">
+        <.form
+          for={%{}}
+          id="playbook-filter"
+          phx-change="filter"
+          phx-submit="filter"
+          class="w-full sm:w-80"
+        >
+          <label class="input input-sm w-full bg-base-100">
+            <.icon name="hero-magnifying-glass-mini" class="size-4 text-base-content/45" />
+            <input
+              type="search"
+              id="playbook-filter-input"
+              name="q"
+              value={@filter}
+              placeholder="Filter playbooks"
+              aria-label="Filter playbooks"
+              autocomplete="off"
+              class="[&::-webkit-search-cancel-button]:appearance-none"
+              phx-debounce="100"
+              phx-keydown="clear_filter"
+              phx-key="Escape"
+            />
+            <button
+              :if={@filtering?}
+              type="button"
+              id="playbook-filter-clear"
+              class="btn btn-ghost btn-xs btn-square"
+              phx-click="clear_filter"
+              aria-label="Clear filter"
+            >
+              <.icon name="hero-x-mark-mini" class="size-3.5" />
+            </button>
+          </label>
+        </.form>
+        <p id="playbook-count" class="text-sm text-base-content/55">
+          {if @filtering?,
+            do: "#{@shown_count} of #{playbooks_count(length(@playbooks))}",
+            else: playbooks_count(length(@playbooks))}
+          <span :if={!@any_starred? and !@filtering?} id="playbook-star-hint">
+            · Star <.icon name="hero-star" class="-mt-0.5 size-3.5" />
+            the ones you run most to keep them on top
+          </span>
         </p>
+        <div
+          :if={@agent_drafts != []}
+          id="playbook-draft-notice"
+          class="ml-auto flex items-center gap-2 rounded-box border border-warning/40 bg-warning/5 px-3 py-1.5 text-sm"
+        >
+          <span class="text-warning" aria-hidden="true">●</span>
+          <%= case @agent_drafts do %>
+            <% [draft] -> %>
+              <span>
+                {if draft.created_by, do: "@#{draft.created_by.name}", else: "An agent"} drafted
+                <strong>{title_of(@titles, draft)}</strong>
+                for you to review
+              </span>
+              <.link
+                navigate={~p"/playbooks/#{draft.id}/edit"}
+                id="playbook-draft-notice-review"
+                class="link link-primary font-medium"
+              >
+                Review
+              </.link>
+            <% several -> %>
+              <span>{length(several)} drafts from agents to review</span>
+              <button
+                type="button"
+                id="playbook-draft-notice-review"
+                class="link link-primary font-medium"
+                phx-click={JS.push("open_drafts") |> JS.focus(to: "#toggle-drafts")}
+              >
+                Review
+              </button>
+          <% end %>
+        </div>
       </div>
 
-      <ul :if={@playbooks != []} id="playbooks" class="flex flex-col gap-3">
-        <li
-          :if={@shown == []}
-          class="rounded-box border border-dashed border-base-300 px-4 py-8 text-center text-sm text-base-content/55"
+      <div :if={@playbooks != []} id="playbooks" class="flex flex-col gap-6">
+        <p
+          :if={@filtering? and @shown_count == 0}
+          id="playbooks-no-match"
+          class="text-sm text-base-content/60"
         >
-          {if @show == "drafts", do: "No drafts.", else: "No enabled playbooks."}
-        </li>
-        <%!-- A card (assets/js/card_links.js): a click on it opens the editor,
-             through its title link; the controls on the right keep their own. --%>
-        <li
-          :for={playbook <- @shown}
-          id={"playbook-#{playbook.id}"}
-          data-enabled={to_string(playbook.enabled)}
-          data-card
-          class="cursor-pointer rounded-box border border-base-300 bg-base-200 p-4 transition-colors hover:border-base-content/25 hover:bg-base-300/40"
-        >
-          <div class="flex flex-wrap items-center gap-2">
-            <.link
-              navigate={~p"/playbooks/#{playbook.id}/edit"}
-              id={"edit-playbook-#{playbook.id}"}
-              data-card-link
-              class="text-[15px] font-semibold hover:underline"
-            >
-              {title_of(@titles, playbook)}
-            </.link>
-            <span class="font-mono text-xs text-base-content/45">{playbook.name}</span>
-            <span class={[
-              "rounded-full px-1.5 text-[10px] font-medium uppercase tracking-wide",
-              playbook.source == "agent" && !playbook.enabled && "bg-warning/15 text-warning",
-              !(playbook.source == "agent" && !playbook.enabled) &&
-                "bg-base-300/70 text-base-content/60"
-            ]}>
-              {source_label(playbook)}
-            </span>
-            <span
-              :if={Map.get(@run_counts, playbook.id, 0) > 0}
-              id={"playbook-runs-#{playbook.id}"}
-              class="badge badge-primary badge-xs"
-              title="Runs in progress"
-            >
-              {Map.get(@run_counts, playbook.id)} running
-            </span>
-            <div data-card-ignore class="ml-auto flex cursor-auto items-center gap-1">
-              <label class="flex cursor-pointer items-center gap-1.5 text-xs text-base-content/70">
-                <input
-                  type="checkbox"
-                  id={"toggle-playbook-#{playbook.id}"}
-                  class="toggle toggle-xs toggle-primary"
-                  checked={playbook.enabled}
-                  phx-click="toggle"
-                  phx-value-id={playbook.id}
-                  phx-value-version={playbook.lock_version}
-                /> Enabled
-              </label>
-              <.link
-                :if={playbook.enabled}
-                navigate={~p"/playbooks/#{playbook.id}/start"}
-                id={"start-playbook-#{playbook.id}"}
-                class="btn btn-ghost btn-sm"
-              >
-                <.icon name="hero-play-mini" class="size-4" /> Start
-              </.link>
-              <.link
-                :if={!playbook.enabled}
-                navigate={~p"/playbooks/#{playbook.id}/edit"}
-                id={"review-playbook-#{playbook.id}"}
-                class={[
-                  "btn btn-sm",
-                  playbook.source == "agent" && "btn-primary",
-                  playbook.source != "agent" && "btn-ghost"
-                ]}
-              >
-                {if playbook.source == "agent", do: "Review draft", else: "Edit"}
-              </.link>
-              <.row_menu
-                id={"playbook-menu-#{playbook.id}"}
-                label={"More for #{playbook.name}"}
-                size="sm"
-              >
-                <.row_menu_item
-                  id={"duplicate-playbook-#{playbook.id}"}
-                  icon="hero-document-duplicate-mini"
-                  phx-click="duplicate"
-                  phx-value-id={playbook.id}
-                >
-                  Duplicate
-                </.row_menu_item>
-                <.row_menu_item
-                  id={"export-playbook-#{playbook.id}"}
-                  icon="hero-arrow-down-tray-mini"
-                  href={~p"/playbooks/#{playbook.id}/export"}
-                  title="Export as a file, to import on another machine"
-                >
-                  Export file
-                </.row_menu_item>
-                <.row_menu_item
-                  id={"delete-playbook-#{playbook.id}"}
-                  icon="hero-trash-mini"
-                  danger
-                  phx-click="delete"
-                  phx-value-id={playbook.id}
-                  data-canopy-confirm="Finished runs keep their own copy of the text."
-                  data-canopy-confirm-title={"Delete #{playbook.name}?"}
-                  data-canopy-confirm-label="Delete"
-                >
-                  Delete
-                </.row_menu_item>
-              </.row_menu>
-            </div>
-          </div>
-          <p class="mt-1 text-sm text-base-content/80">{playbook.description}</p>
-          <%= if definition = @definitions[playbook.id] do %>
-            <ol
-              id={"playbook-strip-#{playbook.id}"}
-              class="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-2"
-              aria-label="Steps"
-            >
-              <%!-- each arrow stays on the line of the step after it --%>
-              <li
-                :for={{step, n} <- Enum.with_index(definition.steps, 1)}
-                class="inline-flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <span :if={n > 1} class="text-base-content/30" aria-hidden="true">→</span>
-                <span class={[
-                  "inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[13px]",
-                  step.on_reject && "border-secondary/30 bg-secondary/5",
-                  step.approval && !step.on_reject && "border-warning/40 bg-warning/5",
-                  !step.approval && !step.on_reject && "border-base-300 bg-base-100"
-                ]}>
-                  <span class="text-base-content/45">{n}</span>
-                  <span>{step.title}</span>
-                  <span
-                    :if={step.on_reject}
-                    class="text-secondary"
-                    title={"can send work back to #{step.on_reject}"}
-                  >↩︎</span>
-                  <span :if={step.approval} class="text-warning" title="waits for you">✓</span>
-                  <span :if={step.optional} class="text-base-content/50" title="can be skipped">⤼</span>
-                  <span class="flex -space-x-0.5">
-                    <.avatar
-                      :for={agent <- owner_agents(definition, step, @by_name)}
-                      agent={agent}
-                      size="size-4"
-                      class="ring-2 ring-base-100"
-                    />
-                  </span>
-                </span>
-              </li>
-            </ol>
-            <p class="mt-3 text-xs text-base-content/50">
-              {meta(playbook, definition, @last_runs[playbook.id])}
-            </p>
-          <% else %>
-            <p class="mt-3 text-xs text-error">This playbook has problems; open it to see them.</p>
-          <% end %>
-        </li>
-      </ul>
+          No playbooks match "{String.trim(@filter)}".
+          <button type="button" class="link" phx-click="clear_filter">Clear filter</button>
+        </p>
 
-      <p
-        :if={@playbooks != []}
-        id="playbook-legend"
-        class="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-base-content/55"
-      >
-        <span><span class="text-secondary">↩︎</span> can send work back</span>
-        <span><span class="text-warning">✓</span> waits for you</span>
-        <span>⤼ can be skipped</span>
-        <span class="inline-flex items-center gap-1.5">
-          <span class="flex -space-x-0.5" aria-hidden="true">
-            <span class="flex size-4 items-center justify-center rounded-md bg-primary/15 text-[10px] font-bold text-primary ring-2 ring-base-200">
-              A
+        <section :if={@sections.starred.shown != []} aria-labelledby="playbooks-starred-heading">
+          <h2 id="playbooks-starred-heading" class={section_heading()}>
+            <.icon name="hero-star-solid" class="size-3.5 text-warning" /> Starred
+            <span class="font-normal">{section_count(@sections.starred, @filtering?)}</span>
+          </h2>
+          <ul id="playbooks-starred" class={list_box()}>
+            <.playbook_row
+              :for={playbook <- @sections.starred.shown}
+              {row_attrs(assigns, playbook)}
+            />
+          </ul>
+        </section>
+
+        <section :if={@sections.other.shown != []} aria-labelledby="playbooks-other-heading">
+          <h2 id="playbooks-other-heading" class={section_heading()}>
+            {if @any_starred?, do: "Other playbooks", else: "All playbooks"}
+            <span class="font-normal">{section_count(@sections.other, @filtering?)}</span>
+          </h2>
+          <ul id="playbooks-other" class={list_box()}>
+            <.playbook_row
+              :for={playbook <- @sections.other.shown}
+              {row_attrs(assigns, playbook)}
+            />
+          </ul>
+        </section>
+
+        <section :if={@sections.drafts.shown != []} aria-labelledby="toggle-drafts">
+          <div class="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <button
+              type="button"
+              id="toggle-drafts"
+              class="flex items-center gap-1 text-sm text-base-content/70 hover:text-base-content"
+              phx-click="toggle_drafts"
+              aria-expanded={to_string(drafts_open?(assigns))}
+              aria-controls="playbooks-drafts"
+            >
+              <.icon
+                name={
+                  if drafts_open?(assigns),
+                    do: "hero-chevron-down-mini",
+                    else: "hero-chevron-right-mini"
+                }
+                class="size-4"
+              /> Drafts
+              <span class="text-base-content/50">
+                {section_count(@sections.drafts, @filtering?)}
+              </span>
+            </button>
+            <span class="text-xs text-base-content/55">
+              Agents can't see or run drafts until you enable them. Drafts can't be starred.
             </span>
-            <span class="flex size-4 items-center justify-center rounded-md bg-secondary/15 text-[10px] font-bold text-secondary ring-2 ring-base-200">
-              B
-            </span>
-          </span>
-          in parallel
-        </span>
-      </p>
+          </div>
+          <ul
+            :if={drafts_open?(assigns)}
+            id="playbooks-drafts"
+            class={[list_box(), "border-dashed"]}
+          >
+            <.playbook_row
+              :for={playbook <- @sections.drafts.shown}
+              {row_attrs(assigns, playbook)}
+            />
+          </ul>
+        </section>
+      </div>
     </Layouts.page>
     """
   end
 
+  defp section_heading,
+    do:
+      "mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-base-content/55"
+
+  defp list_box,
+    do: "rounded-box border border-base-300 bg-base-200 divide-y divide-base-300"
+
+  defp section_count(%{all: all, shown: shown}, true), do: "#{length(shown)} of #{length(all)}"
+  defp section_count(%{all: all}, false), do: "#{length(all)}"
+
+  # a filter opens Drafts while it's on, so its matches show
+  defp drafts_open?(assigns),
+    do: assigns.drafts_open? or String.trim(assigns.filter) != ""
+
+  defp row_attrs(assigns, playbook) do
+    %{
+      playbook: playbook,
+      title: title_of(assigns.titles, playbook),
+      definition: assigns.definitions[playbook.id],
+      people: Map.get(assigns.people, playbook.id, []),
+      runs: Map.get(assigns.active_runs, playbook.id, []),
+      last_run: assigns.last_runs[playbook.id],
+      by_name: assigns.by_name,
+      filter: assigns.filter,
+      open: assigns.open_id == playbook.id,
+      moved: assigns.moved_id == playbook.id
+    }
+  end
+
   defp new_page(assigns) do
+    assigns = assign(assigns, :copy_rows, copy_rows(assigns, assigns.copy_q))
+
     ~H"""
     <Layouts.page title="New playbook" max_width="max-w-6xl">
       <:actions>
@@ -808,6 +1031,7 @@ defmodule CanopyWeb.PlaybooksLive do
         for={%{}}
         id="new-playbook-form"
         phx-change="new_change"
+        phx-submit="new_noop"
         class="grid gap-4 lg:grid-cols-3"
       >
         <%!-- Copy --%>
@@ -822,42 +1046,84 @@ defmodule CanopyWeb.PlaybooksLive do
           <p class="text-sm text-base-content/60">
             Start from one that already works and change what's different.
           </p>
-          <fieldset class="mt-4 flex flex-1 flex-col gap-2">
+          <label :if={length(@playbooks) > 5} class="input input-sm mt-4 w-full bg-base-100">
+            <.icon name="hero-magnifying-glass-mini" class="size-4 text-base-content/45" />
+            <input
+              type="search"
+              id="copy-filter"
+              name="copy_q"
+              value={@copy_q}
+              placeholder={"Filter #{length(@playbooks)} playbooks"}
+              aria-label="Filter playbooks to copy"
+              autocomplete="off"
+              phx-debounce="100"
+            />
+          </label>
+          <fieldset class="mt-2 flex flex-1 flex-col">
             <legend class="sr-only">Playbook to copy</legend>
             <p :if={@playbooks == []} class="text-xs text-base-content/50">
               No playbooks to copy yet.
             </p>
-            <label
-              :for={playbook <- @playbooks}
+            <p
+              :if={@playbooks != [] and @copy_rows == []}
+              id="copy-no-match"
+              class="text-xs text-base-content/60"
+            >
+              No playbooks match "{String.trim(@copy_q)}".
+            </p>
+            <ul
+              :if={@copy_rows != []}
+              id="copy-list"
+              phx-hook="ScrollChecked"
               class={[
-                "flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2",
-                @copy_id == playbook.id && "border-primary/50 bg-primary/5",
-                @copy_id != playbook.id && "border-base-300 bg-base-100 hover:border-base-content/25"
+                "max-h-64 overflow-y-auto rounded-lg border border-base-300 bg-base-100 divide-y divide-base-300",
+                length(@copy_rows) > 6 &&
+                  "[mask-image:linear-gradient(to_bottom,black_88%,transparent)]"
               ]}
             >
-              <input
-                type="radio"
-                name="copy_id"
-                value={playbook.id}
-                checked={@copy_id == playbook.id}
-                class="radio radio-sm radio-primary mt-0.5"
-              />
-              <span class="min-w-0">
-                <span class="font-medium">{title_of(@titles, playbook)}</span>
-                <span class="text-xs text-base-content/50">
-                  {source_word(playbook)}{if @definitions[playbook.id],
-                    do: " · #{length(@definitions[playbook.id].steps)} steps"}
-                </span>
-                <span :if={@definitions[playbook.id]} class="block text-xs text-base-content/60">
+              <li
+                :for={playbook <- @copy_rows}
+                id={"copy-row-#{playbook.id}"}
+                class={@copy_id == playbook.id && "bg-primary/5"}
+              >
+                <label class={[
+                  "flex h-9 cursor-pointer items-center gap-2.5 px-3 text-sm",
+                  @copy_id == playbook.id && "font-medium"
+                ]}>
+                  <input
+                    type="radio"
+                    name="copy_id"
+                    value={playbook.id}
+                    checked={@copy_id == playbook.id}
+                    class="radio radio-xs radio-primary"
+                  />
+                  <span class="min-w-0 flex-1 truncate">{title_of(@titles, playbook)}</span>
+                  <.icon
+                    :if={copy_starred?(playbook)}
+                    name="hero-star-solid"
+                    class="size-3.5 shrink-0 text-warning"
+                  />
+                  <span
+                    :if={@definitions[playbook.id]}
+                    class="shrink-0 text-xs font-normal text-base-content/45"
+                  >
+                    {length(@definitions[playbook.id].steps)} steps
+                  </span>
+                </label>
+                <p
+                  :if={@copy_id == playbook.id && @definitions[playbook.id]}
+                  class="line-clamp-2 pb-2 pl-[34px] pr-3 text-xs text-base-content/60"
+                  title={arrows(@definitions[playbook.id])}
+                >
                   {arrows(@definitions[playbook.id])}
-                </span>
-              </span>
-            </label>
+                </p>
+              </li>
+            </ul>
           </fieldset>
           <button
             type="button"
             id="copy-playbook"
-            class="new-card-go btn btn-block mt-4"
+            class={["btn btn-block mt-4", @copy_id && "btn-primary", !@copy_id && "new-card-go"]}
             phx-click="copy"
             disabled={is_nil(@copy_id)}
           >
@@ -974,12 +1240,24 @@ defmodule CanopyWeb.PlaybooksLive do
       </p>
 
       <div :if={@definition} class="grid items-start gap-4 lg:grid-cols-[1fr_360px]">
+        <%!-- Files travel through their own form, as in the channel composer:
+             uploads need a phx-change, and the start form's own change reads
+             `_target`. The whole start form is the drop target. --%>
+        <form
+          id="start-upload-form"
+          phx-change="validate_upload"
+          phx-submit="validate_upload"
+          class="hidden"
+        >
+          <.live_file_input upload={@uploads.brief_files} />
+        </form>
         <.form
           for={@start_form}
           id="start-run-form"
           phx-change="start_validate"
           phx-submit="start_playbook"
-          class="rounded-box border border-base-300 bg-base-200 p-5 sm:p-6"
+          phx-drop-target={@uploads.brief_files.ref}
+          class="group/drop rounded-box border border-base-300 bg-base-200 p-5 sm:p-6"
         >
           <label for="start-brief" class="block font-semibold">
             What's this run about?
@@ -992,14 +1270,70 @@ defmodule CanopyWeb.PlaybooksLive do
           >
             {@definition.inputs}
           </p>
-          <textarea
-            id="start-brief"
-            name="start[brief]"
-            rows="4"
-            phx-debounce="300"
-            class="textarea mt-2 w-full text-[15px]"
-            placeholder="Leave empty to let the playbook speak for itself"
-          >{@start_form[:brief].value}</textarea>
+          <div
+            id="start-brief-box"
+            class="relative mt-2 rounded-xl border border-base-300 bg-base-100 p-2 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 group-[.phx-drop-target-active]/drop:border-2 group-[.phx-drop-target-active]/drop:border-dashed group-[.phx-drop-target-active]/drop:border-primary group-[.phx-drop-target-active]/drop:bg-primary/5"
+          >
+            <.file_chips
+              id="start-brief-files"
+              item="start-"
+              upload={brief_upload(assigns)}
+              picked={@brief_picked}
+              target="brief"
+            />
+            <textarea
+              id="start-brief"
+              name="start[brief]"
+              rows="4"
+              phx-debounce="300"
+              phx-hook="PasteUpload"
+              data-upload="brief_files"
+              class="w-full resize-y bg-transparent px-1 text-[15px] outline-none focus:outline-none"
+              placeholder="Leave empty to let the playbook speak for itself"
+            >{@start_form[:brief].value}</textarea>
+            <div class="mt-1 flex items-center gap-1">
+              <label
+                for={!brief_full?(assigns) && @uploads.brief_files.ref}
+                id="start-brief-attach"
+                aria-disabled={brief_full?(assigns) && "true"}
+                class={[
+                  "btn btn-sm btn-ghost btn-square",
+                  brief_full?(assigns) && "btn-disabled",
+                  !brief_full?(assigns) && "cursor-pointer"
+                ]}
+                title="Attach a file from your computer (or paste, or drop one here)"
+              >
+                <.icon name="hero-folder-open-mini" class="size-4" />
+              </label>
+              <button
+                type="button"
+                id="start-brief-library"
+                class="btn btn-sm btn-ghost btn-square"
+                phx-click="open_library"
+                disabled={brief_full?(assigns)}
+                title="Attach a file already shared in Canopy"
+              >
+                <.icon name="hero-paper-clip-mini" class="size-4" />
+              </button>
+              <span class="text-xs text-base-content/50">
+                Drop, paste (⌘V) or attach screenshots and files
+              </span>
+              <span
+                :if={brief_files(assigns) > 0}
+                id="start-brief-count"
+                class="ml-auto text-xs text-base-content/50"
+              >
+                {brief_files(assigns)} of {Messages.max_attachments()} files
+              </span>
+            </div>
+            <div
+              id="start-brief-drop"
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-0 hidden items-center justify-center rounded-xl bg-base-100/85 text-sm font-medium text-primary group-[.phx-drop-target-active]/drop:flex"
+            >
+              Drop to attach to the brief
+            </div>
+          </div>
 
           <dl class="mt-5 grid gap-x-4 gap-y-4 text-sm md:grid-cols-[112px_1fr] md:items-center">
             <dt class="text-base-content/60">Runs in</dt>
@@ -1170,12 +1504,15 @@ defmodule CanopyWeb.PlaybooksLive do
             </button>
             <.link navigate={~p"/playbooks"} class="btn btn-ghost">Cancel</.link>
             <p id="start-consequence" class="min-w-0 flex-1 text-xs text-base-content/60">
-              {consequence(
-                @start_form,
-                @start_new_name,
-                @active_agents,
-                @definition,
-                @start_channel_groups
+              {consequence_html(
+                consequence(
+                  @start_form,
+                  @start_new_name,
+                  @active_agents,
+                  @definition,
+                  @start_channel_groups,
+                  brief_files(assigns)
+                )
               )}
             </p>
           </div>
@@ -1218,6 +1555,11 @@ defmodule CanopyWeb.PlaybooksLive do
           <.link navigate={~p"/playbooks/#{@playbook.id}/edit"} class="link mt-3 inline-block text-sm">Edit the playbook</.link>
         </aside>
       </div>
+      <.library_picker
+        :if={@library}
+        library={@library}
+        hint="Files already in Canopy, from any chat. Pick one to add it to the brief."
+      />
     </Layouts.page>
     """
   end

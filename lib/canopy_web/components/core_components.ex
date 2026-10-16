@@ -417,12 +417,14 @@ defmodule CanopyWeb.CoreComponents do
 
   @doc """
   An entry in a `row_menu/1`: an icon and a label, as a button (with
-  `phx-click` and friends in `rest`) or, with `href`, a plain link. `danger`
-  marks the destructive one, which goes last under a rule.
+  `phx-click` and friends in `rest`), with `href` a plain link, or with
+  `navigate` a live link. `danger` marks the destructive one, which goes
+  last under a rule.
   """
   attr :id, :string, required: true
   attr :icon, :string, required: true
   attr :href, :string, default: nil
+  attr :navigate, :string, default: nil
   attr :danger, :boolean, default: false
 
   attr :rest, :global,
@@ -438,8 +440,11 @@ defmodule CanopyWeb.CoreComponents do
       <a :if={@href} id={@id} href={@href} role="menuitem" {@rest}>
         <.icon name={@icon} class="size-4" /> {render_slot(@inner_block)}
       </a>
+      <.link :if={@navigate} id={@id} navigate={@navigate} role="menuitem" {@rest}>
+        <.icon name={@icon} class="size-4" /> {render_slot(@inner_block)}
+      </.link>
       <button
-        :if={!@href}
+        :if={!@href and !@navigate}
         type="button"
         id={@id}
         role="menuitem"

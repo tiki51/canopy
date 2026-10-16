@@ -45,7 +45,7 @@ test.describe("recording for canopy_site", () => {
 
     // Set up off camera: the Start page, filled in.
     await gotoLive(page, "/playbooks");
-    await page.locator("#playbooks li", { hasText: "feature-build" }).locator("a[id^='start-playbook-']").click();
+    await page.locator("#playbooks li[data-playbook='feature-build'] a[id^='start-playbook-']").click();
     await expect(page.locator("#start-preview")).toContainText("What will happen");
     await page.locator("#start-repository").selectOption({ label: "acme-reports" });
     await page.waitForTimeout(600);

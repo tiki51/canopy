@@ -189,13 +189,14 @@ defmodule Canopy.Runtime.Prompts do
   defp attachments_block([]), do: ""
 
   defp attachments_block(plan) when is_list(plan) do
-    lines =
-      Enum.map_join(plan, "\n", fn {document, mode} -> "- " <> attachment_line(document, mode) end)
-
     "Attachments on this message:\n" <>
-      lines <>
+      attachment_lines(plan) <>
       "\nEvery attachment is also a file under .canopy/files/ in the repository, readable with your own tools; canopy_document_get returns one by id (images included) and canopy_documents_list finds files shared anywhere in Canopy.\n"
   end
+
+  defp attachment_lines(plan),
+    do:
+      Enum.map_join(plan, "\n", fn {document, mode} -> "- " <> attachment_line(document, mode) end)
 
   @doc """
   Appended to a wake when the same agent posted several messages in one turn:
@@ -653,7 +654,7 @@ defmodule Canopy.Runtime.Prompts do
 
     """
     You are coordinating the #{args.playbook} playbook in ##{args.channel} (run #{args.run_id}). #{where}
-    #{run_brief(args.brief)}
+    #{run_brief(args.brief, :started, Map.get(args, :kickoff))}
     #{guidance}
     Step 1: #{args.title} (#{args.step}), owners #{owner_text(args.owners)}.#{section}
     Follow each step's instructions, delegate each step to its owner, and advance with canopy_playbook_advance when the step is done, putting the evidence in result.
@@ -728,7 +729,7 @@ defmodule Canopy.Runtime.Prompts do
 
     """
     The user made you the coordinator of the #{args.playbook} playbook in ##{args.channel} (run #{args.run_id}).
-    #{run_brief(args.brief, :reassigned)}
+    #{run_brief(args.brief, :reassigned, Map.get(args, :kickoff))}
 
     It is on step #{args.position} of #{args.total}: #{args.title} (#{args.step}), owners #{owner_text(args.owners)}.#{section}
     Read the run with canopy_playbook_get (every step's result and delegations), then carry on from there and advance with canopy_playbook_advance.
@@ -745,11 +746,15 @@ defmodule Canopy.Runtime.Prompts do
     """
   end
 
-  # a run started without a brief works from the playbook alone
-  defp run_brief(brief, at \\ :started) do
+  # a run started without a brief works from the playbook alone; files
+  # posted with it (its kickoff) are the brief too
+  defp run_brief(brief, at, kickoff) do
     cond do
       present?(brief) ->
-        "Brief:\n" <> brief
+        "Brief:\n" <> brief <> kickoff_block(kickoff)
+
+      kickoff ->
+        "Brief: (no text; its files are the brief)" <> kickoff_block(kickoff)
 
       at == :started ->
         "No brief was given: the playbook is the context. Start on step 1, and ask in the channel only if a step needs something the playbook doesn't say."
@@ -757,6 +762,16 @@ defmodule Canopy.Runtime.Prompts do
       true ->
         "No brief was given: the playbook is the context."
     end
+  end
+
+  defp kickoff_block(nil), do: ""
+
+  defp kickoff_block(%{message_id: id, plan: plan, author: author}) do
+    files = if length(plan) == 1, do: "1 file", else: "#{length(plan)} files"
+
+    "\nThe brief is #{author} kickoff message #{id} in this channel, with #{files}:\n" <>
+      attachment_lines(plan) <>
+      "\nEvery file is also under .canopy/files/ in the repository; canopy_document_get returns one by id. Point step owners at them when you delegate."
   end
 
   defp upcase_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
