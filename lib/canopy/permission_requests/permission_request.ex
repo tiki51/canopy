@@ -7,7 +7,9 @@ defmodule Canopy.PermissionRequests.PermissionRequest do
   @primary_key {:id, :string, autogenerate: {Canopy.ID, :generate, ["pr"]}}
   @foreign_key_type :string
 
-  @statuses ~w(pending once always rejected)
+  # "global": answered Allow globally; "auto": approved by a grant another
+  # card made (Canopy.GlobalPermissions)
+  @statuses ~w(pending once always global auto rejected)
 
   schema "permission_requests" do
     field :opencode_permission_id, :string

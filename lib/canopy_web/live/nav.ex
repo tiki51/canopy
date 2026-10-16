@@ -503,6 +503,17 @@ defmodule CanopyWeb.Nav do
   defp handle_info({:timeline_any, %{event_type: "question_" <> _} = event}, socket),
     do: {:halt, socket |> refresh_attention() |> notify(event)}
 
+  # An auto-approval clears a badge only when a grant swept a waiting card (it
+  # then names the request); the rest change no card, so nothing is read.
+  defp handle_info(
+         {:timeline_any, %{event_type: "permission_auto_approved", payload: payload}},
+         socket
+       ) do
+    if Map.has_key?(payload, "request_id"),
+      do: {:halt, refresh_attention(socket)},
+      else: {:halt, socket}
+  end
+
   defp handle_info({:timeline_any, %{event_type: "permission_" <> _} = event}, socket),
     do: {:halt, socket |> refresh_attention() |> notify(event)}
 

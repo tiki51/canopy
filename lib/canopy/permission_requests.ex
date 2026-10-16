@@ -10,6 +10,7 @@ defmodule Canopy.PermissionRequests do
 
   import Ecto.Query, warn: false
 
+  alias Canopy.GlobalPermissions
   alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.Repo
   alias Canopy.Timeline
@@ -78,23 +79,63 @@ defmodule Canopy.PermissionRequests do
   end
 
   @doc """
-  Resolves a pending request with `:once`, `:always`, or `:reject` and records
-  the event. `delivered: "message"` with `message_id:` records that the
-  approval was posted to the channel as a message mentioning the agent,
+  Resolves a pending request with `:once`, `:always`, `:global`, or `:reject`
+  and records the event. `:global` also grants the tool to the agent
+  (`Canopy.GlobalPermissions`) in the same transaction, and the event names
+  the grant; it is `{:error, :not_grantable}` or `{:error, :no_agent}` when
+  no grant can be made. `delivered: "message"` with `message_id:` records that
+  the approval was posted to the channel as a message mentioning the agent,
   because it had stopped waiting.
   """
-  def resolve(%PermissionRequest{} = request, reply, opts \\ []) do
-    status = status_for(reply)
+  def resolve(request, reply, opts \\ [])
 
-    Multi.new()
+  def resolve(%PermissionRequest{} = request, reply, opts) when reply in [:global, "global"] do
+    case grant_check(request) do
+      {:ok, agent_id} ->
+        Multi.new()
+        |> GlobalPermissions.grant_multi(agent_id, request.permission,
+          channel_id: request.channel_id
+        )
+        |> resolve_multi(request, reply, opts)
+        |> commit()
+
+      error ->
+        error
+    end
+  end
+
+  def resolve(%PermissionRequest{} = request, reply, opts),
+    do: Multi.new() |> resolve_multi(request, reply, opts) |> commit()
+
+  @doc """
+  Whether Allow globally can grant this request's tool: `{:ok, agent_id}`,
+  `{:error, :not_grantable}`, or `{:error, :no_agent}`.
+  """
+  def grant_check(%PermissionRequest{} = request) do
+    cond do
+      not GlobalPermissions.grantable?(request.permission) -> {:error, :not_grantable}
+      agent_id = agent_id_of(request) -> {:ok, agent_id}
+      true -> {:error, :no_agent}
+    end
+  end
+
+  defp resolve_multi(multi, request, reply, opts) do
+    multi
     |> Multi.update(
       :request,
-      PermissionRequest.changeset(request, %{status: status, resolved_at: DateTime.utc_now()})
+      PermissionRequest.changeset(request, %{
+        status: status_for(reply),
+        resolved_at: DateTime.utc_now()
+      })
     )
-    |> Timeline.multi_record(:event, fn %{request: r} ->
+    |> Timeline.multi_record(:event, fn %{request: r} = changes ->
       payload =
         %{"permission" => r.permission, "status" => r.status}
-        |> Map.merge(%{"delivered" => opts[:delivered], "message_id" => opts[:message_id]})
+        |> Map.merge(%{
+          "delivered" => opts[:delivered],
+          "message_id" => opts[:message_id],
+          "grant_id" => changes[:grant] && changes.grant.id
+        })
         |> Map.reject(fn {_k, v} -> is_nil(v) end)
 
       %{
@@ -105,7 +146,49 @@ defmodule Canopy.PermissionRequests do
         payload: payload
       }
     end)
+  end
+
+  @doc """
+  Resolves a pending request the agent's grant now covers (another card was
+  answered Allow globally) with status `"auto"`. It records the grant's use
+  and a channel-level `permission_auto_approved` line naming the request, in
+  the request's channel, with no `permission_resolved`.
+  """
+  def auto_resolve(%PermissionRequest{} = request, %GlobalPermissions.Grant{} = grant) do
+    Multi.new()
+    |> Multi.update(
+      :request,
+      PermissionRequest.changeset(request, %{status: "auto", resolved_at: DateTime.utc_now()})
+    )
+    |> GlobalPermissions.use_multi(grant, %{
+      channel_id: request.channel_id,
+      agent_id: grant.agent_id,
+      permission: request.permission,
+      patterns: request.patterns,
+      request_id: request.id
+    })
     |> commit()
+  end
+
+  @doc """
+  Pending requests of the agent's sessions for `tool` (matched like a grant,
+  ignoring case) that the agent still waits on, in every channel. Options:
+  `:channel_id` keeps one channel's.
+  """
+  def waiting_for_agent_tool(agent_id, tool, opts \\ []) do
+    key = GlobalPermissions.normalize(tool)
+
+    from(p in PermissionRequest,
+      join: s in assoc(p, :agent_session),
+      where: s.agent_id == ^agent_id and p.status == "pending" and is_nil(p.detached_at),
+      where: fragment("lower(trim(?))", p.permission) == ^key,
+      order_by: [asc: p.id],
+      preload: ^@preloads
+    )
+    |> then(fn q ->
+      if cid = opts[:channel_id], do: where(q, [p], p.channel_id == ^cid), else: q
+    end)
+    |> Repo.all()
   end
 
   @doc """
@@ -189,22 +272,30 @@ defmodule Canopy.PermissionRequests do
   defp status_for(:once), do: "once"
   defp status_for(:always), do: "always"
   defp status_for(:reject), do: "rejected"
+  defp status_for(:global), do: "global"
   defp status_for("once"), do: "once"
   defp status_for("always"), do: "always"
+  defp status_for("global"), do: "global"
   defp status_for("reject"), do: "rejected"
   defp status_for("rejected"), do: "rejected"
 
-  defp agent_id_of(request) do
+  @doc "The id of the agent whose session made the request, or nil."
+  def agent_id_of(request) do
     case Repo.preload(request, :agent_session).agent_session do
       %{agent_id: agent_id} -> agent_id
       _ -> nil
     end
   end
 
+  # A grant made (:grant) or used (:use) changes the agent page's list too.
   defp commit(multi) do
     case Repo.transaction(multi) do
-      {:ok, %{request: request, event: event}} ->
+      {:ok, %{request: request, event: event} = changes} ->
         Timeline.broadcast(event)
+
+        if Map.has_key?(changes, :grant) or Map.has_key?(changes, :use),
+          do: GlobalPermissions.notify(event.agent_id)
+
         {:ok, Repo.preload(request, @preloads, force: true)}
 
       {:error, _step, changeset, _} ->

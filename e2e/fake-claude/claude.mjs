@@ -206,12 +206,15 @@ function needsPermission(name, input) {
   });
 }
 
+// Unique across the session's turns (each turn is a new process), as the real
+// CLI's are: a reused id would name an earlier turn's permission request.
 let toolCounter = 0;
+const toolRun = Date.now().toString(36);
 // One tool call: the tool_use, the permission prompt if the CLI would ask,
 // `hold` × FAKE_TURN_DELAY_MS of "running" (so the live card shows it), then
 // the result. `run(input)` does the work and returns the result text.
 async function tool(name, input, run, { hold = 1 } = {}) {
-  const id = `toolu_fake_${sid.slice(0, 8)}_${++toolCounter}`;
+  const id = `toolu_fake_${sid.slice(0, 8)}_${toolRun}_${++toolCounter}`;
   modelCall([{ type: "tool_use", id, name, input }], "tool_use");
   let decision = { behavior: "allow", updatedInput: input };
   if (needsPermission(name, input)) {
@@ -1008,6 +1011,13 @@ async function turn(prompt) {
       ]);
     if (/\bgo ahead\b/i.test(body) && story.phase === "planned") return goAhead(state);
     if (/every (weekday|day) at \d{1,2}:\d{2}/i.test(body)) return schedule(body);
+    // "run `cmd`" runs it with Bash, asking first unless --allowedTools covers it
+    // (e2e/tests/allow-globally.spec.ts)
+    if ((m = body.match(/\brun `([^`]+)`/))) {
+      const ran = await bash(m[1], "ok");
+      await canopy("message_send", { text: ran.denied ? `Didn't run \`${m[1]}\`.` : `Ran \`${m[1]}\`.` });
+      return finish("Ran the command.");
+    }
     await read("README.md");
     await canopy("message_send", { text: "Acknowledged: looking into it now." });
     return finish("Replied.");

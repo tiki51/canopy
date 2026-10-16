@@ -319,6 +319,130 @@ defmodule CanopyWeb.AgentsLiveTest do
     end
   end
 
+  describe "global permissions" do
+    alias Canopy.GlobalPermissions
+
+    test "the panel is empty until a tool is allowed globally", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "careful"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+
+      assert has_element?(view, "#agent-global-permissions #agent-grants-empty", "@careful")
+      refute has_element?(view, "#agent-grants")
+    end
+
+    test "grants list where and when, how often they were used, and follow changes", %{
+      conn: conn
+    } do
+      %{channel: channel, agent: agent} = Fixtures.scenario()
+      {:ok, bash} = GlobalPermissions.grant(agent.id, "Bash", channel_id: channel.id)
+      # its channel is gone
+      {:ok, edit} = GlobalPermissions.grant(agent.id, "Edit")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      today = Calendar.strftime(Date.utc_today(), "%b %-d")
+
+      assert has_element?(view, "#grant-#{bash.id}", "Bash")
+      assert has_element?(view, "#grant-#{bash.id}-meta", "Allowed #{today}")
+
+      assert has_element?(
+               view,
+               "#grant-#{bash.id}-meta a[href='/channels/#{channel.id}']",
+               "##{channel.name}"
+             )
+
+      assert has_element?(view, "#grant-#{bash.id}-meta", "not used since")
+      assert has_element?(view, "#grant-#{edit.id}-meta", "in a deleted channel")
+
+      # bash and Edit sort together, by the tool
+      assert render(view) =~ ~r/grant-#{bash.id}.*grant-#{edit.id}/s
+
+      # an auto-approval moves the counts without a reload
+      for _ <- 1..2 do
+        {:ok, _} =
+          GlobalPermissions.record_use(GlobalPermissions.get(agent.id, "bash"), %{
+            channel_id: channel.id,
+            agent_id: agent.id,
+            permission: "Bash",
+            patterns: ["ls"]
+          })
+      end
+
+      assert has_element?(view, "#grant-#{bash.id}-meta", "2 auto-approvals · last")
+
+      # another agent's grant changes nothing here
+      other = Fixtures.agent_fixture()
+      {:ok, _} = GlobalPermissions.grant(other.id, "Read")
+      refute has_element?(view, "#agent-grants", "Read")
+    end
+
+    test "Remove takes the grant away, and Undo brings back the same one", %{conn: conn} do
+      %{channel: channel, agent: agent} = Fixtures.scenario()
+      {:ok, grant} = GlobalPermissions.grant(agent.id, "Bash", channel_id: channel.id)
+
+      {:ok, _} =
+        GlobalPermissions.record_use(grant, %{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          permission: "Bash",
+          patterns: []
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#grant-#{grant.id}-meta", "1 auto-approval · last")
+
+      view |> element("#remove-grant-#{grant.id}") |> render_click()
+      refute has_element?(view, "#grant-#{grant.id}")
+      assert has_element?(view, "#agent-grants-empty")
+
+      assert has_element?(
+               view,
+               "#undo-toast",
+               "Removed Bash from @#{agent.name}'s global permissions."
+             )
+
+      assert GlobalPermissions.get(agent.id, "bash") == nil
+
+      view |> element("#undo-delete") |> render_click()
+      refute has_element?(view, "#undo-toast")
+      assert has_element?(view, "#grant-#{grant.id}-meta", "1 auto-approval")
+      assert %{id: id, granted_at: at} = GlobalPermissions.get(agent.id, "bash")
+      assert {id, at} == {grant.id, grant.granted_at}
+
+      # dismissed, it stays removed
+      view |> element("#remove-grant-#{grant.id}") |> render_click()
+      view |> element("#undo-toast button[aria-label=Dismiss]") |> render_click()
+      refute has_element?(view, "#undo-toast")
+      assert GlobalPermissions.get(agent.id, "bash") == nil
+    end
+
+    test "Remove takes only a grant of the agent on the page", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "mine"})
+      other = Fixtures.agent_fixture(%{name: "theirs"})
+      {:ok, theirs} = GlobalPermissions.grant(other.id, "Bash")
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      render_click(view, "remove_grant", %{"id" => theirs.id})
+
+      refute has_element?(view, "#undo-toast")
+      assert GlobalPermissions.get(other.id, "bash")
+    end
+
+    test "a Claude Code agent's Permissions row counts its grants", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "claudey", engine: "claude_code"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      refute has_element?(view, "#agent-grants-link")
+
+      {:ok, _} = GlobalPermissions.grant(agent.id, "Bash")
+      {:ok, _} = GlobalPermissions.grant(agent.id, "WebFetch")
+
+      assert has_element?(
+               view,
+               "#agent-permissions #agent-grants-link[href='#agent-global-permissions']",
+               "+ 2 global"
+             )
+    end
+  end
+
   describe "creating" do
     test "creates an agent and lands on its page", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/agents/new")

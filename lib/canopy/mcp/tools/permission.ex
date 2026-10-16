@@ -1,7 +1,7 @@
 defmodule Canopy.MCP.Tools.Permission do
   @moduledoc """
   Internal: Claude Code's permission prompt. Canopy answers it from the channel
-  (Once / Always / Reject on the permission card, or the answers on a question
+  (Once / Always / Allow globally / Reject on the permission card, or the answers on a question
   card). Agents never call this themselves.
   """
 
@@ -80,6 +80,11 @@ defmodule Canopy.MCP.Tools.Permission do
 
         {:ok, :always} ->
           :ok = Prompts.allow_always(sid, tool)
+          %{behavior: "allow", updatedInput: input}
+
+        # Canopy keeps the grant and answers the next prompts itself, so
+        # nothing is remembered here: a removal makes the agent ask again
+        {:ok, :global} ->
           %{behavior: "allow", updatedInput: input}
 
         {:ok, :reject} ->

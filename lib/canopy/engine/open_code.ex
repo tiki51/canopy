@@ -153,12 +153,14 @@ defmodule Canopy.Engine.OpenCode do
     end
   end
 
+  # Allow globally is sent as Once: OpenCode's `always` would keep approving
+  # the request's patterns for the session after the grant is removed.
   @impl true
   def reply_permission(ctx, state, request, reply) do
     case client().reply_permission(
            ctx.repository.path,
            request.opencode_permission_id,
-           reply,
+           if(reply == :global, do: :once, else: reply),
            state.client_opts
          ) do
       {:ok, _} -> :ok

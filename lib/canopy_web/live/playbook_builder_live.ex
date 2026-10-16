@@ -2945,36 +2945,6 @@ defmodule CanopyWeb.PlaybookBuilderLive do
     """
   end
 
-  attr :undo, :map, required: true
-
-  defp undo_toast(assigns) do
-    ~H"""
-    <div
-      id="undo-toast"
-      role="status"
-      class="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full bg-neutral px-4 py-2 text-sm text-neutral-content shadow-lg"
-    >
-      <span>{@undo.text}</span>
-      <button
-        type="button"
-        id="undo-delete"
-        class="font-semibold text-primary-content underline"
-        phx-click="undo"
-      >
-        Undo
-      </button>
-      <button
-        type="button"
-        class="opacity-60 hover:opacity-100"
-        phx-click="dismiss_undo"
-        aria-label="Dismiss"
-      >
-        ×
-      </button>
-    </div>
-    """
-  end
-
   attr :reasons, :list, required: true
   attr :agent, :any, required: true
 

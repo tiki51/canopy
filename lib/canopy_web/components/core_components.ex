@@ -376,6 +376,45 @@ defmodule CanopyWeb.CoreComponents do
   end
 
   @doc """
+  A dark toast with Undo (`phx-click="undo"`) and × (`"dismiss_undo"`) for
+  something just done. `undo.text` says what. `class` places and shapes it:
+  by default a pill at the bottom of the screen.
+  """
+  attr :undo, :map, required: true
+  attr :class, :any, default: "fixed bottom-6 left-1/2 rounded-full"
+
+  def undo_toast(assigns) do
+    ~H"""
+    <div
+      id="undo-toast"
+      role="status"
+      class={[
+        "z-40 flex -translate-x-1/2 items-center gap-3 bg-neutral px-4 py-2 text-sm text-neutral-content shadow-lg",
+        @class
+      ]}
+    >
+      <span>{@undo.text}</span>
+      <button
+        type="button"
+        id="undo-delete"
+        class="font-semibold underline"
+        phx-click="undo"
+      >
+        Undo
+      </button>
+      <button
+        type="button"
+        class="opacity-60 hover:opacity-100"
+        phx-click="dismiss_undo"
+        aria-label="Dismiss"
+      >
+        ×
+      </button>
+    </div>
+    """
+  end
+
+  @doc """
   A row's `⋯` menu: the actions after the one or two labelled ones, each a
   labelled `<li>` from the caller (`row_menu_item/1`), with delete last.
   Opens on click or focus and closes when focus leaves.

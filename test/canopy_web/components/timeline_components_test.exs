@@ -367,6 +367,10 @@ defmodule CanopyWeb.TimelineComponentsTest do
 
     assert routine.("lock_released", %{"released_by" => "lease", "note" => "x"}) == nil
     assert routine.("lock_queued", %{}) == nil
+
+    # every auto-approval by a global permission stays in the default feed
+    assert routine.("permission_auto_approved", %{"grant_id" => "gp_1"}) == nil
+    assert routine.("permission_auto_approved", %{"request_id" => "per_1"}) == nil
   end
 
   test "paths inside the repository read relative to its root" do

@@ -314,6 +314,22 @@ defmodule Canopy.Runtime do
   end
 
   @doc """
+  Has the channel approve its cards that a global permission now covers (a
+  card elsewhere was answered Allow globally). The sweep runs in that
+  channel's server; this returns once the server is up.
+
+  `ensure_channel/1` starts the channel's server when none runs, an archived
+  channel's too: a card there whose tool call is still held is answered like
+  any other.
+  """
+  def sweep_grant(channel_id, grant_id) do
+    case ensure_channel(channel_id) do
+      {:ok, pid} -> ChannelServer.sweep_grant(pid, grant_id)
+      {:error, _} -> :ok
+    end
+  end
+
+  @doc """
   Answers an agent's question. `outcome` is `{:answered, answers}` with one list
   of chosen option labels per question, in question order, or `:rejected`.
   """

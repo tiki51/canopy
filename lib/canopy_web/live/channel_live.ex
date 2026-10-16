@@ -45,6 +45,7 @@ defmodule CanopyWeb.ChannelLive do
     Costs,
     Documents,
     Environment,
+    GlobalPermissions,
     Messages,
     Handoffs,
     Locks,
@@ -118,6 +119,8 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:pending_text, %{})
      |> assign(:first_page, nil)
      |> assign(:seen_runs, nil)
+     # the toast after Allow globally: Undo removes the grant that click made
+     |> assign(:undo, nil)
      |> allow_upload(:files,
        accept: :any,
        max_entries: Messages.max_attachments(),
@@ -671,6 +674,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:msg_target, nil)
     |> assign(:pending_handoffs, Handoffs.pending_for_channel(id))
     |> assign(:pending_permissions, PermissionRequests.pending_for_channel(id))
+    |> assign(:undo, nil)
     |> assign(:pending_questions, QuestionRequests.pending_for_channel(id))
     |> assign(:question_drafts, %{})
     |> assign(:pending_signoffs, Signoffs.pending_for_channel(id))
@@ -1179,6 +1183,14 @@ defmodule CanopyWeb.ChannelLive do
       else: {:noreply, socket}
   end
 
+  # The Allow globally toast's time is up (a newer toast keeps its own timer).
+  def handle_info({:clear_undo, token}, socket) do
+    case socket.assigns.undo do
+      %{token: ^token} -> {:noreply, assign(socket, :undo, nil)}
+      _ -> {:noreply, socket}
+    end
+  end
+
   # a team created, edited, or deleted: the composer and the Members panel follow
   def handle_info({:teams, :changed}, socket) do
     socket = assign_mention_sources(socket, socket.assigns.channel)
@@ -1537,6 +1549,12 @@ defmodule CanopyWeb.ChannelLive do
   defp react_to(socket, %{event_type: "task_updated"}),
     do: socket |> assign_task(Tasks.for_channel(cid(socket))) |> assign_archive_offer()
 
+  # An auto-approval closes a card only when a grant swept one (it then names
+  # the request); the rest, dozens a turn at times, change no card.
+  defp react_to(socket, %{event_type: "permission_auto_approved", payload: %{"request_id" => _}}),
+    do: refresh_permissions(socket)
+
+  defp react_to(socket, %{event_type: "permission_auto_approved"}), do: socket
   defp react_to(socket, %{event_type: "permission_" <> _}), do: refresh_permissions(socket)
   defp react_to(socket, %{event_type: "question_" <> _}), do: refresh_questions(socket)
 
@@ -1720,6 +1738,50 @@ defmodule CanopyWeb.ChannelLive do
       Enum.reject(socket.assigns.pending_permissions, &(&1.id == id))
     )
     |> assign_cards()
+  end
+
+  # After Allow globally: the toast with Undo when this click made the grant,
+  # a note when the agent already had it.
+  defp granted(socket, request, agent_id, _prior) when is_nil(agent_id) or is_nil(request),
+    do: socket
+
+  defp granted(socket, request, _agent_id, %GlobalPermissions.Grant{}) do
+    put_flash(
+      socket,
+      :info,
+      "@#{request.agent_session.agent.name} already had #{request.permission} globally."
+    )
+  end
+
+  defp granted(socket, request, agent_id, nil) do
+    case GlobalPermissions.get(agent_id, request.permission) do
+      nil ->
+        socket
+
+      grant ->
+        token = System.unique_integer()
+        Process.send_after(self(), {:clear_undo, token}, 6_000)
+
+        assign(socket, :undo, %{
+          grant_id: grant.id,
+          token: token,
+          text: grant_text(request.agent_session.agent.name, request.permission)
+        })
+    end
+  end
+
+  @doc false
+  def grant_text(name, tool) do
+    case String.downcase(tool) do
+      "bash" ->
+        "@#{name} can now run any #{tool} command, anywhere, without asking."
+
+      "external_directory" ->
+        "@#{name} can now reach files outside its project folder, in every channel, without asking."
+
+      _ ->
+        "@#{name} can now use #{tool} anywhere without asking."
+    end
   end
 
   # What the pending cards imply, worked out once per change: the agents still
@@ -2218,6 +2280,57 @@ defmodule CanopyWeb.ChannelLive do
          put_flash(socket, :info, "No session yet; the next turn already starts fresh.")}
     end
   end
+
+  # Undo is offered only when this click made the grant: if the agent already
+  # had one, removing it would take an older grant and its history with it.
+  # A card already answered elsewhere (another tab) comes back with its old
+  # status and no grant.
+  def handle_event("respond_permission", %{"id" => id, "reply" => "global"}, socket) do
+    request = Enum.find(socket.assigns.pending_permissions, &(&1.id == id))
+    agent_id = request && request.agent_session && request.agent_session.agent_id
+    prior = agent_id && GlobalPermissions.get(agent_id, request.permission)
+
+    case Runtime.respond_permission(cid(socket), id, :global) do
+      {:ok, %{status: "global"}} ->
+        {:noreply, socket |> drop_permission(id) |> granted(request, agent_id, prior)}
+
+      {:ok, _request} ->
+        {:noreply,
+         socket
+         |> drop_permission(id)
+         |> put_flash(
+           :info,
+           "That request was already answered, so nothing was allowed globally."
+         )}
+
+      {:error, :archived} ->
+        {:noreply, put_flash(socket, :error, @archived_answer)}
+
+      {:error, :not_grantable} ->
+        tool = if request, do: request.permission, else: "This tool"
+        {:noreply, put_flash(socket, :error, "#{tool} can't be allowed globally.")}
+
+      {:error, :no_agent} ->
+        {:noreply,
+         put_flash(socket, :error, "This request has no agent to allow it globally for.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not answer permission: #{inspect(reason)}")}
+    end
+  end
+
+  # Undo of Allow globally: the grant goes, the request it answered still runs.
+  # Already removed (on the agent page, another tab) is fine too.
+  def handle_event("undo", _params, socket) do
+    case socket.assigns.undo do
+      %{grant_id: grant_id} -> _ = GlobalPermissions.revoke(grant_id)
+      nil -> :ok
+    end
+
+    {:noreply, assign(socket, :undo, nil)}
+  end
+
+  def handle_event("dismiss_undo", _params, socket), do: {:noreply, assign(socket, :undo, nil)}
 
   def handle_event("respond_permission", %{"id" => id, "reply" => reply}, socket)
       when reply in ~w(once always reject) do
@@ -2996,6 +3109,17 @@ defmodule CanopyWeb.ChannelLive do
             offer={@archive_offer}
             names={@names}
           />
+          <%!-- floats just above the composer; over the thread or activity
+               panel, which covers the screen below lg, it sits at the bottom --%>
+          <div :if={@undo} class="relative z-20 h-0">
+            <.undo_toast
+              undo={@undo}
+              class={[
+                "absolute bottom-3 left-1/2 w-max max-w-[calc(100vw-2rem)] rounded-2xl",
+                (@thread || @activity || @details?) && "max-lg:fixed max-lg:bottom-6 max-lg:z-40"
+              ]}
+            />
+          </div>
           <.composer
             :if={!Channels.archived?(@channel)}
             id="composer"

@@ -147,6 +147,9 @@ defmodule Canopy.Runtime.PromptsTest do
 
     assert Prompts.approval_message("pm", %{permission: "edit", patterns: []}, :once) ==
              "@pm Approved: edit (once). You can do it now."
+
+    assert Prompts.approval_message("pm", %{permission: "Bash", patterns: ["make"]}, :global) ==
+             "@pm Approved: Bash make (globally: Bash in every channel and project, until removed). You can do it now."
   end
 
   test "the pending-delegation reminder lists each delegation and how to report it" do

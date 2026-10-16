@@ -116,6 +116,8 @@ defmodule Canopy.EnvironmentTest do
       File.write!(keep, "not a document")
       on_exit(fn -> File.rm(keep) end)
 
+      {:ok, _} = Canopy.GlobalPermissions.grant(hd(Agents.list()).id, "Bash")
+
       assert {:ok, id} = Environment.reset()
       assert Environment.status() != :idle
       await_reset()
