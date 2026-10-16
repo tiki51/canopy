@@ -991,7 +991,7 @@ Its sections, top to bottom:
   the number active) and **Spend** (spent, and the limit). Each opens in place.
 - **View**: the **Routine activity** switch (see
   [Compact timeline](#compact-timeline-and-the-activity-view)), **Search this channel**, and
-  **Archive channel…**.
+  **Archive channel** (see [Archiving](#archiving)).
 
 ![Channel details beside the feed, light](user-guide/images/channel-details-light.png)
 
@@ -1218,11 +1218,17 @@ the limit.
 
 ### Archiving
 
-**Archive channel…**, under **View** in the channel's details (with a confirmation),
-closes the channel: an *archived* badge appears, the composer becomes a notice with a
-**Reopen** button (the header's **Stop** becomes **Reopen** too), and the sidebar folds
-the channel under an "archived" toggle. Agents see it as archived in
-`canopy_channels_list`.
+Archiving closes a channel in one click, with no confirmation: an *Archived #name* toast
+offers **Undo** for a few seconds. Archive from **Archive channel** under **View** in the
+channel's details, from the archive icon or the ⋯ menu on a sidebar row (right-click works
+too), or with **Archive this channel** in the command palette. An *archived* badge appears,
+the composer becomes a notice with a **Reopen** button (the header's **Stop** becomes
+**Reopen** too), and the sidebar folds the channel under an "N archived" toggle. Agents see
+it as archived in `canopy_channels_list`.
+
+When a channel's task is completed, its sidebar row shows a ✓ and the channel offers a
+**Task done** bar with **Archive channel** and **Keep open**. Keep open (or reopening a
+finished channel after an archive) stops the offer for that channel.
 
 ![Archived channel, light](user-guide/images/archived-channel-light.png)
 

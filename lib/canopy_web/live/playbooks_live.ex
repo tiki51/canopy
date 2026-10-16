@@ -26,8 +26,11 @@ defmodule CanopyWeb.PlaybooksLive do
   import CanopyWeb.AttachmentComponents, only: [file_chips: 1, library_picker: 1]
 
   alias Canopy.{Agents, Documents, Messages, Playbooks, Repositories, Users}
+  alias Canopy.Channels.Sections
   alias Canopy.Playbooks.{Definition, Playbook, Runs, Writer}
-  alias CanopyWeb.{Attachments, PlaybookAsk, PlaybookBuilder, PlaybookStart}
+  alias CanopyWeb.{Attachments, PlaybookAsk, PlaybookBuilder, PlaybookStart, SectionPicker}
+
+  @new_section SectionPicker.new()
 
   @impl true
   def mount(_params, _session, socket) do
@@ -297,6 +300,12 @@ defmodule CanopyWeb.PlaybooksLive do
         do: assign(socket, :start_name_typed, true),
         else: socket
 
+    # another repository has other sections: the playbook's default applies again
+    params =
+      if event["_target"] == ["start", "repository_id"],
+        do: Map.drop(params, ["section", "section_new"]),
+        else: params
+
     {:noreply, assign_start(socket, params)}
   end
 
@@ -338,7 +347,10 @@ defmodule CanopyWeb.PlaybooksLive do
               {:ok, run} ->
                 {:noreply,
                  socket
-                 |> put_flash(:info, "Started #{run.playbook_name} in ##{run.channel.name}.")
+                 |> put_flash(
+                   :info,
+                   "Started #{run.playbook_name} in ##{run.channel.name}#{filed_in(run.channel)}."
+                 )
                  |> push_navigate(to: ~p"/channels/#{run.channel_id}")}
 
               {:error, reason} ->
@@ -592,6 +604,11 @@ defmodule CanopyWeb.PlaybooksLive do
         do: Runs.channel_name(repository_id, channel_name, playbook.name, params["brief"]),
         else: channel_name
 
+    sections = section_names(socket.assigns.repositories, repository_id)
+
+    {section, section_new} =
+      start_section(params, sections, repository_id, socket.assigns.definition)
+
     form =
       to_form(
         %{
@@ -601,6 +618,8 @@ defmodule CanopyWeb.PlaybooksLive do
           "repository_id" => repository_id,
           "channel_id" => params["channel_id"] || "",
           "channel_name" => channel_name,
+          "section" => section,
+          "section_new" => section_new,
           "coordinator_id" => params["coordinator_id"] || socket.assigns.start_coordinator_id,
           "roles" => roles
         },
@@ -611,6 +630,54 @@ defmodule CanopyWeb.PlaybooksLive do
     socket
     |> assign(:start_form, form)
     |> assign(:start_new_name, new_name)
+    |> assign(:start_sections, sections)
+  end
+
+  # The repository's sections by position, from Nav's repositories.
+  defp section_names(repositories, repository_id) do
+    case Enum.find(repositories, &(&1.id == repository_id)) do
+      %{sections: sections} when is_list(sections) -> Enum.map(sections, & &1.name)
+      _ -> []
+    end
+  end
+
+  # The section picker: what was chosen, else the playbook's `section:` (an
+  # existing section, found the way Runs will find it; else "New section…"
+  # with its name; else none). `{choice, new_name}`; choice is a section
+  # name, "" or "New section…".
+  defp start_section(%{"section" => choice} = params, sections, _repository_id, _definition)
+       when is_binary(choice) do
+    if choice in ["", @new_section] or choice in sections,
+      do: {choice, params["section_new"] || ""},
+      else: {@new_section, choice}
+  end
+
+  defp start_section(_params, _sections, repository_id, definition) do
+    case definition && definition.section do
+      name when is_binary(name) and name != "" ->
+        case repository_id && Sections.find_by_name(repository_id, name) do
+          %{name: found} -> {found, ""}
+          _ -> {@new_section, name}
+        end
+
+      _ ->
+        {"", ""}
+    end
+  end
+
+  # Where a run's new channel was filed, for the flash.
+  defp filed_in(%{section: %{name: name, created?: true}}), do: " in the new section #{name}"
+  defp filed_in(%{section: %{name: name}}), do: " in #{name}"
+  defp filed_in(_channel), do: ""
+
+  # " in Releases" for the consequence line, when a section is picked.
+  defp in_section(form) do
+    case {form[:section].value, String.trim(form[:section_new].value || "")} do
+      {@new_section, ""} -> ""
+      {@new_section, name} -> " in the new section #{name}"
+      {name, _} when name in [nil, ""] -> ""
+      {name, _} -> " in #{name}"
+    end
   end
 
   # The name field was typed in when it was ever the change's target, or
@@ -719,7 +786,7 @@ defmodule CanopyWeb.PlaybooksLive do
 
     where =
       cond do
-        form[:runs_in].value == "new" -> {:new, "##{new_name}"}
+        form[:runs_in].value == "new" -> {:new, "##{new_name}#{in_section(form)}"}
         channel -> {:in, "##{channel.name}"}
         true -> {:in, "the channel you pick"}
       end
@@ -1401,6 +1468,41 @@ defmodule CanopyWeb.PlaybooksLive do
                     {repo.name}
                   </option>
                 </select>
+              </div>
+              <div
+                :if={@start_form[:runs_in].value == "new"}
+                id="start-section-row"
+                class="flex flex-wrap items-center gap-2"
+              >
+                <label for="start-section" class="text-xs text-base-content/50">Section</label>
+                <select id="start-section" name="start[section]" class="select select-sm w-48">
+                  <option value="" selected={@start_form[:section].value == ""}>No section</option>
+                  <option
+                    :for={name <- @start_sections}
+                    value={name}
+                    selected={name == @start_form[:section].value}
+                  >
+                    {name}
+                  </option>
+                  <option
+                    value={SectionPicker.new()}
+                    selected={@start_form[:section].value == SectionPicker.new()}
+                  >
+                    New section…
+                  </option>
+                </select>
+                <input
+                  :if={@start_form[:section].value == SectionPicker.new()}
+                  id="start-section-new"
+                  name="start[section_new]"
+                  type="text"
+                  value={@start_form[:section_new].value}
+                  maxlength="40"
+                  phx-debounce="300"
+                  placeholder="Section name"
+                  aria-label="New section name"
+                  class="input input-sm min-w-0 flex-1"
+                />
               </div>
               <select
                 :if={@start_form[:runs_in].value != "new"}

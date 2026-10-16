@@ -15,6 +15,7 @@
 // channels, DMs and agents you visit as well as what you pick here.
 import {rank, tokens} from "../command_palette/match"
 import {commands as pageCommands} from "../command_palette/commands"
+import {markKeyboardArchive} from "../sidebar/archive_origin"
 
 const RECENT_KEY = "canopy:cmdk-recent"
 const RECENT_MAX = 20
@@ -39,6 +40,7 @@ const CommandPalette = {
     this.input = this.el.querySelector("#cmdk-input")
     this.list = this.el.querySelector("#cmdk-list")
     this.chip = this.el.querySelector("#cmdk-chip")
+    this.enterHint = this.el.querySelector("#cmdk-enter")
     this.status = this.el.querySelector("#cmdk-status")
     this.cache = {}
     this.mode = null
@@ -116,7 +118,7 @@ const CommandPalette = {
     const id = this.context().channel_id
     if (!id) return null
     const item = this.items().find(i => (i.t === "channel" || i.t === "dm") && i.id === id)
-    return item ? {id, kind: item.t, archived: item.archived} : null
+    return item ? {id, kind: item.t, archived: item.archived, section: item.section || null} : null
   },
 
   commandContext() {
@@ -128,6 +130,7 @@ const CommandPalette = {
       channel: this.currentChannel(),
       repoId: ctx.repo_id,
       repos: items.filter(i => i.t === "repo"),
+      sections: ctx.sections || [],
       playbooks: items.filter(i => i.t === "playbook"),
       notify: window.canopyNotifier ? window.canopyNotifier.status() : null,
     }
@@ -269,6 +272,7 @@ const CommandPalette = {
 
   groups() {
     const query = this.input.value
+    if (this.step && this.step.section) return [{name: "Move to section", rows: this.sectionRows(query)}]
     if (this.step) return [{name: `Run /${this.step.command.name} in…`, rows: this.stepRows(query)}]
     if (this.mode === "/") return [{name: "Slash commands", rows: this.slashRows(query)}]
 
@@ -372,6 +376,33 @@ const CommandPalette = {
       .map(r => ({...this.row(r.item), enter: () => this.runIn(r.item), alt: null, hints: ["↵ choose"]}))
   },
 
+  // "Move to section…": the open channel's project sections (✓ on its own),
+  // and "No section" when it is in one. Creating a section stays in the
+  // sidebar.
+  sectionRows(query) {
+    const channel = this.currentChannel()
+    if (!channel) return []
+    const current = channel.section
+    const q = query.trim().toLowerCase()
+    const choices = [
+      ...this.commandContext().sections.map(s => ({id: s.id, name: s.name, here: s.id === current})),
+      ...(current ? [{id: "", name: "No section", here: false}] : []),
+    ]
+    return choices
+      .filter(s => q === "" || s.name.toLowerCase().includes(q))
+      .map(s => ({
+        key: `section:${s.id}`,
+        // "No section" isn't a section: it gets Remove from section's icon
+        kind: s.id === "" ? "unsection" : "section",
+        name: s.name,
+        hints: [s.here ? "here now" : "↵ move"],
+        enter: () => {
+          this.close()
+          if (!s.here) this.pushEvent("move_channel", {id: channel.id, section_id: s.id}, () => {})
+        },
+      }))
+  },
+
   // What a row shows and does on Enter and Shift+Enter.
   row(entry) {
     const ctx = this.context()
@@ -433,6 +464,13 @@ const CommandPalette = {
   },
 
   run(command) {
+    if (command.action.sectionStep) {
+      this.step = {section: true, typed: this.input.value}
+      this.input.value = ""
+      this.active = 0
+      this.render()
+      return
+    }
     this.remember("cmd", command.id)
     this.close()
     const action = command.action
@@ -441,6 +479,10 @@ const CommandPalette = {
     else if (action.dmPicker) this.pushEventTo("#dm-picker-component", "open_picker", {}, () => {})
     else if (action.theme) this.setTheme(action.theme)
     else if ("notify" in action) this.setNotify(action.notify)
+    else if (action.archive) {
+      markKeyboardArchive()
+      this.pushEvent("archive_channel", {id: action.archive}, () => {})
+    }
   },
 
   // The desktop notifications switch (../notify.js). Choosing "on" is the
@@ -643,11 +685,13 @@ const CommandPalette = {
   },
 
   renderChip() {
-    const text = this.step ? `/${this.step.command.name} ›` : this.mode ? MODES[this.mode].chip : ""
+    const text = this.step ? (this.step.section ? "Move to section ›" : `/${this.step.command.name} ›`) : this.mode ? MODES[this.mode].chip : ""
     this.chip.textContent = text
     this.chip.hidden = text === ""
+    // the footer's ↵ says what the step's rows do
+    this.enterHint.textContent = this.step ? (this.step.section ? "move" : "choose") : "open"
     this.input.placeholder = this.step
-      ? "Choose a channel…"
+      ? (this.step.section ? "Choose a section…" : "Choose a channel…")
       : this.mode
         ? MODES[this.mode].placeholder
         : PLACEHOLDER
@@ -665,7 +709,9 @@ const CommandPalette = {
     clearTimeout(this.statusTimer)
     const count = this.rows.length
     const results = `${count} ${count === 1 ? "result" : "results"}`
-    const text = this.step ? `Choose a channel for /${this.step.command.name}. ${results}` : results
+    const text = !this.step ? results
+      : this.step.section ? `Choose a section. ${results}`
+      : `Choose a channel for /${this.step.command.name}. ${results}`
     this.statusTimer = setTimeout(() => {
       this.status.textContent = text
     }, 300)
@@ -679,6 +725,8 @@ const ICONS = {
   file: "hero-document-mini",
   command: "hero-command-line-mini",
   search: "hero-magnifying-glass-mini",
+  section: "hero-folder-open-mini",
+  unsection: "hero-arrow-uturn-up-mini",
 }
 
 function toEntry(item) {

@@ -8,14 +8,14 @@ defmodule Canopy.Channels do
 
   alias Canopy.Agents
   alias Canopy.Agents.Agent
-  alias Canopy.Channels.{Channel, ChannelAgent}
+  alias Canopy.Channels.{Channel, ChannelAgent, Section, Sections}
   alias Canopy.Repo
   alias Canopy.Tasks.Task
   alias Canopy.Teams
   alias Canopy.Timeline
   alias Ecto.Multi
 
-  @preloads [:repository, :owner, :task, agents: from(a in Agent, order_by: a.name)]
+  @preloads [:repository, :owner, :task, :section, agents: from(a in Agent, order_by: a.name)]
 
   def list_by_repository(repository_id) do
     Repo.all(
@@ -53,6 +53,14 @@ defmodule Canopy.Channels do
   `:brief_by`, "user" or an agent id, default "user"). The task title
   defaults to the topic, then the name. A brief records the channel's one
   creation event, `brief_updated`, so its history starts here.
+
+  The sidebar section, optionally: `:section` (a name, found in any case or
+  created last through `Sections.find_or_create/2` in the same transaction,
+  so a failed create leaves no section behind) or `:section_id` (a section of
+  the same repository). A blank or nil `:section` means none. The returned
+  channel's `section` is the resolved struct, whose `created?` says whether
+  it is new. A bad section name comes back as an error on `:section` of the
+  `%Channel{}` changeset, checked before anything is written.
   """
   def create(attrs) when is_map(attrs) do
     attrs = Map.new(attrs, fn {k, v} -> {to_atom_key(k), v} end)
@@ -75,8 +83,16 @@ defmodule Canopy.Channels do
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 
+    changeset = attrs |> new_channel_changeset() |> check_section(attrs)
+    section_name = section_name(attrs)
+
     Multi.new()
-    |> Multi.insert(:channel, new_channel_changeset(attrs))
+    |> Multi.run(:section, fn _repo, _changes -> resolve_section(changeset, section_name) end)
+    |> Multi.insert(:channel, fn %{section: section} ->
+      if section,
+        do: Ecto.Changeset.put_change(changeset, :section_id, section.id),
+        else: changeset
+    end)
     |> Multi.run(:brief_event, fn repo, %{channel: channel} -> creation_brief(repo, channel) end)
     |> Multi.insert(:task, fn %{channel: channel} ->
       Task.changeset(%Task{}, %{
@@ -96,15 +112,74 @@ defmodule Canopy.Channels do
         end)
       end
     end)
-    |> Repo.transaction()
+    |> Repo.transaction(mode: :immediate)
     |> case do
-      {:ok, %{channel: channel, brief_event: event}} ->
+      {:ok, %{channel: channel, brief_event: event, section: section}} ->
         if event, do: Timeline.broadcast(event)
         notify()
-        {:ok, get!(channel.id)}
+        channel = get!(channel.id)
+        {:ok, if(section, do: %{channel | section: section}, else: channel)}
 
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
+    end
+  end
+
+  defp section_name(attrs) do
+    case attrs[:section] do
+      name when is_binary(name) -> Section.normalize_name(name)
+      _ -> nil
+    end
+  end
+
+  # Checks the section before the transaction, so a bad name is an error on
+  # the channel's own changeset (beside any other) and nothing is written.
+  defp check_section(changeset, attrs) do
+    repository_id = Ecto.Changeset.get_field(changeset, :repository_id)
+
+    cond do
+      not is_nil(attrs[:section]) and not is_binary(attrs[:section]) ->
+        Ecto.Changeset.add_error(changeset, :section, "must be a name")
+
+      section_name(attrs) ->
+        case Sections.validate_name(attrs[:section]) do
+          :ok -> changeset
+          {:error, message} -> Ecto.Changeset.add_error(changeset, :section, message)
+        end
+
+      attrs[:section_id] in [nil, ""] ->
+        changeset
+
+      true ->
+        case Sections.get(attrs[:section_id]) do
+          %Section{repository_id: ^repository_id} = section ->
+            Ecto.Changeset.put_change(changeset, :section_id, section.id)
+
+          _ ->
+            Ecto.Changeset.add_error(changeset, :section_id, "is not a section of this project")
+        end
+    end
+  end
+
+  # Only a valid channel finds or creates its section, so an invalid one leaves
+  # none behind; an insert failing later rolls the section back with it.
+  defp resolve_section(_changeset, nil), do: {:ok, nil}
+  defp resolve_section(%{valid?: false}, _name), do: {:ok, nil}
+
+  defp resolve_section(changeset, name) do
+    repository_id = Ecto.Changeset.get_field(changeset, :repository_id)
+
+    case Sections.find_or_create(repository_id, name) do
+      {:ok, section} ->
+        {:ok, section}
+
+      {:error, %Ecto.Changeset{} = section_changeset} ->
+        {:error,
+         Ecto.Changeset.add_error(
+           %{changeset | action: :insert},
+           :section,
+           Sections.error_message(section_changeset) |> String.replace_prefix("Name ", "")
+         )}
     end
   end
 
@@ -279,10 +354,103 @@ defmodule Canopy.Channels do
 
   def archive(%Channel{} = channel), do: set_status(channel, "archived", "channel_archived")
 
-  @doc "Reopens an archived channel and records `channel_reopened`."
-  def reopen(%Channel{status: "open"} = channel), do: {:ok, Repo.preload(channel, @preloads)}
+  @doc """
+  Reopens an archived channel and records `channel_reopened`. With
+  `keep_open: true` (the deliberate Reopen, not the archive's Undo) it also
+  dismisses the archive offer, but only when the task is already completed:
+  a finished channel reopened on purpose doesn't ask again, while one archived
+  mid-task still offers once its task is finished.
+  """
+  def reopen(channel, opts \\ [])
 
-  def reopen(%Channel{} = channel), do: set_status(channel, "open", "channel_reopened")
+  def reopen(%Channel{status: "open"} = channel, opts) do
+    if opts[:keep_open],
+      do: keep_open(channel),
+      else: {:ok, Repo.preload(channel, @preloads)}
+  end
+
+  def reopen(%Channel{} = channel, opts) do
+    with {:ok, channel} <- set_status(channel, "open", "channel_reopened") do
+      if opts[:keep_open], do: keep_open(channel), else: {:ok, channel}
+    end
+  end
+
+  # Read the task fresh: the caller's channel may carry the task it was mounted with.
+  defp keep_open(%Channel{id: id} = channel) do
+    if Repo.exists?(from t in Task, where: t.channel_id == ^id and t.status == "completed"),
+      do: dismiss_archive_offer(channel),
+      else: {:ok, Repo.preload(channel, @preloads)}
+  end
+
+  @doc """
+  True when the sidebar should mark a channel done and its page offer to
+  archive it: an open group channel whose task is completed and whose offer
+  was not dismissed. Reads only the struct (the task must be preloaded).
+  """
+  def archive_offer?(%Channel{
+        kind: "channel",
+        status: "open",
+        archive_offer_dismissed_at: nil,
+        task: %Task{status: "completed"}
+      }),
+      do: true
+
+  def archive_offer?(_channel), do: false
+
+  @doc """
+  The archive offer's text for a channel: `%{title, by, agent_id,
+  completed_at}`, or nil when there is no offer. It reads the channel and its
+  task fresh by id (a page's own copy may hold the task it was mounted with),
+  then the latest `task_updated` event that completed the task:
+
+    * the event names an agent: `by: :agent`, `agent_id` that agent;
+    * the event names none (you completed it): `by: :user`, `agent_id: nil`;
+    * no such event (older data): `by: nil`, `agent_id: nil` and the task's
+      `updated_at`. The owner is never credited: they may not have done it.
+  """
+  def archive_offer(%Channel{id: id}), do: archive_offer(id)
+
+  def archive_offer(id) when is_binary(id) do
+    with %Channel{} = channel <- Channel |> Repo.get(id) |> Repo.preload(:task),
+         true <- archive_offer?(channel) do
+      task = channel.task
+
+      event =
+        Repo.one(
+          from e in Timeline.Event,
+            where:
+              e.channel_id == ^id and e.event_type == "task_updated" and
+                fragment("json_extract(?, '$.changes.status')", e.payload) == "completed",
+            order_by: [desc: e.inserted_at],
+            limit: 1
+        )
+
+      {by, agent_id, completed_at} =
+        case event do
+          %{agent_id: nil} -> {:user, nil, event.inserted_at}
+          %{agent_id: agent_id} -> {:agent, agent_id, event.inserted_at}
+          nil -> {nil, nil, task.updated_at}
+        end
+
+      %{title: task.title, by: by, agent_id: agent_id, completed_at: completed_at}
+    else
+      _ -> nil
+    end
+  end
+
+  @doc "Keeps a channel open for good: its archive offer never shows again. Idempotent."
+  def dismiss_archive_offer(%Channel{archive_offer_dismissed_at: %DateTime{}} = channel),
+    do: {:ok, Repo.preload(channel, @preloads)}
+
+  def dismiss_archive_offer(%Channel{} = channel) do
+    with {:ok, channel} <-
+           channel
+           |> Ecto.Changeset.change(archive_offer_dismissed_at: DateTime.utc_now())
+           |> Repo.update() do
+      notify()
+      {:ok, Repo.preload(channel, @preloads, force: true)}
+    end
+  end
 
   @doc """
   Sets or clears (nil) the total dollars a channel may spend, and records

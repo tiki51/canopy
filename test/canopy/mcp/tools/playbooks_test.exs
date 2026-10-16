@@ -214,6 +214,47 @@ defmodule Canopy.MCP.Tools.PlaybooksTest do
     assert prompt_text(body) =~ "You are coordinating the ship-it playbook in #ship-v3"
   end
 
+  test "start: section files the new channel, found or created; ignored without channel_name",
+       ctx do
+    stub_engine(self(), ctx.repository)
+    {:ok, _} = Canopy.Channels.Sections.create(ctx.repository.id, "Releases")
+
+    assert {:ok, text} =
+             call(
+               PlaybookStart,
+               %{name: "ship-it", brief: "v4", channel_name: "ship-v4", section: "releases"},
+               ctx
+             )
+
+    assert text =~ "in the new channel #ship-v4, in section Releases ("
+
+    assert {:ok, text} =
+             call(
+               PlaybookStart,
+               %{name: "ship-it", brief: "v5", channel_name: "ship-v5", section: "Launches"},
+               ctx
+             )
+
+    assert text =~ "in the new channel #ship-v5, in the new section Launches ("
+
+    assert {:error, reason} =
+             call(
+               PlaybookStart,
+               %{name: "ship-it", channel_name: "ship-v6", section: String.duplicate("x", 41)},
+               ctx
+             )
+
+    assert reason =~ "could not create the channel: section should be at most 40 character(s)"
+    refute Canopy.Channels.get_by_name(ctx.repository.id, "ship-v6")
+
+    assert {:ok, text} = call(PlaybookStart, %{name: "ship-it", section: "Releases"}, ctx)
+
+    assert text =~
+             "you coordinate it; section ignored: the run is in this channel, which keeps its place"
+
+    assert Canopy.Channels.get!(ctx.channel.id).section_id == nil
+  end
+
   test "a channel_name that cleans to nothing gets the generated name, not this channel", ctx do
     stub_engine(self(), ctx.repository)
 

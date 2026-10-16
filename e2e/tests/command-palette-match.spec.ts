@@ -108,6 +108,17 @@ test.describe("command palette matcher", () => {
     expect(archived).not.toContain("stop-all");
     expect(archived).toContain("changes");
 
+    // the open channel's place in the sidebar: archive it, or move it to one of its project's sections
+    expect(inChannel).toContain("archive-channel");
+    expect(inChannel).not.toContain("move-to-section");
+    const sections = [{ id: "sec_1", name: "Releases" }];
+    expect(ids({ path: "/channels/ch_1", channel: { id: "ch_1", kind: "channel", archived: false }, sections })).toContain("move-to-section");
+    expect(ids({ path: "/channels/ch_2", channel: { id: "ch_2", kind: "dm", archived: false }, sections })).not.toContain("archive-channel");
+    expect(ids({ path: "/channels/ch_2", channel: { id: "ch_2", kind: "dm", archived: false }, sections })).not.toContain("move-to-section");
+    expect(ids({ path: "/agents", sections })).not.toContain("archive-channel");
+    // an archived channel has nothing to archive
+    expect(ids({ path: "/channels/ch_3", channel: { id: "ch_3", kind: "channel", archived: true }, sections })).not.toContain("archive-channel");
+
     const perRepo = commands({
       path: "/agents",
       repoId: "r2",

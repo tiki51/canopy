@@ -391,6 +391,18 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     refute Playbooks.get!(playbook.id).body =~ "channel:"
   end
 
+  test "a section: line survives an edit and save in the builder", %{conn: conn} do
+    playbook = playbook_fixture("filed", [{"a", "A", "coordinator"}], "section: Releases\n")
+    assert definition!(playbook).section == "Releases"
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+
+    edit(view, %{"title" => "Filed one"})
+    view |> element("#builder-form") |> render_submit()
+
+    assert Playbooks.get!(playbook.id).body =~ "section: Releases\n"
+    assert definition!(playbook).section == "Releases"
+  end
+
   test "a change made elsewhere while editing: load theirs, or save mine as a copy", %{conn: conn} do
     playbook = playbook_fixture("shared", [{"a", "A", "coordinator"}])
     {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")

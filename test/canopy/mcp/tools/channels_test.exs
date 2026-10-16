@@ -28,6 +28,18 @@ defmodule Canopy.MCP.Tools.ChannelsTest do
       assert text =~ "owner @#{ctx.agent.name}"
       assert text =~ "task open — #{ctx.task.title}"
       refute text =~ ctx.outsider_channel.name
+      assert text =~ "Sections in #{ctx.repository.name}: none yet"
+    end
+
+    test "shows each channel's section and the project's sections", ctx do
+      alias Canopy.Channels.Sections
+      {:ok, releases} = Sections.create(ctx.repository.id, "Releases")
+      {:ok, _} = Sections.create(ctx.repository.id, "Bugs")
+      {:ok, _} = Canopy.Channels.Sections.move_channel(ctx.channel, releases)
+
+      assert {:ok, text} = call(ChannelsList, %{}, ctx)
+      assert text =~ "task open — #{ctx.task.title}, section Releases"
+      assert text =~ "Sections in #{ctx.repository.name}: Bugs, Releases"
     end
   end
 

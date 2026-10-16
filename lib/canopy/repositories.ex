@@ -9,14 +9,24 @@ defmodule Canopy.Repositories do
   alias Canopy.Repo
   alias Canopy.Repositories.Repository
 
-  @doc "Repositories with their open channels preloaded, for the sidebar."
+  @doc """
+  Repositories for the sidebar: each with `:channels` (every non-DM channel,
+  open and archived, A→Z) and `:sections` (by position). See
+  `Canopy.Channels.Sections.group/2`.
+  """
   def list_with_channels do
     channels =
       Canopy.Channels.list()
       |> Enum.reject(&Canopy.Channels.dm?/1)
       |> Enum.group_by(& &1.repository_id)
 
-    Enum.map(list(), &Map.put(&1, :channels, Map.get(channels, &1.id, [])))
+    sections = Canopy.Channels.Sections.list_all() |> Enum.group_by(& &1.repository_id)
+
+    Enum.map(list(), fn repository ->
+      repository
+      |> Map.put(:channels, Map.get(channels, repository.id, []))
+      |> Map.put(:sections, Map.get(sections, repository.id, []))
+    end)
   end
 
   def list do

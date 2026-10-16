@@ -62,6 +62,21 @@ defmodule Canopy.Playbooks.DefinitionTest do
     assert [%{id: "build", owner: ["dev"], approval: false, optional: false}] = d.steps
   end
 
+  test "section: a default section for a run's new channel, trimmed, at most 40 characters" do
+    assert {:ok, %{section: nil}} = Definition.parse(text(@minimal))
+
+    assert {:ok, %{section: "Releases"}} =
+             Definition.parse(text(@minimal <> "section: \" Releases \"\n"))
+
+    assert {:ok, %{section: nil}} = Definition.parse(text(@minimal <> "section: \"\"\n"))
+
+    assert {:error, ["section must be text"]} =
+             Definition.parse(text(@minimal <> "section: [a]\n"))
+
+    assert {:error, ["section should be at most 40 character(s)"]} =
+             Definition.parse(text(@minimal <> "section: #{String.duplicate("x", 41)}\n"))
+  end
+
   test "an old channel field is accepted and ignored, whatever it says" do
     # runs keep the text they started with, and older files say `channel: new`
     for value <- ["new", "current", "bogus", "[1, 2]"] do

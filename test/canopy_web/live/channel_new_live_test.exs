@@ -334,4 +334,153 @@ defmodule CanopyWeb.ChannelNewLiveTest do
                Enum.sort([ctx.tester.id, ctx.builder.id])
     end
   end
+
+  describe "section picker" do
+    alias Canopy.Channels.Sections
+
+    defp create(view, ctx, extra) do
+      # the name field is only there once "New section…" is picked
+      if extra[:section] == " new" do
+        view
+        |> form("#channel-form", channel: %{repository_id: ctx.repository.id, section: " new"})
+        |> render_change()
+      end
+
+      view
+      |> form("#channel-form",
+        channel:
+          Map.merge(
+            %{
+              repository_id: ctx.repository.id,
+              name: "release-1-9",
+              topic: "Cut 1.9",
+              owner_agent_id: ctx.builder.id,
+              agent_ids: [ctx.builder.id]
+            },
+            extra
+          )
+      )
+      |> render_submit()
+    end
+
+    test "?section= picks that section, or New section… with the name", ctx do
+      {:ok, _} = Sections.create(ctx.repository.id, "Payments")
+      base = "/channels/new?repository_id=#{ctx.repository.id}&section="
+
+      {:ok, view, _html} = live(ctx.conn, base <> "payments")
+      assert has_element?(view, "#channel-form_section option[selected][value='Payments']")
+
+      {:ok, view, _html} = live(ctx.conn, base <> "Releases")
+      assert has_element?(view, "#channel-form_section option[selected][value=' new']")
+      assert has_element?(view, "#channel-form_section_new[value='Releases']")
+    end
+
+    test "lists the repository's sections, and re-lists them for another repository", ctx do
+      {:ok, _} = Sections.create(ctx.repository.id, "Payments")
+      other = Fixtures.repository_fixture()
+      {:ok, _} = Sections.create(other.id, "Launch")
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new?repository_id=#{ctx.repository.id}")
+
+      select = "#channel-form select[name='channel[section]']"
+      assert has_element?(view, "#{select} option[value='']", "No section")
+      assert has_element?(view, "#{select} option[value='Payments']")
+      assert has_element?(view, "#{select} option[value=' new']", "New section…")
+      refute has_element?(view, "#{select} option[value='Launch']")
+      refute has_element?(view, "#channel-form input[name='channel[section_new]']")
+
+      view
+      |> form("#channel-form", channel: %{repository_id: ctx.repository.id, section: "Payments"})
+      |> render_change()
+
+      assert has_element?(view, "#{select} option[selected][value='Payments']")
+
+      # Payments isn't a section of the other repository: back to none
+      view
+      |> form("#channel-form", channel: %{repository_id: other.id, section: "Payments"})
+      |> render_change()
+
+      assert has_element?(view, "#{select} option[value='Launch']")
+      refute has_element?(view, "#{select} option[value='Payments']")
+      refute has_element?(view, "#{select} option[selected][value='Payments']")
+    end
+
+    test "files the new channel in a picked section", ctx do
+      {:ok, payments} = Sections.create(ctx.repository.id, "Payments")
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      create(view, ctx, %{section: "Payments"})
+
+      channel = Channels.get_by_name(ctx.repository.id, "release-1-9")
+      assert channel.section_id == payments.id
+      flash = assert_redirect(view, ~p"/channels/#{channel.id}")
+      assert flash["info"] == "Created #release-1-9 in Payments."
+    end
+
+    test "New section… shows a name field; the section is made last and the channel filed", ctx do
+      {:ok, _} = Sections.create(ctx.repository.id, "Payments")
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      view
+      |> form("#channel-form", channel: %{repository_id: ctx.repository.id, section: " new"})
+      |> render_change()
+
+      assert has_element?(view, "#channel-form input[name='channel[section_new]']")
+
+      create(view, ctx, %{section: " new", section_new: "  Releases "})
+
+      channel = Channels.get_by_name(ctx.repository.id, "release-1-9")
+      assert [%{name: "Payments"}, %{name: "Releases", id: id}] = Sections.list(ctx.repository.id)
+      assert channel.section_id == id
+      flash = assert_redirect(view, ~p"/channels/#{channel.id}")
+      assert flash["info"] == "Created #release-1-9 in the new section Releases."
+    end
+
+    test "a new name matching a section in another case files it there", ctx do
+      {:ok, payments} = Sections.create(ctx.repository.id, "Payments")
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      create(view, ctx, %{section: " new", section_new: "payments"})
+
+      channel = Channels.get_by_name(ctx.repository.id, "release-1-9")
+      assert channel.section_id == payments.id
+      assert length(Sections.list(ctx.repository.id)) == 1
+      flash = assert_redirect(view, ~p"/channels/#{channel.id}")
+      assert flash["info"] == "Created #release-1-9 in Payments."
+    end
+
+    test "New section… with no name is an error on the field, and nothing is made", ctx do
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      create(view, ctx, %{section: " new", section_new: " "})
+
+      assert has_element?(view, "#channel-form", "name the new section")
+      assert Channels.get_by_name(ctx.repository.id, "release-1-9") == nil
+      assert Sections.list(ctx.repository.id) == []
+    end
+
+    test "a section name over 40 characters is said under the field; no section is left", ctx do
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      create(view, ctx, %{section: " new", section_new: String.duplicate("x", 41)})
+
+      assert has_element?(view, "#channel-form", "should be at most 40 character(s)")
+      assert has_element?(view, "#channel-form input[name='channel[section_new]']")
+      assert has_element?(view, "#channel-form select option[selected][value=' new']")
+      assert Channels.get_by_name(ctx.repository.id, "release-1-9") == nil
+      assert Sections.list(ctx.repository.id) == []
+    end
+
+    test "No section puts the channel at the top of the project", ctx do
+      {:ok, _} = Sections.create(ctx.repository.id, "Payments")
+      {:ok, view, _html} = live(ctx.conn, ~p"/channels/new")
+
+      create(view, ctx, %{section: ""})
+
+      channel = Channels.get_by_name(ctx.repository.id, "release-1-9")
+      assert channel.section_id == nil
+      flash = assert_redirect(view, ~p"/channels/#{channel.id}")
+      assert flash["info"] == "Created #release-1-9."
+    end
+  end
 end

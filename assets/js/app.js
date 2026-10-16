@@ -40,6 +40,8 @@ import copyText from "./copy_text"
 import PlaybookBuilder from "./hooks/playbook_builder"
 import PasteUpload from "./hooks/paste_upload"
 import ScrollChecked from "./hooks/scroll_checked"
+import SidebarChannels from "./hooks/sidebar_channels"
+import UndoToast from "./hooks/undo_toast"
 import notifier from "./notify"
 import "./card_links"
 
@@ -64,6 +66,8 @@ const liveSocket = new LiveSocket("/live", Socket, {
     PlaybookBuilder,
     PasteUpload,
     ScrollChecked,
+    SidebarChannels,
+    UndoToast,
   },
 })
 

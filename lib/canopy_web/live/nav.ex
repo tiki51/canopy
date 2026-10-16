@@ -50,6 +50,7 @@ defmodule CanopyWeb.Nav do
   import Phoenix.Component
   import Phoenix.LiveView
 
+  alias Canopy.Channels.Sections
   alias CanopyWeb.Notify
 
   alias Canopy.{
@@ -200,6 +201,10 @@ defmodule CanopyWeb.Nav do
     end
   end
 
+  @sidebar_events ~w(create_section rename_section move_section delete_section toggle_section
+                     move_channel archive_channel unarchive_channel dismiss_archive_offer
+                     mark_channel_read)
+
   # Settings → Run setup again: the modal opens over the page, from the start.
   defp handle_event("open_setup", _params, socket) do
     {:halt, assign(socket, :setup, socket.assigns.setup || "you")}
@@ -263,7 +268,176 @@ defmodule CanopyWeb.Nav do
     {:halt, %{}, put_flash(socket, :info, message)}
   end
 
+  # The sidebar's sections and archiving, the offer bar, the Undo toast and the
+  # palette, on every page. Each answers `%{ok: true}` or `%{ok: false, error}`
+  # and refreshes this tab's nav at once, so the DOM is settled when a hook's
+  # reply callback runs; the broadcast refreshes the other tabs.
+  defp handle_event(event, params, socket) when event in @sidebar_events do
+    if Environment.resetting?() do
+      message = CanopyWeb.EnvironmentComponents.resetting_message()
+      {:halt, %{ok: false, error: message}, put_flash(socket, :error, message)}
+    else
+      sidebar_event(event, params, socket)
+    end
+  end
+
   defp handle_event(_event, _params, socket), do: {:cont, socket}
+
+  defp sidebar_event("create_section", %{"repository_id" => repo_id, "name" => name}, socket)
+       when is_binary(repo_id) do
+    case Sections.create(repo_id, to_string(name)) do
+      {:ok, section} -> {:halt, %{ok: true, id: section.id}, refresh_nav(socket)}
+      {:error, changeset} -> inline_error(socket, Sections.error_message(changeset))
+    end
+  end
+
+  defp sidebar_event("rename_section", %{"id" => id, "name" => name}, socket) do
+    with_section(socket, id, fn section ->
+      case Sections.rename(section, to_string(name)) do
+        {:ok, _} -> ok(socket)
+        {:error, changeset} -> inline_error(socket, Sections.error_message(changeset))
+      end
+    end)
+  end
+
+  defp sidebar_event("move_section", %{"id" => id, "index" => index}, socket) do
+    with_section(socket, id, fn section ->
+      case to_index(index) do
+        nil ->
+          failed(socket, "That position isn't valid.")
+
+        index ->
+          section |> Sections.move(index) |> result(socket, "That section no longer exists.")
+      end
+    end)
+  end
+
+  defp sidebar_event("delete_section", %{"id" => id}, socket) do
+    with_section(socket, id, fn section ->
+      section |> Sections.delete() |> result(socket, "That section couldn't be deleted.")
+    end)
+  end
+
+  defp sidebar_event("toggle_section", %{"id" => id, "collapsed" => collapsed}, socket) do
+    with_section(socket, id, fn section ->
+      case to_boolean(collapsed) do
+        nil ->
+          failed(socket, "That isn't a section state.")
+
+        value ->
+          section
+          |> Sections.set_collapsed(value)
+          |> result(socket, "That section couldn't be saved.")
+      end
+    end)
+  end
+
+  defp sidebar_event("move_channel", %{"id" => id} = params, socket) do
+    with_channel(socket, id, fn channel ->
+      case params["section_id"] do
+        blank when blank in [nil, ""] ->
+          channel |> Sections.move_channel(nil) |> move_result(socket)
+
+        section_id ->
+          with_section(socket, section_id, fn section ->
+            channel |> Sections.move_channel(section) |> move_result(socket)
+          end)
+      end
+    end)
+  end
+
+  defp sidebar_event("archive_channel", %{"id" => id}, socket) do
+    with_channel(socket, id, fn channel ->
+      case Channels.archive(channel) do
+        {:ok, channel} ->
+          {:halt, %{ok: true},
+           socket
+           |> refresh_nav()
+           |> push_event("canopy:channel_archived", %{id: channel.id, name: channel.name})}
+
+        {:error, _} ->
+          failed(socket, "That channel couldn't be archived.")
+      end
+    end)
+  end
+
+  defp sidebar_event("unarchive_channel", %{"id" => id}, socket) do
+    with_channel(socket, id, fn channel ->
+      channel |> Channels.reopen() |> result(socket, "That channel couldn't be reopened.")
+    end)
+  end
+
+  defp sidebar_event("dismiss_archive_offer", %{"id" => id}, socket) do
+    with_channel(socket, id, fn channel ->
+      channel
+      |> Channels.dismiss_archive_offer()
+      |> result(socket, "That channel couldn't be saved.")
+    end)
+  end
+
+  # This tab only, as opening the channel does: other tabs clear the dot on
+  # their next unread refresh.
+  defp sidebar_event("mark_channel_read", %{"id" => id}, socket) do
+    with_channel(socket, id, fn channel ->
+      :ok = Unread.mark_read(channel.id, Users.local())
+      {:halt, %{ok: true}, refresh_unread(socket)}
+    end)
+  end
+
+  defp sidebar_event(_event, _params, socket), do: failed(socket, "That request was incomplete.")
+
+  defp with_section(socket, id, fun) do
+    case Sections.get(id) do
+      nil -> failed(refresh_nav(socket), "That section no longer exists.")
+      section -> fun.(section)
+    end
+  end
+
+  defp with_channel(socket, id, fun) do
+    case is_binary(id) && Channels.get(id) do
+      %Channels.Channel{} = channel -> fun.(channel)
+      _ -> failed(refresh_nav(socket), "That channel no longer exists.")
+    end
+  end
+
+  defp move_result({:error, :dm}, socket), do: failed(socket, "A DM can't go in a section.")
+
+  defp move_result({:error, :other_repository}, socket),
+    do: failed(socket, "That section is in another project.")
+
+  defp move_result(result, socket), do: result(result, socket, "That channel couldn't be moved.")
+
+  defp result({:ok, _}, socket, _message), do: ok(socket)
+  defp result({:error, :not_found}, socket, message), do: failed(refresh_nav(socket), message)
+
+  defp result({:error, %Ecto.Changeset{} = changeset}, socket, _message),
+    do: failed(socket, Sections.error_message(changeset))
+
+  defp result(_error, socket, message), do: failed(socket, message)
+
+  defp ok(socket), do: {:halt, %{ok: true}, refresh_nav(socket)}
+
+  defp failed(socket, message),
+    do: {:halt, %{ok: false, error: message}, put_flash(socket, :error, message)}
+
+  # The naming fields show their error inline, so no flash.
+  defp inline_error(socket, message), do: {:halt, %{ok: false, error: message}, socket}
+
+  defp to_index(index) when is_integer(index), do: index
+
+  defp to_index(index) when is_binary(index) do
+    case Integer.parse(index) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp to_index(_), do: nil
+
+  defp to_boolean(value) when is_boolean(value), do: value
+  defp to_boolean("true"), do: true
+  defp to_boolean("false"), do: false
+  defp to_boolean(_), do: nil
 
   defp cmdk_stop(%{"channel_id" => id}, socket) when is_binary(id) do
     case Channels.get(id) do

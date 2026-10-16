@@ -1260,4 +1260,140 @@ defmodule CanopyWeb.PlaybooksLiveTest do
       0 -> []
     end
   end
+
+  describe "start: the section picker" do
+    alias Canopy.Channels
+    alias Canopy.Channels.Sections
+
+    defp start_new(view, ctx, extra) do
+      # the name field is only there once "New section…" is picked
+      if extra[:section] == " new" do
+        view
+        |> form("#start-run-form",
+          start: %{runs_in: "new", repository_id: ctx.repository.id, section: " new"}
+        )
+        |> render_change()
+      end
+
+      view
+      |> form("#start-run-form",
+        start:
+          Map.merge(
+            %{
+              runs_in: "new",
+              repository_id: ctx.repository.id,
+              channel_name: "launch-day",
+              coordinator_id: ctx.agent.id,
+              brief: "Ship v2"
+            },
+            extra
+          )
+      )
+      |> render_submit()
+    end
+
+    test "lists the repository's sections and picks the playbook's section:", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      {:ok, _} = Sections.create(ctx.repository.id, "Payments")
+      {:ok, _} = Sections.create(ctx.repository.id, "Releases")
+
+      playbook =
+        playbook_fixture("ship", [{"build", "Build", "coordinator"}], "section: releases\n")
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      view |> form("#start-run-form", start: %{runs_in: "new"}) |> render_change()
+
+      assert has_element?(view, "#start-section option[value='']", "No section")
+      assert has_element?(view, "#start-section option[value='Payments']")
+      assert has_element?(view, "#start-section option[selected][value='Releases']")
+      assert has_element?(view, "#start-section option[value=' new']", "New section…")
+      refute has_element?(view, "#start-section-new")
+      assert has_element?(view, "#start-consequence", "in Releases.")
+
+      view
+      |> form("#start-run-form", start: %{runs_in: "new", section: " new"})
+      |> render_change()
+
+      assert has_element?(view, "#start-section-new")
+    end
+
+    test "a playbook section: that doesn't exist yet is offered as a new section", %{conn: conn} do
+      Fixtures.scenario()
+
+      playbook =
+        playbook_fixture("ship", [{"build", "Build", "coordinator"}], "section: Bug fixes\n")
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      view |> form("#start-run-form", start: %{runs_in: "new"}) |> render_change()
+
+      assert has_element?(view, "#start-section option[selected][value=' new']")
+      assert has_element?(view, "#start-section-new[value='Bug fixes']")
+    end
+
+    test "New section… makes the section and files the run's channel there", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      on_exit(&stop_channels/0)
+      stub_engine(self(), ctx.repository)
+      playbook = playbook_fixture("ship", [{"build", "Build", "coordinator"}])
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      start_new(view, ctx, %{section: " new", section_new: "Launch"})
+
+      {path, flash} = assert_redirect(view)
+      "/channels/" <> channel_id = path
+      assert [%{name: "Launch", id: id}] = Sections.list(ctx.repository.id)
+      assert Channels.get!(channel_id).section_id == id
+      assert flash["info"] =~ "in the new section Launch"
+    end
+
+    test "No section overrides the playbook's section:", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      on_exit(&stop_channels/0)
+      stub_engine(self(), ctx.repository)
+      {:ok, _} = Sections.create(ctx.repository.id, "Releases")
+
+      playbook =
+        playbook_fixture("ship", [{"build", "Build", "coordinator"}], "section: Releases\n")
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      start_new(view, ctx, %{section: ""})
+
+      {"/channels/" <> channel_id, _flash} = assert_redirect(view)
+      assert Channels.get!(channel_id).section_id == nil
+    end
+
+    test "New section… with no name is refused before the run is tried", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      playbook = playbook_fixture("ship", [{"build", "Build", "coordinator"}])
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      html = start_new(view, ctx, %{section: " new", section_new: ""})
+
+      assert html =~ "name the new section"
+      assert Channels.get_by_name(ctx.repository.id, "launch-day") == nil
+      assert has_element?(view, "#start-section option[selected][value=' new']")
+    end
+
+    test "an existing channel's run never takes a section", %{conn: conn} do
+      ctx = Fixtures.scenario()
+      on_exit(&stop_channels/0)
+      stub_engine(self(), ctx.repository)
+
+      playbook =
+        playbook_fixture("ship", [{"build", "Build", "coordinator"}], "section: Releases\n")
+
+      {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/start")
+      view |> form("#start-run-form", start: %{runs_in: "existing"}) |> render_change()
+
+      view
+      |> form("#start-run-form",
+        start: %{runs_in: "existing", channel_id: ctx.channel.id, coordinator_id: ctx.agent.id}
+      )
+      |> render_submit()
+
+      assert_redirect(view)
+      assert Channels.get!(ctx.channel.id).section_id == nil
+      assert Sections.list(ctx.repository.id) == []
+    end
+  end
 end

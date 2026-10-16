@@ -26,7 +26,8 @@ defmodule Canopy.Environment.Clear do
               search_entries timeline_events turn_activity_details permission_requests
               question_requests signoff_requests lock_claims routing_pauses watch_items schedules tasks
               delegations handoffs playbook_steps playbook_runs playbooks documents messages
-              channel_agents agent_memories agent_sessions team_members teams channels agents)
+              channel_agents agent_memories agent_sessions team_members teams channels
+              channel_sections agents)
 
   @doc "The tables a reset keeps."
   def kept_tables, do: @kept

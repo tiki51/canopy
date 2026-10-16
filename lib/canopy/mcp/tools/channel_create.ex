@@ -39,6 +39,10 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
     field :text, :string,
       description: "A first message to post, in Markdown. @name mentions wake those agents."
 
+    field :section, :string,
+      description:
+        "Section of the project to file the new channel under, by name (canopy_channels_list shows the sections). An existing section matches in any case; a name that doesn't exist creates the section (added last). Leave it out for the top of the project."
+
     field :spend_limit, {:either, {:integer, :float}},
       description:
         "Optional total the channel may spend, in dollars. Once reached, agents in it stay quiet until the user raises it. Only the user can change it later."
@@ -62,9 +66,10 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
             else: ""
 
         brief = if channel.brief, do: "; brief set", else: ""
+        section = section_note(channel.section)
 
         {:ok,
-         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{limit}#{brief}#{posted}. " <>
+         "created ##{channel.name} [#{channel.id}] in #{channel.repository.name}; you own it; members #{members}#{limit}#{brief}#{section}#{posted}. " <>
            "Post there with canopy_message_send channel: \"#{channel.name}\"."}
       end
     end)
@@ -83,7 +88,8 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
       task_description: Tool.blank_to_nil(Map.get(params, :task)),
       spend_limit: limit(Map.get(params, :spend_limit)),
       brief: Tool.blank_to_nil(Map.get(params, :brief)),
-      brief_by: ctx.agent.id
+      brief_by: ctx.agent.id,
+      section: Tool.blank_to_nil(Map.get(params, :section))
     }
 
     case Channels.create(attrs) do
@@ -94,6 +100,12 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
         {:error, "could not create channel: " <> Tool.changeset_reason(changeset)}
     end
   end
+
+  defp section_note(%Canopy.Channels.Section{created?: true, name: name}),
+    do: "; in the new section #{name}"
+
+  defp section_note(%Canopy.Channels.Section{name: name}), do: "; in section #{name}"
+  defp section_note(_), do: ""
 
   defp limit(n) when is_number(n) and n > 0, do: n / 1
   defp limit(_), do: nil

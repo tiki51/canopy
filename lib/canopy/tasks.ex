@@ -18,7 +18,9 @@ defmodule Canopy.Tasks do
 
   @doc """
   Updates a task and records `task_updated` with the changed fields. Options:
-  `:agent_id` — the agent making the change, stored on the event.
+  `:agent_id` — the agent making the change, stored on the event. A status
+  moving into or out of `completed` also broadcasts `{:channels, :changed}`,
+  so every sidebar's done mark follows.
   """
   def update(%Task{} = task, attrs, opts \\ []) do
     changeset = Task.update_changeset(task, attrs)
@@ -37,9 +39,13 @@ defmodule Canopy.Tasks do
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{task: task, event: event}} ->
+      {:ok, %{task: updated, event: event}} ->
         Timeline.broadcast(event)
-        {:ok, Repo.preload(task, @preloads, force: true)}
+        # the sidebar's done mark follows the task into and out of completed
+        if Map.has_key?(changes, "status") and "completed" in [task.status, updated.status],
+          do: Canopy.Channels.notify_changed()
+
+        {:ok, Repo.preload(updated, @preloads, force: true)}
 
       {:error, _step, changeset, _} ->
         {:error, changeset}

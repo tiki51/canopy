@@ -95,11 +95,29 @@ defmodule CanopyWeb.CommandPaletteTest do
              current_channel_id: "ch_1",
              current_repository_id: "rep_1",
              current_path: "/channels/ch_1",
-             hold: "Insufficient balance"
-           }) == %{channel_id: "ch_1", repo_id: "rep_1", path: "/channels/ch_1", hold: true}
+             hold: "Insufficient balance",
+             sections: [%{id: "sec_1", name: "Payments"}]
+           }) == %{
+             channel_id: "ch_1",
+             repo_id: "rep_1",
+             path: "/channels/ch_1",
+             hold: true,
+             sections: [%{id: "sec_1", name: "Payments"}]
+           }
 
     assert CommandPalette.context(%{current_path: "/agents", hold: nil}) ==
-             %{channel_id: nil, repo_id: nil, path: "/agents", hold: false}
+             %{channel_id: nil, repo_id: nil, path: "/agents", hold: false, sections: []}
+  end
+
+  test "sections/2 lists a repository's sections, or none" do
+    repositories = [
+      %{id: "rep_1", sections: [%{id: "sec_1", name: "Payments", position: 0}]},
+      %{id: "rep_2", sections: []}
+    ]
+
+    assert CommandPalette.sections(repositories, "rep_1") == [%{id: "sec_1", name: "Payments"}]
+    assert CommandPalette.sections(repositories, "rep_2") == []
+    assert CommandPalette.sections(repositories, nil) == []
   end
 
   describe "Commands.catalog/0" do
