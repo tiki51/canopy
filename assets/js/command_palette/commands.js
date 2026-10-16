@@ -8,10 +8,13 @@
 //   {dmPicker: true}              opens the "new direct message" modal
 //   {theme: "system"|"light"|"dark"}
 //   {notify: true|false}          the desktop notifications master switch
+//   {archive: channelId}          Nav's archive_channel, with the Undo toast
+//   {sectionStep: true}           asks which section to move the channel to
 //
-// `ctx`: {path, hold, channel: {id, kind, archived} | null, repoId,
-// repos: [{id, name}], playbooks: [{id, name}], notify: "on" | "off" |
-// "blocked" | "unsupported" | null}. No DOM here.
+// `ctx`: {path, hold, channel: {id, kind, archived, section} | null, repoId,
+// repos: [{id, name}], sections: [{id, name}] (the open channel's project),
+// playbooks: [{id, name}], notify: "on" | "off" | "blocked" | "unsupported" |
+// null}. No DOM here.
 
 const PAGES = [
   ["search", "Search", "/search", "find messages turns files"],
@@ -135,6 +138,22 @@ export function commands(ctx) {
     action: {navigate: `/playbooks/${encodeURIComponent(playbook.id)}/start`},
   }))
 
+  // the open channel's place in the sidebar
+  const tidy = !inGroupChannel(ctx) ? [] : [
+    {
+      id: "archive-channel",
+      label: "Archive this channel",
+      keywords: ["close", "done", "tidy", "hide"],
+      action: {archive: ctx.channel.id},
+    },
+    ...((ctx.sections || []).length === 0 ? [] : [{
+      id: "move-to-section",
+      label: "Move to section…",
+      keywords: ["group", "file", "folder", "organize", "sidebar"],
+      action: {sectionStep: true},
+    }]),
+  ]
+
   const at = listed.findIndex(command => command.id === "new-dm")
-  return [...listed.slice(0, at), ...perRepo, ...listed.slice(at), ...playbooks]
+  return [...listed.slice(0, at), ...perRepo, ...listed.slice(at), ...tidy, ...playbooks]
 }

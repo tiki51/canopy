@@ -293,6 +293,73 @@ defmodule Canopy.Playbooks.RunsTest do
       assert text =~ "Step 1: Plan (plan), owners you."
     end
 
+    test "section: the new channel's section, else the playbook's default, \"\" for none",
+         ctx do
+      stub_engine(self(), ctx.repository)
+      alias Canopy.Channels.{Section, Sections}
+
+      playbook =
+        playbook_fixture(
+          "filed",
+          [{"plan", "Plan", "coordinator"}],
+          "section: Releases\n"
+        )
+
+      # no :section: the playbook's default, created on first use
+      {run, true} = start!(ctx, playbook, %{channel_name: "filed-1"})
+      assert %Section{name: "Releases", created?: true} = run.channel.section
+      releases = Sections.find_by_name(ctx.repository.id, "releases")
+      assert run.channel.section_id == releases.id
+
+      # found the second time
+      {run, true} = start!(ctx, playbook, %{channel_name: "filed-2"})
+      assert %Section{created?: false} = run.channel.section
+      assert run.channel.section_id == releases.id
+
+      # an explicit name overrides it; "" means none
+      {run, true} = start!(ctx, playbook, %{channel_name: "filed-3", section: "Hotfixes"})
+      assert %Section{name: "Hotfixes", created?: true} = run.channel.section
+      {run, true} = start!(ctx, playbook, %{channel_name: "filed-4", section: ""})
+      assert run.channel.section_id == nil
+      assert run.channel.section == nil
+
+      # a bad name fails the start before anything is written
+      assert {:error, reason} =
+               Runs.start(%{
+                 playbook: playbook,
+                 channel: ctx.channel,
+                 coordinator: ctx.agent,
+                 channel_name: "filed-5",
+                 section: String.duplicate("x", 41)
+               })
+
+      assert reason == "could not create the channel: section should be at most 40 character(s)"
+      refute Channels.get_by_name(ctx.repository.id, "filed-5")
+
+      # a failing start (the name is taken) leaves no new section
+      assert {:error, _} =
+               Runs.start(%{
+                 playbook: playbook,
+                 channel: ctx.channel,
+                 coordinator: ctx.agent,
+                 channel_name: ctx.channel.name,
+                 section: "Never"
+               })
+
+      assert Sections.find_by_name(ctx.repository.id, "Never") == nil
+
+      # in an existing channel, section is ignored and the channel stays put
+      {run, false} = start!(ctx, playbook, %{section: "Elsewhere"})
+      assert run.channel_id == ctx.channel.id
+      assert run.channel.section_id == nil
+      assert Sections.find_by_name(ctx.repository.id, "Elsewhere") == nil
+
+      assert ctx.repository.id |> Sections.list() |> Enum.map(& &1.name) == [
+               "Releases",
+               "Hotfixes"
+             ]
+    end
+
     test "a channel_name creates a channel owned by the coordinator and wakes it there", ctx do
       stub_engine(self(), ctx.repository)
 

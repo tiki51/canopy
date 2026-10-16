@@ -11,7 +11,7 @@ defmodule Canopy.Playbooks.Writer do
 
     * `:title` — the body's `# Heading` (the human name)
     * `:name`, `:description`, `:team`, `:coordinator`, `:stall_after`,
-      `:inputs` — as on the definition
+      `:inputs`, `:section` — as on the definition
     * `:roles` — `[%{key: role, agent: name | nil}]`, in order of first use;
       a role with no agent is kept for the builder but not written
     * `:guidance` — the ground rules, between the heading and the first step
@@ -50,6 +50,7 @@ defmodule Canopy.Playbooks.Writer do
       coordinator: definition.coordinator,
       stall_after: definition.stall_after,
       inputs: definition.inputs,
+      section: definition.section,
       roles: roles(definition),
       guidance: guidance,
       steps:
@@ -81,6 +82,7 @@ defmodule Canopy.Playbooks.Writer do
       coordinator: nil,
       stall_after: Definition.default_stall_minutes(),
       inputs: nil,
+      section: nil,
       roles: [],
       guidance: "",
       steps: [],
@@ -123,6 +125,7 @@ defmodule Canopy.Playbooks.Writer do
       line("name", draft.name),
       line("description", draft.description),
       line("team", draft.team),
+      line("section", Map.get(draft, :section)),
       roles_block(draft.roles),
       line("coordinator", draft.coordinator),
       stall_line(draft.stall_after),

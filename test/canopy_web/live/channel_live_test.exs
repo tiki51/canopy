@@ -2508,7 +2508,13 @@ defmodule CanopyWeb.ChannelLiveTest do
         assert has_element?(view, "#details-body > ##{id}")
       end
 
-      assert has_element?(view, "#details-view #archive-channel[data-canopy-confirm]")
+      # one click, undone from the toast: no confirm
+      assert has_element?(
+               view,
+               "#details-view #archive-channel[phx-click=archive_channel][phx-value-id='#{channel.id}']"
+             )
+
+      refute has_element?(view, "#details-view #archive-channel[data-canopy-confirm]")
       assert has_element?(view, "#details-panel-close[phx-click=close_panel]")
     end
 

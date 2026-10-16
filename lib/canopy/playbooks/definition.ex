@@ -8,9 +8,11 @@ defmodule Canopy.Playbooks.Definition do
   sentence, at most 200 chars), `steps` (1–20 of `id`, `title`, `owner`, and
   optionally `approval: user`, `optional: true`, `on_reject: <earlier id>`),
   and optionally `roles` (role => default agent name), `team`, `coordinator`,
-  `inputs`, and `stall_after` (`30m`, `2h`, a number of minutes, or `off`;
-  default 30 minutes). Where a run happens is chosen when it starts; an old
-  `channel:` field is accepted and ignored.
+  `inputs`, `stall_after` (`30m`, `2h`, a number of minutes, or `off`;
+  default 30 minutes), and `section` (the sidebar section a run's new channel
+  goes in by default, found in any case or created; at most 40 characters).
+  Where a run happens is chosen when it starts; an old `channel:` field is
+  accepted and ignored.
 
   `owner` is a role, a list of roles (they work in parallel), or the reserved
   role `coordinator`. Pure: `parse/1` returns `{:ok, %Definition{}}` or
@@ -24,7 +26,7 @@ defmodule Canopy.Playbooks.Definition do
   @name_regex ~r/^[a-z0-9]+(-[a-z0-9]+)*$/
   # `channel` is accepted and ignored, whatever its value: runs started
   # before it went keep it in their stored text, and so do older files
-  @top_keys ~w(name description steps roles team coordinator channel inputs stall_after)
+  @top_keys ~w(name description steps roles team coordinator channel inputs stall_after section)
   @step_keys ~w(id title owner approval optional on_reject)
   @max_steps 20
   # read before the YAML parser sees anything, so it never works on more
@@ -40,6 +42,7 @@ defmodule Canopy.Playbooks.Definition do
             team: nil,
             coordinator: nil,
             inputs: nil,
+            section: nil,
             stall_after: @default_stall_minutes,
             body: "",
             warnings: []
@@ -61,6 +64,7 @@ defmodule Canopy.Playbooks.Definition do
           team: String.t() | nil,
           coordinator: String.t() | nil,
           inputs: String.t() | nil,
+          section: String.t() | nil,
           stall_after: pos_integer() | nil,
           body: String.t(),
           warnings: [String.t()]
@@ -127,6 +131,7 @@ defmodule Canopy.Playbooks.Definition do
       |> Kernel.++(check_optional_string(data, "team"))
       |> Kernel.++(check_optional_string(data, "coordinator"))
       |> Kernel.++(check_optional_string(data, "inputs"))
+      |> Kernel.++(check_section(data["section"]))
 
     {roles, role_errors} = roles(data["roles"])
     {stall, stall_errors} = stall_after(Map.get(data, "stall_after", :default))
@@ -143,6 +148,7 @@ defmodule Canopy.Playbooks.Definition do
         team: team && String.trim_leading(team, "@"),
         coordinator: blank_to_nil(data["coordinator"]) |> strip_at(),
         inputs: blank_to_nil(data["inputs"]),
+        section: blank_to_nil(data["section"]),
         stall_after: stall,
         body: String.trim(body)
       }
@@ -188,6 +194,17 @@ defmodule Canopy.Playbooks.Definition do
   end
 
   defp check_description(_), do: ["description must be text"]
+
+  defp check_section(nil), do: []
+
+  defp check_section(value) when is_binary(value) do
+    case Canopy.Channels.Sections.validate_name(value) do
+      :ok -> []
+      {:error, message} -> ["section " <> message]
+    end
+  end
+
+  defp check_section(_), do: ["section must be text"]
 
   defp check_optional_string(data, key) do
     case Map.get(data, key) do

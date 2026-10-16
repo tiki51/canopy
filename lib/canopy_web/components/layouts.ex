@@ -90,8 +90,17 @@ defmodule CanopyWeb.Layouts do
       inert={@setup != nil and @socket != nil}
     >
       <%!-- Below lg the rail and sidebar slide in over the page; this checkbox
-      is their open state, toggled by <.menu_button> and the overlay. --%>
-      <input id="app-drawer" type="checkbox" class="peer sr-only" aria-hidden="true" tabindex="-1" />
+      is their open state, toggled by <.menu_button> and the overlay. Ignored
+      by patches, which would uncheck it: the sidebar's own actions refresh
+      the nav and must leave the drawer open. Navigation closes it (app.js). --%>
+      <input
+        id="app-drawer"
+        type="checkbox"
+        class="peer sr-only"
+        aria-hidden="true"
+        tabindex="-1"
+        phx-update="ignore"
+      />
       <label
         for="app-drawer"
         id="app-drawer-overlay"
@@ -182,7 +191,7 @@ defmodule CanopyWeb.Layouts do
 
         <aside
           id="sidebar"
-          class="relative flex w-64 shrink-0 flex-col overflow-y-auto border-r border-base-300 bg-base-200"
+          class="relative flex w-64 shrink-0 flex-col overflow-y-auto [overflow-anchor:none] border-r border-base-300 bg-base-200"
           aria-label="Channels and agents"
           phx-hook="SidebarScroll"
         >
@@ -217,92 +226,17 @@ defmodule CanopyWeb.Layouts do
             to create channels.
           </div>
 
-          <div
-            :for={repository <- @repositories}
-            class="px-2 pb-2"
-            id={"sidebar-repo-#{repository.id}"}
-          >
-            <div
-              class="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-base-content/70"
-              title={repository.path}
-            >
-              <.icon name="hero-folder-mini" class="size-3.5 text-base-content/40" />
-              <span class="truncate">{repository.name}</span>
-            </div>
-            <ul class="flex flex-col gap-px">
-              <li :for={channel <- visible_channels(repository.channels, @current_channel_id)}>
-                <.link
-                  navigate={~p"/channels/#{channel.id}"}
-                  id={"sidebar-channel-#{channel.id}"}
-                  data-active={channel.id == @current_channel_id}
-                  class={[
-                    "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition",
-                    channel.id == @current_channel_id &&
-                      "bg-primary/10 dark:bg-primary/15 text-primary font-medium",
-                    channel.id != @current_channel_id &&
-                      "text-base-content/80 hover:bg-base-300 hover:text-base-content",
-                    channel.status == "archived" && "opacity-50"
-                  ]}
-                  title={channel.topic}
-                >
-                  <span class="opacity-60">#</span>
-                  <span class={["truncate", unread_class(@unread, channel.id, @current_channel_id)]}>
-                    {channel.name}
-                  </span>
-                  <span
-                    :if={Canopy.Attention.playbook?(Map.get(@attention, channel.id))}
-                    id={"sidebar-playbook-#{channel.id}"}
-                    class="flex shrink-0 text-primary/70"
-                    title="A playbook run is in progress"
-                  >
-                    <.icon name="hero-book-open-micro" class="size-3" />
-                  </span>
-                  <.icon
-                    :if={channel.status == "archived"}
-                    name="hero-archive-box-mini"
-                    class="ml-auto size-3.5 opacity-60"
-                  />
-                  <span class="ml-auto flex shrink-0 items-center gap-1">
-                    <.attention_mark attention={@attention} channel_id={channel.id} />
-                    <.unread_mark
-                      unread={@unread}
-                      channel_id={channel.id}
-                      current_id={@current_channel_id}
-                    />
-                  </span>
-                </.link>
-              </li>
-              <li :if={repository.channels == []} class="px-2 py-0.5 text-xs text-base-content/60">
-                no channels
-              </li>
-            </ul>
-            <details
-              :if={archived_channels(repository.channels, @current_channel_id) != []}
-              id={"sidebar-archived-#{repository.id}"}
-              class="group/arch"
-            >
-              <summary class="flex cursor-pointer select-none list-none items-center gap-1 rounded-md px-2 py-1 text-[11px] text-base-content/60 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
-                <.icon
-                  name="hero-chevron-right-mini"
-                  class="size-3 transition-transform group-open/arch:rotate-90"
-                />
-                {length(archived_channels(repository.channels, @current_channel_id))} archived
-              </summary>
-              <ul class="flex flex-col gap-px">
-                <li :for={channel <- archived_channels(repository.channels, @current_channel_id)}>
-                  <.link
-                    navigate={~p"/channels/#{channel.id}"}
-                    id={"sidebar-channel-#{channel.id}"}
-                    class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-base-content/50 opacity-70 transition hover:bg-base-300 hover:text-base-content"
-                    title={channel.topic}
-                  >
-                    <span class="opacity-60">#</span>
-                    <span class="truncate">{channel.name}</span>
-                    <.icon name="hero-archive-box-mini" class="ml-auto size-3.5 opacity-60" />
-                  </.link>
-                </li>
-              </ul>
-            </details>
+          <%!-- Menus, naming in place and drag for the project blocks
+               (assets/js/hooks/sidebar_channels.js). On a wrapper because
+               #sidebar already carries SidebarScroll. --%>
+          <div id="sidebar-projects" phx-hook="SidebarChannels">
+            <CanopyWeb.Sidebar.project
+              :for={repository <- @repositories}
+              repository={repository}
+              current_channel_id={@current_channel_id}
+              unread={@unread}
+              attention={@attention}
+            />
           </div>
 
           <div class="mt-2 flex items-center justify-between px-4 pt-2 pb-2">
@@ -419,7 +353,7 @@ defmodule CanopyWeb.Layouts do
         </aside>
       </div>
 
-      <main class="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main id="main" tabindex="-1" class="flex min-w-0 flex-1 flex-col overflow-hidden outline-none">
         <div
           :if={@hold}
           id="hold-banner"
@@ -473,7 +407,8 @@ defmodule CanopyWeb.Layouts do
             current_channel_id: @current_channel_id,
             current_repository_id: @current_repository_id,
             current_path: @current_path,
-            hold: @hold
+            hold: @hold,
+            sections: CanopyWeb.CommandPalette.sections(@repositories, @current_repository_id)
           })
         }
       />
@@ -484,6 +419,20 @@ defmodule CanopyWeb.Layouts do
       live_render(@socket, CanopyWeb.OnboardingLive, id: "setup", session: %{"step" => @setup})}
 
     <.flash_group flash={@flash} />
+
+    <%!-- The sidebar's row and section menu (built by SidebarChannels on
+         each open; popover="auto" puts it in the top layer) and the Undo
+         toast after an archive (UndoToast, on "canopy:channel_archived").
+         Both belong to their hooks. --%>
+    <div
+      id="sidebar-menu"
+      popover="auto"
+      role="menu"
+      phx-update="ignore"
+      class="sidebar-menu"
+    >
+    </div>
+    <div id="sidebar-undo-toast" phx-hook="UndoToast" phx-update="ignore" aria-live="polite"></div>
     """
   end
 
@@ -771,7 +720,8 @@ defmodule CanopyWeb.Layouts do
   attr :channel_id, :string, required: true
   attr :current_id, :string, default: nil
 
-  defp unread_mark(assigns) do
+  @doc false
+  def unread_mark(assigns) do
     assigns =
       assign(
         assigns,
@@ -817,7 +767,8 @@ defmodule CanopyWeb.Layouts do
   attr :attention, :map, required: true
   attr :channel_id, :string, required: true
 
-  defp attention_mark(assigns) do
+  @doc false
+  def attention_mark(assigns) do
     assigns =
       assign(
         assigns,
@@ -852,12 +803,4 @@ defmodule CanopyWeb.Layouts do
 
   defp unread_title(%{count: count, mentions: mentions}),
     do: "#{mentions} #{if mentions == 1, do: "mention", else: "mentions"} · #{count} unread"
-
-  # Archived channels stay out of the list unless you are in one; the rest fold
-  # behind an "N archived" toggle.
-  defp visible_channels(channels, current_id),
-    do: Enum.filter(channels, &(&1.status != "archived" or &1.id == current_id))
-
-  defp archived_channels(channels, current_id),
-    do: Enum.filter(channels, &(&1.status == "archived" and &1.id != current_id))
 end

@@ -336,10 +336,11 @@ to: researcher …" as in the README demo prompt.
       gets a row, the header's count goes up, and the timeline says it joined. Click the × on
       another member → it is gone and the timeline says so. `@` in the composer only suggests
       current members.
-- [ ] **Details › View › Archive channel…** (confirm the prompt) → an **archived** badge, the
-      composer is replaced by a notice with a **Reopen** button (so is the header's **Stop**),
-      the sidebar entry is dimmed with a box icon, and agents' `channels_list` shows it as
-      archived. **Reopen** brings the composer back.
+- [ ] **Details › View › Archive channel** → no prompt: an **archived** badge, the composer is
+      replaced by a notice with a **Reopen** button (so is the header's **Stop**), the sidebar
+      entry moves under "N archived", dimmed with a box icon, and agents' `channels_list` shows
+      it as archived. An *Archived #name* toast offers **Undo**, which puts it back; it leaves
+      after about 6 seconds (hovering holds it). **Reopen** brings the composer back.
 - [ ] Details remembers itself: on a wide window, close it with **×** and reload → closed;
       open it, open a thread (Details gives way), close the thread, reload → open again.
       Narrow the window below 1024px → Details closes; with it opened there (full screen),

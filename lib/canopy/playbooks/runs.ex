@@ -32,7 +32,7 @@ defmodule Canopy.Playbooks.Runs do
 
   alias Canopy.{Agents, Channels, Documents, Messages, Repo, Runtime, Teams, Timeline}
   alias Canopy.Agents.Agent
-  alias Canopy.Channels.Channel
+  alias Canopy.Channels.{Channel, Section}
   alias Canopy.Playbooks
   alias Canopy.Playbooks.{Definition, Playbook, Run, StallWorker, Step}
   alias Canopy.Runtime.Prompts
@@ -45,7 +45,7 @@ defmodule Canopy.Playbooks.Runs do
     :coordinator,
     :started_by,
     :playbook,
-    channel: [:repository],
+    channel: [:repository, :section],
     steps: [delegations: [:to_agent]]
   ]
   @result_excerpt 300
@@ -153,6 +153,10 @@ defmodule Canopy.Playbooks.Runs do
       duplicates collapse): they post with the brief as the run's kickoff
       message (see below)
     * `:trigger` — for a run a watch started
+    * `:section` — with `:channel_name`, the sidebar section for the new
+      channel, by name (found in any case, else created last); `""` for none;
+      nil or absent for the playbook's `section:`. A run never moves an
+      existing channel, so it is ignored without `:channel_name`.
     * `:new_channel_via` — how the starter would open a new channel instead,
       for the busy and DM refusals: `"with channel_name"` (an agent, the
       default) or, say, `"from the Playbooks page"`
@@ -216,7 +220,23 @@ defmodule Canopy.Playbooks.Runs do
         )
       end
 
-      {:ok, get!(run.id), new?}
+      {:ok, with_created_section(get!(run.id), changes, new?), new?}
+    end
+  end
+
+  # The reload drops `created?`, which says whether the new channel's section is new.
+  defp with_created_section(run, %{channel: %Channel{section: %Section{} = section}}, true),
+    do: put_in(run.channel.section, section)
+
+  defp with_created_section(run, _changes, _new?), do: run
+
+  # The new channel's section: the one asked for (`""` for none), else the
+  # playbook's default.
+  defp run_section(attrs, definition) do
+    case Map.get(attrs, :section) do
+      nil -> definition.section
+      name when is_binary(name) -> String.trim(name)
+      _ -> nil
     end
   end
 
@@ -515,7 +535,8 @@ defmodule Canopy.Playbooks.Runs do
                team_ids: if(team, do: [team.id], else: []),
                task_title:
                  String.slice(if(brief == "", do: about, else: single_line(brief)), 0, 120),
-               task_description: if(brief != "", do: brief)
+               task_description: if(brief != "", do: brief),
+               section: run_section(attrs, definition)
              }) do
           {:ok, channel} ->
             {:ok, channel}

@@ -30,6 +30,30 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
   end
 
   describe "channel_create" do
+    test "section files the channel under an existing section or a new one", ctx do
+      {:ok, _} = Canopy.Channels.Sections.create(ctx.repository.id, "Releases")
+
+      assert {:ok, text} = call(ChannelCreate, %{name: "found", section: "RELEASES"}, ctx)
+      assert text =~ "; in section Releases"
+      refute text =~ "new section"
+
+      assert {:ok, text} = call(ChannelCreate, %{name: "fresh", section: "Launches"}, ctx)
+      assert text =~ "; in the new section Launches"
+      assert Channels.get_by_name(ctx.repository.id, "fresh").section.name == "Launches"
+
+      assert {:ok, text} = call(ChannelCreate, %{name: "plain"}, ctx)
+      refute text =~ "section"
+
+      assert {:error, reason} =
+               call(ChannelCreate, %{name: "long", section: String.duplicate("x", 41)}, ctx)
+
+      assert reason == "could not create channel: section should be at most 40 character(s)"
+      refute Channels.get_by_name(ctx.repository.id, "long")
+
+      assert ctx.repository.id |> Canopy.Channels.Sections.list() |> Enum.map(& &1.name) ==
+               ["Releases", "Launches"]
+    end
+
     test "an agent can set a spend limit at creation, not change it later", ctx do
       assert {:ok, text} = call(ChannelCreate, %{name: "budgeted", spend_limit: 3}, ctx)
       assert text =~ "spend limit $3.00"

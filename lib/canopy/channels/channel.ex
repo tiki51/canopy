@@ -27,8 +27,14 @@ defmodule Canopy.Channels.Channel do
     field :brief_updated_at, :utc_datetime_usec
     # "user" or an agent id
     field :brief_updated_by, :string
+    # set when the user chose to keep the channel open after its task was
+    # done, so the archive offer never comes back
+    field :archive_offer_dismissed_at, :utc_datetime_usec
 
     belongs_to :repository, Canopy.Repositories.Repository
+    # the sidebar section; nil for the top of the project. Not in
+    # `changeset/2`: only `Canopy.Channels.Sections` and `create/1` set it.
+    belongs_to :section, Canopy.Channels.Section
     belongs_to :owner, Canopy.Agents.Agent, foreign_key: :owner_agent_id
     has_one :task, Canopy.Tasks.Task
     has_many :channel_agents, Canopy.Channels.ChannelAgent

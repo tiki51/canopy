@@ -162,12 +162,12 @@ test.describe("layout", () => {
     await expectNoPageScroll(page);
   });
 
-  test("Archive in Details asks first, then archives; Reopen brings it back", async ({ page }) => {
+  test("Archive in Details archives at once, with an Undo toast; Reopen brings it back", async ({ page }) => {
     await createChannel(page);
     await page.locator("#toggle-details").click();
     await page.locator("#archive-channel").click();
-    await expect(page.locator("#canopy-confirm")).toBeVisible();
-    await page.locator("#canopy-confirm-ok").click();
+    await expect(page.locator("#canopy-confirm")).toBeHidden();
+    await expect(page.locator("#sidebar-undo-toast")).toContainText("Archived");
     await expect(page.locator("#archived-badge")).toBeVisible();
     await expect(page.locator("#archived-bar")).toBeVisible();
     await expect(page.locator("#archive-channel")).toBeHidden();

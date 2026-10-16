@@ -96,6 +96,7 @@ defmodule CanopyWeb.ChannelLive do
     {:ok,
      socket
      |> assign(:channel, nil)
+     |> assign(:archive_offer, nil)
      |> assign(:compact?, true)
      # the pinned brief opened up; this browser remembers it (Pref hook)
      |> assign(:brief_expanded?, false)
@@ -637,6 +638,7 @@ defmodule CanopyWeb.ChannelLive do
     socket
     |> assign(:page_title, channel_title(channel))
     |> assign(:channel, channel)
+    |> assign(:archive_offer, Channels.archive_offer(channel))
     |> assign(:members, members)
     |> assign(:member_names, Enum.map(members, & &1.name))
     |> assign_mention_sources(channel)
@@ -868,6 +870,12 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:thread_unread, unread)
     |> refresh_roots(MapSet.to_list(changed))
   end
+
+  # The "Task done" bar's text. Whether it shows is read from Nav's copy of
+  # the channel (`archive_offer?/1` on `@repositories`), which every tab
+  # refreshes on `{:channels, :changed}`; see `done_bar/1`.
+  defp assign_archive_offer(socket),
+    do: assign(socket, :archive_offer, Channels.archive_offer(cid(socket)))
 
   defp assign_task(socket, task) do
     form = if task, do: to_form(Tasks.change(task), id: "task-form"), else: nil
@@ -1495,8 +1503,17 @@ defmodule CanopyWeb.ChannelLive do
        when type in ~w(member_added member_removed team_added),
        do: refresh_members(socket)
 
-  defp react_to(socket, %{event_type: type}) when type in ~w(channel_archived channel_reopened),
-    do: socket |> refresh_channel() |> Nav.refresh_nav()
+  defp react_to(socket, %{event_type: "channel_archived"}) do
+    socket
+    |> refresh_channel()
+    |> assign(:editing_members?, false)
+    |> assign(:editing_task?, false)
+    |> assign_archive_offer()
+    |> Nav.refresh_nav()
+  end
+
+  defp react_to(socket, %{event_type: "channel_reopened"}),
+    do: socket |> refresh_channel() |> assign_archive_offer() |> Nav.refresh_nav()
 
   defp react_to(socket, %{event_type: "repository_switched"}),
     do: socket |> refresh_channel() |> assign_branch() |> watch_locks() |> Nav.refresh_nav()
@@ -1518,7 +1535,7 @@ defmodule CanopyWeb.ChannelLive do
   end
 
   defp react_to(socket, %{event_type: "task_updated"}),
-    do: assign_task(socket, Tasks.for_channel(cid(socket)))
+    do: socket |> assign_task(Tasks.for_channel(cid(socket))) |> assign_archive_offer()
 
   defp react_to(socket, %{event_type: "permission_" <> _}), do: refresh_permissions(socket)
   defp react_to(socket, %{event_type: "question_" <> _}), do: refresh_questions(socket)
@@ -2604,21 +2621,13 @@ defmodule CanopyWeb.ChannelLive do
     end
   end
 
-  def handle_event("archive_channel", _params, socket) do
-    {:ok, channel} = Channels.archive(socket.assigns.channel)
-
-    {:noreply,
-     socket
-     |> assign(:channel, channel)
-     |> assign(:editing_members?, false)
-     |> assign(:editing_task?, false)
-     |> Nav.refresh_nav()
-     |> put_flash(:info, "##{channel.name} archived. Reopen it any time from its header.")}
-  end
-
+  # Archiving is a Nav event (`archive_channel` with the id, from every
+  # entry point); reopening here is deliberate, so a finished channel you
+  # reopen stops offering to be archived.
   def handle_event("reopen_channel", _params, socket) do
-    {:ok, channel} = Channels.reopen(socket.assigns.channel)
-    {:noreply, socket |> assign(:channel, channel) |> Nav.refresh_nav()}
+    {:ok, channel} = Channels.reopen(socket.assigns.channel, keep_open: true)
+
+    {:noreply, socket |> assign(:channel, channel) |> assign_archive_offer() |> Nav.refresh_nav()}
   end
 
   def handle_event("validate_task", %{"task" => params}, socket) do
@@ -2977,6 +2986,15 @@ defmodule CanopyWeb.ChannelLive do
             :if={!Channels.archived?(@channel)}
             waiting={@waiting_on_user}
             signoffs={@pending_signoffs}
+          />
+          <.done_bar
+            :if={
+              @archive_offer && !Channels.archived?(@channel) &&
+                nav_archive_offer?(@repositories, @channel.id)
+            }
+            channel={@channel}
+            offer={@archive_offer}
+            names={@names}
           />
           <.composer
             :if={!Channels.archived?(@channel)}
@@ -3933,14 +3951,12 @@ defmodule CanopyWeb.ChannelLive do
                 id="archive-channel"
                 class="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left text-[13px] hover:bg-base-200"
                 phx-click="archive_channel"
-                data-canopy-confirm={"Nobody can post in ##{@channel.name} until it is reopened."}
-                data-canopy-confirm-title={"Archive ##{@channel.name}?"}
-                data-canopy-confirm-label="Archive"
+                phx-value-id={@channel.id}
               >
                 <.icon
                   name="hero-archive-box-arrow-down-mini"
                   class="size-4 shrink-0 text-base-content/60"
-                /> Archive channel…
+                /> Archive channel
               </button>
             </div>
           </div>
@@ -4442,6 +4458,70 @@ defmodule CanopyWeb.ChannelLive do
       </span>
     </div>
     """
+  end
+
+  attr :channel, :map, required: true
+  attr :offer, :map, required: true, doc: "`Channels.archive_offer/1`"
+  attr :names, :map, required: true
+
+  # The channel's task is done: offer to archive it, or keep it open for good
+  # (both Nav events). Outside the composer's form, so its phx-change never
+  # touches it.
+  defp done_bar(assigns) do
+    ~H"""
+    <div
+      id="done-bar"
+      role="status"
+      class="mx-3 mb-2 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-success/30 bg-success/5 px-4 py-2.5 text-sm sm:mx-4"
+    >
+      <.icon name="hero-check-circle" class="size-5 shrink-0 text-success" />
+      <p class="min-w-0 flex-1">
+        <span class="font-semibold">Task done.</span>
+        {done_credit(@offer, @names)} {Canopy.MCP.Format.relative_time(@offer.completed_at)}.
+        Archive to tidy it out of the sidebar; you can reopen it any time.
+      </p>
+      <div class="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          id="done-bar-archive"
+          class="btn btn-sm btn-success"
+          phx-click="archive_channel"
+          phx-value-id={@channel.id}
+        >
+          <.icon name="hero-archive-box-arrow-down-mini" class="size-4" /> Archive channel
+        </button>
+        <button
+          type="button"
+          id="done-bar-keep"
+          class="btn btn-sm btn-ghost"
+          phx-click="dismiss_archive_offer"
+          phx-value-id={@channel.id}
+        >
+          Keep open
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # Who gets the credit: the agent that completed the task, you, or no one
+  # (older data with no completing event; never the owner by default).
+  defp done_credit(%{by: :agent, agent_id: id, title: title}, names) when is_map_key(names, id),
+    do: "@#{names[id]} finished “#{title}”"
+
+  defp done_credit(%{by: :user, title: title}, _names), do: "You marked “#{title}” complete"
+  defp done_credit(%{title: title}, _names), do: "“#{title}” was completed"
+
+  # Nav's copy of the channel, fresh after every `{:channels, :changed}`
+  # (which Nav handles before this page sees it), decides whether the bar
+  # shows, so Keep open in one tab hides it in every tab.
+  defp nav_archive_offer?(repositories, channel_id) do
+    Enum.any?(repositories, fn repository ->
+      Enum.any?(
+        Map.get(repository, :channels, []),
+        &(&1.id == channel_id and Channels.archive_offer?(&1))
+      )
+    end)
   end
 
   attr :channel, :map, required: true

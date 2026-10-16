@@ -12,6 +12,8 @@ defmodule CanopyWeb.PlaybookStart do
   alias Canopy.{Agents, Channels, Playbooks}
   alias Canopy.Playbooks.Runs
 
+  @new_section CanopyWeb.SectionPicker.new()
+
   @doc """
   The form for `params` (string keys: `playbook_id`, `channel_id`,
   `coordinator_id`, `brief`, `assign`). `channel` is the fixed channel (the
@@ -54,7 +56,10 @@ defmodule CanopyWeb.PlaybookStart do
   `"current"`) runs it in `channel_id`. A channel with a run in progress is
   refused, and a DM or archived one counts as none picked. A typed name
   that's taken, archived channels included, is refused. `roles` (`%{role => agent name}`) overrides the roster where it
-  differs from who would fill the role anyway.
+  differs from who would fill the role anyway. The new channel's sidebar
+  section is `section` (a name, `""` for none, `CanopyWeb.SectionPicker.new/0` for the name in
+  `section_new`), which overrides the playbook's `section:`; left out, the
+  playbook's applies.
 
   From the run panel, the run always happens in `channel`.
 
@@ -78,14 +83,20 @@ defmodule CanopyWeb.PlaybookStart do
             params["brief"]
           )
 
-        if Channels.get_by_name(repository.id, name) do
-          {:error,
-           "##{name} already exists in #{repository.name}; pick another name, or choose Existing channel"}
-        else
-          params
-          |> Map.delete("runs_in")
-          |> Map.put("channel_name", name)
-          |> do_start(%Canopy.Channels.Channel{repository_id: repository.id})
+        cond do
+          Channels.get_by_name(repository.id, name) ->
+            {:error,
+             "##{name} already exists in #{repository.name}; pick another name, or choose Existing channel"}
+
+          section(params) == :blank ->
+            {:error, "name the new section"}
+
+          true ->
+            params
+            |> Map.delete("runs_in")
+            |> Map.put("channel_name", name)
+            |> Map.put("section", section(params))
+            |> do_start(%Canopy.Channels.Channel{repository_id: repository.id})
         end
 
       _ ->
@@ -112,14 +123,14 @@ defmodule CanopyWeb.PlaybookStart do
          "##{channel.name} already has a run in progress (#{playbook}); pick another channel or start a new one"}
 
       _ ->
-        params |> Map.delete("channel_name") |> do_start(channel)
+        params |> Map.drop(["channel_name", "section"]) |> do_start(channel)
     end
   end
 
   # the run panel: never a new channel, whatever the post says
   def start(params, %Canopy.Channels.Channel{} = channel) do
     params
-    |> Map.delete("channel_name")
+    |> Map.drop(["channel_name", "section"])
     |> do_start(Channels.get!(channel.id), "from the Playbooks page")
   end
 
@@ -157,6 +168,7 @@ defmodule CanopyWeb.PlaybookStart do
              playbook: playbook,
              channel: channel,
              channel_name: params["channel_name"],
+             section: params["section"],
              coordinator: coordinator,
              started_by_agent_id: nil,
              brief: params["brief"],
@@ -217,6 +229,19 @@ defmodule CanopyWeb.PlaybookStart do
   end
 
   defp roles_filled(_params, _playbook), do: :ok
+
+  # The Start page's section picker, as `Runs.start` takes it: a name, `""`
+  # for "No section" (not nil, which would mean the playbook's default), or
+  # nil when the form had no picker. `:blank` is "New section…" left empty.
+  defp section(%{"section" => @new_section} = params) do
+    case blank_to_nil(params["section_new"]) do
+      nil -> :blank
+      name -> name
+    end
+  end
+
+  defp section(%{"section" => name}) when is_binary(name), do: String.trim(name)
+  defp section(_params), do: nil
 
   defp playbook_name(id) do
     case present?(id) && Playbooks.get(id) do

@@ -9,12 +9,19 @@ defmodule CanopyWeb.ChannelLive.New do
   Team chips and group headings tick (or clear) all their active agents at
   once. `?team=<id>` (the Teams page's "New channel") starts with only that
   team's members, its lead as owner.
+
+  The Section picker files the channel in the repository's sidebar: "No
+  section", one of its sections, or "New section…" with a name, which
+  `Channels.create/1` finds or creates (added last). `?section=<name>`
+  preselects it (or "New section…" with the name, when there is none).
   """
   use CanopyWeb, :live_view
 
   alias Canopy.{Channels, Teams}
-  alias Canopy.Channels.Channel
-  alias CanopyWeb.Nav
+  alias Canopy.Channels.{Channel, Sections}
+  alias CanopyWeb.{Nav, SectionPicker}
+
+  @new_section SectionPicker.new()
 
   @impl true
   def mount(_params, _session, socket) do
@@ -41,10 +48,11 @@ defmodule CanopyWeb.ChannelLive.New do
         do: team.lead_agent_id,
         else: List.first(member_ids)
 
-    attrs = %{
-      "repository_id" => repository_id,
-      "owner_agent_id" => owner
-    }
+    attrs =
+      Map.merge(
+        %{"repository_id" => repository_id, "owner_agent_id" => owner},
+        prefill_section(repository_id, params["section"])
+      )
 
     {:noreply,
      socket
@@ -77,7 +85,7 @@ defmodule CanopyWeb.ChannelLive.New do
 
   def handle_event("validate", %{"channel" => params}, socket) do
     member_ids = members_from(params, socket.assigns.agents)
-    params = ensure_owner(params, member_ids)
+    params = params |> ensure_owner(member_ids) |> keep_section(socket.assigns.repositories)
 
     changeset =
       params
@@ -95,12 +103,18 @@ defmodule CanopyWeb.ChannelLive.New do
     params = ensure_owner(params, member_ids)
     changeset = build_changeset(params, member_ids)
 
+    attrs =
+      params
+      |> create_attrs()
+      |> Map.put(:agent_ids, member_ids)
+      |> Map.put(:section, section_name(params))
+
     with true <- changeset.valid?,
-         {:ok, channel} <- Channels.create(Map.put(create_attrs(params), :agent_ids, member_ids)) do
+         {:ok, channel} <- Channels.create(attrs) do
       {:noreply,
        socket
        |> Nav.refresh_nav()
-       |> put_flash(:info, "Created ##{channel.name}.")
+       |> put_flash(:info, "Created ##{channel.name}#{filed_in(channel)}.")
        |> push_navigate(to: ~p"/channels/#{channel.id}")}
     else
       false ->
@@ -109,11 +123,13 @@ defmodule CanopyWeb.ChannelLive.New do
          |> assign(:member_ids, member_ids)
          |> assign_form(Map.put(changeset, :action, :insert))}
 
-      {:error, %Ecto.Changeset{data: %Channel{}} = changeset} ->
+      # the form's own changeset with the errors that came back, so the
+      # section picker keeps what was chosen and typed
+      {:error, %Ecto.Changeset{data: %Channel{}} = refused} ->
         {:noreply,
          socket
          |> assign(:member_ids, member_ids)
-         |> assign_form(changeset)}
+         |> assign_form(with_errors(changeset, refused, params))}
 
       {:error, _other} ->
         {:noreply,
@@ -184,18 +200,93 @@ defmodule CanopyWeb.ChannelLive.New do
     end
   end
 
+  # "section" and "section_new" aren't Channel fields: they stay in the
+  # changeset's params, which is where the form reads them back from. A
+  # missing "section" would fall back to the struct's unloaded association.
   defp build_changeset(params, member_ids) do
     params =
       params
-      |> Map.take(["repository_id", "name", "topic", "brief", "owner_agent_id", "spend_limit"])
+      |> Map.take(
+        ~w(repository_id name topic brief owner_agent_id spend_limit section section_new)
+      )
       |> blank_to_nil()
+      |> Map.put_new("section", "")
 
     %Channel{}
     |> Channels.change(params)
     |> Channel.brief_changeset(%{"brief" => params["brief"] || ""})
     |> Ecto.Changeset.validate_required([:owner_agent_id], message: "pick an owner")
     |> validate_members(member_ids)
+    |> validate_new_section(params)
   end
+
+  defp validate_new_section(changeset, %{"section" => @new_section, "section_new" => name})
+       when is_binary(name),
+       do: changeset
+
+  defp validate_new_section(changeset, %{"section" => @new_section}),
+    do: Ecto.Changeset.add_error(changeset, :section_new, "name the new section")
+
+  defp validate_new_section(changeset, _params), do: changeset
+
+  # What `Channels.create/1` takes as `:section`: the typed name for "New
+  # section…", the picked name, or "" for none.
+  defp section_name(%{"section" => @new_section} = params),
+    do: String.trim(params["section_new"] || "")
+
+  defp section_name(%{"section" => name}) when is_binary(name), do: String.trim(name)
+  defp section_name(_params), do: ""
+
+  # `?section=<name>`: that section when the repository has it (any case),
+  # else "New section…" with the name filled in.
+  defp prefill_section(repository_id, name) when is_binary(name) and is_binary(repository_id) do
+    case {String.trim(name), Sections.find_by_name(repository_id, name)} do
+      {"", _} -> %{"section" => ""}
+      {_, %{name: found}} -> %{"section" => found}
+      {typed, nil} -> %{"section" => @new_section, "section_new" => typed}
+    end
+  end
+
+  defp prefill_section(_repository_id, _name), do: %{"section" => ""}
+
+  # Another repository has other sections: a pick that isn't among them
+  # goes back to "No section".
+  defp keep_section(params, repositories) do
+    names = section_names(repositories, params["repository_id"])
+
+    if params["section"] in [nil, "", @new_section] or params["section"] in names,
+      do: params,
+      else: Map.put(params, "section", "")
+  end
+
+  defp section_names(repositories, repository_id) do
+    case Enum.find(repositories, &(&1.id == repository_id)) do
+      %{sections: sections} when is_list(sections) -> Enum.map(sections, & &1.name)
+      _ -> []
+    end
+  end
+
+  # The create's errors on the form's changeset. A bad section name is said
+  # under the field it was typed in.
+  defp with_errors(changeset, refused, params) do
+    refused.errors
+    |> Enum.reverse()
+    |> Enum.reduce(changeset, fn
+      {:section, {message, opts}}, acc ->
+        field = if params["section"] == @new_section, do: :section_new, else: :section
+        Ecto.Changeset.add_error(acc, field, message, opts)
+
+      {field, {message, opts}}, acc ->
+        Ecto.Changeset.add_error(acc, field, message, opts)
+    end)
+    |> Map.put(:action, :insert)
+  end
+
+  defp filed_in(%Channel{section: %{name: name, created?: true}}),
+    do: " in the new section #{name}"
+
+  defp filed_in(%Channel{section: %{name: name}}), do: " in #{name}"
+  defp filed_in(_channel), do: ""
 
   defp validate_members(changeset, []) do
     Ecto.Changeset.add_error(changeset, :agent_ids, "pick at least one agent")
@@ -210,8 +301,12 @@ defmodule CanopyWeb.ChannelLive.New do
     |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
   end
 
+  # Not the section picker's value: "New section…" is a leading space.
   defp blank_to_nil(params) do
     Map.new(params, fn
+      {"section", _value} = pair ->
+        pair
+
       {key, value} when is_binary(value) ->
         case String.trim(value) do
           "" -> {key, nil}
@@ -234,6 +329,12 @@ defmodule CanopyWeb.ChannelLive.New do
 
   defp assign_form(socket, changeset) do
     assign(socket, :form, to_form(changeset, id: "channel-form"))
+  end
+
+  defp section_options(repositories, repository_id) do
+    [{"No section", ""}] ++
+      Enum.map(section_names(repositories, repository_id), &{&1, &1}) ++
+      [{"New section…", @new_section}]
   end
 
   defp repository_options(repositories) do
@@ -322,6 +423,23 @@ defmodule CanopyWeb.ChannelLive.New do
                 placeholder="retry-logic"
                 autocomplete="off"
                 spellcheck="false"
+              />
+            </div>
+            <div id="channel-section-row" class="grid gap-3 sm:grid-cols-2">
+              <.input
+                field={@form[:section]}
+                type="select"
+                label="Section"
+                options={section_options(@repositories, @form[:repository_id].value)}
+              />
+              <.input
+                :if={@form[:section].value == SectionPicker.new()}
+                field={@form[:section_new]}
+                type="text"
+                label="New section name"
+                placeholder="Releases"
+                maxlength="40"
+                autocomplete="off"
               />
             </div>
             <.input

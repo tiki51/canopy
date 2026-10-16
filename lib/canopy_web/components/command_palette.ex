@@ -41,7 +41,8 @@ defmodule CanopyWeb.CommandPalette do
           name: channel.name,
           repo: repository.name,
           repo_id: repository.id,
-          archived: Channels.archived?(channel)
+          archived: Channels.archived?(channel),
+          section: channel.section_id
         }
       end
 
@@ -96,14 +97,30 @@ defmodule CanopyWeb.CommandPalette do
     |> Map.new()
   end
 
-  @doc "Where you are: the open channel and its repository, the path, and whether a hold is on."
+  @doc """
+  Where you are: the open channel and its repository, the path, whether a
+  hold is on, and the open channel's project sections (`sections/2`), for
+  "Move to section…".
+  """
   def context(assigns) do
     %{
       channel_id: assigns[:current_channel_id],
       repo_id: assigns[:current_repository_id],
       path: assigns[:current_path] || "/",
-      hold: not is_nil(assigns[:hold])
+      hold: not is_nil(assigns[:hold]),
+      sections: assigns[:sections] || []
     }
+  end
+
+  @doc "A repository's sections in their order, `[%{id, name}]`, from Nav's repositories."
+  def sections(repositories, repository_id) do
+    case Enum.find(repositories, &(&1.id == repository_id)) do
+      %{sections: sections} when is_list(sections) ->
+        Enum.map(sections, &%{id: &1.id, name: &1.name})
+
+      _ ->
+        []
+    end
   end
 
   @doc "The slash commands, as the palette lists them (`Commands.catalog/0`)."
@@ -191,7 +208,7 @@ defmodule CanopyWeb.CommandPalette do
           class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-base-300 px-3 py-1.5 text-[11px] text-base-content/50 pointer-coarse:hidden"
         >
           <span><kbd class="font-sans">↑↓</kbd> move</span>
-          <span><kbd class="font-sans">↵</kbd> open</span>
+          <span><kbd class="font-sans">↵</kbd> <span id="cmdk-enter">open</span></span>
           <span><kbd class="font-sans">⇧↵</kbd> alternative</span>
           <span>
             <kbd class="font-mono">#</kbd> <kbd class="font-mono">@</kbd>

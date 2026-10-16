@@ -27,6 +27,10 @@ defmodule Canopy.MCP.Tools.PlaybookStart do
       description:
         "Run it in a new channel with this name (you own it). Without it, the run happens in this channel."
 
+    field :section, :string,
+      description:
+        "With channel_name: the sidebar section to file the new channel under, by name (canopy_channels_list shows the sections); an existing one matches in any case, otherwise it is created. Defaults to the playbook's section:, and an agent can't ask for no section when the playbook has one. Ignored without channel_name: a run never moves a channel."
+
     field :assign, :string,
       description: "Role overrides, comma separated: \"fix=@fullstack, test=@qa\"."
   end
@@ -43,9 +47,10 @@ defmodule Canopy.MCP.Tools.PlaybookStart do
                started_by_agent_id: ctx.agent.id,
                brief: Map.get(params, :brief),
                channel_name: Tool.blank_to_nil(Map.get(params, :channel_name)),
+               section: Tool.blank_to_nil(Map.get(params, :section)),
                assign: Tool.blank_to_nil(Map.get(params, :assign))
              }) do
-        {:ok, reply(run, new?)}
+        {:ok, reply(run, new?, Tool.blank_to_nil(Map.get(params, :section)))}
       end
     end)
   end
@@ -57,19 +62,30 @@ defmodule Canopy.MCP.Tools.PlaybookStart do
     end
   end
 
-  defp reply(run, true) do
-    "started #{run.playbook_name} [#{run.id}] in the new channel ##{run.channel.name} (you own it; members joined). " <>
+  defp reply(run, true, _section) do
+    "started #{run.playbook_name} [#{run.id}] in the new channel ##{run.channel.name}#{section_note(run.channel.section)} (you own it; members joined). " <>
       "You will be woken there with the first step; there is nothing more to do here."
   end
 
-  defp reply(run, false) do
+  defp reply(run, false, section) do
     step = Runs.current_step(run)
 
-    "started #{run.playbook_name} [#{run.id}] in ##{run.channel.name}; you coordinate it.\n" <>
+    ignored =
+      if section,
+        do: "; section ignored: the run is in this channel, which keeps its place",
+        else: ""
+
+    "started #{run.playbook_name} [#{run.id}] in ##{run.channel.name}; you coordinate it#{ignored}.\n" <>
       "Now: " <>
       PlaybookText.step_header(run, step) <>
       "\n" <>
       PlaybookText.step_instructions(run, step) <>
       "\n\nWhen this step's work is done, call canopy_playbook_advance with the evidence in result."
   end
+
+  defp section_note(%Canopy.Channels.Section{created?: true, name: name}),
+    do: ", in the new section #{name}"
+
+  defp section_note(%Canopy.Channels.Section{name: name}), do: ", in section #{name}"
+  defp section_note(_), do: ""
 end
