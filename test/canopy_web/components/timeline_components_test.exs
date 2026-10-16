@@ -825,6 +825,10 @@ defmodule CanopyWeb.TimelineComponentsTest do
       assert line("playbook_started", %{"steps" => 6, "brief" => "login broken"}) ==
                "@pm started the bug-fix playbook · 6 steps: login broken"
 
+      # started with files: the kickoff post below carries the brief, so no suffix
+      assert line("playbook_started", %{"steps" => 6}) ==
+               "@pm started the bug-fix playbook · 6 steps"
+
       assert line(
                "playbook_started",
                %{

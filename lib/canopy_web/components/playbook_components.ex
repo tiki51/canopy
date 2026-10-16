@@ -339,6 +339,320 @@ defmodule CanopyWeb.PlaybookComponents do
   end
 
   @doc """
+  One playbook on the library page: a 44 px row (star, title and
+  description, who does the steps, how many, when it last ran, Start and
+  ⋯), and under it, while open, its steps and where it runs. Starred, other
+  and draft rows all use it; a draft has no star.
+  """
+  attr :playbook, :map, required: true
+  attr :title, :string, required: true
+  attr :definition, :any, required: true, doc: "nil when the playbook doesn't parse"
+  attr :people, :list, default: [], doc: "the agents a run would use, in step order"
+  attr :runs, :list, default: [], doc: "its runs in progress (`Playbooks.active_runs/0`)"
+  attr :last_run, :any, default: nil
+  attr :by_name, :map, required: true
+  attr :filter, :string, default: ""
+  attr :open, :boolean, default: false
+  attr :moved, :boolean, default: false
+
+  def playbook_row(assigns) do
+    playbook = assigns.playbook
+
+    # the 112px column holds five avatars, or four and the "+N"
+    shown = if length(assigns.people) > 5, do: 4, else: 5
+
+    assigns =
+      assigns
+      |> assign(:id, playbook.id)
+      |> assign(:draft?, !playbook.enabled)
+      |> assign(:starred?, playbook.enabled and not is_nil(playbook.starred_at))
+      |> assign(:shown_people, Enum.take(assigns.people, shown))
+      |> assign(:more_people, length(assigns.people) - min(length(assigns.people), shown))
+
+    ~H"""
+    <li
+      id={"playbook-#{@id}"}
+      data-playbook={@playbook.name}
+      data-enabled={to_string(@playbook.enabled)}
+      data-starred={to_string(@starred?)}
+      class={[
+        "group/row first:rounded-t-box last:rounded-b-box",
+        @open && "bg-base-100",
+        @moved && "pb-moved"
+      ]}
+    >
+      <div class="grid h-11 grid-cols-[24px_minmax(0,1fr)_112px_56px_128px_auto] items-center gap-3 pl-2 pr-3">
+        <button
+          :if={!@draft?}
+          type="button"
+          id={"star-playbook-#{@id}"}
+          phx-click="star"
+          phx-value-id={@id}
+          aria-pressed={to_string(@starred?)}
+          aria-label={"Star #{@title}"}
+          title={if @starred?, do: "Unstar", else: "Star: pin to the top"}
+          class={[
+            "btn btn-ghost btn-xs btn-square size-6 min-h-6",
+            @starred? && "text-warning",
+            !@starred? &&
+              "text-base-content/25 group-hover/row:bg-base-300/50 group-hover/row:text-base-content/60"
+          ]}
+        >
+          <.icon name={if @starred?, do: "hero-star-solid", else: "hero-star"} class="size-4" />
+        </button>
+        <span :if={@draft?} aria-hidden="true"></span>
+        <button
+          type="button"
+          id={"expand-playbook-#{@id}"}
+          phx-click="expand"
+          phx-value-id={@id}
+          aria-expanded={to_string(@open)}
+          aria-controls={"playbook-detail-#{@id}"}
+          class="flex h-full min-w-0 cursor-pointer items-center gap-2 text-left"
+        >
+          <.icon
+            name={if @open, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+            class="size-4 shrink-0 text-base-content/40"
+          />
+          <span class={[
+            "max-w-[calc(100%-1.5rem)] shrink-0 truncate font-medium",
+            @draft? && "text-base-content/80"
+          ]}>
+            <.marked text={@title} q={@filter} />
+          </span>
+          <span :if={@definition} class="truncate text-sm text-base-content/55">
+            <.marked text={@playbook.description} q={@filter} />
+          </span>
+          <span :if={!@definition} class="truncate text-sm text-error">
+            This playbook has problems; open it to see them.
+          </span>
+        </button>
+        <span
+          class="flex items-center gap-0.5"
+          title={Enum.map_join(@people, ", ", &("@" <> &1.name))}
+        >
+          <.avatar :for={agent <- @shown_people} agent={agent} size="size-5" />
+          <span :if={@more_people > 0} class="pl-0.5 text-xs text-base-content/50">
+            +{@more_people}
+          </span>
+        </span>
+        <span class="text-sm text-base-content/55">
+          {if @definition, do: "#{length(@definition.steps)} steps", else: "—"}
+        </span>
+        <span class="truncate text-sm text-base-content/55">
+          <span :if={@runs != []} id={"playbook-runs-#{@id}"} class="text-success">
+            ● {length(@runs)} running
+          </span>
+          <span :if={@runs == []}>{row_when(@playbook, @last_run)}</span>
+        </span>
+        <div class="flex items-center gap-1">
+          <.link
+            :if={!@draft? and @definition}
+            navigate={~p"/playbooks/#{@id}/start"}
+            id={"start-playbook-#{@id}"}
+            class={["btn btn-sm", @open && "btn-primary", !@open && "btn-ghost"]}
+          >
+            <.icon name="hero-play-mini" class="size-4" /> Start
+          </.link>
+          <.link
+            :if={@draft? or !@definition}
+            navigate={~p"/playbooks/#{@id}/edit"}
+            id={"review-playbook-#{@id}"}
+            class={[
+              "btn btn-sm bg-base-100",
+              @draft? && @playbook.source == "agent" && "btn-outline btn-primary",
+              !(@draft? && @playbook.source == "agent") && "border-base-300"
+            ]}
+          >
+            {if @draft? && @playbook.source == "agent", do: "Review", else: "Edit"}
+          </.link>
+          <.row_menu id={"playbook-menu-#{@id}"} label={"More for #{@title}"} size="sm">
+            <.row_menu_item
+              id={"edit-playbook-#{@id}"}
+              icon="hero-pencil-square-mini"
+              navigate={~p"/playbooks/#{@id}/edit"}
+            >
+              Edit
+            </.row_menu_item>
+            <.row_menu_item
+              id={"duplicate-playbook-#{@id}"}
+              icon="hero-document-duplicate-mini"
+              phx-click="duplicate"
+              phx-value-id={@id}
+            >
+              Duplicate
+            </.row_menu_item>
+            <.row_menu_item
+              id={"export-playbook-#{@id}"}
+              icon="hero-arrow-down-tray-mini"
+              href={~p"/playbooks/#{@id}/export"}
+              title="Export as a file, to import on another machine"
+            >
+              Export file
+            </.row_menu_item>
+            <.row_menu_item
+              id={"toggle-playbook-#{@id}"}
+              icon={if @draft?, do: "hero-play-circle-mini", else: "hero-pause-circle-mini"}
+              phx-click="toggle"
+              phx-value-id={@id}
+              phx-value-version={@playbook.lock_version}
+            >
+              {if @draft?, do: "Enable", else: "Disable"}
+            </.row_menu_item>
+            <.row_menu_item
+              id={"delete-playbook-#{@id}"}
+              icon="hero-trash-mini"
+              danger
+              phx-click="delete"
+              phx-value-id={@id}
+              data-canopy-confirm="Finished runs keep their own copy of the text."
+              data-canopy-confirm-title={"Delete #{@title}?"}
+              data-canopy-confirm-label="Delete"
+            >
+              Delete
+            </.row_menu_item>
+          </.row_menu>
+        </div>
+      </div>
+      <div :if={@open} id={"playbook-detail-#{@id}"} class="pb-3 pl-[44px] pr-3">
+        <%= if @definition do %>
+          <.step_strip id={"playbook-strip-#{@id}"} definition={@definition} by_name={@by_name} />
+          <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-base-content/55">
+            <span>
+              {if @definition.coordinator,
+                do: "Led by @#{@definition.coordinator}",
+                else: "Led by whoever starts it"}{if @definition.team,
+                do: " · @#{@definition.team}"}
+            </span>
+            <span :for={run <- @runs} id={"playbook-run-#{run.run_id}"}>
+              <span class="text-success">●</span>
+              Running in
+              <.link navigate={~p"/channels/#{run.channel_id}"} class="link">#{run.channel_name}</.link>
+              <span :if={run.position}>· step {run.position} of {run.steps}</span>
+            </span>
+            <.link navigate={~p"/playbooks/#{@id}/edit"} class="link ml-auto">
+              Edit playbook
+            </.link>
+          </div>
+        <% else %>
+          <p class="text-xs text-error">
+            This playbook has problems.
+            <.link navigate={~p"/playbooks/#{@id}/edit"} class="link">Open it</.link>
+            to see them.
+          </p>
+        <% end %>
+      </div>
+    </li>
+    """
+  end
+
+  @doc """
+  A playbook's steps as a strip of pills: number, title, send-back, sign-off
+  and skip marks, and who does it.
+  """
+  attr :id, :string, required: true
+  attr :definition, :map, required: true
+  attr :by_name, :map, required: true
+
+  def step_strip(assigns) do
+    ~H"""
+    <ol id={@id} class="flex flex-wrap items-center gap-x-1.5 gap-y-2" aria-label="Steps">
+      <%!-- each arrow stays on the line of the step after it --%>
+      <li
+        :for={{step, n} <- Enum.with_index(@definition.steps, 1)}
+        class="inline-flex items-center gap-1.5 whitespace-nowrap"
+      >
+        <span :if={n > 1} class="text-base-content/30" aria-hidden="true">→</span>
+        <span class={[
+          "inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[13px]",
+          step.on_reject && "border-secondary/30 bg-secondary/5",
+          step.approval && !step.on_reject && "border-warning/40 bg-warning/5",
+          !step.approval && !step.on_reject && "border-base-300 bg-base-100"
+        ]}>
+          <span class="text-base-content/45">{n}</span>
+          <span>{step.title}</span>
+          <span
+            :if={step.on_reject}
+            class="text-secondary"
+            title={"can send work back to #{step.on_reject}"}
+          >↩︎</span>
+          <span :if={step.approval} class="text-warning" title="waits for you">✓</span>
+          <span :if={step.optional} class="text-base-content/50" title="can be skipped">⤼</span>
+          <span class="flex -space-x-0.5">
+            <.avatar
+              :for={agent <- owner_agents(@definition, step, @by_name)}
+              agent={agent}
+              size="size-4"
+              class="ring-2 ring-base-100"
+            />
+          </span>
+        </span>
+      </li>
+    </ol>
+    """
+  end
+
+  # Text with each case-insensitive match of `q` in a <mark>; split, never
+  # injected, so the text stays escaped.
+  attr :text, :string, default: ""
+  attr :q, :string, default: ""
+
+  defp marked(assigns) do
+    ~H"{marked_html(@text, @q)}"
+  end
+
+  defp marked_html(text, q) do
+    {:safe,
+     for {kind, part} <- mark_parts(text || "", q || "") do
+       escaped = Phoenix.HTML.html_escape(part) |> Phoenix.HTML.safe_to_string()
+
+       if kind == :mark,
+         do: [~s(<mark class="rounded-sm bg-warning/20 text-inherit">), escaped, "</mark>"],
+         else: escaped
+     end}
+  end
+
+  @doc false
+  def mark_parts(text, q) do
+    case String.trim(q) do
+      "" ->
+        [{:text, text}]
+
+      q ->
+        ~r/#{Regex.escape(q)}/iu
+        |> Regex.split(text, include_captures: true, trim: true)
+        |> Enum.map(fn part ->
+          if String.downcase(part) == String.downcase(q), do: {:mark, part}, else: {:text, part}
+        end)
+    end
+  end
+
+  # The row's "when" column: a draft's author, else its last run.
+  defp row_when(%{enabled: false, source: "agent", created_by: %{name: name}}, _last),
+    do: "by @#{name}"
+
+  defp row_when(%{enabled: false, source: "agent"}, _last), do: "by an agent"
+  defp row_when(%{enabled: false, source: "seed"}, _last), do: "starter"
+  defp row_when(%{enabled: false}, _last), do: "by you"
+  defp row_when(_playbook, nil), do: "never run"
+  defp row_when(_playbook, last), do: Canopy.Schedules.relative(last)
+
+  @doc "The agents who own a step, by the playbook's defaults (nil for a role nobody fills)."
+  def owner_agents(definition, step, by_name) do
+    Enum.map(step.owner, fn
+      "coordinator" -> definition.coordinator && Map.get(by_name, definition.coordinator)
+      role -> role_agent(definition, role, by_name)
+    end)
+  end
+
+  defp role_agent(definition, role, by_name) do
+    case definition.roles[role] do
+      nil -> nil
+      name -> Map.get(by_name, name) || %{name: name, color: nil}
+    end
+  end
+
+  @doc """
   An agent's avatar tile (its colour and initial), or a dashed `?` for a
   role nobody fills. `agent` is anything with `name` and `color`.
   """

@@ -351,4 +351,79 @@ defmodule CanopyWeb.PlaybookStartTest do
       assert form[:hint].value == "Runs in this channel. @crew joins it."
     end
   end
+
+  describe "files on the brief" do
+    defp doc!(name) do
+      {:ok, doc} =
+        Canopy.Documents.create(%{
+          filename: name,
+          source: {:binary, name},
+          user_id: Canopy.Users.local().id
+        })
+
+      doc
+    end
+
+    defp kickoff_docs(run) do
+      run = Canopy.Playbooks.Runs.get!(run.id)
+
+      run.kickoff_message_id &&
+        Enum.map(Canopy.Messages.get!(run.kickoff_message_id).documents, & &1.id)
+    end
+
+    test "document_ids pass through for an existing and a new channel", ctx do
+      a = doc!("a.md")
+      b = doc!("b.md")
+
+      {:ok, run} =
+        PlaybookStart.start(
+          params(ctx, %{
+            "runs_in" => "existing",
+            "channel_id" => ctx.channel.id,
+            "document_ids" => [b.id, a.id]
+          })
+        )
+
+      assert kickoff_docs(run) == [b.id, a.id]
+
+      {:ok, run} =
+        PlaybookStart.start(
+          params(ctx, %{
+            "runs_in" => "new",
+            "repository_id" => ctx.repository.id,
+            "document_ids" => [a.id]
+          })
+        )
+
+      assert run.channel_id != ctx.channel.id
+      assert kickoff_docs(run) == [a.id]
+    end
+
+    test "a non-list or non-string document_ids is ignored", ctx do
+      a = doc!("a.md")
+      other = channel_fixture(%{repository_id: ctx.repository.id, owner_agent_id: ctx.agent.id})
+
+      {:ok, run} =
+        PlaybookStart.start(
+          params(ctx, %{
+            "runs_in" => "existing",
+            "channel_id" => ctx.channel.id,
+            "document_ids" => a.id
+          })
+        )
+
+      assert kickoff_docs(run) == nil
+
+      {:ok, run} =
+        PlaybookStart.start(
+          params(ctx, %{
+            "runs_in" => "existing",
+            "channel_id" => other.id,
+            "document_ids" => [1, a.id]
+          })
+        )
+
+      assert kickoff_docs(run) == [a.id]
+    end
+  end
 end

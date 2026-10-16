@@ -30,7 +30,7 @@ defmodule Canopy.Playbooks.Runs do
 
   import Ecto.Query, warn: false
 
-  alias Canopy.{Agents, Channels, Repo, Runtime, Teams, Timeline}
+  alias Canopy.{Agents, Channels, Documents, Messages, Repo, Runtime, Teams, Timeline}
   alias Canopy.Agents.Agent
   alias Canopy.Channels.Channel
   alias Canopy.Playbooks
@@ -50,6 +50,7 @@ defmodule Canopy.Playbooks.Runs do
   ]
   @result_excerpt 300
   @max_brief 8_000
+  @missing_document "a file you attached no longer exists; remove it and try again"
 
   # -- Reading ------------------------------------------------------------------
 
@@ -147,6 +148,10 @@ defmodule Canopy.Playbooks.Runs do
     * `:brief` — what the run is about; optional (blank is stored as `""`, and
       the coordinator works from the playbook alone)
     * `:assign` — role overrides: `%{role => agent name}` or `"fix=@fullstack, test=@qa"`
+    * `:document_ids` — files for the brief, in order (at most
+      `Canopy.Messages.max_attachments/0`, each an existing document;
+      duplicates collapse): they post with the brief as the run's kickoff
+      message (see below)
     * `:trigger` — for a run a watch started
     * `:new_channel_via` — how the starter would open a new channel instead,
       for the busy and DM refusals: `"with channel_name"` (an agent, the
@@ -159,10 +164,20 @@ defmodule Canopy.Playbooks.Runs do
   agents (the whole team, when the playbook has one) join the channel; a DM
   never gains members, so a run there needs everyone in it already.
 
+  With files, the brief and the files post as one message in the run's
+  channel, its kickoff (`kickoff_message_id`): from the user, or from the
+  `started_by_agent_id` agent, between the "started" line (which then leaves
+  the brief out) and step 1. The kickoff wakes nobody itself (`Canopy.Runtime.Router`):
+  the coordinator's start wake carries the files. An agent starting a run in
+  its own existing channel gets no start wake (it is in its turn already), so
+  a tool that ever passes `document_ids` from an agent must point that agent
+  at the files itself; `canopy_playbook_start` doesn't take them yet.
+
   Everything is checked before anything is written; a new channel, its task,
-  and the run then commit in one transaction, which also re-checks that the
-  playbook still exists, unchanged and enabled. Returns `{:ok, run,
-  new_channel?}` or `{:error, reason}`.
+  the kickoff and the run then commit in one transaction, which also
+  re-checks that the playbook still exists, unchanged and enabled, and that
+  every file still exists. Documents are never deleted, whatever the
+  outcome. Returns `{:ok, run, new_channel?}` or `{:error, reason}`.
   """
   def start(attrs) do
     playbook = Map.fetch!(attrs, :playbook)
@@ -174,6 +189,8 @@ defmodule Canopy.Playbooks.Runs do
     with :ok <- check_enabled(playbook),
          {:ok, definition} <- parse(playbook),
          {:ok, brief} <- check_brief(Map.get(attrs, :brief)),
+         {:ok, document_ids} <- check_documents(Map.get(attrs, :document_ids)),
+         attrs = Map.put(attrs, :document_ids, document_ids),
          :ok <- check_active(coordinator, "the coordinator"),
          {:ok, overrides} <- parse_assign(Map.get(attrs, :assign), definition),
          team = definition.team && Teams.get_by_name(definition.team),
@@ -191,8 +208,11 @@ defmodule Canopy.Playbooks.Runs do
       # in its own turn already; anyone else (the user, a watch) or a new
       # channel needs a wake. Only the user's own start resets the chatter budget.
       if new? or is_nil(by) do
-        wake(run, Prompts.playbook_started(started_args(run, definition, new?)),
-          reset: is_nil(by) and is_nil(trigger)
+        args = started_args(run, definition, new?)
+
+        wake(run, Prompts.playbook_started(args),
+          reset: is_nil(by) and is_nil(trigger),
+          attachments: kickoff_plan(args.kickoff)
         )
       end
 
@@ -226,6 +246,20 @@ defmodule Canopy.Playbooks.Runs do
       do: {:error, "the brief is too long (at most #{@max_brief} characters)"},
       else: {:ok, text}
   end
+
+  # the brief's files: strings only, duplicates collapse, order kept
+  defp check_documents(ids) when is_list(ids) do
+    ids = ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
+    max = Messages.max_attachments()
+
+    cond do
+      length(ids) > max -> {:error, "at most #{max} files on a brief"}
+      Enum.any?(ids, &is_nil(Documents.get(&1))) -> {:error, @missing_document}
+      true -> {:ok, ids}
+    end
+  end
+
+  defp check_documents(_ids), do: {:ok, []}
 
   defp check_active(%Agent{active: true}, _what), do: :ok
   defp check_active(%Agent{name: name}, what), do: {:error, "#{what} @#{name} is deactivated"}
@@ -522,60 +556,123 @@ defmodule Canopy.Playbooks.Runs do
     end
   end
 
+  # With files, the kickoff post goes first (the run row names it; SQLite
+  # checks foreign keys at once), after a re-check of the files inside the
+  # immediate transaction; its timeline row sits between "started" and step 1.
   defp run_multi(playbook, definition, channel, coordinator, brief, roster, attrs) do
     by = Map.get(attrs, :started_by_agent_id)
+    document_ids = Map.get(attrs, :document_ids, [])
+    kickoff? = document_ids != []
     now = DateTime.utc_now()
     [first | _] = definition.steps
 
-    run_changeset =
-      Run.changeset(%Run{}, %{
-        playbook_id: playbook.id,
-        playbook_name: playbook.name,
-        definition: playbook.body,
-        channel_id: channel.id,
-        coordinator_agent_id: coordinator.id,
-        started_by_agent_id: by,
-        brief: brief,
-        roster: roster,
-        status: "active",
-        current_step: first.id,
-        trigger: Map.get(attrs, :trigger),
-        stall_after_minutes: definition.stall_after,
-        last_activity_at: now
-      })
+    run_attrs = %{
+      playbook_id: playbook.id,
+      playbook_name: playbook.name,
+      definition: playbook.body,
+      channel_id: channel.id,
+      coordinator_agent_id: coordinator.id,
+      started_by_agent_id: by,
+      brief: brief,
+      roster: roster,
+      status: "active",
+      current_step: first.id,
+      trigger: Map.get(attrs, :trigger),
+      stall_after_minutes: definition.stall_after,
+      last_activity_at: now
+    }
 
-    definition.steps
-    |> Enum.with_index(1)
-    |> Enum.reduce(Multi.insert(Multi.new(), :run, run_changeset), fn {step, position}, multi ->
-      Multi.insert(multi, {:step, step.id}, fn %{run: run} ->
-        first? = position == 1
+    Multi.new()
+    |> kickoff_multi(kickoff?, channel, by, brief, document_ids)
+    |> Multi.insert(:run, fn changes ->
+      kickoff_id =
+        case Map.get(changes, {:kickoff, :message}) do
+          %{id: id} -> id
+          nil -> nil
+        end
 
-        Step.changeset(%Step{}, %{
-          run_id: run.id,
-          step_id: step.id,
-          position: position,
-          title: step.title,
-          owner_roles: step.owner,
-          owner_ids: owner_ids(step.owner, roster),
-          approval: step.approval,
-          optional: step.optional,
-          status: if(first?, do: "active", else: "pending"),
-          round: if(first?, do: 1, else: 0),
-          started_at: if(first?, do: now)
-        })
+      Run.changeset(%Run{}, Map.put(run_attrs, :kickoff_message_id, kickoff_id))
+    end)
+    |> then(fn multi ->
+      definition.steps
+      |> Enum.with_index(1)
+      |> Enum.reduce(multi, fn {step, position}, multi ->
+        Multi.insert(multi, {:step, step.id}, fn %{run: run} ->
+          first? = position == 1
+
+          Step.changeset(%Step{}, %{
+            run_id: run.id,
+            step_id: step.id,
+            position: position,
+            title: step.title,
+            owner_roles: step.owner,
+            owner_ids: owner_ids(step.owner, roster),
+            approval: step.approval,
+            optional: step.optional,
+            status: if(first?, do: "active", else: "pending"),
+            round: if(first?, do: 1, else: 0),
+            started_at: if(first?, do: now)
+          })
+        end)
       end)
     end)
     |> Timeline.multi_record(:started_event, fn %{run: run} ->
-      event(run, by, "playbook_started", %{
+      payload = %{
         "steps" => length(definition.steps),
         "coordinator_agent_id" => run.coordinator_agent_id,
-        "brief" => String.slice(single_line(brief), 0, @result_excerpt),
         "trigger" => run.trigger
-      })
+      }
+
+      # with a kickoff, the post right below shows the brief in full
+      payload =
+        if kickoff?,
+          do: payload,
+          else: Map.put(payload, "brief", String.slice(single_line(brief), 0, @result_excerpt))
+
+      event(run, by, "playbook_started", payload)
+    end)
+    |> then(fn multi ->
+      if kickoff?,
+        do:
+          Messages.post_event_multi(multi, :kickoff, fn %{run: run} ->
+            %{"kickoff_run_id" => run.id}
+          end),
+        else: multi
     end)
     |> Timeline.multi_record(:step_event, fn %{run: run} ->
       step_event(run, by, first, 1, 1, length(definition.steps), roster)
     end)
+  end
+
+  @doc false
+  # The start's in-transaction re-check (`BEGIN IMMEDIATE`): a file deleted
+  # since `start/1` checked it fails the start with the same plain reason.
+  def recheck_documents(repo, document_ids) do
+    if Enum.any?(document_ids, &is_nil(repo.get(Documents.Document, &1))),
+      do: {:error, @missing_document},
+      else: {:ok, document_ids}
+  end
+
+  defp kickoff_multi(multi, false, _channel, _by, _brief, _document_ids), do: multi
+
+  defp kickoff_multi(multi, true, channel, by, brief, document_ids) do
+    author =
+      if by, do: %{agent_id: by}, else: %{user_id: Canopy.Users.local().id}
+
+    multi
+    |> Multi.run(:documents, fn repo, _ -> recheck_documents(repo, document_ids) end)
+    |> Messages.post_multi(
+      :kickoff,
+      Map.merge(author, %{
+        channel_id: channel.id,
+        body: brief,
+        kind: "post",
+        mentions: [],
+        team_mentions: [],
+        interrupt: false
+      }),
+      document_ids
+    )
   end
 
   defp owner_ids(roles, roster),
@@ -1341,6 +1438,8 @@ defmodule Canopy.Playbooks.Runs do
         _ -> nil
       end
 
+    kickoff = kickoff(run)
+
     wake(
       run,
       Prompts.playbook_reassigned(%{
@@ -1348,6 +1447,7 @@ defmodule Canopy.Playbooks.Runs do
         playbook: run.playbook_name,
         run_id: run.id,
         brief: run.brief,
+        kickoff: kickoff,
         step: step && step.step_id,
         title: step && step.title,
         position: step && step.position,
@@ -1355,7 +1455,8 @@ defmodule Canopy.Playbooks.Runs do
         owners: if(step && step.owner_ids != [], do: owner_names(step), else: []),
         section: section
       }),
-      reset: true
+      reset: true,
+      attachments: kickoff_plan(kickoff)
     )
   end
 
@@ -1663,6 +1764,7 @@ defmodule Canopy.Playbooks.Runs do
       playbook: run.playbook_name,
       run_id: run.id,
       brief: run.brief,
+      kickoff: kickoff(run),
       step: step.step_id,
       title: step.title,
       owners: if(step.owner_ids == [], do: [], else: owner_names(step)),
@@ -1670,6 +1772,26 @@ defmodule Canopy.Playbooks.Runs do
       guidance: Definition.guidance(definition)
     }
   end
+
+  # The kickoff post and how its files reach a wake prompt: `%{message_id,
+  # plan}` (`Canopy.Documents.prompt_plan/1`), or nil without one.
+  defp kickoff(%Run{kickoff_message_id: id}) when is_binary(id) do
+    case Messages.get(id) do
+      %{documents: documents} = message ->
+        %{message_id: id, plan: Documents.prompt_plan(documents), author: author(message)}
+
+      nil ->
+        nil
+    end
+  end
+
+  defp kickoff(_run), do: nil
+
+  defp author(%{agent: %Agent{name: name}}), do: "@#{name}'s"
+  defp author(_message), do: "the user's"
+
+  defp kickoff_plan(%{plan: plan}), do: plan
+  defp kickoff_plan(nil), do: []
 
   defp approval_args(run, step, note, what) do
     next = current_step(run)

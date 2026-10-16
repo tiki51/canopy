@@ -391,4 +391,96 @@ defmodule Canopy.MessagesTest do
       assert length(ids) == 3
     end
   end
+
+  describe "post_multi/4 and post_event_multi/3" do
+    defp doc!(user, name) do
+      {:ok, doc} =
+        Canopy.Documents.create(%{filename: name, source: {:binary, name}, user_id: user.id})
+
+      doc
+    end
+
+    defp commit_post(channel, attrs, ids, extra) do
+      Ecto.Multi.new()
+      |> Messages.post_multi(:post, Map.put(attrs, :channel_id, channel.id), ids)
+      |> Messages.post_event_multi(:post, extra)
+      |> Repo.transaction()
+    end
+
+    test "write the message, its attachments in order and its event in one commit",
+         %{channel: channel, user: user} do
+      a = doc!(user, "a.md")
+      b = doc!(user, "b.md")
+
+      assert {:ok, %{{:post, :message} => message, {:post, :event} => event}} =
+               commit_post(
+                 channel,
+                 %{user_id: user.id, body: "", kind: "post"},
+                 [b.id, a.id],
+                 %{}
+               )
+
+      # a blank body is fine with attachments
+      assert message.body == ""
+      assert Enum.map(Messages.get!(message.id).documents, & &1.id) == [b.id, a.id]
+      assert event.ref_id == message.id
+      assert event.payload["attachments"] == [b.id, a.id]
+
+      # the extra payload may be built from the changes so far
+      assert {:ok, %{{:post, :event} => event}} =
+               commit_post(channel, %{user_id: user.id, body: "x", kind: "post"}, [a.id], fn
+                 %{{:post, :message} => m} -> %{"seen" => m.id}
+               end)
+
+      assert event.payload["seen"] == event.ref_id
+    end
+
+    test "the event matches a composer post's, apart from ids and the extra key",
+         %{channel: channel, user: user, agent: agent} do
+      a = doc!(user, "a.md")
+      b = doc!(user, "b.md")
+      body = "Fix the login for @#{agent.name}"
+
+      {:ok, posted} =
+        Messages.post_user_message(channel.id, user.id, body,
+          attachments: [a.id, b.id],
+          interrupt: false
+        )
+
+      composer = Repo.get_by!(Timeline.Event, ref_id: posted.id)
+
+      {:ok, %{{:post, :event} => built, {:post, :message} => message}} =
+        commit_post(
+          channel,
+          %{user_id: user.id, body: body, kind: "post", interrupt: false},
+          [a.id, b.id],
+          %{
+            "kickoff_run_id" => "pbr_x"
+          }
+        )
+
+      for field <- [:channel_id, :agent_id, :thread_id, :in_channel, :event_type] do
+        assert Map.get(built, field) == Map.get(composer, field), "#{field} differs"
+      end
+
+      assert Map.delete(built.payload, "kickoff_run_id") == composer.payload
+      assert built.payload["kickoff_run_id"] == "pbr_x"
+
+      # the message itself is built the same way: mentions from the body
+      for field <- [:kind, :body, :mentions, :team_mentions, :mentions_user, :interrupt] do
+        assert Map.get(message, field) == Map.get(posted, field), "#{field} differs"
+      end
+
+      # mentions can be overridden, as for any poster
+      {:ok, %{{:post, :message} => quiet}} =
+        commit_post(
+          channel,
+          %{user_id: user.id, body: body, kind: "post", mentions: [], team_mentions: []},
+          [a.id],
+          %{}
+        )
+
+      assert quiet.mentions == []
+    end
+  end
 end

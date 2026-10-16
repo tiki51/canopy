@@ -38,6 +38,8 @@ import HeaderFit from "./hooks/header_fit"
 import FileViewer from "./hooks/file_viewer"
 import copyText from "./copy_text"
 import PlaybookBuilder from "./hooks/playbook_builder"
+import PasteUpload from "./hooks/paste_upload"
+import ScrollChecked from "./hooks/scroll_checked"
 import notifier from "./notify"
 import "./card_links"
 
@@ -60,6 +62,8 @@ const liveSocket = new LiveSocket("/live", Socket, {
     HeaderFit,
     FileViewer,
     PlaybookBuilder,
+    PasteUpload,
+    ScrollChecked,
   },
 })
 

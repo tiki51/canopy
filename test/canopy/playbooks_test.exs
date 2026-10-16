@@ -161,6 +161,137 @@ defmodule Canopy.PlaybooksTest do
     assert finished.definition =~ "name: busy"
   end
 
+  describe "set_starred/2" do
+    test "stars without an edit: no lock_version or updated_at bump; again keeps the time" do
+      {:ok, playbook} = Playbooks.create(%{body: playbook_text("starry")})
+      Playbooks.subscribe()
+
+      assert {:ok, starred} = Playbooks.set_starred(playbook, true)
+      assert %DateTime{} = starred.starred_at
+      assert starred.lock_version == playbook.lock_version
+      assert starred.updated_at == playbook.updated_at
+      assert_receive {:playbooks, :changed}
+
+      assert {:ok, again} = Playbooks.set_starred(playbook, true)
+      assert again.starred_at == starred.starred_at
+
+      # an editor still holding the unstarred struct neither clears the star nor goes stale
+      assert {:ok, edited} = Playbooks.update(playbook, %{body: playbook_text("starry-two")})
+      assert edited.starred_at == starred.starred_at
+      assert Playbooks.get!(playbook.id).starred_at == starred.starred_at
+
+      assert {:ok, unstarred} = Playbooks.set_starred(edited, false)
+      assert unstarred.starred_at == nil
+      assert_receive {:playbooks, :changed}
+    end
+
+    test "a draft can't be starred; disabling keeps a star; a deleted one is an error" do
+      {:ok, draft} = Playbooks.create(%{body: playbook_text("drafty"), enabled: false})
+
+      assert {:error, "drafts can't be starred; enable it first"} =
+               Playbooks.set_starred(draft, true)
+
+      {:ok, enabled} = Playbooks.set_enabled(draft, true)
+      {:ok, starred} = Playbooks.set_starred(enabled, true)
+      {:ok, disabled} = Playbooks.set_enabled(starred, false)
+      assert disabled.starred_at == starred.starred_at
+      # unstarring a draft always works
+      assert {:ok, %{starred_at: nil}} = Playbooks.set_starred(disabled, false)
+
+      # a duplicate starts unstarred
+      {:ok, enabled} = Playbooks.set_enabled(Playbooks.get!(draft.id), true)
+      {:ok, starred} = Playbooks.set_starred(enabled, true)
+      {:ok, copy} = Playbooks.duplicate(starred)
+      assert copy.starred_at == nil
+
+      {:ok, _} = Playbooks.delete(starred)
+
+      assert {:error, "that playbook no longer exists"} = Playbooks.set_starred(starred, true)
+      assert {:error, "that playbook no longer exists"} = Playbooks.set_starred(starred, false)
+    end
+
+    test "list/0 loads the star" do
+      {:ok, playbook} = Playbooks.create(%{body: playbook_text("listed-star")})
+      {:ok, _} = Playbooks.set_starred(playbook, true)
+      assert %{starred_at: %DateTime{}} = Enum.find(Playbooks.list(), &(&1.id == playbook.id))
+    end
+  end
+
+  test "active_runs/0: live runs per playbook, oldest first, with position and step count" do
+    one = scenario()
+    two = scenario()
+    {:ok, playbook} = Playbooks.create(%{body: two_steps("running")})
+
+    start = fn ctx ->
+      {:ok, run, false} =
+        Runs.start(%{
+          playbook: playbook,
+          channel: ctx.channel,
+          coordinator: ctx.agent,
+          started_by_agent_id: ctx.agent.id,
+          brief: "go"
+        })
+
+      run
+    end
+
+    first = start.(one)
+    second = start.(two)
+    {:ok, second, {:step, "build"}} = Runs.advance(second, :user)
+
+    assert [a, b] = Playbooks.active_runs()[playbook.id]
+
+    assert a == %{
+             run_id: first.id,
+             channel_id: one.channel.id,
+             channel_name: one.channel.name,
+             status: "active",
+             position: 1,
+             steps: 2
+           }
+
+    assert %{run_id: id, position: 2, steps: 2, status: "active"} = b
+    assert id == second.id
+
+    # awaiting approval counts; a run with no current step is listed without a position
+    Repo.update_all(from(r in Canopy.Playbooks.Run, where: r.id == ^first.id),
+      set: [status: "awaiting_approval", current_step: nil]
+    )
+
+    assert [%{status: "awaiting_approval", position: nil, steps: 2}, _] =
+             Playbooks.active_runs()[playbook.id]
+
+    # finished runs drop out
+    {:ok, _, :cancelled} = Runs.cancel(Runs.get!(second.id), :user, "done")
+    assert [%{run_id: only}] = Playbooks.active_runs()[playbook.id]
+    assert only == first.id
+    assert map_size(Playbooks.active_run_counts()) == map_size(Playbooks.active_runs())
+  end
+
+  defp two_steps(name) do
+    """
+    ---
+    name: #{name}
+    description: The #{name} process.
+    steps:
+      - id: plan
+        title: Plan
+        owner: coordinator
+      - id: build
+        title: Build
+        owner: coordinator
+    ---
+
+    ## plan
+
+    Plan it.
+
+    ## build
+
+    Build it.
+    """
+  end
+
   # 12
   test "an agent replaces only its own untouched draft; a user edit claims it" do
     agent = agent_fixture()

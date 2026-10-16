@@ -57,6 +57,10 @@ defmodule CanopyWeb.PlaybookStart do
   differs from who would fill the role anyway.
 
   From the run panel, the run always happens in `channel`.
+
+  `document_ids` (optional) are files already stored, in order: they post
+  with the brief as the run's kickoff message (see `Canopy.Playbooks.Runs.start/1`).
+  The page stores uploads before it calls this; nothing here deletes them.
   """
   def start(params, channel \\ nil)
 
@@ -156,6 +160,7 @@ defmodule CanopyWeb.PlaybookStart do
              coordinator: coordinator,
              started_by_agent_id: nil,
              brief: params["brief"],
+             document_ids: document_ids(params["document_ids"]),
              assign: assign(params, playbook),
              new_channel_via: via
            }) do
@@ -186,6 +191,10 @@ defmodule CanopyWeb.PlaybookStart do
   end
 
   defp assign(params, _playbook), do: params["assign"]
+
+  # the brief's files, already stored: a list of ids, anything else is none
+  defp document_ids(ids) when is_list(ids), do: Enum.filter(ids, &is_binary/1)
+  defp document_ids(_ids), do: []
 
   # the Start page names every role; one nobody fills is said here, in its
   # words, before `Runs.start` refuses it in its own

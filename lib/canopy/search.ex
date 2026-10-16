@@ -266,6 +266,10 @@ defmodule Canopy.Search do
   A document already indexed is left alone.
   """
   def index_document(%Document{} = document, source \\ nil) do
+    # Filed under its origin channel only. Known gap: a file uploaded on the
+    # Playbooks Start page has none (it is stored before the run's channel
+    # may exist), so a channel-scoped search misses it even though the run's
+    # kickoff post carries it; workspace-wide search still finds it.
     entry = %Entry{
       source: "document",
       ref_id: document.id,

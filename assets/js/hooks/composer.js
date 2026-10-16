@@ -29,6 +29,7 @@
 // below is kept in case it is ever turned back on.
 import Highlighter from "../composer_highlight"
 import {maskCode} from "../composer_tokens"
+import {pastedFiles} from "../pasted_files"
 
 const MAX_SUGGESTIONS = 8
 const DRAFT_PREFIX = "canopy:cmdk-draft:"
@@ -139,20 +140,13 @@ const Composer = {
     this.el.dispatchEvent(new Event("input", {bubbles: true}))
   },
 
-  // Pasted files (a screenshot from the clipboard arrives as "image.png") go
-  // straight to the upload config; text pastes are left to the browser.
+  // Pasted files go straight to the upload config; text pastes are left to
+  // the browser.
   onPaste(e) {
-    const files = Array.from((e.clipboardData && e.clipboardData.files) || [])
+    const files = pastedFiles(e)
     if (files.length === 0) return
     e.preventDefault()
-    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-")
-    const renamed = files.map((file, i) => {
-      const generic = /^(image|file|blob)(\.\w+)?$/i.test(file.name) || file.name === ""
-      if (!generic) return file
-      const ext = (file.name.match(/\.\w+$/) || [file.type ? "." + file.type.split("/")[1] : ""])[0]
-      return new File([file], `paste-${stamp}${files.length > 1 ? "-" + (i + 1) : ""}${ext}`, {type: file.type})
-    })
-    this.upload(this.el.dataset.upload || "files", renamed)
+    this.upload(this.el.dataset.upload || "files", files)
   },
 
   // The agent, team, and channel lists live on the form, which LiveView keeps

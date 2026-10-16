@@ -247,8 +247,8 @@ test.describe("screenshots for the user guide", () => {
     await page.mouse.move(5, 5);
     await shot(page, "playbook-builder");
     await page.goto("/playbooks");
-    await expect(page.locator("#playbooks")).toContainText("release-check");
-    await expect(page.locator("#playbooks")).toContainText("bug-fix");
+    await expect(page.locator("#playbooks li[data-playbook='release-check']")).toBeVisible();
+    await expect(page.locator("#playbooks li[data-playbook='bug-fix']")).toContainText("Bug fix");
     await dismissFlash(page);
     await shot(page, "playbooks");
 

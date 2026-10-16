@@ -23,6 +23,8 @@ defmodule Canopy.Playbooks.Playbook do
     field :enabled, :boolean, default: true
     field :source, :string, default: "user"
     field :lock_version, :integer, default: 1
+    # the user's star (`Canopy.Playbooks.set_starred/2`); never cast, so an edit keeps it
+    field :starred_at, :utc_datetime_usec
 
     belongs_to :created_by, Canopy.Agents.Agent, foreign_key: :created_by_agent_id
 

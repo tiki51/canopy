@@ -67,6 +67,18 @@ defmodule Canopy.Runtime.RouterTest do
     refute text =~ "thread"
   end
 
+  test "a run's kickoff post wakes nobody; the same post without the key wakes the owner" do
+    kickoff = %{message_event(%{}) | payload: %{"kickoff_run_id" => "pbr_1"}}
+    assert Router.wakeups(kickoff, ctx()) == []
+
+    # not even an agent it mentions
+    kickoff = %{message_event(%{mentions: [@reviewer]}) | payload: %{"kickoff_run_id" => "pbr_1"}}
+    assert Router.wakeups(kickoff, ctx()) == []
+
+    plain = %{message_event(%{}) | payload: %{"kind" => "post"}}
+    assert [{{:root, @backend}, _}] = Router.wakeups(plain, ctx())
+  end
+
   test "reactions on a message change nothing about how it routes" do
     reactions = [
       %{emoji: "check", user_id: nil, agent_id: @reviewer, agent: %{name: "reviewer"}},

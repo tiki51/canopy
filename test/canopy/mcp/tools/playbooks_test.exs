@@ -75,6 +75,29 @@ defmodule Canopy.MCP.Tools.PlaybooksTest do
     assert reason =~ "no playbook run is in progress"
   end
 
+  test "get lists the files posted with the brief", ctx do
+    {:ok, doc} =
+      Canopy.Documents.create(%{
+        filename: "spec.md",
+        source: {:binary, "# spec"},
+        user_id: Canopy.Users.local().id
+      })
+
+    {:ok, run, false} =
+      Runs.start(%{
+        playbook: ctx.playbook,
+        channel: ctx.channel,
+        coordinator: ctx.agent,
+        started_by_agent_id: ctx.agent.id,
+        brief: "",
+        document_ids: [doc.id]
+      })
+
+    assert {:ok, text} = call(PlaybookGet, %{}, ctx)
+    assert text =~ "Brief: (no text; the files below are the brief)"
+    assert text =~ "Brief files (#{run.kickoff_message_id}): #{doc.id} spec.md (text, 6 B)"
+  end
+
   test "start: the caller (by its session) coordinates; the first step comes back", ctx do
     assert {:ok, text} = call(PlaybookStart, %{name: "ship-it", brief: "v2 of the thing"}, ctx)
     assert text =~ "started ship-it ["

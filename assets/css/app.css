@@ -375,6 +375,12 @@
   .details-flash { animation: details-flash 1.2s ease-out; }
 }
 
+/* Playbooks: the row just starred or unstarred, tinted where it landed.
+   Without motion the tint holds, then goes. */
+@keyframes pb-moved { from { background: color-mix(in oklab, var(--color-warning) 10%, transparent); } }
+.pb-moved { animation: pb-moved 1.2s ease-out; }
+@media (prefers-reduced-motion: reduce) { .pb-moved { animation-timing-function: step-end; } }
+
 /* One focus ring for every field, the composer's: a soft primary ring and a
    primary border (focus:outline-none focus:ring-2 focus:ring-primary/40
    focus:border-primary), never daisyUI's offset outline. */
