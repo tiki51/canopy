@@ -22,7 +22,7 @@ defmodule Canopy.Timeline.Event do
     member_added member_removed team_added channel_archived channel_reopened repository_switched
     spend_limit_changed spend_limit_reached brief_updated
     schedule_created schedule_fired schedule_skipped schedule_cancelled schedule_paused schedule_resumed
-    permission_requested permission_resolved permission_detached
+    permission_requested permission_resolved permission_detached permission_auto_approved
     question_requested question_resolved question_detached
     signoff_requested signoff_resolved signoff_withdrawn
     lock_granted lock_queued lock_released

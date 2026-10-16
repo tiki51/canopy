@@ -2,7 +2,16 @@ defmodule Canopy.MCP.Tools.PermissionTest do
   @moduledoc "Claude Code's permission prompt tool, answered from the channel."
   use Canopy.DataCase, async: false
 
-  alias Canopy.{AgentSessions, Fixtures, PermissionRequests, QuestionRequests, Runtime, Timeline}
+  alias Canopy.{
+    AgentSessions,
+    Fixtures,
+    GlobalPermissions,
+    PermissionRequests,
+    QuestionRequests,
+    Runtime,
+    Timeline
+  }
+
   alias Canopy.ClaudeCode.Prompts
   alias Canopy.Engine.Event
   alias Canopy.MCP.Tools.Permission
@@ -97,6 +106,49 @@ defmodule Canopy.MCP.Tools.PermissionTest do
 
     refute_received {:telemetry, _,
                      %Event{type: :approval_required, data: %{request: %{"id" => "toolu_4"}}}}
+  end
+
+  test "Allow globally allows without remembering it for the session; the grant answers the next call",
+       ctx do
+    task = ask(ctx, %{tool_name: "Bash", input: %{"command" => "make"}, tool_use_id: "toolu_g1"})
+    assert_receive {:telemetry, _, %Event{type: :approval_required}}, 5_000
+    [pending] = PermissionRequests.pending_for_channel(ctx.channel.id)
+
+    assert {:ok, %{status: "global"}} =
+             Runtime.respond_permission(ctx.channel.id, pending.id, :global)
+
+    assert %{"behavior" => "allow"} = decode(Task.await(task, 5_000))
+    assert Prompts.always_list(ctx.claude_session.engine_session_id) == []
+    assert %{label: "Bash"} = GlobalPermissions.get(ctx.coder.id, "bash")
+
+    # the next Bash call: answered by the channel server, with a line and no card
+    input = %{"command" => "npm run build"}
+
+    assert %{"behavior" => "allow", "updatedInput" => ^input} =
+             decode(
+               MCPHelpers.call_as_session(
+                 Permission,
+                 %{tool_name: "Bash", input: input, tool_use_id: "toolu_g2"},
+                 ctx.claude_session
+               )
+             )
+
+    assert_receive {:timeline,
+                    %{event_type: "permission_auto_approved", payload: %{"patterns" => patterns}}},
+                   5_000
+
+    assert patterns == ["npm run build"]
+    assert PermissionRequests.pending_for_channel(ctx.channel.id) == []
+    assert PermissionRequests.get_by_opencode_id("toolu_g2") == nil
+    assert GlobalPermissions.get(ctx.coder.id, "Bash").use_count == 1
+
+    # removed: the agent asks again
+    {:ok, _} = GlobalPermissions.revoke(GlobalPermissions.get(ctx.coder.id, "Bash"))
+    task = ask(ctx, %{tool_name: "Bash", input: %{"command" => "ls"}, tool_use_id: "toolu_g3"})
+    assert_receive {:telemetry, _, %Event{type: :approval_required}}, 5_000
+    [pending] = PermissionRequests.pending_for_channel(ctx.channel.id)
+    assert {:ok, _} = Runtime.respond_permission(ctx.channel.id, pending.id, :reject)
+    assert %{"behavior" => "deny"} = decode(Task.await(task, 5_000))
   end
 
   test "AskUserQuestion becomes a question card; the answers go back as updatedInput", ctx do

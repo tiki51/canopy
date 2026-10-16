@@ -206,7 +206,9 @@ defmodule Canopy.Engine.ClaudeCode do
   end
 
   # A late Always (the tool call that asked is gone) still counts for the rest
-  # of the session, so the agent redoing the action is not asked again.
+  # of the session, so the agent redoing the action is not asked again. A late
+  # Allow globally needs nothing of the sort: the grant covers the next call,
+  # and a session Always would outlive its removal.
   @impl true
   def reply_permission(_ctx, _state, request, reply) do
     case Prompts.answer(request.opencode_permission_id, reply) do

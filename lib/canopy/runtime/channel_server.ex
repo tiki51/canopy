@@ -102,6 +102,7 @@ defmodule Canopy.Runtime.ChannelServer do
     Channels,
     Costs,
     Delegations,
+    GlobalPermissions,
     Locks,
     Messages,
     PermissionRequests,
@@ -116,6 +117,7 @@ defmodule Canopy.Runtime.ChannelServer do
   alias Canopy.Engine
   alias Canopy.Engine.Event
   alias Canopy.PermissionRequests.PermissionRequest
+  alias Canopy.Runtime
   alias Canopy.QuestionRequests.QuestionRequest
   alias Canopy.Runtime.{Activity, Prompts, Router, Routing}
   alias Canopy.Timeline.ActivityDetails
@@ -145,6 +147,9 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # Appended to a wake that replaced an earlier one still waiting for the same agent.
   @merged_wake_note "\nOther messages arrived while you were busy; this wake stands for all of them, and canopy_messages_read returns everything new.\n"
+
+  # how many auto-approved prompt ids each session remembers
+  @auto_approved_keep 32
 
   @fields [
     :channel,
@@ -194,7 +199,11 @@ defmodule Canopy.Runtime.ChannelServer do
     # when the session's last main and light turns ended (monotonic ms), the
     # context of its last turn, and the profile it ran on. Lost on restart,
     # which costs one cold-cache guess.
-    routing_cache: %{}
+    routing_cache: %{},
+    # engine_session_id => the ids of its prompts last answered under a global
+    # grant, newest first (at most @auto_approved_keep): such a prompt leaves
+    # no card, so this is what tells a second delivery of it from a new one
+    auto_approved: %{}
   ]
 
   defstruct @fields
@@ -219,10 +228,23 @@ defmodule Canopy.Runtime.ChannelServer do
   is posted to the channel as a message mentioning the agent, saying what it
   may now do; a rejection only clears the card. `{:error, :archived}` for an
   approval in an archived channel.
+
+  `:global` also grants the tool to the agent everywhere
+  (`Canopy.GlobalPermissions`) and then approves the agent's other cards for
+  it that still hold a tool call, in every channel. It is `{:error,
+  :not_grantable}` or `{:error, :no_agent}`, before the engine is told
+  anything, when no grant can be made.
   """
   def respond_permission(server, permission_request_id, reply)
-      when reply in [:once, :always, :reject],
+      when reply in [:once, :always, :global, :reject],
       do: GenServer.call(server, {:respond_permission, permission_request_id, reply})
+
+  @doc """
+  Approves this channel's cards that `grant_id` now covers and whose tool
+  call is still held (see `respond_permission/3`). A cast: a channel granting
+  never waits on another.
+  """
+  def sweep_grant(server, grant_id), do: GenServer.cast(server, {:sweep_grant, grant_id})
 
   @doc """
   Answers the question an agent asked through its engine's question tool.
@@ -378,23 +400,17 @@ defmodule Canopy.Runtime.ChannelServer do
   # fails, the answer is late: it is posted to the channel instead. An
   # archived channel takes no answers or approvals, since one may wake an
   # agent; dismissing still works.
+  # Allow globally is checked first, so the engine is never told yes for a
+  # card that cannot then resolve.
   def handle_call({:respond_permission, request_id, reply}, _from, state) do
     if reply != :reject and archived?(state) do
       {:reply, {:error, :archived}, state}
     else
       request = PermissionRequests.get!(request_id)
-      {mod, es, state} = engine_for_request(state, request)
 
-      case mod.reply_permission(ctx(state), es, request, reply) do
-        :ok ->
-          {:reply, resolve_if_pending(request, reply), clear_awaiting(state, request)}
-
-        {:error, reason} when reason != :gone and is_nil(request.detached_at) ->
-          {:reply, {:error, reason}, state}
-
-        _late ->
-          state = clear_awaiting(state, request)
-          {:reply, deliver_late_permission(state, request, reply), state}
+      case reply == :global && PermissionRequests.grant_check(request) do
+        {:error, _} = error -> {:reply, error, state}
+        _ -> answer_permission(state, request, reply)
       end
     end
   end
@@ -658,6 +674,10 @@ defmodule Canopy.Runtime.ChannelServer do
   def handle_cast({:wake_counted, target, wake}, state),
     do: {:noreply, wake_within_budget(state, target, wake)}
 
+  # another channel's card was answered Allow globally
+  def handle_cast({:sweep_grant, grant_id}, state),
+    do: {:noreply, sweep_channel(state, grant_id)}
+
   @impl true
   def handle_info(msg, %__MODULE__{} = state) when map_size(state) != @field_count,
     do: handle_info(msg, upgrade(state))
@@ -725,6 +745,13 @@ defmodule Canopy.Runtime.ChannelServer do
       nil -> {:noreply, state}
       who -> {:noreply, handle_execution(event, who, touch_turn(state, sid, event))}
     end
+  end
+
+  # a card here was answered Allow globally (see sweep_others/1)
+  def handle_info({:sweep_grant, grant_id}, state) do
+    state = sweep_channel(state, grant_id)
+    sweep_elsewhere(state, grant_id)
+    {:noreply, state}
   end
 
   # The event stream reconnected: events may have been missed, so reconcile
@@ -2531,7 +2558,8 @@ defmodule Canopy.Runtime.ChannelServer do
   # user; the card in the feed is the only way to release it. A replayed
   # prompt (the engine still lists it) brings back a card resolved or
   # detached here; one already showing is not announced again. A prompt that cannot be recorded would block with no card,
-  # so the engine is told to reject it at once.
+  # so the engine is told to reject it at once. A prompt the agent's global
+  # permission covers gets no card (`auto_approve/4`).
   defp handle_execution(
          %{type: :approval_required, data: %{request: req}} = event,
          %{agent_id: agent_id},
@@ -2539,38 +2567,9 @@ defmodule Canopy.Runtime.ChannelServer do
        ) do
     session = session_for(state, event.session_id)
 
-    attrs = %{
-      channel_id: state.channel.id,
-      agent_session_id: session && session.id,
-      opencode_permission_id: req["id"],
-      permission: req["permission"],
-      patterns: req["patterns"] || [],
-      metadata: req["metadata"] || %{},
-      tool_call_id: get_in(req, ["tool", "callID"]),
-      status: "pending"
-    }
-
-    known? = attached?(PermissionRequests.get_by_opencode_id(req["id"] || ""))
-
-    case PermissionRequests.record(attrs, reopen: replay?(event)) do
-      {:ok, request} ->
-        unless known?, do: broadcast(state, {:telemetry, agent_id, event})
-        mark_awaiting(state, event.session_id, request)
-
-      {:error, error} ->
-        Logger.warning(
-          "channel #{state.channel.name}: could not record permission #{inspect(req["id"])}, rejecting it: #{inspect(error)}"
-        )
-
-        request = %PermissionRequest{
-          opencode_permission_id: req["id"],
-          permission: req["permission"],
-          agent_session: session
-        }
-
-        {mod, es, state} = engine_for_session(state, session)
-        _ = mod.reply_permission(ctx(state), es, request, :reject)
-        state
+    case auto_approve(state, event, session, req) do
+      {:approved, state} -> state
+      {:card, state} -> record_permission(state, event, agent_id, session, req)
     end
   end
 
@@ -3414,6 +3413,211 @@ defmodule Canopy.Runtime.ChannelServer do
        do: %{state | channel: Channels.get!(state.channel.id)}
 
   defp maybe_refresh_channel(_event, state), do: state
+
+  defp record_permission(state, event, agent_id, session, req) do
+    attrs = %{
+      channel_id: state.channel.id,
+      agent_session_id: session && session.id,
+      opencode_permission_id: req["id"],
+      permission: req["permission"],
+      patterns: req["patterns"] || [],
+      metadata: req["metadata"] || %{},
+      tool_call_id: get_in(req, ["tool", "callID"]),
+      status: "pending"
+    }
+
+    known? = attached?(PermissionRequests.get_by_opencode_id(req["id"] || ""))
+
+    case PermissionRequests.record(attrs, reopen: replay?(event)) do
+      {:ok, request} ->
+        unless known?, do: broadcast(state, {:telemetry, agent_id, event})
+        mark_awaiting(state, event.session_id, request)
+
+      {:error, error} ->
+        Logger.warning(
+          "channel #{state.channel.name}: could not record permission #{inspect(req["id"])}, rejecting it: #{inspect(error)}"
+        )
+
+        request = %PermissionRequest{
+          opencode_permission_id: req["id"],
+          permission: req["permission"],
+          agent_session: session
+        }
+
+        {mod, es, state} = engine_for_session(state, session)
+        _ = mod.reply_permission(ctx(state), es, request, :reject)
+        state
+    end
+  end
+
+  defp answer_permission(state, request, reply) do
+    {mod, es, state} = engine_for_request(state, request)
+
+    case mod.reply_permission(ctx(state), es, request, reply) do
+      :ok ->
+        result = resolve_if_pending(request, reply)
+        sweep_others(result)
+        {:reply, result, clear_awaiting(state, request)}
+
+      {:error, reason} when reason != :gone and is_nil(request.detached_at) ->
+        {:reply, {:error, reason}, state}
+
+      _late ->
+        state = clear_awaiting(state, request)
+        result = deliver_late_permission(state, request, reply)
+        sweep_others(result)
+        {:reply, result, state}
+    end
+  end
+
+  # -- Global permissions -------------------------------------------------------
+
+  # A card answered Allow globally: the agent's other cards for the tool that
+  # still hold a tool call are approved in their own channels, after this
+  # call has replied (one engine reply per card, or starting another
+  # channel's server, must not run on the caller's clock). Detached cards
+  # are left alone: approving one would post a message that wakes the agent
+  # unasked.
+  defp sweep_others({:ok, %PermissionRequest{status: "global"} = request}) do
+    agent_id = PermissionRequests.agent_id_of(request)
+
+    with %GlobalPermissions.Grant{} = grant <-
+           GlobalPermissions.match(agent_id, request.permission) do
+      send(self(), {:sweep_grant, grant.id})
+    end
+
+    :ok
+  end
+
+  defp sweep_others(_result), do: :ok
+
+  # Other channels holding the agent's waiting cards for the tool sweep their own.
+  defp sweep_elsewhere(state, grant_id) do
+    with %GlobalPermissions.Grant{} = grant <- GlobalPermissions.get_by_id(grant_id) do
+      grant.agent_id
+      |> PermissionRequests.waiting_for_agent_tool(grant.tool)
+      |> Enum.map(& &1.channel_id)
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == state.channel.id))
+      |> Enum.each(&Runtime.sweep_grant(&1, grant.id))
+    end
+
+    :ok
+  end
+
+  # The grant is read again: it may have been removed since.
+  defp sweep_channel(state, grant_id) do
+    case GlobalPermissions.get_by_id(grant_id) do
+      nil ->
+        state
+
+      grant ->
+        grant.agent_id
+        |> PermissionRequests.waiting_for_agent_tool(grant.tool, channel_id: state.channel.id)
+        |> Enum.reduce(state, &sweep_request(&2, &1, grant))
+    end
+  end
+
+  # A card whose engine reply fails stays for the user; one the engine no
+  # longer holds is detached by the usual expiry and reconcile paths.
+  defp sweep_request(state, request, grant) do
+    {mod, es, state} = engine_for_request(state, request)
+
+    with :ok <- mod.reply_permission(ctx(state), es, request, :once) do
+      case PermissionRequests.auto_resolve(request, grant) do
+        {:ok, request} ->
+          clear_awaiting(state, request)
+
+        {:error, reason} ->
+          Logger.warning(
+            "channel #{state.channel.name}: approved #{inspect(request.opencode_permission_id)} under a global grant but could not resolve its card: #{inspect(reason)}"
+          )
+
+          state
+      end
+    else
+      _ -> state
+    end
+  end
+
+  # A fresh prompt the agent's grant covers is answered Once at once, with a
+  # line instead of a card. A prompt already recorded (a replay, a reopen)
+  # keeps its card, and one already auto-approved is not answered again.
+  # When the engine reply fails the card is shown after all.
+  defp auto_approve(state, event, session, req) do
+    cond do
+      auto_approved?(state, event.session_id, req["id"]) ->
+        {:approved, state}
+
+      grant =
+          is_nil(PermissionRequests.get_by_opencode_id(req["id"] || "")) && session &&
+            GlobalPermissions.match(session.agent_id, req["permission"]) ->
+        auto_approve(state, event, session, req, grant)
+
+      true ->
+        {:card, state}
+    end
+  end
+
+  defp auto_approved?(_state, _sid, nil), do: false
+
+  defp auto_approved?(state, sid, id),
+    do: id in Map.get(state.auto_approved, sid, [])
+
+  defp note_auto_approved(state, _sid, nil), do: state
+
+  defp note_auto_approved(state, sid, id) do
+    ids = Enum.take([id | Map.get(state.auto_approved, sid, [])], @auto_approved_keep)
+    %{state | auto_approved: Map.put(state.auto_approved, sid, ids)}
+  end
+
+  defp auto_approve(state, event, session, req, grant) do
+    request = %PermissionRequest{
+      opencode_permission_id: req["id"],
+      permission: req["permission"],
+      patterns: req["patterns"] || [],
+      agent_session_id: session.id,
+      agent_session: session
+    }
+
+    {mod, es, state} = engine_for_session(state, session)
+
+    case mod.reply_permission(ctx(state), es, request, :once) do
+      :ok ->
+        # a prompt from a thread turn records its line in that thread
+        thread_id = state.turns |> Map.get(event.session_id, %{}) |> Map.get(:thread_id)
+
+        attrs =
+          Map.merge(
+            %{
+              channel_id: state.channel.id,
+              agent_id: session.agent_id,
+              permission: req["permission"],
+              patterns: request.patterns
+            },
+            thread_scope(thread_id)
+          )
+
+        with {:error, reason} <- GlobalPermissions.record_use(grant, attrs) do
+          Logger.warning(
+            "channel #{state.channel.name}: could not record the auto-approval of #{inspect(req["id"])}: #{inspect(reason)}"
+          )
+        end
+
+        {:approved, note_auto_approved(state, event.session_id, req["id"])}
+
+      # nobody waits for it any more
+      {:error, :gone} ->
+        {:approved, state}
+
+      {:error, reason} ->
+        Logger.warning(
+          "channel #{state.channel.name}: could not auto-approve #{inspect(req["id"])}, showing a card: #{inspect(reason)}"
+        )
+
+        {:card, state}
+    end
+  end
 
   defp resolve_if_pending(%{status: "pending"} = request, reply),
     do: PermissionRequests.resolve(request, reply)

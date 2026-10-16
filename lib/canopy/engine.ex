@@ -109,12 +109,16 @@ defmodule Canopy.Engine do
   """
   @callback compact(ctx, engine_state, session, agent) :: :ok | {:ok, :turn} | {:error, term()}
 
-  @doc "Answers a permission prompt. `{:error, :gone}` when the engine no longer holds it."
+  @doc """
+  Answers a permission prompt. `{:error, :gone}` when the engine no longer
+  holds it. `:global` (Allow globally) allows this call only: Canopy keeps the
+  grant and answers later prompts itself, so a removal takes effect at once.
+  """
   @callback reply_permission(
               ctx,
               engine_state,
               Canopy.PermissionRequests.PermissionRequest.t(),
-              :once | :always | :reject
+              :once | :always | :global | :reject
             ) :: :ok | {:error, :gone} | {:error, term()}
 
   @doc """

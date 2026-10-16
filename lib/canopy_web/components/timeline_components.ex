@@ -201,7 +201,7 @@ defmodule CanopyWeb.TimelineComponents do
     <div id={@id} data-activity={activity_class(@event)}>
       <.system_line
         id={"line-#{@event.id}"}
-        icon={event_icon(@event.event_type)}
+        icon={line_icon(@event)}
         tone={event_tone(@event)}
         at={@event.inserted_at}
       >
@@ -797,7 +797,7 @@ defmodule CanopyWeb.TimelineComponents do
   @doc "A centred, subtle line for collaboration events and system notes."
   attr :id, :string, required: true
   attr :icon, :string, default: "hero-information-circle-mini"
-  attr :tone, :string, default: "muted", values: ~w(muted success error warning)
+  attr :tone, :string, default: "muted", values: ~w(muted success error warning secondary)
   attr :at, :any, default: nil
   slot :inner_block, required: true
 
@@ -810,15 +810,16 @@ defmodule CanopyWeb.TimelineComponents do
     >
       <span class="h-px flex-1 bg-base-300/70" />
       <span class={[
-        "flex items-center gap-1.5 whitespace-pre-wrap text-center",
+        "flex min-w-0 items-center gap-1.5 whitespace-pre-wrap text-center",
         @tone == "muted" && "text-base-content/55",
         @tone == "success" && "text-success",
         @tone == "error" && "text-error",
-        @tone == "warning" && "text-warning"
+        @tone == "warning" && "text-warning",
+        @tone == "secondary" && "text-secondary"
       ]}>
         <.icon name={@icon} class="size-3.5 shrink-0 opacity-70" />
-        <span>{render_slot(@inner_block)}</span>
-        <time :if={@at} class="text-[10px] opacity-60" title={DateTime.to_iso8601(@at)}>
+        <span class="min-w-0 [overflow-wrap:anywhere]">{render_slot(@inner_block)}</span>
+        <time :if={@at} class="shrink-0 text-[10px] opacity-60" title={DateTime.to_iso8601(@at)}>
           {short_time(@at)}
         </time>
       </span>
@@ -2446,7 +2447,9 @@ defmodule CanopyWeb.TimelineComponents do
   # -- Permission cards --------------------------------------------------------
 
   @doc """
-  A pending permission request with Once / Always / Reject. A detached card
+  A pending permission request with Once / Always / Allow globally / Reject
+  (Allow globally only for tools `Canopy.GlobalPermissions.grantable?/1`
+  accepts, on a card with an agent). A detached card
   (the agent stopped waiting) stays answerable: an approval reaches the agent
   as a new message, and Reject becomes Dismiss.
   """
@@ -2463,26 +2466,28 @@ defmodule CanopyWeb.TimelineComponents do
         stale?(@request) && "opacity-70"
       ]}
     >
-      <div class="flex items-center gap-2 px-4 py-2.5">
-        <.icon name="hero-shield-exclamation" class="size-5 text-warning" />
-        <div class="min-w-0 flex-1 text-sm">
-          <span class="font-medium">@{requester_name(@request, @names)}</span>
-          {if @request.detached_at, do: "asked for", else: "asks for"}
-          <span class="font-semibold">{@request.permission}</span>
-          permission
-          <span :if={@request.patterns != []} class="text-base-content/60">
-            on
-            <code
-              :for={pattern <- @request.patterns}
-              class="mr-1 rounded bg-base-300/60 px-1 font-mono text-xs"
-            >{pattern}</code>
-          </span>
+      <div class="flex flex-col gap-2 px-4 py-2.5 sm:flex-row sm:items-center">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
+          <.icon name="hero-shield-exclamation" class="size-5 shrink-0 text-warning" />
+          <div class="min-w-0 flex-1 text-sm">
+            <span class="font-medium">@{requester_name(@request, @names)}</span>
+            {if @request.detached_at, do: "asked for", else: "asks for"}
+            <span class="font-semibold">{@request.permission}</span>
+            permission
+            <span :if={@request.patterns != []} class="text-base-content/60">
+              on
+              <code
+                :for={pattern <- @request.patterns}
+                class="mr-1 rounded bg-base-300/60 px-1 font-mono text-xs [overflow-wrap:anywhere]"
+              >{pattern}</code>
+            </span>
+          </div>
         </div>
-        <div class="flex shrink-0 items-center gap-1.5">
+        <div class="grid grid-cols-2 gap-1.5 sm:flex sm:shrink-0 sm:items-center">
           <button
             type="button"
             id={"permission-#{@request.id}-once"}
-            class="btn btn-xs btn-primary"
+            class="btn btn-sm btn-primary sm:btn-xs"
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="once"
@@ -2492,7 +2497,8 @@ defmodule CanopyWeb.TimelineComponents do
           <button
             type="button"
             id={"permission-#{@request.id}-always"}
-            class="btn btn-xs btn-primary btn-soft"
+            class="btn btn-sm btn-primary btn-soft sm:btn-xs"
+            title="Until this session resets"
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="always"
@@ -2500,9 +2506,21 @@ defmodule CanopyWeb.TimelineComponents do
             Always
           </button>
           <button
+            :if={@request.agent_session && Canopy.GlobalPermissions.grantable?(@request.permission)}
+            type="button"
+            id={"permission-#{@request.id}-global"}
+            class="btn btn-sm btn-secondary btn-soft sm:btn-xs"
+            title={global_title(requester_name(@request, @names), @request.permission)}
+            phx-click="respond_permission"
+            phx-value-id={@request.id}
+            phx-value-reply="global"
+          >
+            <.icon name="hero-globe-alt-mini" class="size-3.5" /> Allow globally
+          </button>
+          <button
             type="button"
             id={"permission-#{@request.id}-reject"}
-            class="btn btn-xs btn-ghost text-error"
+            class="btn btn-sm btn-ghost text-error sm:btn-xs"
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="reject"
@@ -2787,8 +2805,19 @@ defmodule CanopyWeb.TimelineComponents do
           suffix(Enum.join(List.wrap(p["patterns"]), ", "))
 
       "permission_resolved" ->
-        "#{p["permission"]} permission #{permission_status(p["status"])}" <>
-          delivered_suffix(p)
+        if p["status"] == "global",
+          do:
+            "#{p["permission"]} permission allowed globally for #{agent}" <> delivered_suffix(p),
+          else:
+            "#{p["permission"]} permission #{permission_status(p["status"])}" <>
+              delivered_suffix(p)
+
+      "permission_auto_approved" ->
+        "#{agent} ran #{p["permission"]} without asking · global permission" <>
+          case Enum.join(List.wrap(p["patterns"]), ", ") do
+            "" -> ""
+            patterns -> " · " <> truncate(patterns, 160)
+          end
 
       "permission_detached" ->
         "#{agent} stopped waiting for #{p["permission"]} permission"
@@ -3208,6 +3237,14 @@ defmodule CanopyWeb.TimelineComponents do
   defp requester_name(%{agent_session: %{agent: %{name: name}}}, _names), do: name
   defp requester_name(_request, _names), do: "agent"
 
+  defp global_title(name, "external_directory"),
+    do:
+      "Let @#{name} reach files outside its project folder, in every channel, without asking. Remove it on its page."
+
+  defp global_title(name, tool),
+    do:
+      "Let @#{name} use #{tool} in every project and channel without asking. Remove it on its page."
+
   defp receipt_text(receipt) do
     [count(receipt[:tools], "tool"), format_duration(receipt[:duration_ms])]
     |> Enum.reject(&is_nil/1)
@@ -3322,7 +3359,15 @@ defmodule CanopyWeb.TimelineComponents do
   defp permission_status("once"), do: "granted once"
   defp permission_status("always"), do: "granted for the session"
   defp permission_status("rejected"), do: "rejected"
+  defp permission_status("global"), do: "allowed globally"
   defp permission_status(other), do: to_string(other)
+
+  # The icon for a plain event line: a global grant shows the globe the card's
+  # Allow globally button carries.
+  defp line_icon(%{event_type: "permission_resolved", payload: %{"status" => "global"}}),
+    do: "hero-globe-alt-mini"
+
+  defp line_icon(%{event_type: type}), do: event_icon(type)
 
   defp event_icon("agent_started"), do: "hero-play-circle-mini"
   defp event_icon("session_reset"), do: "hero-arrow-path-mini"
@@ -3344,6 +3389,7 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("brief_updated"), do: "hero-document-text-mini"
   defp event_icon("schedule_fired"), do: "hero-bell-alert-mini"
   defp event_icon("schedule_" <> _), do: "hero-clock-mini"
+  defp event_icon("permission_auto_approved"), do: "hero-globe-alt-mini"
   defp event_icon("permission_" <> _), do: "hero-shield-check-mini"
   defp event_icon("question_" <> _), do: "hero-question-mark-circle-mini"
   defp event_icon("lock_released"), do: "hero-lock-open-mini"
@@ -3358,6 +3404,10 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_tone(%{event_type: "spend_limit_reached"}), do: "error"
   defp event_tone(%{event_type: "delegation_failed"}), do: "error"
   defp event_tone(%{event_type: "handoff_rejected"}), do: "warning"
+  defp event_tone(%{event_type: "permission_auto_approved"}), do: "secondary"
+
+  defp event_tone(%{event_type: "permission_resolved", payload: %{"status" => "global"}}),
+    do: "secondary"
 
   defp event_tone(%{event_type: "lock_released", payload: %{"released_by" => by}})
        when by in ~w(lease user restart),

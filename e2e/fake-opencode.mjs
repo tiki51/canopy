@@ -723,6 +723,20 @@ async function runTurn(sessionID, text, cwd) {
     emit("file.edited", { file: "notes.txt" });
   }
 
+  // "run `cmd`" asks for bash permission on cmd (e2e/tests/allow-globally.spec.ts);
+  // the read window holds earlier messages too, so the last one counts.
+  const run = [...body.matchAll(/\brun `([^`]+)`/g)].at(-1)?.[1];
+  const doomLoop = /\bdoom loop\b/i.test(body);
+  if (run || doomLoop) {
+    const id = nextId("per");
+    const permission = run ? "bash" : "doom_loop";
+    const patterns = run ? [run] : ["read"];
+    await new Promise((resume) => {
+      pendingPermissions.set(id, resume);
+      emit("permission.asked", { id, sessionID, permission, patterns, metadata: {}, always: ["*"], tool: { messageID, callID: nextId("call") } });
+    });
+  }
+
   // "ask me" puts the question tool on hold until the card is answered or
   // dismissed; the answer comes back as a list of labels per question.
   let answer = null;

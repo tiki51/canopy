@@ -33,7 +33,17 @@ defmodule CanopyWeb.AgentsLive do
 
   use CanopyWeb, :live_view
 
-  alias Canopy.{Agents, Channels, Memory, Repositories, Schedules, Settings, Teams}
+  alias Canopy.{
+    Agents,
+    Channels,
+    GlobalPermissions,
+    Memory,
+    Repositories,
+    Schedules,
+    Settings,
+    Teams
+  }
+
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
   alias CanopyWeb.Nav
@@ -58,6 +68,9 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:agent_teams, [])
       |> assign(:agent_schedules, [])
       |> assign(:agent_memory, "")
+      |> assign(:agent_grants, [])
+      # the toast after Remove on a global permission; Undo restores the grant
+      |> assign(:undo, nil)
       |> assign(:light_profile, nil)
       |> assign(:routing_pauses, [])
       |> assign(:rule_stats, [])
@@ -69,6 +82,7 @@ defmodule CanopyWeb.AgentsLive do
 
     if connected?(socket) do
       Memory.subscribe()
+      GlobalPermissions.subscribe()
       Settings.subscribe()
       Teams.subscribe()
     end
@@ -109,6 +123,7 @@ defmodule CanopyWeb.AgentsLive do
           agent ->
             socket =
               socket
+              |> keep_undo_for(id)
               |> assign(:agent, agent)
               |> assign(:page_title, "@" <> agent.name)
               |> load_agent_details()
@@ -128,6 +143,21 @@ defmodule CanopyWeb.AgentsLive do
         %{assigns: %{agent: %Agent{id: agent_id}}} = socket
       ),
       do: {:noreply, load_memory(socket)}
+
+  # A grant made, removed or restored, or used (the counts move).
+  def handle_info(
+        {:global_permissions, :changed, agent_id},
+        %{assigns: %{agent: %Agent{id: agent_id}}} = socket
+      ),
+      do: {:noreply, load_grants(socket)}
+
+  # The Remove toast's time is up (a newer toast keeps its own timer).
+  def handle_info({:clear_undo, token}, socket) do
+    case socket.assigns.undo do
+      %{token: ^token} -> {:noreply, assign(socket, :undo, nil)}
+      _ -> {:noreply, socket}
+    end
+  end
 
   # A default changed in Settings, or agents were moved onto it there.
   def handle_info({:settings, :default_models_changed}, socket) do
@@ -305,6 +335,55 @@ defmodule CanopyWeb.AgentsLive do
          )}
     end
   end
+
+  # Removing a global permission keeps the row it returns, so Undo can put it
+  # back with its date and counts.
+  # only a grant of the agent on this page
+  def handle_event("remove_grant", %{"id" => id}, socket) do
+    agent_id = socket.assigns.agent.id
+
+    result =
+      case GlobalPermissions.get_by_id(id) do
+        %{agent_id: ^agent_id} = grant -> GlobalPermissions.revoke(grant)
+        _ -> {:error, :not_found}
+      end
+
+    case result do
+      {:ok, grant} ->
+        token = System.unique_integer()
+        Process.send_after(self(), {:clear_undo, token}, 6_000)
+
+        {:noreply,
+         socket
+         |> load_grants()
+         |> assign(:undo, %{
+           grant: grant,
+           token: token,
+           text: "Removed #{grant.label} from @#{socket.assigns.agent.name}'s global permissions."
+         })}
+
+      {:error, :not_found} ->
+        {:noreply, load_grants(socket)}
+    end
+  end
+
+  def handle_event("undo", _params, socket) do
+    socket =
+      case socket.assigns.undo do
+        %{grant: grant} ->
+          case GlobalPermissions.restore(grant) do
+            {:ok, _} -> socket
+            {:error, _} -> put_flash(socket, :error, "Could not restore #{grant.label}.")
+          end
+
+        nil ->
+          socket
+      end
+
+    {:noreply, socket |> assign(:undo, nil) |> load_grants()}
+  end
+
+  def handle_event("dismiss_undo", _params, socket), do: {:noreply, assign(socket, :undo, nil)}
 
   def handle_event("cancel_schedule", %{"id" => id}, socket) do
     case Schedules.get(id) do
@@ -531,9 +610,53 @@ defmodule CanopyWeb.AgentsLive do
     |> assign(:agent_spend, agent_spend(id))
     |> load_routing()
     |> load_memory()
+    |> load_grants()
   end
 
   defp load_agent_details(socket), do: socket
+
+  defp load_grants(%{assigns: %{agent: %Agent{id: id}}} = socket),
+    do: assign(socket, :agent_grants, GlobalPermissions.list_for_agent(id))
+
+  defp load_grants(socket), do: socket
+
+  # A Remove toast belongs to the agent it was made on.
+  defp keep_undo_for(%{assigns: %{agent: %Agent{id: id}}} = socket, id), do: socket
+  defp keep_undo_for(socket, _id), do: assign(socket, :undo, nil)
+
+  # Where a grant was made: the channel, or a note that it is gone.
+  attr :channel, :any, required: true
+
+  defp grant_channel(%{channel: nil} = assigns), do: ~H"a deleted channel"
+
+  defp grant_channel(assigns) do
+    ~H"""
+    <.link navigate={~p"/channels/#{@channel.id}"} class="hover:underline">
+      {if Channels.dm?(@channel), do: "a DM", else: "#" <> @channel.name}
+    </.link>
+    """
+  end
+
+  defp granted_on(%DateTime{} = at) do
+    if at.year == Date.utc_today().year,
+      do: Calendar.strftime(at, "%b %-d"),
+      else: Calendar.strftime(at, "%b %-d, %Y")
+  end
+
+  defp grant_use(%{use_count: 0}), do: "not used since"
+  defp grant_use(%{use_count: 1, last_used_at: at}), do: "1 auto-approval · last #{last_used(at)}"
+
+  defp grant_use(%{use_count: n, last_used_at: at}),
+    do: "#{n} auto-approvals · last #{last_used(at)}"
+
+  defp last_used(nil), do: "—"
+
+  defp last_used(at) do
+    case Schedules.relative(at) do
+      "now" -> "just now"
+      ago -> ago
+    end
+  end
 
   defp agent_spend(agent_id) do
     for {key, since} <- [
@@ -1342,6 +1465,14 @@ defmodule CanopyWeb.AgentsLive do
                   <dt class="text-base-content/60">Permissions</dt>
                   <dd id="agent-permissions" class="font-mono text-xs">
                     {@agent.permission_mode}{effort_text(@agent, @default_effort)}
+                    <a
+                      :if={@agent_grants != []}
+                      href="#agent-global-permissions"
+                      id="agent-grants-link"
+                      class="ml-1 font-sans text-secondary hover:underline"
+                    >
+                      + {length(@agent_grants)} global
+                    </a>
                   </dd>
                 <% else %>
                   <dt class="text-base-content/60">OpenCode agent</dt>
@@ -1401,6 +1532,48 @@ defmodule CanopyWeb.AgentsLive do
                 class="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-base-100 p-3 font-mono text-xs leading-relaxed text-base-content/80"
               >{@agent.system_prompt}</pre>
             </div>
+          </Layouts.panel>
+
+          <Layouts.panel
+            id="agent-global-permissions"
+            title="Global permissions"
+            description={"Tools @#{@agent.name} uses in any project and channel without asking. Remove one and it asks again next time."}
+          >
+            <ul :if={@agent_grants != []} id="agent-grants" class="divide-y divide-base-300">
+              <li
+                :for={grant <- @agent_grants}
+                id={"grant-#{grant.id}"}
+                class="flex items-center gap-3 py-2"
+              >
+                <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary/10 text-secondary">
+                  <.icon name="hero-globe-alt-mini" class="size-4" />
+                </div>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate font-mono text-sm">{grant.label}</p>
+                  <p id={"grant-#{grant.id}-meta"} class="text-xs text-base-content/60">
+                    Allowed
+                    <time title={DateTime.to_iso8601(grant.granted_at)}>
+                      {granted_on(grant.granted_at)}
+                    </time>
+                    in <.grant_channel channel={grant.channel} /> · {grant_use(grant)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  id={"remove-grant-#{grant.id}"}
+                  class="btn btn-ghost btn-xs text-base-content/60 hover:text-error"
+                  phx-click="remove_grant"
+                  phx-value-id={grant.id}
+                  aria-label={"Remove #{grant.label} from @#{@agent.name}'s global permissions"}
+                >
+                  Remove
+                </button>
+              </li>
+            </ul>
+            <p :if={@agent_grants == []} id="agent-grants-empty" class="text-xs text-base-content/60">
+              None yet. Choose <strong>Allow globally</strong>
+              on a permission card and @{@agent.name} stops asking for that tool.
+            </p>
           </Layouts.panel>
 
           <Layouts.panel
@@ -1610,6 +1783,7 @@ defmodule CanopyWeb.AgentsLive do
           </Layouts.panel>
         </div>
       </div>
+      <.undo_toast :if={@undo} undo={@undo} />
     </Layouts.page>
     """
   end

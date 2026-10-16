@@ -414,7 +414,12 @@ defmodule Canopy.Runtime.Prompts do
         list -> " " <> Enum.join(list, ", ")
       end
 
-    scope = if reply == :always, do: "always", else: "once"
+    scope =
+      case reply do
+        :always -> "always"
+        :global -> "globally: #{permission} in every channel and project, until removed"
+        _ -> "once"
+      end
 
     "@#{agent_name} Approved: #{permission}#{target} (#{scope}). You can do it now."
   end

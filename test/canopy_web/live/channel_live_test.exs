@@ -7,6 +7,7 @@ defmodule CanopyWeb.ChannelLiveTest do
 
   alias Canopy.{
     Fixtures,
+    GlobalPermissions,
     Handoffs,
     Messages,
     PermissionRequests,
@@ -16,6 +17,7 @@ defmodule CanopyWeb.ChannelLiveTest do
   }
 
   alias Canopy.ClaudeCode.Prompts
+  alias Canopy.PermissionRequests.PermissionRequest
   alias Canopy.OpenCode.ClientMock, as: OC
   alias CanopyWeb.ChannelLive
 
@@ -2024,6 +2026,341 @@ defmodule CanopyWeb.ChannelLiveTest do
 
       {:ok, _} = PermissionRequests.resolve(request, :reject)
       refute has_element?(view, "#permission-#{request.id}")
+    end
+  end
+
+  describe "allow globally" do
+    defp pending(ctx, permission, attrs \\ %{}) do
+      {:ok, request} =
+        PermissionRequests.record(
+          Map.merge(
+            %{
+              channel_id: ctx.channel.id,
+              agent_session_id: ctx.session.id,
+              opencode_permission_id: "per_" <> Fixtures.unique_suffix(),
+              permission: permission,
+              patterns: ["npm run build"],
+              status: "pending"
+            },
+            attrs
+          )
+        )
+
+      request
+    end
+
+    # A sweep runs on a message the ChannelServer sends itself as the click
+    # returns: once the server has handled it, its broadcasts are on their way
+    # to the view, and the next render sees them.
+    defp settle(ctx), do: :sys.get_state(Runtime.Supervisor.whereis(ctx.channel.id))
+
+    test "the card offers Allow globally, with what it allows in the title", ctx do
+      request = pending(ctx, "bash")
+      outside = pending(ctx, "external_directory")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      assert has_element?(
+               view,
+               ~s(#permission-#{request.id}-global[title="Let @#{ctx.agent.name} use bash in every project and channel without asking. Remove it on its page."]),
+               "Allow globally"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#permission-#{request.id}-always[title="Until this session resets"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#permission-#{outside.id}-global[title="Let @#{ctx.agent.name} reach files outside its project folder, in every channel, without asking. Remove it on its page."])
+             )
+    end
+
+    test "a detached card keeps it; doom_loop and a card with no agent don't offer it", ctx do
+      detached = pending(ctx, "bash")
+      {:ok, detached} = PermissionRequests.detach(detached)
+      loop = pending(ctx, "doom_loop")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      assert has_element?(view, "#permission-#{detached.id}-global")
+      assert has_element?(view, "#permission-#{loop.id}-once")
+      refute has_element?(view, "#permission-#{loop.id}-global")
+
+      html =
+        render_component(&CanopyWeb.TimelineComponents.permission_card/1,
+          request: %{detached | agent_session: nil},
+          names: %{}
+        )
+
+      refute html =~ "-global"
+    end
+
+    test "it grants the tool, answers Once, and Undo removes that grant", ctx do
+      request = pending(ctx, "bash")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      expect(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:ok, true} end)
+      view |> element("#permission-#{request.id}-global") |> render_click()
+
+      refute has_element?(view, "#permission-#{request.id}")
+      assert PermissionRequests.get!(request.id).status == "global"
+      assert %{id: grant_id} = GlobalPermissions.get(ctx.agent.id, "bash")
+
+      assert has_element?(
+               view,
+               "#undo-toast",
+               "@#{ctx.agent.name} can now run any bash command, anywhere, without asking."
+             )
+
+      assert render(view) =~ "bash permission allowed globally for @#{ctx.agent.name}"
+
+      view |> element("#undo-delete") |> render_click()
+      refute has_element?(view, "#undo-toast")
+      assert GlobalPermissions.get(ctx.agent.id, "bash") == nil
+      assert {:error, :not_found} = GlobalPermissions.revoke(grant_id)
+    end
+
+    test "when the agent already had it, there is no Undo and the grant is kept", ctx do
+      {:ok, grant} = GlobalPermissions.grant(ctx.agent.id, "Bash", channel_id: ctx.channel.id)
+      # a card from before the grant existed
+      request = pending(ctx, "bash")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      expect(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:ok, true} end)
+      view |> element("#permission-#{request.id}-global") |> render_click()
+
+      refute has_element?(view, "#undo-toast")
+      assert render(view) =~ "@#{ctx.agent.name} already had bash globally."
+      assert %{id: id, granted_at: at} = GlobalPermissions.get(ctx.agent.id, "bash")
+      assert {id, at} == {grant.id, grant.granted_at}
+    end
+
+    test "the toast closes on its timer, but not on an older toast's", ctx do
+      request = pending(ctx, "edit")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      expect(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:ok, true} end)
+      view |> element("#permission-#{request.id}-global") |> render_click()
+      assert has_element?(view, "#undo-toast", "can now use edit anywhere without asking.")
+
+      send(view.pid, {:clear_undo, -1})
+      assert has_element?(view, "#undo-toast")
+
+      view |> element("#undo-toast button[aria-label=Dismiss]") |> render_click()
+      refute has_element?(view, "#undo-toast")
+      assert GlobalPermissions.get(ctx.agent.id, "edit")
+    end
+
+    test "the toast copy names what the tool can do" do
+      assert ChannelLive.grant_text("backend", "Bash") ==
+               "@backend can now run any Bash command, anywhere, without asking."
+
+      assert ChannelLive.grant_text("backend", "external_directory") ==
+               "@backend can now reach files outside its project folder, in every channel, without asking."
+
+      assert ChannelLive.grant_text("backend", "WebFetch") ==
+               "@backend can now use WebFetch anywhere without asking."
+    end
+
+    test "a grant sweeps the agent's other waiting card for that tool", ctx do
+      request = pending(ctx, "bash")
+      sibling = pending(ctx, "bash", %{patterns: ["mix test"]})
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      assert has_element?(view, "#permission-#{sibling.id}")
+
+      stub(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:ok, true} end)
+      view |> element("#permission-#{request.id}-global") |> render_click()
+
+      settle(ctx)
+      refute has_element?(view, "#permission-#{sibling.id}")
+      assert PermissionRequests.get!(sibling.id).status == "auto"
+
+      assert render(view) =~
+               "@#{ctx.agent.name} ran bash without asking · global permission · mix test"
+    end
+
+    test "on a detached card it grants the tool and posts the approval", ctx do
+      request = pending(ctx, "bash")
+      {:ok, request} = PermissionRequests.detach(request)
+      test_pid = self()
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      expect(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:error, {:http, 404, %{}}} end)
+
+      expect(OC, :prompt_async, fn _dir, _sid, body, _opts ->
+        send(test_pid, {:woken, body})
+        {:ok, ""}
+      end)
+
+      view |> element("#permission-#{request.id}-global") |> render_click()
+
+      assert_receive {:woken, %{parts: [%{text: text} | _]}}, 2_000
+      assert text =~ "Approved: bash"
+      assert text =~ "globally"
+      refute has_element?(view, "#permission-#{request.id}")
+      assert PermissionRequests.get!(request.id).status == "global"
+      assert GlobalPermissions.get(ctx.agent.id, "bash")
+      assert has_element?(view, "#undo-toast", "can now run any bash command")
+    end
+
+    test "a tool that can't be granted says so and keeps the card", ctx do
+      loop = pending(ctx, "doom_loop")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      # the button is hidden; a stale page could still send the event
+      html = render_click(view, "respond_permission", %{"id" => loop.id, "reply" => "global"})
+
+      assert html =~ "doom_loop can&#39;t be allowed globally."
+      assert has_element?(view, "#permission-#{loop.id}")
+      assert PermissionRequests.get!(loop.id).status == "pending"
+      assert GlobalPermissions.list_for_agent(ctx.agent.id) == []
+    end
+
+    test "a card already answered in another tab grants nothing and says so", ctx do
+      request = pending(ctx, "bash")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+      {:ok, _} = PermissionRequests.resolve(request, :once)
+      refute has_element?(view, "#permission-#{request.id}")
+
+      stub(OC, :reply_permission, fn _dir, _id, _reply, _opts -> {:ok, true} end)
+
+      html =
+        render_click(view, "respond_permission", %{"id" => request.id, "reply" => "global"})
+
+      assert html =~ "That request was already answered, so nothing was allowed globally."
+      refute has_element?(view, "#undo-toast")
+      assert PermissionRequests.get!(request.id).status == "once"
+      assert GlobalPermissions.get(ctx.agent.id, "bash") == nil
+    end
+
+    test "Undo after the grant was removed elsewhere leaves a newer grant alone", ctx do
+      request = pending(ctx, "bash")
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      expect(OC, :reply_permission, fn _dir, _id, :once, _opts -> {:ok, true} end)
+      view |> element("#permission-#{request.id}-global") |> render_click()
+      assert has_element?(view, "#undo-toast")
+
+      # removed on the Agents page, then granted again from another card
+      {:ok, _} = GlobalPermissions.revoke(GlobalPermissions.get(ctx.agent.id, "bash"))
+      {:ok, newer} = GlobalPermissions.grant(ctx.agent.id, "bash", channel_id: ctx.channel.id)
+
+      view |> element("#undo-delete") |> render_click()
+      refute has_element?(view, "#undo-toast")
+      assert %{id: id} = GlobalPermissions.get(ctx.agent.id, "bash")
+      assert id == newer.id
+    end
+
+    test "only an auto-approval that closed a card reloads the cards", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      # a waiting card the page hasn't been told about
+      {:ok, hidden} =
+        %PermissionRequest{}
+        |> PermissionRequest.changeset(%{
+          channel_id: ctx.channel.id,
+          agent_session_id: ctx.session.id,
+          opencode_permission_id: "per_hidden",
+          permission: "bash",
+          status: "pending"
+        })
+        |> Canopy.Repo.insert()
+
+      auto_approved = fn payload ->
+        {:ok, event} =
+          Timeline.record(%{
+            channel_id: ctx.channel.id,
+            agent_id: ctx.agent.id,
+            event_type: "permission_auto_approved",
+            ref_id: "gp_test",
+            payload:
+              Map.merge(
+                %{"permission" => "bash", "patterns" => [], "grant_id" => "gp_test"},
+                payload
+              )
+          })
+
+        Timeline.broadcast(event)
+        render(view)
+      end
+
+      html = auto_approved.(%{})
+      assert html =~ "@#{ctx.agent.name} ran bash without asking · global permission"
+      refute html =~ "· global permission ·"
+      refute has_element?(view, "#permission-#{hidden.id}")
+
+      auto_approved.(%{"request_id" => "per_other"})
+      assert has_element?(view, "#permission-#{hidden.id}")
+    end
+
+    test "the sidebar badges follow only auto-approvals that closed a card", ctx do
+      other =
+        Fixtures.channel_fixture(%{
+          repository_id: ctx.repository.id,
+          owner_agent_id: ctx.agent.id
+        })
+
+      other_session = Fixtures.session_fixture(%{channel: other, agent_id: ctx.agent.id})
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      # a waiting card the sidebar hasn't been told about
+      {:ok, _} =
+        %PermissionRequest{}
+        |> PermissionRequest.changeset(%{
+          channel_id: other.id,
+          agent_session_id: other_session.id,
+          opencode_permission_id: "per_other_hidden",
+          permission: "bash",
+          status: "pending"
+        })
+        |> Canopy.Repo.insert()
+
+      auto_approved = fn payload ->
+        {:ok, event} =
+          Timeline.record(%{
+            channel_id: other.id,
+            agent_id: ctx.agent.id,
+            event_type: "permission_auto_approved",
+            ref_id: "gp_test",
+            payload:
+              Map.merge(
+                %{"permission" => "bash", "patterns" => [], "grant_id" => "gp_test"},
+                payload
+              )
+          })
+
+        Timeline.broadcast(event)
+        render(view)
+      end
+
+      auto_approved.(%{})
+      refute has_element?(view, "#attention-#{other.id}")
+
+      auto_approved.(%{"request_id" => "per_swept"})
+      assert has_element?(view, "#attention-#{other.id}[data-attention='1']")
+    end
+
+    test "the grant line is teal with a globe", ctx do
+      {:ok, view, _html} = open(conn_of(ctx), ctx.channel)
+
+      {:ok, event} =
+        Timeline.record(%{
+          channel_id: ctx.channel.id,
+          agent_id: ctx.agent.id,
+          event_type: "permission_resolved",
+          ref_id: "pr_test",
+          payload: %{"permission" => "Bash", "status" => "global", "grant_id" => "gp_test"}
+        })
+
+      Timeline.broadcast(event)
+
+      assert has_element?(
+               view,
+               ~s(#line-#{event.id}[data-tone="secondary"]),
+               "Bash permission allowed globally for @#{ctx.agent.name}"
+             )
+
+      assert has_element?(view, "#line-#{event.id} .hero-globe-alt-mini")
     end
   end
 
