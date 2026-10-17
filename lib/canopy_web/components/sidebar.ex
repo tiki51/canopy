@@ -94,13 +94,15 @@ defmodule CanopyWeb.Sidebar do
         id={"sidebar-archived-#{@repository.id}"}
         class="group/arch mt-1.5"
       >
-        <summary class="flex cursor-pointer select-none list-none items-center gap-1 rounded-md px-2 py-1 text-[11px] text-base-content/45 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
+        <%!-- the icon sits where a top-level row's # does and the chevron
+             trails, so the fold doesn't read as a row of the last section --%>
+        <summary class="flex cursor-pointer select-none list-none items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-base-content/45 hover:text-base-content/70 [&::-webkit-details-marker]:hidden">
+          <.icon name="hero-archive-box-micro" class="size-3 shrink-0" />
+          {length(@group.archived)} archived
           <.icon
             name="hero-chevron-right-mini"
-            class="size-3 transition-transform group-open/arch:rotate-90"
+            class="-ml-0.5 size-3 shrink-0 transition-transform group-open/arch:rotate-90"
           />
-          <.icon name="hero-archive-box-micro" class="size-3" />
-          {length(@group.archived)} archived
         </summary>
         <ul class="flex flex-col gap-px">
           <li :for={channel <- @group.archived} :key={channel.id}>

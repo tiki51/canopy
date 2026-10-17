@@ -7,7 +7,7 @@
 // interactions (an agent working, a permission card, a delegation, a
 // playbook run) run against the fake OpenCode, whose #refund-webhooks and
 // #checkout-cache stories are scripted to read like real work.
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Locator, Page } from "@playwright/test";
 import os from "node:os";
 import path from "node:path";
 import { send, timeline, clickHeader, openDetails } from "./helpers";
@@ -118,9 +118,13 @@ Keep the change behind a feature flag and post what changed at each step.
 
 List the files to change and the test that proves it.
 
+Done when: the plan names every file and its test.
+
 ## build
 
 Make the change and run the tests.
+
+Done when: the tests pass with the flag on and off.
 
 ## sign-off
 
@@ -132,6 +136,49 @@ const sidebarChannel = (page: Page, name: string) =>
 
 const sidebarDm = (page: Page, name: string) =>
   page.locator("#sidebar-dms a", { hasText: name }).first();
+
+const sidebarProject = (page: Page, repo: string) =>
+  page.locator("#sidebar-projects > [data-repo-id]", { hasText: repo }).first();
+
+const sidebarSection = (page: Page, name: string) => page.locator(`ul[data-section-name="${name}"]`);
+
+/** A channel's id, from its sidebar link. */
+const channelIdOf = async (page: Page, name: string) =>
+  (await sidebarChannel(page, name).getAttribute("id"))!.replace("sidebar-channel-", "");
+
+/** A section from the repository's + in the sidebar; returns its id. */
+async function newSection(page: Page, repo: string, name: string): Promise<string> {
+  const project = sidebarProject(page, repo);
+  await project.locator(".group\\/proj").first().hover();
+  await project.locator("[data-new-section]").click();
+  const input = project.locator('[data-section-editor="create"] input');
+  await expect(input).toBeFocused();
+  await input.fill(name);
+  await input.press("Enter");
+  await expect(sidebarSection(page, name)).toBeAttached();
+  await expect(input).toBeHidden();
+  return (await sidebarSection(page, name).getAttribute("data-section-id"))!;
+}
+
+/** The channel row's ⋯ › Move to section, the submenu open. */
+async function openMoveMenu(page: Page, channel: string) {
+  const id = await channelIdOf(page, channel);
+  await page.locator(`#sidebar-row-${id}`).hover();
+  await page.locator(`#sidebar-row-menu-${id}`).click();
+  await expect(page.locator("#sidebar-menu")).toBeVisible();
+  await page.locator("#sidebar-menu").getByRole("menuitem", { name: "Move to section" }).click();
+  await expect(page.locator("#sidebar-submenu")).toBeVisible();
+}
+
+async function fileIn(page: Page, channel: string, section: string) {
+  await openMoveMenu(page, channel);
+  await page.locator("#sidebar-submenu").getByRole("menuitemradio", { name: section, exact: true }).click();
+  await expect(sidebarSection(page, section).locator(`#sidebar-row-${await channelIdOf(page, channel)}`)).toBeAttached();
+}
+
+/** Waits for the CSS transitions and animations inside `el` to finish. */
+const settled = (el: Locator) =>
+  expect.poll(() => el.evaluate((node) => node.getAnimations({ subtree: true }).length)).toBe(0);
 
 /** Opens the first thread on the page in the side panel, from its summary row. */
 async function openThread(page: Page) {
@@ -155,20 +202,63 @@ test.describe("screenshots for the user guide", () => {
   test("capture every screen", async ({ page }) => {
     test.setTimeout(480_000);
 
+    // -- Sidebar sections, first, so every later shot has them ---------------------
+    // Payments and Invoicing in acme-billing, Design in acme-storefront
+    await page.goto("/");
+    await sidebarChannel(page, "payment-retries").click();
+    await expect(page.locator("#channel-name")).toContainText("payment-retries");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await newSection(page, "acme-billing", "Payments");
+    const invoicing = await newSection(page, "acme-billing", "Invoicing");
+    await newSection(page, "acme-storefront", "Design");
+    await fileIn(page, "payment-retries", "Payments");
+    await fileIn(page, "invoice-pdf-export", "Invoicing");
+    await fileIn(page, "brand-logo", "Design");
+    await page.keyboard.press("Escape");
+
     // -- Settings, with the billing hold the seed engaged ---------------------
     await page.goto("/settings");
     await expect(page.locator("#hold-banner")).toContainText("insufficient balance");
+    await expect(sidebarSection(page, "Payments")).toBeAttached();
+    await page.mouse.move(700, 600);
     await shot(page, "hold-banner", { clip: { x: 0, y: 0, width: 1440, height: 300 } });
     await page.locator("#release-hold").click();
     await expect(page.locator("#hold-banner")).toBeHidden();
     await dismissFlash(page);
+
+    // Invoicing collapsed (its channel unread, so the dot), and the
+    // payment-retries row's ⋯ › Move to section open
+    await sidebarChannel(page, "payment-retries").click();
+    await expect(page.locator("#channel-name")).toContainText("payment-retries");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await page.locator(`#sidebar-section-toggle-${invoicing}`).click();
+    await expect(page.locator(`#sidebar-section-toggle-${invoicing}`)).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(`#sidebar-section-count-${invoicing}`)).toHaveText("1");
+    await expect.soft(page.locator(`#sidebar-section-dot-${invoicing}`)).toBeVisible();
+    await openMoveMenu(page, "payment-retries");
+    const submenu = (await page.locator("#sidebar-submenu").boundingBox())!;
+    await shot(page, "sidebar-sections", { clip: { x: 0, y: 0, width: Math.ceil(submenu.x + submenu.width + 24), height: 900 } });
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#sidebar-menu")).toBeHidden();
+    // open again: the later shots go to invoice-pdf-export from the sidebar
+    await page.locator(`#sidebar-section-toggle-${invoicing}`).click();
+    await expect(page.locator(`#sidebar-section-toggle-${invoicing}`)).toHaveAttribute("aria-expanded", "true");
+    await page.goto("/settings");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
 
     await page.locator("#check-connection").click();
     // the version playwright.config gives the fake OpenCode for this capture
     await expect(page.locator("#health-result")).toContainText("1.18.11");
     await shot(page, "settings", {}, () => scrubPaths(page));
 
-    await page.locator("#appearance-panel").scrollIntoViewIfNeeded();
+    // from the You panel above it, whole, so no label is cut at the top edge
+    await page.locator("#profile-panel").evaluate((el) => {
+      let box = el.parentElement!;
+      while (box.scrollHeight <= box.clientHeight) box = box.parentElement!;
+      box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24;
+    });
+    await page.waitForTimeout(200);
     await shot(page, "settings-appearance", { clip: { x: 312, y: 0, width: 1128, height: 900 } });
 
     await page.locator("#mcp-panel").scrollIntoViewIfNeeded();
@@ -199,8 +289,9 @@ test.describe("screenshots for the user guide", () => {
     await expect(page).toHaveURL(/\/teams$/);
     const teams = page.locator('[id^="team-tm_"]');
     await expect(teams.filter({ hasText: "@bugfix-team" })).toBeVisible();
+    // just below the last team, above the sidebar's next repository
     const lastTeam = (await teams.last().boundingBox())!;
-    await shot(page, "teams", { clip: { x: 0, y: 0, width: 1440, height: Math.ceil(lastTeam.y + lastTeam.height + 32) } });
+    await shot(page, "teams", { clip: { x: 0, y: 0, width: 1440, height: Math.ceil(lastTeam.y + lastTeam.height + 21) } });
 
     // the gallery, then the bug-fix bundle's import preview (not applied): a
     // new agent, agents and a team that differ from Acme's, and the playbook;
@@ -226,6 +317,7 @@ test.describe("screenshots for the user guide", () => {
     // -- Playbooks: the builder with release-check in it, then the library --------
     // a blank playbook saved once, then the whole file pasted through Edit file text
     await page.goto("/playbooks/new/blank");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
     await page.locator("#about-title").fill("release-check");
     await page.locator("#about-description").fill("Plan, build and sign off a small change behind a flag.");
     await page.locator("#step-s1-title").fill("Plan");
@@ -250,7 +342,46 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("#playbooks li[data-playbook='release-check']")).toBeVisible();
     await expect(page.locator("#playbooks li[data-playbook='bug-fix']")).toContainText("Bug fix");
     await dismissFlash(page);
-    await shot(page, "playbooks");
+    // bug-fix starred, so Starred sits above Other playbooks
+    await page.locator("li[data-playbook='bug-fix'] [id^='star-playbook-']").click();
+    await expect(page.locator("#playbooks-starred li[data-playbook='bug-fix']")).toBeVisible();
+    await expect(page.locator("#playbooks-other-heading")).toBeVisible();
+    await dismissFlash(page);
+    await page.mouse.move(5, 5);
+    await settled(page.locator("#playbooks-starred"));
+    await shot(page, "playbooks", { clip: { x: 312, y: 0, width: 1128, height: 360 } });
+
+    // release-check's Start page: a new channel in acme-billing, filed in
+    // Payments, with a brief (not started)
+    await page.locator("li[data-playbook='release-check'] a[id^='start-playbook-']").click();
+    await expect(page.locator("#start-preview")).toContainText("What will happen");
+    await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
+    await page.locator("#start-repository").selectOption({ label: "acme-billing" });
+    await page.locator("#start-section").selectOption({ label: "Payments" });
+    await page.locator("#start-brief").fill("Retry refunds on timeout");
+    await page.locator("#start-upload-form input[type=file]").setInputFiles({
+      name: "refund-timeouts.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# Refund timeouts\n\nSeven refunds stuck pending last week, all after a gateway timeout.\n"),
+    });
+    await expect(page.locator("#start-brief-files")).toContainText("refund-timeouts.md");
+    await expect(page.locator("#start-brief-count")).toContainText("1 of 10 files");
+    await expect(page.locator("#start-channel-name")).toHaveValue(/^release-check/);
+    await expect(page.locator("#start-section")).toHaveValue("Payments");
+    await page.locator("#start-coordinator").selectOption({ label: "@backend" });
+    await expect(page.locator("#start-consequence")).toContainText("@backend is woken");
+    await expect(page.locator("#start-consequence")).toContainText("#release-check");
+    await page.mouse.move(5, 5);
+    await shot(page, "playbook-start");
+
+    // two global permissions on @backend, as Allow globally leaves them
+    const ago = (days: number) => iso(new Date(Date.now() - days * 86_400_000));
+    sql(`INSERT INTO global_permissions (id, agent_id, tool, label, channel_id, granted_at, use_count, last_used_at, inserted_at, updated_at)
+      SELECT 'gp_guide_' || g.tool, a.id, g.tool, g.label, c.id, g.at, g.uses, g.used, g.at, g.at
+      FROM agents a, channels c,
+        (SELECT 'bash' AS tool, 'Bash' AS label, '${ago(6)}' AS at, 23 AS uses, '${ago(0.1)}' AS used
+         UNION ALL SELECT 'webfetch', 'WebFetch', '${ago(2)}', 4, '${ago(1)}') g
+      WHERE a.name = 'backend' AND c.name = 'payment-retries'`);
 
     await page.goto("/agents");
     await expect(page.locator("#active-agents")).toContainText("@backend");
@@ -258,7 +389,12 @@ test.describe("screenshots for the user guide", () => {
     await page.locator('#active-agents a[href^="/agents/"]', { hasText: "backend" }).first().click();
     await expect(page.locator("#agent-page")).toBeVisible();
     await expect(page.locator("#agent-memory")).toContainText("small PRs");
+    await expect(page.locator("#agent-grants li")).toHaveCount(2);
+    // a taller window when needed, so the page reaches the Global permissions panel
+    const grants = (await page.locator("#agent-global-permissions").boundingBox())!;
+    await page.setViewportSize({ width: 1440, height: Math.max(900, Math.ceil(grants.y + grants.height + 32)) });
     await shot(page, "agent-page");
+    await page.setViewportSize({ width: 1440, height: 900 });
 
     await page.locator('[id^="edit-agent-"]').click();
     await expect(page.locator("#agent-form")).toBeVisible();
@@ -406,11 +542,23 @@ test.describe("screenshots for the user guide", () => {
     await page.waitForTimeout(300);
     await shot(page, "image-feedback");
 
-    // -- Archived ------------------------------------------------------------------
-    await page.locator('[id^="sidebar-archived-"] summary').first().click();
-    await sidebarChannel(page, "q3-tax-rates").click();
-    await expect(page.locator("#archived-bar")).toBeVisible();
-    await shot(page, "archived-channel");
+    // -- Archived: #checkout-latency from its row's archive button, Undo up -----------
+    // (an open channel stays put when archived, so archive one that isn't)
+    const latency = await channelIdOf(page, "checkout-latency");
+    await page.locator(`#sidebar-row-${latency}`).hover();
+    await page.locator(`#sidebar-archive-${latency}`).click();
+    await expect(page.locator("#sidebar-undo-toast")).toContainText(/Archived\s*#checkout-latency/);
+    await expect(sidebarProject(page, "acme-storefront").locator('details[id^="sidebar-archived-"] summary')).toContainText("1 archived");
+    // hovering the toast holds it for both themes
+    await page.locator("#sidebar-undo-toast > *").first().hover({ position: { x: 8, y: 8 } });
+    // the feed scrolls to its end after the archive, so back to the top per theme
+    await shot(page, "archived-channel", {}, async () => {
+      await page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = 0));
+      await page.waitForTimeout(300);
+    });
+    await page.locator("#sidebar-undo-archive").click();
+    await expect(sidebarProject(page, "acme-storefront").locator(`#sidebar-row-${latency}`)).toBeAttached();
+    await expect(sidebarProject(page, "acme-storefront").locator('details[id^="sidebar-archived-"]')).toHaveCount(0);
 
     // -- Direct messages --------------------------------------------------------------
     await page.locator("#sidebar-new-dm").click();
@@ -449,7 +597,7 @@ test.describe("screenshots for the user guide", () => {
       const b = (await page.locator(`#${id}`).boundingBox())!;
       breakdown = Math.max(breakdown, b.y + b.height);
     }
-    await shot(page, "costs", { clip: { x: 0, y: 0, width: 1440, height: Math.ceil(breakdown + 24) } });
+    await shot(page, "costs", { clip: { x: 0, y: 0, width: 1440, height: Math.ceil(breakdown + 2) } });
     await page.setViewportSize({ width: 1440, height: 900 });
 
     // -- Live: a new channel and an agent at work (fake OpenCode) --------------------
@@ -462,8 +610,17 @@ test.describe("screenshots for the user guide", () => {
     await page.getByLabel(/Spend limit/).fill("2");
     const owner = page.getByLabel("Initial owner");
     await owner.selectOption((await owner.locator("option", { hasText: "@test" }).first().getAttribute("value"))!);
+    await page.locator("#channel-section-row select").selectOption({ label: "Payments" });
+    await expect(page.locator("#channel-section-row select")).toHaveValue("Payments");
+    // from the top of the form, nothing focused (filling the spend limit scrolled it)
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.scrollTo(0, 0);
+      for (const el of document.querySelectorAll("*")) if (el.scrollTop > 0) el.scrollTop = 0;
+    });
     // a taller window for this one, so the form ends on its Create button
-    await page.setViewportSize({ width: 1440, height: 1120 });
+    const create = (await page.locator("#create-channel").boundingBox())!;
+    await page.setViewportSize({ width: 1440, height: Math.max(900, Math.ceil(create.y + create.height + 32)) });
     await shot(page, "new-channel");
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.locator("#create-channel").click();
@@ -487,19 +644,44 @@ test.describe("screenshots for the user guide", () => {
     await send(page, "Go ahead and add the timeout handling to webhooks.py.");
     const perm = page.locator('[id^="permission-"]').first();
     await expect(perm).toContainText("webhooks.py", { timeout: 30_000 });
-    await perm.scrollIntoViewIfNeeded();
+    await expect(page.locator('[id^="permission-"][id$="-global"]').first()).toBeVisible();
+    // 30px taller, so Priya's name clears the header with the card whole
+    await page.setViewportSize({ width: 1440, height: 930 });
+    await bottomOfFeed(page);
+    await page.waitForTimeout(200);
     await shot(page, "permission-card");
-    await page.locator('[id^="permission-"][id$="-once"]').first().click();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // Allow globally: @test's next edit, after the delegation, goes through without a card
+    await page.locator('[id^="permission-"][id$="-global"]').first().click();
     await expect(perm).toBeHidden({ timeout: 30_000 });
     await expect(timeline(page)).toContainText("Added the timeout", { timeout: 30_000 });
     await idle();
 
     await send(page, "/delegate @researcher list every webhook handler that can reach the refund endpoint");
     await expect(timeline(page)).toContainText("so the fix covers both", { timeout: 60_000 });
+    await expect(timeline(page)).toContainText("Added the same timeout to on_refund_failed", { timeout: 30_000 });
     await idle();
+    await expect(page.locator('[id^="permission-"][id$="-global"]')).toHaveCount(0);
     // off the feed, so no message shows its hover toolbar
     await page.mouse.move(5, 5);
-    await shot(page, "delegation");
+    // from the /delegate down, so the delegation reads from its start
+    const delegated = timeline(page)
+      .getByText("list every webhook handler")
+      .first()
+      .locator("xpath=ancestor-or-self::*[self::article or starts-with(@id, 'line-')][1]");
+    await shot(page, "delegation", {}, () => delegated.evaluate((el) => el.scrollIntoView({ block: "start" })));
+
+    // the auto-approval line, between the handler list and the second edit
+    const auto = timeline(page).locator('[id^="line-"]', { hasText: "without asking" }).last();
+    await expect(auto).toContainText("global permission");
+    const from = timeline(page).locator("article", { hasText: "so the fix covers both" }).last();
+    const to = timeline(page).locator("article", { hasText: "Added the same timeout" }).last();
+    await to.scrollIntoViewIfNeeded();
+    const fromBox = (await from.boundingBox())!;
+    const toBox = (await to.boundingBox())!;
+    await shot(page, "permission-auto-approved", {
+      clip: { x: 312, y: Math.floor(fromBox.y), width: 1128, height: Math.ceil(toBox.y + toBox.height - fromBox.y) },
+    });
 
     // a question in a thread on the plan; @test answers there, and the Threads
     // inbox shows it at work next to the latency thread's unread replies
@@ -594,6 +776,20 @@ test.describe("screenshots for the user guide", () => {
     await expect(timeline(page)).toContainText("Going with Invoice only.", { timeout: 30_000 });
     await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0, { timeout: 30_000 });
 
+    // a freestanding sign-off card: three options, B recommended
+    await send(page, "@test can you write up a few receipt layouts and let me pick one?");
+    const signoff = page.locator('section[id^="signoff-so_"]').first();
+    await expect(signoff).toContainText("receipt layout", { timeout: 30_000 });
+    await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0, { timeout: 30_000 });
+    await signoff.scrollIntoViewIfNeeded();
+    await page.mouse.move(5, 5);
+    await shot(page, "signoff-card");
+    const so = (await signoff.getAttribute("id"))!.replace(/^signoff-/, "");
+    await page.locator(`#signoff-${so}-accept-1`).click();
+    await expect(page.locator(`#signoff-${so}`)).toHaveCount(0);
+    await expect(timeline(page)).toContainText("Heard: you accepted B.", { timeout: 30_000 });
+    await expect(page.locator('section[id^="telemetry-"]')).toHaveCount(0, { timeout: 30_000 });
+
     // @test's session transcript, from its row in Details › Agents
     await openDetails(page);
     await page.locator('#members li[id^="member-"]', { hasText: "@test" }).first().locator('a[id^="transcript-"]').click();
@@ -605,7 +801,8 @@ test.describe("screenshots for the user guide", () => {
       .first()
       .evaluate((el) => el.scrollIntoView({ block: "start" }));
     await page.waitForTimeout(300);
-    await shot(page, "transcript");
+    // down to the end of the sign-off prompt, before the next entry starts
+    await shot(page, "transcript", { clip: { x: 0, y: 0, width: 1440, height: 856 } });
 
     await setInterrupt(page, false);
     await page.goto("/");

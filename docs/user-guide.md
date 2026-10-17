@@ -209,8 +209,9 @@ take a permission mode.
 ### The layout
 
 The left **rail** holds Search, Repositories, Agents, Playbooks, Threads, Files, Costs, and
-Settings, with the theme buttons at the bottom. The **sidebar** lists channels grouped by repository (archived ones fold
-away), direct messages, and agents. The main area shows the page you are on. On a narrow
+Settings, with the theme buttons at the bottom. The **sidebar** lists channels grouped by repository, and within it by
+any [sections](#sidebar-sections) you make (archived ones fold away), then direct messages
+and agents. The main area shows the page you are on. On a narrow
 window the sidebar becomes a drawer behind a menu button.
 
 In the sidebar, a channel with something you have not read yet turns bold with a dot.
@@ -230,6 +231,37 @@ A reply that stays inside a thread does not make its channel bold, unless it men
 Threads you follow have their own count, on the rail's **Threads** icon (see
 [Threads](#threads)).
 
+#### Sidebar sections
+
+Inside a repository, you can group its channels into **sections**, such as one per
+feature or per stage. A channel is in at most one section; channels in none sit at the
+top of the repository, above the sections. Sections only change the sidebar: nothing is
+posted, and deleting one archives nothing.
+
+![Sidebar sections, light](user-guide/images/sidebar-sections-light.png)
+
+![Sidebar sections, dark](user-guide/images/sidebar-sections-dark.png)
+
+- **Create** one with the **+** that shows when you hover a repository's name, then type
+  a name (40 characters at most) and press Enter.
+- **Collapse** a section by clicking its name. A collapsed section shows how many open
+  channels it holds, plus a dot when something inside is unread or waiting on you. Click
+  it again to expand it.
+- A section's `⋯` menu (or right-click on its name) has **Rename section**, **Move up**,
+  **Move down**, and **Delete section**. You can also drag a section by its name to
+  reorder it. When you delete a section, its channels go back to the top of the
+  repository.
+- **File a channel** by dragging its row onto a section, or from the row's `⋯` menu (or a
+  right-click on the row): **Move to section** lists the repository's sections, plus
+  **New section…** and **Remove from section**. The same menu has **Mark as read**,
+  **Copy link**, and **Archive channel**.
+
+A DM can't go in a section, and a channel can't move to another repository's section. You
+can also choose the section when you [create a channel](#creating-a-channel) or
+[start a playbook run](#starting-a-run). Agents can file the channels they create too
+(`section` on `canopy_channel_create` and `canopy_playbook_start`), but only you rename,
+move, collapse, or delete sections.
+
 #### The command palette
 
 Press **⌘K** on a Mac (**Ctrl+K** elsewhere), or click **Jump to…** at the top of the
@@ -248,8 +280,9 @@ A first character narrows the search: `#` channels, `@` agents, teams and DMs, `
 (pages, *New channel in* a repository, *New direct message*, *Import agents…*, *Agent
 gallery*, *Start playbook*, the theme,
 *Turn desktop notifications off* (or *on*, following the switch in this browser),
-*Release hold*, and the open channel's header actions such as *Stop all agents here*), and
-`/` slash commands. **Backspace** on an empty box removes the filter.
+*Release hold*, the open channel's header actions such as *Stop all agents here*, and, in
+an open channel, *Archive this channel* and *Move to section…*, which then lists the
+repository's sections and only shows when it has some), and `/` slash commands. **Backspace** on an empty box removes the filter.
 
 **Shift+Enter** does the second thing a row offers, shown on the right: an agent opens a
 DM with it instead of its page, a repository starts a new channel in it, and a file is
@@ -518,8 +551,9 @@ empty workspace.
   *Show all* for the full list), or "Nothing to add" when every starter is there. If the
   seeder stops partway, it says why, and whatever it created before that is kept. It does
   the same as `mix run priv/repo/seeds.exs` or `canopy seed`.
-- **Reset…** deletes every channel and DM, message, agent, team, playbook and run, task,
-  schedule and watch, agent memory, shared file and the cost history, then runs the
+- **Reset…** deletes every channel and DM, sidebar section, message, agent, team, playbook
+  and run, task, schedule and watch, agent memory, agent's
+  [global permission](#permissions), shared file and the cost history, then runs the
   seeder. Your settings (engines, models, brakes, the MCP token, the collaboration prompt,
   a billing hold), your display name and your registered repositories stay, and nothing
   inside a repository is touched. Agents start fresh engine sessions; their old Claude
@@ -672,6 +706,13 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   button.
 - **Channels**: every channel the agent belongs to, owned ones marked, each with a
   **Transcript** link to the agent's [session transcript](#the-session-transcript) there.
+- **Global permissions**: the tools the agent uses in any repository and channel without
+  asking, one row each, made with **Allow globally** on a
+  [permission card](#permissions). A row says when and where the tool was allowed and how
+  many times it has been auto-approved since. **Remove** takes it away at once, and the
+  agent asks again the next time it wants that tool. An *Undo* toast puts the grant back,
+  with its date and count, for a few seconds. When the agent has any, **About** shows
+  *+ N global* next to its Claude Code permissions, linking to this panel.
 - **Message** opens (or creates) your direct message with the agent. **Edit** opens the
   form. The power icon deactivates the agent.
 
@@ -830,8 +871,8 @@ You are @security-reviewer. You review diffs and designs for security problems�
   private code, so read it before you share the file.
 - Tick agents in the list and **Export selected** downloads them as `canopy-agents.zip`. A
   team's **Export** downloads `<team>.canopy.zip`: the team, its members, and (ticked by
-  default) the playbooks whose `team:` is that team. A playbook's download icon on the
-  Playbooks page saves its text as `<name>.md`, unchanged.
+  default) the playbooks whose `team:` is that team. **Export file**, in a playbook's `⋯`
+  menu on the Playbooks page, saves its text as `<name>.md`, unchanged.
 
 **Import.** **Import** on the Agents page takes one file: an agent `.md`, a bundle `.zip`, a
 playbook, or a Claude Code subagent file from `.claude/agents/` (its description becomes the
@@ -926,12 +967,18 @@ Press **+** next to *Channels* in the sidebar, or *Channel* on a repository row.
   whole team (press again to clear it), and each group heading does the same for its
   group. Adding a team here wakes nobody.
 - **Initial owner** is woken for every message that mentions nobody. Only members can own.
+- **Section** files the channel in the repository's [sidebar sections](#sidebar-sections):
+  *No section* (the default, at the top of the repository), one of its sections, or
+  **New section…** with a name, which creates it. A link to `/channels/new?section=<name>`
+  picks that section ahead of time, or fills in **New section…** with the name when the
+  repository has no such section.
 - **Spend limit** is optional: the total, in dollars, the channel may spend before agents
   in it go quiet. See [Keeping spend under control](#15-keeping-spend-under-control).
 
 Agents can create channels too, through `canopy_channel_create`. Ask one to "create a
 channel called retry-backoff with @reviewer and post a plan" and it appears in the
-sidebar with the agent as owner. The tool takes a `brief` as well.
+sidebar with the agent as owner. The tool takes a `brief` as well, and a `section`: an
+existing section's name (in any case), or a new name, which creates that section.
 
 ![Empty channel, light](user-guide/images/channel-empty-light.png)
 
@@ -1230,9 +1277,9 @@ When a channel's task is completed, its sidebar row shows a ✓ and the channel 
 **Task done** bar with **Archive channel** and **Keep open**. Keep open (or reopening a
 finished channel after an archive) stops the offer for that channel.
 
-![Archived channel, light](user-guide/images/archived-channel-light.png)
+![The Archived toast with Undo, and the "1 archived" toggle in the sidebar, light](user-guide/images/archived-channel-light.png)
 
-![Archived channel, dark](user-guide/images/archived-channel-dark.png)
+![The Archived toast with Undo, and the "1 archived" toggle in the sidebar, dark](user-guide/images/archived-channel-dark.png)
 
 ---
 
@@ -1508,7 +1555,8 @@ current step". The finished line then reads "@agent finished · took 1 message m
   the card is answered; the message is never taken as the answer.
 - A message is never lost: if the turn ends without having read it (or you pressed
   Interrupt now), it goes to the agent again as its next turn, marked as possibly already
-  seen. **Stop all** drops it with everything else that was waiting.
+  seen. **Stop** in the header (its tooltip says *Stop all*) drops it with everything else
+  that was waiting.
 - It starts no turn of its own, so it does not wait for *One agent at a time* and does not
   count against the pause.
 
@@ -1521,12 +1569,41 @@ appears in the channel with the permission, the file pattern, and the diff.
 
 ![Permission card, dark](user-guide/images/permission-card-dark.png)
 
-**Once** allows this action, **Always** allows it for the rest of the session, **Reject**
-refuses and the agent reports that it could not proceed. For OpenCode agents, answering from the OpenCode
-terminal instead also clears the card. Which actions ask is up to each agent's configuration:
-for Claude Code agents, the permissions and the tools that run without asking on the
-agent's edit form; for OpenCode agents, the configuration in
-the repository's `.opencode/opencode.json` (for example, `{ "permission": { "edit": "ask" } }`).
+The card has four answers (on a phone they sit in a 2×2 grid):
+
+- **Once** allows this action.
+- **Always** allows it until the agent's session in this channel resets.
+- **Allow globally** (teal, with a globe) allows the tool for this agent everywhere, from
+  now on: in every repository and channel, until you remove it.
+- **Reject** refuses, and the agent reports that it could not proceed.
+
+For OpenCode agents, answering from the OpenCode terminal instead also clears the card.
+Which actions ask is up to each agent's configuration: for Claude Code agents, the
+permissions and the tools that run without asking on the agent's edit form; for OpenCode
+agents, the configuration in the repository's `.opencode/opencode.json` (for example,
+`{ "permission": { "edit": "ask" } }`).
+
+**Allow globally** stores a grant for that agent and that tool. It matches the tool name
+only, never the pattern: allowing `bash` for `make test` lets the agent run any `bash`
+command without asking. The button's tooltip names the tool ("Let @backend use bash in
+every project and channel without asking."). The request on the card goes ahead, and the
+agent's other waiting cards for the same tool, in this channel and others, are approved
+too (a card whose agent has stopped waiting is left as it is). A toast spells out what you
+allowed ("@backend can now run any bash command, anywhere, without asking.") and offers
+**Undo** for a few seconds. Undo removes the grant;
+the request it answered still runs. The grants are listed, and removed, on the
+[agent's page](#an-agents-page). Reset in [Environment](#environment) clears them all.
+
+From then on, when that agent asks for that tool, Canopy approves it without showing a
+card. Each auto-approval leaves a line in the feed instead: "@backend ran bash without
+asking · global permission · make test". If an engine delivers the same request twice,
+Canopy approves it once and counts it once. OpenCode is told "once" for each approval, so
+removing the grant takes effect on the next request. Allow globally isn't offered for
+questions or for OpenCode's repeated-call guard (`doom_loop`).
+
+![An auto-approval line in the feed, light](user-guide/images/permission-auto-approved-light.png)
+
+![An auto-approval line in the feed, dark](user-guide/images/permission-auto-approved-dark.png)
 
 A waiting card can also raise a [desktop notification](#notifications) when you are
 looking elsewhere.
@@ -1536,8 +1613,9 @@ Code agent's permission request waited 30 minutes, a fixed limit separate from t
 question wait in Settings), the card stays and says so. Approving it then posts a
 message from you in the channel, for example `@backend Approved: Bash make test (once).
 You can do it now.`, which wakes the agent like any message; the original call is gone,
-so the agent does the action again. On such a card, **Reject** becomes **Dismiss** and
-only clears it.
+so the agent does the action again. **Allow globally** on such a card stores the grant as
+well, and the message says so. On such a card, **Reject** becomes **Dismiss** and only
+clears it.
 
 ### Questions
 
@@ -1859,7 +1937,7 @@ step the run is on.
 
 Playbooks are global to Canopy (they live in its database, not in a repository); a run
 happens in a channel, so it works in that channel's repository. The seed step adds two,
-each run by `@project-manager` in a new channel:
+each led by `@project-manager`:
 
 - **bug-fix**: triage, reproduce with a failing test, fix, verify, review, and your
   sign-off, with `@bugfix-team`.
@@ -1869,22 +1947,31 @@ each run by `@project-manager` in a new channel:
 
 ### The library and the builder
 
-**Playbooks** in the rail lists every playbook as a card: its title and short name, where
-it came from (*starter*, *yours*, *draft by @agent*, or *by @agent* once enabled), *N
-running* while runs are in progress, the description, and the steps as a strip (↩︎ can
-send work back, ✓ waits for you, ⤼ can be skipped). A line under it says who leads a run,
-the team, where it runs, and when it last ran; on an agent's draft it says instead who
-drafted it, and that agents can't use it until you enable it. On the right are the **Enabled** toggle,
-**Start** (on a disabled playbook, **Edit**, or **Review draft** for an agent's draft), and
-a `⋯` menu with **Duplicate** (a disabled copy, opened in the builder), **Export file**
-(the playbook as a file, to [import elsewhere](#sharing-agents-export-import-and-the-gallery)),
-and **Delete**, last. **All**, **Enabled** and **Drafts** (every disabled playbook) filter
-the list. A click anywhere on a card that is not one of its controls opens it in the
-builder; ⌘-, Ctrl- or Shift-click (or a middle click) opens it in a new tab.
+**Playbooks** in the rail lists every playbook as a compact row: a star, the title and
+description, the avatars of who does the steps, the number of steps, when it last ran (or
+*● N running* while runs are in progress), **Start**, and a `⋯` menu.
+
+- **Star** the playbooks you run most. Starred ones get their own **Starred** section at
+  the top, above **Other playbooks** (called **All playbooks** while nothing is starred).
+- **Filter playbooks**, above the list, narrows every section by title, description, or
+  short name, and the count beside it says how many match. **Esc** or the × clears it.
+- **Drafts** holds every disabled playbook, in a section that starts collapsed. It opens by
+  itself when an agent's draft is waiting for review, and a notice above the list offers
+  **Review**. A draft's row says where it came from (*by @agent*, *starter*, or *by you*)
+  and has **Review** (an agent's draft) or **Edit** instead of Start. Drafts can't be
+  starred.
+- **Click a row** to open it in place: the steps as a strip (↩︎ can send work back, ✓ waits
+  for you, ⤼ can be skipped), who leads a run and the team, each channel it is running in
+  (with the step it is on), and **Edit playbook**.
+- The `⋯` menu holds **Edit** (opens the builder), **Duplicate** (a disabled copy, opened
+  in the builder), **Export file** (the playbook as a file, to
+  [import elsewhere](#sharing-agents-export-import-and-the-gallery)), **Enable** or
+  **Disable**, and **Delete**.
 
 Enabled playbooks are listed in every agent's prompt, so agents know they exist; a
-disabled one cannot be started. Delete is refused while a run is in progress (disable it
-instead, or cancel the run); finished runs keep their own copy of the text.
+disabled one cannot be started. Delete asks first, and is refused while a run is in
+progress (disable it instead, or cancel the run); finished runs keep their own copy of the
+text.
 
 ![Playbooks, light](user-guide/images/playbooks-light.png)
 
@@ -1893,7 +1980,8 @@ instead, or cancel the run); finished runs keep their own copy of the text.
 **+ New playbook** asks how you want to start:
 
 - **Copy a playbook**: pick one and copy it; a disabled copy named `<name>-copy` opens in
-  the builder.
+  the builder. Enabled starred playbooks are listed first, and with more than five
+  playbooks a filter (by title or short name) appears above the list.
 - **Start blank**: one empty step and default settings.
 - **Describe it to an agent**: say how the work should go, pick who drafts it
   (`@project-manager` by default), and press **Ask @agent**. Canopy posts your request in
@@ -1911,7 +1999,6 @@ settings:
 - **Led by**: the agent that coordinates a run you start, or *Choose when starting*. An
   agent that starts a run always leads it. The screens call the coordinator the *lead*.
 - **Team**: a team whose members fill the roles.
-- **Runs in**: *A new channel* for each run, or *The channel it's started from*.
 - **Nudge the lead**: how long a step may go quiet before Canopy nudges the lead (30
   minutes by default, *Never* for no nudges; see [Stalled runs](#stalled-runs)).
 - **Ask when starting**: a hint shown on the start page under "What's this run about?".
@@ -1980,7 +2067,6 @@ roles:
   test: test
   backend: backend
 coordinator: project-manager
-channel: new
 stall_after: 30m
 inputs: The symptom, where it happens, steps to reproduce if known.
 steps:
@@ -2019,31 +2105,60 @@ Done when: a named test fails for the reported reason.
 | `roles` | Role → default agent name |
 | `team` | A team whose members fill the roles: a member whose team role label is the role, else one named like it |
 | `coordinator` | Who coordinates when *you* start a run (an agent that starts one always coordinates it) |
-| `channel` | `current` (default) or `new`: each run gets a new channel, owned by the coordinator, with the roster |
+| `section` | The [sidebar section](#sidebar-sections) a run's new channel goes in by default (at most 40 characters); an existing section matches in any case, otherwise it is created. The builder has no field for it; set it in the file text. The start page and `canopy_playbook_start` can pick another |
+| `channel` | No longer used: where a run happens is chosen when it starts. Older files that still have it load as before, and the value is ignored |
 | `inputs` | What the brief should say: a hint on the start page, and the brief's placeholder in a channel's start form |
 | `stall_after` | How long a step may go quiet before Canopy nudges the coordinator (`30m` by default, `2h`, or `off`) |
 
 ### Starting a run
 
 - **Ask an agent**: "@project-manager run the bug-fix playbook: checkout button does
-  nothing on Safari". It calls `canopy_playbook_start` and coordinates the run.
-- **The start page**: **Start** on a playbook's card, or **Start a run** in the builder.
-  Say what the run is about, where it runs (a new channel, named from the playbook and the
-  first words of the brief, or a channel that exists; a `channel: new` playbook always gets
-  a new one), who leads it (the playbook's lead by default), and **Who does what**: a row
-  per role, filled from the team or the playbook's defaults, which you can change. **What
-  will happen** previews the steps. **Start run** starts it and opens the channel.
+  nothing on Safari". It calls `canopy_playbook_start` and coordinates the run, in its
+  current channel unless you ask for a new one ("…in a new channel called
+  checkout-safari"), which it then owns and can file in a sidebar section.
+- **The start page**: **Start** on a playbook's row, or **Start a run** in the builder.
+  **Start run** starts it and opens the channel.
 - **In a channel**: **Playbook** under **Automation** in the channel's details (*none
   running · Run…*). Pick the playbook and who leads it (the playbook's lead by default,
-  else the channel's owner), write the brief, and optionally override roles
-  (`fix=@fullstack`).
-- **The composer**: `/playbook bug-fix [@coordinator] the brief`.
+  else the channel's owner), write a brief if you like, and optionally override roles
+  (`fix=@fullstack`). The run happens in that channel.
+- **The composer**: `/playbook bug-fix [@coordinator] [the brief]`, in the current channel.
+
+![Starting a playbook run, light](user-guide/images/playbook-start-light.png)
+
+![Starting a playbook run, dark](user-guide/images/playbook-start-dark.png)
+
+The start page has these parts:
+
+- **What's this run about?** The brief is optional: left empty, the playbook is the
+  context. The playbook's *Ask when starting* hint shows above it. Drop, paste or attach up
+  to 10 files (screenshots, logs) on the brief. They are posted with the brief as the run's
+  first message, and the lead is pointed at them.
+- **Runs in**:
+  - **New channel** is the default. Pick the repository, and change the name if you like
+    (it is made from the playbook's name and the first words of the brief). **Section**
+    files the new channel in the sidebar: the playbook's `section:` if it has one, *No
+    section*, an existing section, or **New section…** with a name.
+  - **Existing channel** picks an open channel, grouped by repository. A channel with a run
+    in progress is greyed out and marked "· run active". The channel keeps its place in
+    the sidebar.
+- **Led by**: the playbook's lead by default.
+- **Who does what**: a row per role, filled from the team or the playbook's defaults,
+  which you can change.
+- **What will happen**, beside the form, previews the steps. The line next to **Start
+  run** says who is woken and where, with the section and any team that joins
+  ("@project-manager is woken with your brief and opens
+  #bug-fix-checkout-button-does-nothing. @bugfix-team joins it.").
 
 Canopy fills the roles (your overrides first, then the team, then `roles`), and refuses
 to start when a role has nobody, naming it. Anyone in the roster who is not in the
-channel joins it (the whole team, in one line). One run can be in progress per channel;
-use `channel: new` for parallel work. A run keeps the text it started with, so editing a
-playbook never moves a run in progress; the panel says when the text has changed since.
+channel joins it (the whole team, in one line). One run can be in progress per channel,
+so for parallel work start each run in a new channel. A run keeps the text it started
+with, so editing a playbook never moves a run in progress; the panel says when the text
+has changed since.
+
+A run that a [watch](#watching-github) starts gets its own new channel per item, named
+`<playbook>-<item key>`.
 
 When you start a run, the coordinator is woken with the brief and the first step, and
 that resets the channel's chatter budget like any message from you.
@@ -2094,6 +2209,10 @@ and the step's result:
 - The **note** is optional on every press and goes to the coordinator with your answer.
   Enter in the note answers nothing; press a button.
 
+![A sign-off card waiting for you, light](user-guide/images/signoff-card-light.png)
+
+![A sign-off card waiting for you, dark](user-guide/images/signoff-card-dark.png)
+
 Once answered, the card collapses to one line ("You accepted B · Banner for
 @project-manager's User sign-off — "keep it grey""). The held step in the run panel carries
 a compact copy of the card whose buttons work the same; **Show card ↓** takes you to the
@@ -2120,11 +2239,14 @@ waits for your sign-off, and it counts against the chatter budget like any agent
 ### Agent-written playbooks
 
 An agent can draft a playbook with `canopy_playbook_save`. It is saved **disabled** and
-marked *draft by @agent*: an enabled playbook instructs every agent, so you read it, edit
-it if you like, and enable it yourself. **Review draft** on its card opens it in the
-builder under a banner with **Delete draft** and **Enable playbook**. Saving a change to
-a draft makes it yours: the agent can no longer replace it, the banner goes, the card says
-*yours*, and you enable it with the **Enabled** toggle when it's ready. To ask for one from
+listed under **Drafts** as *by @agent*: an enabled playbook instructs every agent, so you
+read it, edit it if you like, and enable it yourself. While an agent's draft waits, the
+Drafts section is open and a notice above the list names it (with several, it says how
+many, and its **Review** opens Drafts). **Review** on a draft's row (or in a one-draft
+notice) opens it in the builder under a banner with **Delete draft** and **Enable
+playbook**. Saving a change to a draft makes it yours: the agent can no longer replace it,
+the banner goes, the row says *by you*, and you enable it with the **Enabled** toggle (or
+**Enable** in the row's `⋯` menu) when it's ready. To ask for one from
 the library, use **+ New playbook › Describe it to an agent**.
 
 ### Watching GitHub
@@ -2306,16 +2428,16 @@ page; a rule whose light turns keep escalating pauses on its own.
 
 ### Tools agents can call
 
-Canopy provides the same 45 tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
+Canopy provides the same 46 tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
 
 | Area | Tools |
 |---|---|
 | Reading | `channels_list`, `channel_get`, `messages_read`, `messages_search` (messages, turn summaries and files across your channels), `message_get`, `task_get`, `agents_list` |
-| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass`, `escalate` (experimental: on a light turn, re-run the wake on the main model; on a main turn it does nothing) |
+| Posting | `message_send`, `thread_reply` (`also_send_to_channel` puts a conclusion in the feed too), `react` (acknowledge someone else's message with an emoji, waking nobody), `pass`, `escalate` (experimental: on a light turn, re-run the wake on the main model; on a main turn it does nothing), `signoff_request` (a [sign-off card](#sign-off) for you: Accept and Reject, or options and Reject all) |
 | Task and ownership | `task_update`, `delegate_task`, `handoff_task`, `handoff_get`, `handoff_accept`, `handoff_reject` |
-| Channels and DMs | `channel_create` (with an optional `brief`), `channel_add_members`, `channel_remove_members`, `channel_brief_set` (the owner only; replaces the whole brief, never clears it), `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
+| Channels and DMs | `channel_create` (with an optional `brief` and `section`), `channel_add_members`, `channel_remove_members`, `channel_brief_set` (the owner only; replaces the whole brief, never clears it), `dm_start`, `dm_switch_repository`; their agent lists accept teams (`@bugfix-team`) |
 | Later | `schedule_create`, `schedules_list`, `schedule_cancel`, `watch_create` (a GitHub watch; listed and cancelled as a schedule) |
-| Playbooks | `playbooks_list`, `playbook_get`, `playbook_start`, `playbook_advance` (the coordinator only), `playbook_cancel`, `playbook_save` (a disabled draft); `delegate_task` takes `step` during a run |
+| Playbooks | `playbooks_list`, `playbook_get`, `playbook_start` (optional `brief`; `channel_name` for a new channel, with an optional `section`; without it, the run is in the agent's channel), `playbook_advance` (the coordinator only), `playbook_cancel`, `playbook_save` (a disabled draft); `delegate_task` takes `step` during a run |
 | Shared resources | `lock_acquire`, `lock_release`, `locks_list` (see [Locks](#locks)) |
 | Memory, notes, and money | `memory_read`, `memory_write`, `notes_read`, `notes_write`, `costs_report` |
 | Files | `documents_list`, `document_get`, `document_share`; `message_send` and `thread_reply` take `attachments` |
@@ -2324,6 +2446,8 @@ Tool names are prefixed `canopy_` inside OpenCode and `mcp__canopy__` for Claude
 `messages_read` shows reactions after each message (`[reactions: ✅ check: Priya, @qa]`),
 and a plain read (no `around`, `before`, or `thread`) ends with the reactions added since
 the agent's last read to older messages, reactions to its own messages first.
+`channels_list` gives each channel's [sidebar section](#sidebar-sections) and ends with
+each repository's sections, in order.
 `agents_list` ends with the teams, and `delegate_task` and `handoff_task` take one agent:
 given a team, they answer with its members to pick from. `channel_get` prints another
 channel's brief in full and, for the agent's own channel, only who set it (the text is
@@ -2424,7 +2548,7 @@ Reactions leave no line: they show as chips under the message.
 | `@agent started working` | A turn began (with Routine activity on) |
 | `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
 | `@agent had nothing to add` / `@agent is holding the lock` | The agent chose not to reply; its note, when it gave one, is the sentence |
-| `@agent was stopped by <your name>` | You stopped the turn with Abort or Stop all |
+| `@agent was stopped by <your name>` | You stopped the turn with Abort or the header's **Stop** |
 | `@agent will read your message after its current step` | Experimental: your mention went into its running turn (with Routine activity on) |
 | `<you> interrupted @agent` / `@agent was interrupted by <you>` | Experimental: you pressed Interrupt now; a new turn starts with your message |
 | `@agent finished · took 1 message mid-turn · …` | Experimental: the turn read your message mid-turn |
@@ -2438,6 +2562,8 @@ Reactions leave no line: they show as chips under the message.
 | `@team joined: @a, @b` | A team was invited (or `… (added by @agent)`) |
 | `scheduled: … ` / `scheduled task fired` | Schedules |
 | `asked for edit permission` / `permission allowed` | Permissions |
+| `bash permission allowed globally for @agent` | You pressed **Allow globally** on a permission card (teal, with a globe) |
+| `@agent ran bash without asking · global permission · make test` | The agent's [global permission](#permissions) approved a request with no card (teal, with a globe) |
 | `asked a question` / `<you> answered @agent's question` | Questions |
 | `@agent stopped waiting for an answer` | The agent moved on; the card stays and your answer is sent as a new message |
 | `… (sent as a message)` | A late answer or approval, posted to the channel as your message |
@@ -2457,7 +2583,7 @@ Reactions leave no line: they show as chips under the message.
 | `session was compacted` | Context was summarised to stay under the cap |
 | `reset @agent's session · earlier transcript` | You dropped the agent's session in this channel; the link opens the old session's [transcript](#the-session-transcript) |
 
-### Environment
+### Environment variables
 
 | Variable | Purpose |
 |---|---|
@@ -2469,6 +2595,7 @@ Reactions leave no line: they show as chips under the message.
 | `CANOPY_MAX_UPLOAD_MB=n` | Largest file accepted, default 25 |
 | `PORT` | HTTP port, default 4000 |
 | `CANOPY_URL` | The origin engines use to reach Canopy; the Homebrew wrapper keeps it on loopback |
+| `CLAUDE_CONFIG_DIR=path` | Claude Code's own variable. When Settings → Claude Code → *Config directory* is empty, `claude` inherits it from the shell Canopy starts in, and Canopy reads [transcripts](#the-session-transcript) from there (default `~/.claude`). A directory set in Settings takes its place |
 
 Under Homebrew, set these in the shell you run `canopy start` from; the background
 service started by `brew services` uses the defaults.
@@ -2502,7 +2629,8 @@ service started by `brew services` uses the defaults.
 | A watch shows "gh is not installed" or "not logged in" | Install the GitHub CLI and run `gh auth login`, or point Settings → GitHub at the binary; *Check gh* confirms |
 | A watch paused after three failures | Read its reason in the Scheduled panel (often a 404: a repository or workflow `gh` cannot see), fix it, then ask the agent for a new watch |
 | A playbook won't start: "nobody fills role …" (or "pick who does …" on the start page) | Pick an agent for the role under **Who does what** on the start page, or override it (`fix=@fullstack`) in a channel's start form or an agent's `assign`. For good, give the role an agent in the builder (**Roles**), or a role label on the team |
-| "already has a playbook run in progress" | One run per channel: finish or cancel it, or use a playbook with `channel: new` |
+| "already has a playbook run in progress" | One run per channel: finish or cancel it, or start the run in a new channel (**Runs in › New channel** on the start page, or ask the agent for a new channel) |
+| An agent no longer asks before using a tool | It has a [global permission](#permissions) for it. Remove it under **Global permissions** on the agent's page, and it asks again next time |
 | The builder's **Save** stays greyed out | Something needs fixing: the red banner lists it and links to the step; hovering **Save** says how many problems are left. On a new playbook, name it and give each step a title and someone to do it |
 | The builder says "This playbook has problems the editor can't show yet" | The file text no longer parses (often after an import or a hand edit). **Edit file text** to fix it by hand, or ask the offered agent to fix it |
 | **Start a run** or **Enabled** is greyed out in the builder | Save your changes first; a disabled playbook must be enabled before it can start |

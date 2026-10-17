@@ -101,7 +101,7 @@ test.describe("channel collaboration", () => {
     // Details (closed) carries a dot for it
     await expect(page.locator("#details-dot")).toBeVisible();
 
-    // the "created" toast covers the header buttons until dismissed
+    // dismiss the "created" toast
     await page.locator("#flash-info").click();
     await expect(page.locator("#flash-info")).toBeHidden();
     await clickHeader(page, "edit-schedules");

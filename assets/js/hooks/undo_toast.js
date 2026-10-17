@@ -38,9 +38,11 @@ const UndoToast = {
 
   build(name) {
     const toast = document.createElement("div")
-    toast.className = "toast toast-top toast-end z-50"
+    // below the page header (h-14 at most), so its controls stay reachable;
+    // only the alert itself takes clicks
+    toast.className = "toast toast-top toast-end top-16 z-50 pointer-events-none"
     const alert = document.createElement("div")
-    alert.className = "alert w-80 sm:w-96 max-w-80 sm:max-w-96 bg-base-100 text-wrap shadow-lg"
+    alert.className = "alert pointer-events-auto w-80 sm:w-96 max-w-80 sm:max-w-96 bg-base-100 text-wrap shadow-lg"
     alert.setAttribute("role", "status")
     alert.id = "sidebar-undo-toast-alert"
 
