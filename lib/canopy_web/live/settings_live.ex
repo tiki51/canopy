@@ -878,7 +878,7 @@ defmodule CanopyWeb.SettingsLive do
         <Layouts.panel
           id="opencode-panel"
           title="OpenCode server"
-          description="Canopy talks to one `opencode serve` instance and passes each repository as the directory. Agents without a model of their own run on the default model, from their next turn."
+          description="Canopy talks to one opencode serve instance and passes each repository as the directory. Agents without a model of their own run on the default model, from their next turn."
         >
           <.form
             for={@opencode_form}

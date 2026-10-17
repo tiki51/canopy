@@ -169,6 +169,10 @@ defmodule CanopyWeb.CostsLive do
   defp duration(ms) when is_integer(ms), do: "#{div(ms, 1000)}s"
   defp duration(_), do: "—"
 
+  # "1 turn", "2 turns".
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(n, noun), do: "#{n} #{noun}s"
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -221,7 +225,7 @@ defmodule CanopyWeb.CostsLive do
               :for={day <- @by_day}
               id={"day-#{day.day}"}
               class="flex h-full flex-1 flex-col items-center justify-end"
-              title={"#{day.day}: #{Costs.money(day.cost)} · #{day.turns} turns"}
+              title={"#{day.day}: #{Costs.money(day.cost)} · #{count(day.turns, "turn")}"}
             >
               <span :if={day.cost > 0} class="mb-1 text-[9px] tabular-nums text-base-content/60">
                 {Costs.money(day.cost)}
@@ -276,7 +280,7 @@ defmodule CanopyWeb.CostsLive do
               id="eff-errors"
               label="Error turns"
               value={@efficiency.errors.turns}
-              hint={"#{Costs.money(@efficiency.errors.cost)} · #{@efficiency.compactions} compactions"}
+              hint={"#{Costs.money(@efficiency.errors.cost)} · #{count(@efficiency.compactions, "compaction")}"}
             />
           </dl>
         </Layouts.panel>
@@ -618,7 +622,7 @@ defmodule CanopyWeb.CostsLive do
       <p class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">{@label}</p>
       <p class="mt-1 text-2xl font-semibold tabular-nums">{Costs.money(@total.cost)}</p>
       <p class="mt-0.5 text-xs text-base-content/60">
-        {@total.turns} turns · {@total.tools} tool calls
+        {count(@total.turns, "turn")} · {count(@total.tools, "tool call")}
       </p>
     </div>
     """
@@ -660,7 +664,7 @@ defmodule CanopyWeb.CostsLive do
             <div class="h-full rounded bg-secondary/70" style={"width: #{share(row.cost, @total)}%"} />
           </div>
           <p class="mt-1 text-[11px] text-base-content/60">
-            {row.turns} turns · {row.tools} tool calls · {duration(row.duration_ms)}
+            {count(row.turns, "turn")} · {count(row.tools, "tool call")} · {duration(row.duration_ms)}
           </p>
         </li>
       </ul>

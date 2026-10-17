@@ -597,9 +597,10 @@ async function runTurn(sessionID, text, cwd) {
   // Sign-off cards (e2e/tests/signoffs.spec.ts): "ask me to sign off on
   // <thing> with options A, B, C" puts up a card with three options, B
   // recommended; the user's answer comes back as a message that mentions the
-  // agent, and the agent echoes what it heard.
+  // agent, and the agent echoes what it heard. The user guide asks it in
+  // prose: "write up a few <things> and let me pick one".
   const said = text.match(/Message text:\n([\s\S]*?)\n\n/)?.[1] || "";
-  const signoffAsk = said.match(/ask me to sign off on (.+?) with options/i);
+  const signoffAsk = said.match(/ask me to sign off on (.+?) with options/i) || said.match(/write up a few (.+?)s? and let me pick/i);
   if (signoffAsk && /new Canopy message/.test(text)) {
     const reply = await mcpCall("signoff_request", {
       canopy_session_id: sessionID,
@@ -821,7 +822,8 @@ async function runTurn(sessionID, text, cwd) {
 
 // ---- the #refund-webhooks story (e2e/tests/user-guide.spec.ts) ------------------
 // @test reads webhooks.py and posts a plan, edits it behind a permission card
-// on the go-ahead, and folds in @researcher's handler list; the handoff goes
+// on the go-ahead, and folds in @researcher's handler list with a second edit
+// (approved by the Allow globally grant the spec gives it); the handoff goes
 // to @reviewer. Anything else in the channel is a pass.
 const REFUND_PLAN = `Plan:
 1. Read \`webhooks.py\`: \`on_refund_created\` calls \`gateway.refund\` with no timeout and swallows \`GatewayTimeout\`, so a slow gateway leaves the refund pending with no error.
@@ -838,6 +840,14 @@ const REFUND_DIFF = `--- acme/billing/webhooks.py
 +    if resp.timed_out:
 +        raise RefundTimeout(refund.id)
      refunds.mark_sent(refund.id, resp.reference)
+`;
+const REFUND_FAILED_DIFF = `--- acme/billing/webhooks.py
++++ acme/billing/webhooks.py
+@@ -24,2 +24,4 @@ def on_refund_failed(event: dict) -> None:
+-    resp = gateway.refund(refund.charge_id)
++    resp = gateway.refund(refund.charge_id, timeout=10)
++    if resp.timed_out:
++        raise RefundTimeout(refund.id)
 `;
 
 async function refundTurn(sessionID, messageID, text, tool, part) {
@@ -861,6 +871,15 @@ async function refundTurn(sessionID, messageID, text, tool, part) {
   }
   if (/delegated subtask .* was completed/i.test(text)) {
     await say("Found two handlers: `refund_created` and `refund_failed`. Both call `gateway.refund` without a timeout, so the fix covers both.");
+    // the same edit for refund_failed: the go-ahead's card was answered
+    // Allow globally, so Canopy approves this one without a card
+    await new Promise((resume) => {
+      const id = nextId("per");
+      pendingPermissions.set(id, resume);
+      emit("permission.asked", { id, sessionID, permission: "edit", patterns: [file], metadata: { filepath: file, diff: REFUND_FAILED_DIFF }, always: ["*"], tool: { messageID, callID: nextId("call") } });
+    });
+    emit("file.edited", { file });
+    await say("Added the same timeout to `on_refund_failed`.");
     return done("Folded in the handler list.", 0.0014);
   }
   if (/\bgo ahead\b/i.test(body)) {

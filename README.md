@@ -53,7 +53,8 @@ read, and nothing is finished until you approve it. It all runs on your machine.
    time, each with a live card that says what it's doing. When `@frontend` needs the
    endpoint, it hands that part to `@backend` in the channel, where you can read it.
 4. **It asks before it touches your code.** An edit outside `@backend`'s allowance puts a
-   permission card in the channel with the diff. Allow it once, always, or reject it.
+   permission card in the channel with the diff. Allow it once, always, or globally (that
+   tool, for that agent, in every project), or reject it.
 5. **Review can send it back.** `@reviewer` finds that an empty report exports nothing,
    and the work goes back to Build with a note. The playbook says where each review may
    send work back, so the run reopens that step.
@@ -115,11 +116,12 @@ The only traffic is what your engine already sends to its model provider.
 Let them run, and decide when they stop. Agents work on their own between the points you
 choose, and you can step in at any moment.
 
-- **Stop all.** One button ends every running turn in a channel and holds it until you
+- **Stop.** One button ends every running turn in a channel and holds it until you
   reply.
 - **Check-ins.** Pause a channel after a set number of agent turns without you.
 - **Approvals.** Playbook steps that wait for your sign-off, and a permission card before
-  an agent edits outside its allowance.
+  an agent edits outside its allowance. Allow a tool globally and that agent stops asking
+  for it; remove the grant on the agent's page.
 - **Model per agent.** A cheaper model for agents that mostly report.
 - **Spend limits.** A dollar total per channel. Every turn reports what it cost.
 
@@ -136,7 +138,7 @@ scripted run. The site's source is
 **Complete and in daily use.** Everything below works end to end: playbooks with sign-off
 steps, channels and DMs, named agents on either engine, streaming activity, permission and
 question cards, diffs, threads, delegation, handoffs, scheduled tasks and GitHub watches,
-agent memory and notes, shared files, spend controls, and a 45-tool MCP server. It installs
+agent memory and notes, shared files, spend controls, and a 46-tool MCP server. It installs
 from Homebrew on Apple Silicon Macs or runs from source anywhere Elixir does. It is a
 single-user, single-machine tool by design: there is no login, and it binds to loopback.
 
@@ -263,6 +265,8 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
 - **[Playbooks](docs/user-guide.md#12-playbooks)**: a repeatable process, built step by
   step in a visual builder and saved as Markdown. One agent leads, each step goes to the
   agent whose role fits, a review can send work back, and a step can wait for your sign-off.
+- **[The library](docs/user-guide.md#the-library-and-the-builder)**: star the playbooks you
+  run most to keep them on top; a filter finds the rest.
 - **[Scheduled tasks](docs/user-guide.md#11-scheduled-tasks)**: agents schedule work for
   later or on a repeat, and schedules survive restarts.
 - **[GitHub watches](docs/user-guide.md#watching-github)**: a new pull request, issue,
@@ -293,6 +297,9 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
 - **[Channels](docs/user-guide.md#6-channels)** belong to a repository, with members and an
   owner. **[Direct messages](docs/user-guide.md#10-direct-messages)** are private rooms with
   any set of agents.
+- **[Sidebar sections](docs/user-guide.md#sidebar-sections)**: file a project's channels under
+  your own headings; **[archive](docs/user-guide.md#archiving)** a channel in one click,
+  with Undo.
 - **[Who wakes up](docs/user-guide.md#who-wakes-up-when)**: a mention wakes that agent; a
   message that mentions nobody wakes the owner, so nothing is lost.
 - **[Channel details](docs/user-guide.md#channel-details)**: a side panel with the task,
@@ -331,7 +338,8 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
   engine session, prompts and tool calls included, with credentials masked.
 - **[Permission](docs/user-guide.md#permissions)** and
   **[question](docs/user-guide.md#questions)** cards: approve a tool or answer a question
-  in the channel, on either engine.
+  in the channel, on either engine. **Allow globally** approves a tool for that agent in
+  every project, until you remove it on the agent's page.
 - **[Changes](docs/user-guide.md#changes)**: the repository's diff, from the channel header.
 - **[Stop](docs/user-guide.md#anatomy-of-the-channel-header)** in the header ends every
   turn; **[Channel details](docs/user-guide.md#channel-details)** aborts or resets one agent.
@@ -361,20 +369,10 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
 
 Most settings live in the UI under **Settings**: engines and default models, your display
 name, appearance, notifications, GitHub, the conversation brakes, the MCP bearer token
-(show, copy, rotate), and the OpenCode identity plugin source. Environment variables cover
-the rest:
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `PORT` | HTTP port | `4000` |
-| `CANOPY_URL` | Browser and MCP origin for a production release | `http://127.0.0.1:$PORT` |
-| `CANOPY_BIND=0.0.0.0` | Listen on all interfaces for one run (dev only, no login) | loopback |
-| `CANOPY_DB` | Path to the SQLite database (source) | `canopy_dev.db` in the project |
-| `DATABASE_PATH` | Path to the SQLite database (release and Homebrew) | `~/Library/Application Support/Canopy/canopy.db` under Homebrew |
-| `CANOPY_FILES_DIR` | Where shared files are stored | next to the database, `canopy_dev_files/` (source) or `files/` in the state directory (Homebrew) |
-| `CANOPY_STATE_DIR` | Homebrew only: where the database, files, and secret live | `~/Library/Application Support/Canopy` (or `$XDG_DATA_HOME/canopy`) |
-| `CANOPY_MAX_UPLOAD_MB` | Largest file accepted | `25` |
-| `CLAUDE_CONFIG_DIR` | Honoured by `claude` itself; set the config directory in Settings to give agents their own login | your login |
+(show, copy, rotate), and the OpenCode identity plugin source. Environment variables
+(`PORT`, `CANOPY_URL`, `CANOPY_DB`, `DATABASE_PATH`, `CANOPY_FILES_DIR`, and the rest) are
+listed with their defaults under
+[Environment variables](docs/user-guide.md#environment-variables) in the user guide.
 
 Production releases additionally require `DATABASE_PATH`, `SECRET_KEY_BASE`, and
 `PHX_SERVER=true` (see `config/runtime.exs`). The Homebrew `canopy` wrapper sets all three
@@ -392,7 +390,7 @@ image. Maintainers build and publish the native macOS archive by following
 
 Canopy's MCP server is mounted at `/mcp` and protected by a bearer token. Claude Code
 sessions get a token of their own per session; OpenCode sessions present the identity
-plugin's stamp. Identity never comes from tool arguments. The 45 tools (reading, posting,
+plugin's stamp. Identity never comes from tool arguments. The 46 tools (reading, posting,
 delegation and handoffs, channels, schedules, playbooks, locks, memory, notes, costs, and
 files) are listed in the user guide under
 [Tools agents can call](docs/user-guide.md#tools-agents-can-call), and the composer's keys
@@ -408,7 +406,7 @@ lib/canopy/
                   everything downstream sees only normalised Canopy.Engine.Events
   claude_code/    per-turn `claude -p` under a Port, stream-json parsing, prompts
   opencode/       HTTP client, SSE event stream, plugin
-  mcp/            Anubis MCP server, auth plug, identity, 45 tools under tools/
+  mcp/            Anubis MCP server, auth plug, identity, 46 tools under tools/
   channels, messages, agents, tasks, delegations, handoffs, schedules, memory,
   documents, costs, settings, ...   plain contexts over Ecto + SQLite
 lib/canopy_web/   Phoenix LiveView UI, Markdown rendering

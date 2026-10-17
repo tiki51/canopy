@@ -65,11 +65,11 @@ defmodule CanopyWeb.CoreComponents do
       phx-hook="AutoDismiss"
       data-dismiss-ms={if @kind == :error, do: "8000", else: "4000"}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="toast toast-top toast-end top-16 z-50 pointer-events-none"
       {@rest}
     >
       <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
+        "alert pointer-events-auto w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
         @kind == :info && "alert-info",
         @kind == :error && "alert-error"
       ]}>

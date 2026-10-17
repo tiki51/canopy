@@ -24,7 +24,7 @@ defmodule CanopyWeb.CostsLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/costs")
     assert has_element?(view, "#cost-today", "$0.42")
-    assert has_element?(view, "#cost-all", "1 turns")
+    assert has_element?(view, "#cost-all", "1 turn · 2 tool calls")
     assert has_element?(view, "#by-agent-#{agent.id}", "@#{agent.name}")
 
     assert has_element?(
@@ -50,6 +50,33 @@ defmodule CanopyWeb.CostsLiveTest do
 
     assert has_element?(view, "#cost-today", "$1.00")
     assert has_element?(view, "#by-model-unknown")
+  end
+
+  test "counts read 1 turn and 1 tool call, and plural past one", %{conn: conn} do
+    %{channel: channel, agent: agent} = Fixtures.scenario()
+
+    record = fn ->
+      Timeline.record(%{
+        channel_id: channel.id,
+        agent_id: agent.id,
+        event_type: "agent_turn_completed",
+        payload: %{"outcome" => "ok", "cost" => 0.1, "tools" => 1, "duration_ms" => 100}
+      })
+    end
+
+    {:ok, _} = record.()
+    {:ok, view, _html} = live(conn, ~p"/costs")
+    today = NaiveDateTime.to_date(NaiveDateTime.local_now())
+
+    assert has_element?(view, "#cost-all", ~r/1 turn · 1 tool call\s*$/)
+    assert has_element?(view, "#by-agent-#{agent.id}", "1 turn · 1 tool call ·")
+    assert has_element?(view, "#day-#{today}[title$='· 1 turn']")
+
+    {:ok, _} = record.()
+
+    assert has_element?(view, "#cost-all", "2 turns · 2 tool calls")
+    assert has_element?(view, "#by-agent-#{agent.id}", "2 turns · 2 tool calls ·")
+    assert has_element?(view, "#day-#{today}[title$='· 2 turns']")
   end
 
   test "shows efficiency, triggers, the costliest turns, and channel budgets", %{conn: conn} do
