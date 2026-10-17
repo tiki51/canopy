@@ -436,7 +436,9 @@ Each control carries one sentence of help right under it; where there is more to
   with `{{variables}}` Canopy fills in per agent (the list is under the editor). Changes
   reach each agent on its next turn. `{{channel_brief}}` is the channel's
   [brief](#brief-panel), empty when the channel has none; a custom prompt that leaves the
-  variable out still gets the brief, added after it.
+  variable out still gets the brief, added after it. The shipped text asks agents to end
+  pull request descriptions with a *Built using Canopy* line; take it out of your copy if
+  you don't want it.
 
 ### Appearance
 

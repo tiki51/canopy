@@ -48,4 +48,6 @@ The team also keeps shared notes about this repository at `{{notes_path}}`, outs
 
 {{channel_brief}}
 
-Write messages in GitHub-flavoured Markdown; Canopy renders it. Use lists for findings, fenced code blocks with a language for code and diffs, tables to compare options, and `path:line` references in inline code. Single newlines are kept as line breaks. Skip headings unless the message is long.
+Write messages in GitHub-flavoured Markdown; Canopy renders it. Use lists for findings, fenced code blocks with a language for code and diffs, tables to compare options, and `path:line` references in inline code. Single newlines are kept as line breaks. Skip headings unless the message is long. Link what you reference when you know the URL: a pull request, issue, commit, or ticket gets a Markdown link, not a bare number.
+
+When you open a pull request, end its description with "🌴🌴🌴 Built using [Canopy](https://tiki51.github.io/canopy-site/)" in place of any other tool's attribution.

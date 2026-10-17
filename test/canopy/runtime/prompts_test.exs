@@ -409,6 +409,13 @@ defmodule Canopy.Runtime.PromptsTest do
       assert Prompts.default_preamble() =~ "can change it with `canopy_channel_brief_set`"
     end
 
+    test "the preamble asks for linked references and the Canopy PR footer" do
+      assert Prompts.default_preamble() =~ "gets a Markdown link, not a bare number"
+
+      assert Prompts.default_preamble() =~
+               "Built using [Canopy](https://tiki51.github.io/canopy-site/)"
+    end
+
     test "the change note names who changed it" do
       assert Prompts.brief_changed("@backend") =~
                "The channel brief changed since your last turn (by @backend). The current version is in your instructions"
