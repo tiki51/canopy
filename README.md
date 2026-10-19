@@ -5,8 +5,8 @@
 <h1 align="center">Canopy</h1>
 
 <p align="center">
-  The ecosystem for agent collaboration and orchestration.<br />
-  <strong>You write the playbook. Agents execute. You sign off.</strong>
+  Your coding agents, under one roof.<br />
+  <strong>Every agent in the open. Every handoff in view. Every decision yours.</strong>
 </p>
 
 <p align="center">
@@ -29,9 +29,9 @@
 
 ---
 
-A playbook says who owns each step and where it waits for you. Your Claude Code and
-OpenCode agents carry it out together, handing work to each other in a channel you can
-read, and nothing is finished until you approve it. It all runs on your machine.
+Bring your Claude Code and OpenCode agents together under one canopy. A playbook maps out
+who owns each step and where the run pauses for you—so agents hand work off in shared
+channels, and nothing ships without your call. Everything runs locally on your machine.
 
 <p align="center">
   <a href="https://tiki51.github.io/canopy-site/#story">
@@ -41,39 +41,43 @@ read, and nothing is finished until you approve it. It all runs on your machine.
 
 ## One playbook, start to finish
 
-*Add a CSV export to the Reports page.* Here is how the team does it with the
-**Feature build** starter:
+When a problem spans design, backend, frontend, tests, and review, one agent in a terminal
+isn't enough. Playbooks break complex work into stages, route each part to the right
+specialist, and loop until every check passes—here is a full nine-step **Feature build**
+run in action:
 
-1. **You start a playbook.** Pick Feature build, say what it's for in a line, and press
-   Start. Canopy opens `#csv-export`, brings in the agents who fill its roles, and wakes
-   `@project-manager` to lead the run.
-2. **You pick a design.** `@designer` posts three options as images. The run stops at
-   step 3 until you accept one, so nothing is built from a design you haven't seen.
-3. **They build it, in the open.** `@frontend`, `@backend`, and `@test` work at the same
-   time, each with a live card that says what it's doing. When `@frontend` needs the
-   endpoint, it hands that part to `@backend` in the channel, where you can read it.
-4. **It asks before it touches your code.** An edit outside `@backend`'s allowance puts a
-   permission card in the channel with the diff. Allow it once, always, or globally (that
-   tool, for that agent, in every project), or reject it.
-5. **Review can send it back.** `@reviewer` finds that an empty report exports nothing,
-   and the work goes back to Build with a note. The playbook says where each review may
-   send work back, so the run reopens that step.
-6. **You sign off.** When the last check passes, the run stops for you, with the test
-   report on the card and the diff of every file one click away. Accept to finish, or
-   reject with a note and the lead takes it back.
-7. **Then you close the laptop.** The run, the decisions, the files, and what each agent
-   learned are in a SQLite file on your disk. Next time, `@frontend` already knows that
-   Reports use the shared DataTable component.
+1. **Plant the brief.** Pick a playbook, drop in your brief or issue link, and press Start.
+   Here, a **Feature build** run opens `#csv-export`, gathers the specialists for each role,
+   and wakes `@project-manager` to coordinate the work.
+2. **Shape the direction early.** `@designer` posts three visual options. The run holds at
+   step 3 until you choose one—so no code is written against a design you haven't approved.
+3. **Work branches out in parallel.** `@frontend`, `@backend`, and `@test` work side by
+   side, with live cards showing every file read and edit as it happens. When `@frontend`
+   needs the CSV endpoint, it delegates that task to `@backend` right in the channel.
+4. **They ask before crossing a boundary.** The new endpoint touches a file outside
+   `@backend`'s allowed scope, so a permission card drops into the channel with the exact
+   diff. Approve it once, for the session, or globally (that tool, for that agent, across
+   every project), or reject it.
+5. **Review catches the edge cases.** `@reviewer` spots that an empty report exports a
+   blank file instead of a header row, and sends the step back to Build. Because the
+   playbook allows review loops, Build reopens automatically and `@backend` ships the fix.
+6. **You have the final word.** Once every check passes, the run pauses for your sign-off.
+   Inspect the attached test report and the full multi-file diff under **Changes**—then
+   accept to finish, or send it back with a note.
+7. **What they learn stays rooted.** Close your laptop—every message, decision, artifact,
+   and agent memory is saved to a single SQLite file on your disk. Next time a task touches
+   Reports, `@frontend` already knows that Reports use the shared `DataTable` component.
 
 [Watch the full run (2:25)](https://tiki51.github.io/canopy-site/#story) on the website.
-Canopy ships two starters, `feature-build` and `bug-fix`. Build your own step by step in
-the visual builder, or describe one to an agent and review its draft. Playbooks are saved
-as Markdown, and the [user guide](docs/user-guide.md#12-playbooks) has the details.
+Canopy ships with `feature-build` and `bug-fix` starters—assemble your own step by step in
+the visual builder, or ask an agent to draft one for you to review and enable. Playbooks are
+saved as Markdown; see [Playbooks](docs/user-guide.md#12-playbooks) in the user guide.
 
 ## Meet the team
 
-Thirteen agents are ready on day one. Each is a Claude Code or OpenCode session with a
-name, a role, and its own instructions. Rename them, rewrite them, or add your own.
+Thirteen specialists are ready on day one. Each is a persistent Claude Code or OpenCode
+session with its own role, voice, and memory. Tweak their instructions, swap their models,
+or grow the team with your own.
 
 | Group | Agents |
 |---|---|
@@ -82,55 +86,60 @@ name, a role, and its own instructions. Rename them, rewrite them, or add your o
 | Review & research | `@reviewer` checks changes for correctness · `@researcher` answers questions with evidence · `@test` writes tests and reproduces bugs |
 | Support | `@finops` cuts token spend · `@docs` keeps READMEs and guides current |
 
-- **They talk in channels you can read.** Mentions, delegations, handoffs, and questions
-  for you, all in one place.
-- **They remember what they learn.** Tell an agent something once and it knows it in
-  every channel.
-- **They follow your playbooks.** Each step goes to the agent whose role fits, and waits
-  for you where you said it should.
+- **Every handoff happens in the open.** Mentions, delegations, handoffs, and questions for
+  you unfold in shared channels—never buried in a terminal scrollback.
+- **Knowledge takes root.** Teach an agent a convention once and it carries that memory into
+  every channel and project.
+- **Playbooks keep the work on the trail.** Each step routes to the right specialist, loops
+  back when review catches a bug, and pauses where you want a say.
 
 ## How it runs
 
-On your machine, with the engines you already use. Canopy listens on `127.0.0.1`, with no
-account and no cloud service. Your code stays in your repositories, and the team's history
-is one SQLite file.
+Grounded on your machine, powered by the engines you already use. Canopy binds to
+`127.0.0.1` with no cloud relay and no account to create. Your code never leaves your
+repositories, and the team's entire history lives in one local SQLite file.
 
 ```text
-Claude Code / OpenCode session  =  what an agent privately knows and works through
-Canopy MCP server               =  how agents talk to each other and to you
-Canopy database (SQLite)        =  what the team knows
-Phoenix LiveView                =  what you see
+Claude Code / OpenCode session  =  what each agent privately works through
+Canopy MCP server               =  how agents coordinate and reach you
+Canopy database (SQLite)        =  what the whole team remembers
+Phoenix LiveView                =  your live view of the workspace
 ```
 
 | Engine | How it runs | Identity | Best for |
 |---|---|---|---|
-| **Claude Code** (recommended) | Canopy runs `claude -p` on your machine for each turn, in the repository, resuming the agent's own session | A per-session bearer token Canopy issues; uses your existing `claude` login | Permission and question cards, model and effort per agent, tool allowlists |
-| **OpenCode** | Canopy talks HTTP to your running `opencode serve` and follows its event stream | A small identity plugin, installed once, stamps the session id into each tool call | Bringing your own model provider |
+| **Claude Code** | Spawns `claude -p` per turn in the repository, resuming each agent's persistent session | Per-session bearer token issued by Canopy; uses your existing `claude` login | Zero-config setup with your Claude subscription, per-agent effort controls, and tool allowlists |
+| **OpenCode** | Connects over HTTP/SSE to your local `opencode serve` | Session plugin wired up automatically per repository (or installed once globally) | Mixing model providers across agents |
 
-Each agent picks its own engine, so a Claude Code `@backend` and an OpenCode `@researcher`
-can share a channel. Claude Code and OpenCode are installed separately and never bundled.
-The only traffic is what your engine already sends to its model provider.
+Assign engines per agent—let a Claude Code `@backend` and an OpenCode `@researcher`
+collaborate in the same channel. Claude Code and OpenCode stay separate installs; Canopy
+never bundles or wraps them. The only network traffic is between your engine and its model
+provider.
 
 ## Autonomy with brakes
 
-Let them run, and decide when they stop. Agents work on their own between the points you
-choose, and you can step in at any moment.
+Give them room to run, and keep your hand on the reins. Let agents work autonomously
+between checkpoints—and step in whenever you want.
 
-- **Stop.** One button ends every running turn in a channel and holds it until you
-  reply.
-- **Check-ins.** Pause a channel after a set number of agent turns without you.
-- **Approvals.** Playbook steps that wait for your sign-off, and a permission card before
-  an agent edits outside its allowance. Allow a tool globally and that agent stops asking
-  for it; remove the grant on the agent's page.
-- **Model per agent.** A cheaper model for agents that mostly report.
-- **Spend limits.** A dollar total per channel. Every turn reports what it cost.
+- **Stop button.** Halt every running turn in a channel with one click and hold the room
+  until you reply.
+- **Turn check-ins.** Pause a channel automatically after a set number of back-and-forth
+  agent turns without you.
+- **Human gates.** Require your sign-off on key playbook steps and approve out-of-scope file
+  edits in the channel. Allow a tool globally and that agent stops asking for it across
+  projects; revoke the grant any time on the agent's page.
+- **Per-agent models.** Pair heavy reasoning models with deep work and lighter models with
+  routine reporting.
+- **Channel spend limits.** Cap token spend per channel in dollars, with live per-turn cost
+  tracking.
 
 ## Built with Canopy
 
-The [website](https://tiki51.github.io/canopy-site/) was designed and built by agents in
-Canopy. In `#site-update`, `@designer` mocked up three options for the opening, `@frontend`
-built the page from the chosen one, and `@test` captured every screenshot and video from a
-scripted run. The site's source is
+Grown under its own canopy: the [website](https://tiki51.github.io/canopy-site/) was
+designed, written, and built by agents inside Canopy. In `#site-update`, `@designer` mocked
+up three options for a playbook-first opening, `@frontend` built the page from the chosen
+brief, `@copywriter` shaped the copy, and `@test` captured every screenshot and video from a
+scripted run. Browse the source at
 [`tiki51/canopy-site`](https://github.com/tiki51/canopy-site).
 
 ## Status
@@ -147,7 +156,7 @@ single-user, single-machine tool by design: there is no login, and it binds to l
 - **Git.** Canopy registers repositories, initialises them if needed, and reads diffs.
 - **At least one engine:**
   - [Claude Code](https://claude.com/claude-code), installed and logged in (`claude` once,
-    interactively). Recommended.
+    interactively).
   - [OpenCode](https://opencode.ai) 1.18 or newer with a model provider configured.
 - **To run the Homebrew build:** a Mac with Apple Silicon. The formula ships a
   self-contained release, so no Elixir or Erlang install is needed.
@@ -198,10 +207,10 @@ The first time you open Canopy, a short setup walks you through it: your name, a
 which engines are ready, the default engine and model, how much agents may do on their
 own, and your first project. Run it again any time from **Settings**.
 
-- **Claude Code** (recommended): `claude` on your `PATH` (or its path in Settings) and
+- **Claude Code**: `claude` on your `PATH` (or its path in Settings) and
   logged in (run `claude` once in a terminal). Nothing else to install.
-- **OpenCode**: start `opencode serve --port 4096`, install the identity plugin once (the
-  source and path are in Settings), and restart the server.
+- **OpenCode**: start `opencode serve --port 4096`. Canopy drops the identity plugin into
+  each registered repository automatically (a global copy is also available in Settings).
 
 If an engine isn't ready, see [First-run setup](docs/user-guide.md#first-run-setup); every
 setting is explained under [Settings](docs/user-guide.md#3-settings).
