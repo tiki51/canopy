@@ -55,6 +55,9 @@ defmodule Canopy.MCP.AuthPlug do
          conn
          |> assign(:mcp_authenticated, true)
          |> assign(:canopy_session, %{
+           # the row id never changes, while a Codex session's engine id is
+           # renamed after its first turn's MCP connection was made
+           id: session.id,
            engine: session.engine,
            engine_session_id: session.engine_session_id
          })}

@@ -1,0 +1,4 @@
+{"include":"turn-start.jsonl"}
+{"send":{"method":"error","params":{"threadId":"$THREAD","turnId":"$TURN","willRetry":false,"error":{"message":"model gpt-9 does not exist","codexErrorInfo":"badRequest","additionalDetails":null}}}}
+{"send":{"method":"thread/tokenUsage/updated","params":{"threadId":"$THREAD","turnId":"$TURN","tokenUsage":{"total":{"totalTokens":300,"inputTokens":300,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":300,"inputTokens":300,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":258400}}}}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"failed","items":[],"error":{"message":"model gpt-9 does not exist","codexErrorInfo":"badRequest","additionalDetails":null}}}}}

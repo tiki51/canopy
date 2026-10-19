@@ -2,10 +2,13 @@ defmodule Canopy.Costs.Report do
   @moduledoc """
   The spend report as text: what the `costs_report` tool returns and what the
   auditor reads. Everything in it comes from `Canopy.Costs`, plus the settings
-  that shape spend and, when OpenCode answers, the prices of the models in use.
+  that shape spend and the prices of the models in use: Codex models from
+  `Canopy.Codex.Pricing` (OpenAI list prices), the rest from OpenCode's
+  catalogue when it answers. Estimated dollars (Codex's) are marked ≈.
   """
 
   alias Canopy.{Agents, Costs, Settings}
+  alias Canopy.Codex.Pricing
   alias Canopy.Costs.Routing
   alias Canopy.OpenCode.Providers
   alias Canopy.Runtime.ChannelServer
@@ -38,13 +41,14 @@ defmodule Canopy.Costs.Report do
     eff = Costs.efficiency(since)
 
     [
-      "Canopy spend report for #{@labels[period]}#{since_line(since)}. Generated #{now()} local time. Costs are what providers report through OpenCode; unpriced (subscription) models count as $0.",
-      "Total: #{Costs.money(total.cost)} over #{total.turns} turns, #{total.tools} tool calls; #{Costs.money(eff.avg_cost)} per turn on average.",
+      "Canopy spend report for #{@labels[period]}#{since_line(since)}. Generated #{now()} local time. Costs are what Claude Code and the providers behind OpenCode report; Codex reports only tokens, so its costs are estimates (≈) from OpenAI list prices; unpriced (subscription) models count as $0.",
+      "Total: #{Costs.money(total.cost)}#{estimated(total.estimated)} over #{total.turns} turns, #{total.tools} tool calls; #{Costs.money(eff.avg_cost)} per turn on average.",
       "Today #{Costs.money(Costs.total(Costs.since(:today)).cost)} · last 7 days #{Costs.money(Costs.total(Costs.since(:week)).cost)} · all time #{Costs.money(Costs.total(nil).cost)}.",
       "",
       breakdown("By agent", Costs.by_agent(since), total.cost),
       breakdown("By channel", Costs.by_channel(since), total.cost),
       breakdown("By model", Costs.by_model(since), total.cost),
+      breakdown("By engine", Costs.by_engine(since), total.cost),
       breakdown("By trigger (what woke the agent)", Costs.by_trigger(since), total.cost),
       routing(since),
       candidates(since),
@@ -66,7 +70,7 @@ defmodule Canopy.Costs.Report do
   defp breakdown(title, rows, total) do
     lines =
       Enum.map(rows, fn row ->
-        "- #{row.label}: #{Costs.money(row.cost)} (#{share(row.cost, total)}%), #{row.turns} turns, #{row.tools} tool calls, #{duration(row.duration_ms)}"
+        "- #{row.label}: #{Costs.money(row.cost)}#{estimated(row.estimated)} (#{share(row.cost, total)}%), #{row.turns} turns, #{row.tools} tool calls, #{duration(row.duration_ms)}"
       end)
 
     ["#{title}:" | lines] ++ [""]
@@ -180,7 +184,7 @@ defmodule Canopy.Costs.Report do
   defp top_turns(turns) do
     lines =
       Enum.map(turns, fn t ->
-        "- #{Costs.money(t.cost)} #{t.agent} in #{t.channel}, #{local(t.at)}, woken by #{t.trigger || "unknown"}, #{t.tools} tool calls, #{t.steps} model calls, context #{tokens(t.context)}, #{duration(t.duration_ms)}#{turn_flags(t)}"
+        "- #{if t.cost_estimated, do: "≈ "}#{Costs.money(t.cost)} #{t.agent} in #{t.channel}, #{local(t.at)}, woken by #{t.trigger || "unknown"}, #{t.tools} tool calls, #{t.steps} model calls, context #{tokens(t.context)}, #{duration(t.duration_ms)}#{turn_flags(t)}"
       end)
 
     ["Costliest turns:" | lines] ++ [""]
@@ -202,7 +206,7 @@ defmodule Canopy.Costs.Report do
   defp budgets(rows) do
     lines =
       Enum.map(rows, fn b ->
-        "- #{b.label}: #{Costs.money(b.spent)} of #{Costs.money(b.limit)}#{if b.reached?, do: " (reached; agents are held there)", else: ""}"
+        "- #{b.label}: #{Costs.money(b.spent)}#{estimated(b.estimated)} of #{Costs.money(b.limit)}#{if b.reached?, do: " (reached; agents are held there)", else: ""}"
       end)
 
     ["Channel spend limits (only the user changes them):" | lines] ++ [""]
@@ -244,32 +248,55 @@ defmodule Canopy.Costs.Report do
     "Default models (Settings; agents without a model of their own use them): #{Enum.join(models, "; ")}. #{inheriting} of #{total} active agents use them."
   end
 
-  # Prices for the models that appear in the period, when OpenCode answers.
+  # Prices for the models that appear in the period: a model that ran on
+  # Codex from the Codex list prices, the rest from OpenCode when it answers.
   defp prices(since) do
     models = since |> Costs.by_model() |> Enum.map(& &1.label)
+    codex = MapSet.new(Costs.models_on("codex", since))
+    {codex_models, others} = Enum.split_with(models, &MapSet.member?(codex, &1))
+    codex_lines = Enum.map(codex_models, &codex_price/1)
 
-    case models != [] && providers() do
-      %{} = catalog ->
-        lines =
-          Enum.map(models, fn model ->
-            case Map.get(catalog, model) do
-              %{input: i, output: o, cache_read: c} when i > 0 or o > 0 ->
-                "- #{model}: $#{fmt(i)} in / $#{fmt(o)} out / $#{fmt(c)} cached, per million tokens"
+    case {codex_lines, others != [] && providers()} do
+      {[], catalog} when not is_map(catalog) ->
+        ["Model prices: unavailable (OpenCode did not answer)."]
 
-              %{} ->
-                "- #{model}: no per-token price reported (usually a subscription plan)"
-
-              nil ->
-                "- #{model}: price unknown"
-            end
-          end)
-
+      {lines, false} ->
         ["Model prices:" | lines]
 
-      _ ->
-        ["Model prices: unavailable (OpenCode did not answer)."]
+      {lines, nil} ->
+        ["Model prices:" | lines] ++
+          ["- #{Enum.join(others, ", ")}: unavailable (OpenCode did not answer)"]
+
+      {lines, catalog} ->
+        ["Model prices:" | lines ++ Enum.map(others, &catalog_price(&1, catalog))]
     end
   end
+
+  defp codex_price(model) do
+    p = Pricing.price(model)
+
+    own =
+      if Pricing.known?(model), do: "", else: "; no list price of its own, so the Codex default"
+
+    "- #{model}: ≈ $#{fmt(p.input)} in / $#{fmt(p.output)} out / $#{fmt(p.cached_input)} cached, per million tokens (OpenAI list price#{own})"
+  end
+
+  defp catalog_price(model, catalog) do
+    case Map.get(catalog, model) do
+      %{input: i, output: o, cache_read: c} when i > 0 or o > 0 ->
+        "- #{model}: $#{fmt(i)} in / $#{fmt(o)} out / $#{fmt(c)} cached, per million tokens"
+
+      %{} ->
+        "- #{model}: no per-token price reported (usually a subscription plan)"
+
+      nil ->
+        "- #{model}: price unknown"
+    end
+  end
+
+  # The estimated part of an amount, when there is one.
+  defp estimated(e) when is_number(e) and e > 0, do: " (≈ #{Costs.money(e)} estimated)"
+  defp estimated(_), do: ""
 
   # "provider/model" => pricing; a model OpenCode lists without a price counts
   # as unpriced.

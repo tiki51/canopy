@@ -52,7 +52,14 @@ async function shot(page: Page, name: string, opts: Record<string, unknown> = {}
 async function scrubPaths(page: Page) {
   const home = os.homedir();
   const tmp = path.resolve("../tmp") + "/";
+  // the fake Codex and Claude Code server.sh puts first on PATH read as Homebrew installs
+  const fakeCodex = path.resolve("fake-codex/codex");
+  const fakeClaude = path.resolve("fake-claude/claude");
   const pairs: [string, string][] = [
+    [fakeCodex, "/opt/homebrew/bin/codex"],
+    [fakeCodex.replace(home, "~"), "/opt/homebrew/bin/codex"],
+    [fakeClaude, "/opt/homebrew/bin/claude"],
+    [fakeClaude.replace(home, "~"), "/opt/homebrew/bin/claude"],
     [tmp, "/Users/priya/code/"],
     [tmp.replace(home, "~"), "~/code/"],
     [home, "/Users/priya"],
@@ -72,12 +79,12 @@ async function scrubPaths(page: Page) {
 const bottomOfFeed = (page: Page) => page.locator("#timeline-scroll").evaluate((el) => (el.scrollTop = el.scrollHeight));
 
 /** A shot clipped to one element, with a margin around it. */
-async function shotOf(page: Page, name: string, el: Locator, margin = 16) {
+async function shotOf(page: Page, name: string, el: Locator, margin = 16, before?: () => Promise<void>) {
   await el.scrollIntoViewIfNeeded();
   const box = (await el.boundingBox())!;
   const x = Math.max(0, box.x - margin);
   const y = Math.max(0, box.y - margin);
-  await shot(page, name, { clip: { x, y, width: box.width + 2 * margin, height: box.height + 2 * margin } });
+  await shot(page, name, { clip: { x, y, width: box.width + 2 * margin, height: box.height + 2 * margin } }, before);
 }
 
 /** The experimental "Mentioning a working agent interrupts it" setting. */
@@ -250,7 +257,24 @@ test.describe("screenshots for the user guide", () => {
     await page.locator("#check-connection").click();
     // the version playwright.config gives the fake OpenCode for this capture
     await expect(page.locator("#health-result")).toContainText("1.18.11");
+    // Codex isn't checked on mount (too slow): Check Codex turns its card Ready
+    await page.locator("#check-codex").click();
+    await expect(page.locator("#codex-check-result")).toContainText("signed in");
+    await expect(page.locator("#default-engine-choice-codex")).toHaveAttribute("data-ready", "ready");
+    // and Check Claude Code, so all three cards read Ready, not Claude Code alone Installed
+    await page.locator("#check-claude").click();
+    await expect(page.locator("#claude-check-result")).toContainText("logged in");
+    await expect(page.locator("#default-engine-choice-claude_code")).toHaveAttribute("data-ready", "ready");
+    await page.locator("#engine-panel").evaluate((el) => {
+      let box = el.parentElement!;
+      while (box.scrollHeight <= box.clientHeight) box = box.parentElement!;
+      box.scrollTop = 0;
+    });
     await shot(page, "settings", {}, () => scrubPaths(page));
+
+    // the Codex panel alone, its models loaded from the fake
+    await expect(page.locator("#codex-default-model")).toBeEnabled();
+    await shotOf(page, "settings-codex", page.locator("#codex-panel"), 12, () => scrubPaths(page));
 
     // from the You panel above it, whole, so no label is cut at the top edge
     await page.locator("#profile-panel").evaluate((el) => {
@@ -399,6 +423,15 @@ test.describe("screenshots for the user guide", () => {
     await page.locator('[id^="edit-agent-"]').click();
     await expect(page.locator("#agent-form")).toBeVisible();
     await shot(page, "agent-edit");
+
+    // the Codex fields, switched to in the form and not saved
+    await page.locator("#agent-engine-select").selectOption("codex");
+    await expect(page.locator("#codex-model")).toBeEnabled();
+    await expect(page.locator("#codex-permissions-help")).toBeVisible();
+    await page.locator("#agent-engine-select").scrollIntoViewIfNeeded();
+    await shot(page, "agent-edit-codex");
+    await page.locator("#agent-engine-select").selectOption("claude_code");
+    await expect(page.locator("#claude-model")).toBeVisible();
 
     // model routing (experimental) switched on in the form, not saved
     const routing = page.locator("#agent-routing-fields");
@@ -591,6 +624,8 @@ test.describe("screenshots for the user guide", () => {
     await page.goto("/costs");
     await expect(page.locator("#budgets")).toContainText("invoice-pdf-export");
     await expect(page.locator("#request-audit")).toContainText("@finops");
+    // By engine shares the Last 14 days row
+    await expect(page.locator("#by-engine")).toBeVisible();
     // down to the end of the By agent / channel / model / trigger row
     let breakdown = 0;
     for (const id of ["by-agent", "by-channel", "by-model", "by-trigger"]) {
@@ -850,10 +885,11 @@ test.describe("screenshots for the user guide", () => {
       await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
       await expect(page.locator("#setup.phx-connected")).toBeAttached();
       await expect(page.locator("#setup-dialog")).toBeVisible();
-      // the Engines step, with both fake engines answering
+      // the Engines step, with the three fake engines answering
       await page.locator("#setup-step-engines").click();
       await expect(page.locator("#setup-steps [aria-current=step]")).toHaveAttribute("id", "setup-step-engines");
       await expect(page.locator("#welcome-claude")).toHaveAttribute("data-state", "ready");
+      await expect(page.locator("#welcome-codex")).toHaveAttribute("data-state", "ready");
       await expect(page.locator("#welcome-opencode")).toHaveAttribute("data-state", "ready");
       await scrubPaths(page);
       await shot(page, "setup-modal");

@@ -25,6 +25,8 @@ defmodule Canopy.Application do
       # One `claude -p` process per Claude Code turn, and the prompts they wait on
       Canopy.ClaudeCode.Supervisor,
       Canopy.ClaudeCode.Prompts,
+      # One `codex app-server` process per Codex turn, and the Always rules they share
+      Canopy.Codex.Supervisor,
       # One process per open channel owning agent sessions
       Canopy.Runtime.Supervisor,
       # Runs a reset from Settings, one at a time (after the runtime it stops)

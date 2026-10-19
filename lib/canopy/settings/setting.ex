@@ -40,21 +40,30 @@ defmodule Canopy.Settings.Setting do
     field :claude_binary, :string, default: "claude"
     field :claude_config_dir, :string
     field :claude_max_budget_usd, :float
+    # Codex: the binary (a name on PATH or a path) and an optional config dir
+    # (`CODEX_HOME`; nil is Codex's own `~/.codex`)
+    field :codex_binary, :string, default: "codex"
+    field :codex_config_dir, :string
     # GitHub watches run the user's `gh` CLI (a name on PATH or a path)
     field :gh_binary, :string, default: "gh"
     # the engine an agent with none of its own runs on (`Canopy.Settings.default_engine/1`);
     # nil: OpenCode, as before there was a default
     field :default_engine, :string
-    # the model (and, for Claude Code, the effort) an agent with none of its own
-    # runs on, per engine; nil leaves the choice to the engine
+    # the model (and, for Claude Code and Codex, the effort) an agent with none
+    # of its own runs on, per engine; nil leaves the choice to the engine
     field :claude_default_model, :string
     field :claude_default_effort, :string
+    field :codex_default_model, :string
+    field :codex_default_effort, :string
     field :opencode_default_provider, :string
     field :opencode_default_model, :string
-    # model routing (experimental): the light model (and, for Claude Code, the
-    # effort) a routed agent with none of its own runs cheap wakes on; nil: none
+    # model routing (experimental): the light model (and, for Claude Code and
+    # Codex, the effort) a routed agent with none of its own runs cheap wakes
+    # on; nil: none
     field :claude_light_model, :string
     field :claude_light_effort, :string
+    field :codex_light_model, :string
+    field :codex_light_effort, :string
     field :opencode_light_provider, :string
     field :opencode_light_model, :string
     # when first-run setup was finished or skipped; nil sends `/` to /welcome.
@@ -63,6 +72,19 @@ defmodule Canopy.Settings.Setting do
 
     timestamps(type: :utc_datetime_usec)
   end
+
+  # Per engine, its model columns as {provider, model} (nil: the engine has
+  # no provider): the defaults, and the light models.
+  @default_model_fields %{
+    "claude_code" => {nil, :claude_default_model},
+    "codex" => {nil, :codex_default_model},
+    "opencode" => {:opencode_default_provider, :opencode_default_model}
+  }
+  @light_model_fields %{
+    "claude_code" => {nil, :claude_light_model},
+    "codex" => {nil, :codex_light_model},
+    "opencode" => {:opencode_light_provider, :opencode_light_model}
+  }
 
   def changeset(setting, attrs) do
     setting
@@ -83,6 +105,8 @@ defmodule Canopy.Settings.Setting do
       :claude_binary,
       :claude_config_dir,
       :claude_max_budget_usd,
+      :codex_binary,
+      :codex_config_dir,
       :gh_binary,
       :default_engine,
       :claude_default_model,
@@ -92,9 +116,14 @@ defmodule Canopy.Settings.Setting do
       :claude_light_model,
       :claude_light_effort,
       :opencode_light_provider,
-      :opencode_light_model
+      :opencode_light_model,
+      :codex_default_model,
+      :codex_default_effort,
+      :codex_light_model,
+      :codex_light_effort
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
+    |> update_change(:codex_binary, &trim_or_nil/1)
     |> update_change(:gh_binary, &trim_or_nil/1)
     |> update_change(:default_engine, &trim_or_nil/1)
     |> update_change(:claude_default_model, &trim_or_nil/1)
@@ -105,7 +134,12 @@ defmodule Canopy.Settings.Setting do
     |> update_change(:claude_light_effort, &trim_or_nil/1)
     |> update_change(:opencode_light_provider, &trim_or_nil/1)
     |> update_change(:opencode_light_model, &trim_or_nil/1)
-    |> update_change(:claude_config_dir, &normalize_claude_config_dir/1)
+    |> update_change(:codex_default_model, &trim_or_nil/1)
+    |> update_change(:codex_default_effort, &trim_or_nil/1)
+    |> update_change(:codex_light_model, &trim_or_nil/1)
+    |> update_change(:codex_light_effort, &trim_or_nil/1)
+    |> update_change(:claude_config_dir, &normalize_config_dir/1)
+    |> update_change(:codex_config_dir, &normalize_config_dir/1)
     |> validate_required([
       :opencode_url,
       :user_display_name,
@@ -114,6 +148,7 @@ defmodule Canopy.Settings.Setting do
       :question_wait_minutes,
       :lock_hold_minutes,
       :claude_binary,
+      :codex_binary,
       :gh_binary
     ])
     |> validate_number(:claude_max_budget_usd, greater_than: 0)
@@ -130,58 +165,48 @@ defmodule Canopy.Settings.Setting do
     )
     |> validate_length(:user_display_name, max: 80)
     |> validate_length(:collaboration_prompt, max: 20_000)
-    |> validate_change(:claude_config_dir, fn :claude_config_dir, value ->
-      if Path.type(value) == :absolute,
-        do: [],
-        else: [claude_config_dir: "must be an absolute path"]
-    end)
+    |> validate_absolute_path(:claude_config_dir)
+    |> validate_absolute_path(:codex_config_dir)
     |> validate_url(:opencode_url)
     |> validate_inclusion(:default_engine, Canopy.Engine.names())
-    |> validate_inclusion(:claude_default_effort, Agent.efforts())
-    |> validate_inclusion(:claude_light_effort, Agent.efforts())
-    |> validate_default_models()
-    |> validate_engine_models(
-      {:claude_light_model, :opencode_light_provider, :opencode_light_model}
-    )
+    |> validate_inclusion(:claude_default_effort, Agent.efforts("claude_code"))
+    |> validate_inclusion(:claude_light_effort, Agent.efforts("claude_code"))
+    |> validate_inclusion(:codex_default_effort, Agent.efforts("codex"))
+    |> validate_inclusion(:codex_light_effort, Agent.efforts("codex"))
+    |> validate_engine_models(@default_model_fields)
+    |> validate_engine_models(@light_model_fields)
   end
 
-  # The same rules as an agent's own model: the alias list for Claude Code,
-  # provider and model together for OpenCode. Checked only when a default
-  # changes, so a stale one never blocks saving another setting.
-  defp validate_default_models(changeset),
-    do:
-      validate_engine_models(
-        changeset,
-        {:claude_default_model, :opencode_default_provider, :opencode_default_model}
-      )
+  # The same rules as an agent's own model (`Agent.model_errors/3`): the
+  # alias list for Claude Code, any id but a Claude alias for Codex, provider
+  # and model together for OpenCode. Each engine's columns are checked only
+  # when one of them changes, so a stale one never blocks saving another
+  # setting.
+  defp validate_engine_models(changeset, fields) do
+    Enum.reduce(fields, changeset, fn {engine, {provider_field, model_field}}, acc ->
+      if changed?(acc, model_field) or (provider_field && changed?(acc, provider_field)) do
+        provider = provider_field && get_field(acc, provider_field)
 
-  # One set of per-engine model columns (the defaults, or the light models).
-  defp validate_engine_models(changeset, {claude_field, provider_field, model_field}) do
-    claude =
-      if changed?(changeset, claude_field) do
-        Agent.model_errors("claude_code", nil, get_field(changeset, claude_field))
-        |> Enum.map(fn {_field, message} -> {claude_field, message} end)
-      else
-        []
-      end
+        engine
+        |> Agent.model_errors(provider, get_field(acc, model_field))
+        |> Enum.reduce(acc, fn
+          {:model_provider, message}, acc ->
+            add_error(acc, provider_field || model_field, message)
 
-    opencode =
-      if changed?(changeset, provider_field) or changed?(changeset, model_field) do
-        Agent.model_errors(
-          "opencode",
-          get_field(changeset, provider_field),
-          get_field(changeset, model_field)
-        )
-        |> Enum.map(fn
-          {:model_provider, message} -> {provider_field, message}
-          {:model_id, message} -> {model_field, message}
+          {:model_id, message}, acc ->
+            add_error(acc, model_field, message)
         end)
       else
-        []
+        acc
       end
+    end)
+  end
 
-    Enum.reduce(claude ++ opencode, changeset, fn {field, message}, acc ->
-      add_error(acc, field, message)
+  defp validate_absolute_path(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if Path.type(value) == :absolute,
+        do: [],
+        else: [{field, "must be an absolute path"}]
     end)
   end
 
@@ -191,8 +216,11 @@ defmodule Canopy.Settings.Setting do
   @doc "The longest a lock held across turns may be kept: a working day."
   def max_lock_hold_minutes, do: 480
 
-  @doc "Trims a Claude config directory and expands a leading `~` using HOME."
-  def normalize_claude_config_dir(value) when is_binary(value) do
+  @doc """
+  Trims an engine's config directory (Claude Code's or Codex's) and expands a
+  leading `~` using HOME; blank is nil.
+  """
+  def normalize_config_dir(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil
       "~" -> System.user_home!()
@@ -201,7 +229,10 @@ defmodule Canopy.Settings.Setting do
     end
   end
 
-  def normalize_claude_config_dir(value), do: value
+  def normalize_config_dir(value), do: value
+
+  @doc "`normalize_config_dir/1`, under its older name."
+  def normalize_claude_config_dir(value), do: normalize_config_dir(value)
 
   defp trim_or_nil(value) when is_binary(value) do
     case String.trim(value) do

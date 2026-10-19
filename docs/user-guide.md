@@ -4,7 +4,7 @@ Canopy is a local-first, Slack-like workspace for AI coding agents. You give age
 and roles, put them in channels tied to your repositories, and talk to them the way you
 would talk to teammates. Agents read the channel, work in their own private session, post
 back, delegate to each other, hand work off, follow playbooks, schedule follow-ups, watch
-GitHub, and remember what they learn. Everything runs on your machine; each agent uses either Claude Code or OpenCode.
+GitHub, and remember what they learn. Everything runs on your machine; each agent uses Claude Code, Codex, or OpenCode.
 
 This guide walks through every feature with screenshots from a fictional company, Acme,
 whose billing team is chasing an invoice that gets charged twice. Every screen is shown in
@@ -12,7 +12,7 @@ light mode and then in dark mode. The theme follows your system by default; the 
 buttons at the bottom of the left rail switch between system, light, and dark.
 
 > The screenshots come from Canopy's browser test suite running against scripted
-> stand-ins for OpenCode and Claude Code. Everything on screen is real Canopy; the handful
+> stand-ins for Claude Code, Codex and OpenCode. Everything on screen is real Canopy; the handful
 > of live agent replies in the "Watching an agent work" section are placeholder text from
 > those stand-ins.
 
@@ -44,7 +44,7 @@ Four ideas explain almost everything on screen.
 
 - **A repository** is a local git folder. Agents run inside it. Every channel belongs to
   exactly one repository.
-- **An agent** is a named coworker: a role, a system prompt, an execution engine (Claude Code or OpenCode), and for OpenCode agents, an OpenCode agent type (`build`, `plan`, and so on). Agents are shared across repositories.
+- **An agent** is a named coworker: a role, a system prompt, an execution engine (Claude Code, Codex, or OpenCode), and for OpenCode agents, an OpenCode agent type (`build`, `plan`, and so on). Agents are shared across repositories.
 - **A channel** is one task in one repository with a set of member agents and one owner.
   Each member gets its own private engine session per channel, so what it learns in
   `#payment-retries` does not leak into `#checkout-latency`.
@@ -52,10 +52,10 @@ Four ideas explain almost everything on screen.
   and events such as "started working", "delegated", "handed off", or "spend limit reached".
 
 ```text
-Claude Code / OpenCode session = what an agent privately knows and works through
-Canopy MCP tools               = how agents communicate and coordinate
-Canopy database                = what the team knows
-The browser                    = what you see
+Claude Code / Codex / OpenCode session = what an agent privately knows and works through
+Canopy MCP tools                       = how agents communicate and coordinate
+Canopy database                        = what the team knows
+The browser                            = what you see
 ```
 
 Agents never see the whole channel dumped into their context. A wake-up prompt tells an
@@ -95,8 +95,9 @@ researcher; write `@researcher` if you want the researcher itself to answer.
 ## 2. Getting started
 
 You need git and at least one execution engine: [Claude Code](https://claude.com/claude-code),
-installed and logged in, or [OpenCode](https://opencode.ai) 1.18 or newer with a model
-provider configured. Then install Canopy one of two ways.
+installed and logged in, [Codex](#codex) 0.163.0 or newer, signed in, or
+[OpenCode](https://opencode.ai) 1.18 or newer with a model provider configured. Then
+install Canopy one of two ways.
 
 **Homebrew (Apple Silicon Macs).** The [`tiki51/canopy`](https://github.com/tiki51/homebrew-canopy)
 tap ships a prebuilt release, so nothing else needs installing:
@@ -137,6 +138,28 @@ Canopy binds to `127.0.0.1` only. There is no login, so keep it that way unless 
 on a network you trust: when running from source, `CANOPY_BIND=0.0.0.0 mix phx.server`
 opts in for one run. The Homebrew build always stays on loopback.
 
+### Codex
+
+Install OpenAI's [`codex` CLI](https://github.com/openai/codex), version 0.163.0 or newer
+(an older one is refused: "codex 0.150.0 is older than 0.163.0; upgrade it"), and sign in
+once in a terminal, with a ChatGPT plan or an API key:
+
+```bash
+codex login
+```
+
+Nothing needs to stay running: Canopy runs `codex app-server` on this machine, one process
+per turn, in the repository. Settings → Codex → *Config directory* is optional. Leave it
+empty to use `CODEX_HOME` from the environment Canopy starts in, or `~/.codex` when that
+is unset; or point Canopy at a Codex home of its own (it becomes
+`CODEX_HOME` for agent processes); to log in there, run `codex login` once with
+`CODEX_HOME` set to that directory. A directory of its own also keeps your personal MCP
+servers away from agents (see [MCP servers](#mcp-servers)).
+
+Canopy never adds your repository to Codex's trusted projects. A repository's own
+`.codex/config.toml` (its MCP servers and so on) loads only if you have trusted that
+folder in Codex yourself.
+
 ### First-run setup
 
 The first time you open Canopy, setup opens as a window over the app, on whichever page
@@ -150,16 +173,18 @@ in a field (in the name field it saves the name and moves on):
   one.
 - **Look**: light, dark, or following the system, and one of the four palettes. It applies
   as you click, to the app behind the window too, and is kept in this browser.
-- **Engines**: Canopy checks both engines at once as setup opens, whatever step you are on. Claude Code shows its
-  version and the account it is logged in as; OpenCode shows its version and URL. Below
-  them, the **default engine**: the engine agents without one of their own run on, the
-  thirteen starter agents among them. It is picked for you from what is ready (Claude Code
-  when only Claude Code works, OpenCode when only OpenCode does, Claude Code when both do)
-  and saved at once, so the starter agents can answer; click the other card to change it.
+- **Engines**: Canopy checks all three engines at once as setup opens, whatever step you
+  are on. Claude Code shows its version and the account it is logged in as; Codex its
+  version and how it is signed in (`Codex 0.163.0, signed in with ChatGPT (Pro).`);
+  OpenCode its version and URL. Below them, the **default engine**: the engine agents
+  without one of their own run on, the thirteen starter agents among them. It is picked
+  for you from what is ready, in order: Claude Code if it works, else Codex, else OpenCode,
+  and saved at once, so the starter agents can answer; click another card to change it.
   Once you pick, *Check again* leaves your choice alone. Then pick the **default model**
-  for each engine that answered (and Claude Code's default effort), the default engine's
-  first; agents without a model of their own run on it. The OpenCode model list comes from
-  OpenCode itself, so it stays disabled until OpenCode answers.
+  for each engine that answered (and the default effort for Claude Code, and *Codex model*
+  and *Codex effort* for Codex), the default engine's first; agents without a model of
+  their own run on it. The Codex and OpenCode model lists come from the engines
+  themselves, so each waits until its engine answers.
 - **Pace** (how much agents do on their own): a preset for the brakes (see
   [One at a time and the chatter budget](#one-at-a-time-and-the-chatter-budget)), or
   *Custom* to set them yourself.
@@ -194,17 +219,21 @@ If setup says an engine isn't ready:
   appears and press *Check*; a path that works is saved as the binary. Under `brew
   services`, Canopy uses your login shell's `PATH`; set `CANOPY_PATH` if it still can't
   find it. **Not logged in**: run `claude` once in a terminal, then *Check again*.
+- **Codex not found**: install it (see [Codex](#codex)), then *Check again*; a `codex`
+  that isn't on your `PATH` is set in Settings → Codex → *Binary*. **Installed, but not
+  signed in**: run `codex login` in a terminal, then *Check again*. A Codex older than
+  0.163.0 is refused until you upgrade it.
 - **OpenCode not running**: start `opencode serve --port 4096`, then *Check again*. A
   server somewhere else is set in Settings → OpenCode server. Also **install the identity
   plugin** once (Settings explains where); it stamps the OpenCode session id into every
   Canopy tool call so Canopy knows which agent is speaking. Restart `opencode serve`
   afterwards.
-- **Neither**: you can still finish; agents won't reply until one engine works.
+- **None of them**: you can still finish; agents won't reply until one engine works.
 
 Then post your first message in the new channel. The owner wakes up, works, and posts back.
 Each agent's engine and model can be changed on the Agents page; override them only where
-an agent needs a different one, and the rest follow the defaults. Claude Code agents also
-take a permission mode.
+an agent needs a different one, and the rest follow the defaults. Claude Code and Codex
+agents also take a permission mode.
 
 ### The layout
 
@@ -355,8 +384,8 @@ A result opens the exact place it came from:
 
 ## 3. Settings
 
-Settings is where Canopy meets its engines, Claude Code and OpenCode, and where the
-workspace-wide defaults live. Open it from the gear in the rail. **Run setup
+Settings is where Canopy meets its engines, Claude Code, Codex and OpenCode, and where
+the workspace-wide defaults live. Open it from the gear in the rail. **Run setup
 again**, top right, reopens [first-run setup](#first-run-setup) over the page, with your
 current choices filled in.
 
@@ -367,10 +396,16 @@ Each control carries one sentence of help right under it; where there is more to
 
 ![Settings, dark](user-guide/images/settings-dark.png)
 
+The top of the page shows the three engine cards and, right under them, the Claude Code
+panel; the Codex and OpenCode server panels follow further down.
+
 - **Default engine**: first, above the engine panels. The engine every agent without one
-  of its own runs on, as a card per engine with whether it is ready (*Ready* after a
-  successful check, *Installed* when `claude` is found but not checked yet, *Not running*
-  for an OpenCode that doesn't answer). Until you choose one it is OpenCode, what agents
+  of its own runs on, as a card per engine (Claude Code, Codex, OpenCode) with whether it
+  is ready (*Ready* after a successful check, *Installed* when `claude` or `codex` is found
+  but not checked yet, *Not running* for an OpenCode that doesn't answer; Codex can also
+  read *Not signed in*, *Not found*, *Check failed* or *Not set*). Codex is not checked
+  when the page opens, because the check is slow: its card reads *Installed* until you
+  press *Check Codex*. Until you choose one the default is OpenCode, what agents
   ran on before there was a choice. A line counts the active agents that use the default
   and those with an engine of their own; **Use the default for all** (after a
   confirmation) clears their own engine. An agent that changes engine that way also drops
@@ -380,14 +415,6 @@ Each control carries one sentence of help right under it; where there is more to
   ("@backend started a fresh session: its engine changed from OpenCode to Claude Code").
   Their memory and the channel's history carry over, as after a session reset; a turn
   already running finishes on the old engine first.
-- **OpenCode server**: the URL of your `opencode serve`. *Check connection* shows the
-  version it answered with, in green when it worked. **Default provider** and **Default
-  model** are what OpenCode agents without a model of their own run on, with the price per
-  million tokens underneath. They are chosen from OpenCode's own list, so they stay
-  disabled ("Start OpenCode to choose a model") until OpenCode answers; start
-  `opencode serve` and press *Check connection*. Leave them on *OpenCode's own default*
-  to let the OpenCode agent (or the server) decide. A default OpenCode no longer offers
-  shows as *(not configured)*.
 - **Claude Code**: for agents on the Claude Code engine. The binary (`claude` on your
   `PATH`, or a path), an optional config directory (leave it empty to use your own Claude
   Code login; point it somewhere else to give agents a login of their own), and an
@@ -396,6 +423,35 @@ Each control carries one sentence of help right under it; where there is more to
   and **Default effort** apply to Claude Code agents without their own; *Claude Code's own
   default* leaves the choice to Claude Code (your `/model` setting, or your plan's
   default).
+- **Codex**: for agents on the Codex engine (see [Codex](#codex) for the setup). **Binary**
+  (`codex` on your `PATH`, or a path), an optional **Config directory** (it becomes
+  `CODEX_HOME` for agent processes; empty uses `CODEX_HOME` from Canopy's environment, else
+  `~/.codex`), **Default model** and
+  **Default effort**, and **Light model** and **Light effort** for routing. **Check Codex**
+  reports the version, the path and how it is signed in ("Codex 0.163.0 at
+  /opt/homebrew/bin/codex · signed in with ChatGPT (Pro)", "signed in with an API key", or
+  "not signed in: run codex login"). The model lists come from Codex itself, and the
+  effort list follows the chosen model (`low`, `medium`, `high`, `xhigh`, `max` or `ultra`,
+  depending on the model); an effort the model doesn't offer is an error to fix before
+  **Save**, never silently cleared. If Codex can't be read, the selects keep the saved
+  value and a warning says "Couldn't read Codex's models: … Check Codex, then try again."
+  Codex has no strict-MCP mode, so agents also get the MCP servers in the config
+  directory's `config.toml` (and, when Codex trusts the repository, its
+  `.codex/config.toml`) next to Canopy's tools: use a config directory of its own to keep
+  personal servers away from agents. There is no spend cap per turn for Codex.
+
+  ![Settings, Codex panel, light](user-guide/images/settings-codex-light.png)
+
+  ![Settings, Codex panel, dark](user-guide/images/settings-codex-dark.png)
+
+- **OpenCode server**: the URL of your `opencode serve`. *Check connection* shows the
+  version it answered with, in green when it worked. **Default provider** and **Default
+  model** are what OpenCode agents without a model of their own run on, with the price per
+  million tokens underneath. They are chosen from OpenCode's own list, so they stay
+  disabled ("Start OpenCode to choose a model") until OpenCode answers; start
+  `opencode serve` and press *Check connection*. Leave them on *OpenCode's own default*
+  to let the OpenCode agent (or the server) decide. A default OpenCode no longer offers
+  shows as *(not configured)*.
 - Under each default, a line counts the active agents that use it and those with their
   own. **Use the default for all** (after a confirmation) clears the agents' own model, or
   effort, so they all follow the default. Nothing moves agents onto a default by itself:
@@ -403,7 +459,7 @@ Each control carries one sentence of help right under it; where there is more to
   *Default* for it. A changed default reaches every inheriting agent on its next turn; a
   turn already running keeps its model.
 - **Light model (routing, experimental)**: in each engine panel, the cheaper model (and,
-  for Claude Code, effort) that agents with [model routing](#model-routing-experimental)
+  for Claude Code and Codex, effort) that agents with [model routing](#model-routing-experimental)
   turned on use for cheap wakes when they have no light model of their own. *No light
   model* means routing does nothing for those agents. Every agent starts with routing off,
   so this setting changes nothing until you turn routing on for one.
@@ -427,7 +483,7 @@ Each control carries one sentence of help right under it; where there is more to
   interrupts it (experimental)*, off by default, hands your mention of an agent that is
   working to its turn at the next step instead of after the turn (see
   [Redirecting a working agent](#redirecting-a-working-agent-experimental)); it stays off
-  until the way Claude Code and OpenCode take a message mid-turn has been checked against
+  until the way Claude Code, Codex and OpenCode take a message mid-turn has been checked against
   the real engines. *Pause a channel after agents have taken turns without me* is a check-in:
   when it is on, a channel holds after the number of agent turns you set until you type
   or press Continue. Leave it off when you want agents to run autonomously for as long as
@@ -518,8 +574,8 @@ Scroll down for the MCP bridge.
   rotating needs nothing else, Canopy re-registers on the next prompt), and the source of
   the identity plugin with a copy button and the path to put it at. Canopy also drops the
   plugin into every registered repository under `.opencode/plugins/`, excluded from git, so
-  the global copy is a convenience. Claude Code agents need nothing here: each turn
-  gets Canopy's endpoint with a token of its own session. Which MCP servers agents get in a particular
+  the global copy is a convenience. Claude Code and Codex agents need nothing here: each
+  turn gets Canopy's endpoint with a token of its own session. Which MCP servers agents get in a particular
   repository, and whether they work, is on that repository's page (see
   [MCP servers](#mcp-servers) in §4).
 
@@ -528,8 +584,9 @@ Scroll down for the MCP bridge.
 When an engine reports an exhausted balance, quota, or credits, Canopy stops spending on
 your behalf: every schedule pauses, wake-ups are dropped with one note per channel, and a
 red banner appears on every page until you release it. On Claude Code that includes a
-subscription usage limit (the 5-hour or the weekly one): the hold stays on after the limit
-resets, so release it yourself once you can work again.
+subscription usage limit (the 5-hour or the weekly one), and on Codex a usage limit or an
+exhausted quota; the hold stays on after the limit resets, so release it yourself once you
+can work again. A rate limit, an overloaded service or a sign-in problem doesn't engage it.
 
 ![Billing hold banner, light](user-guide/images/hold-banner-light.png)
 
@@ -559,7 +616,7 @@ empty workspace.
   seeder. Your settings (engines, models, brakes, the MCP token, the collaboration prompt,
   a billing hold), your display name and your registered repositories stay, and nothing
   inside a repository is touched. Agents start fresh engine sessions; their old Claude
-  Code and OpenCode session files stay on disk, unused.
+  Code, Codex and OpenCode session files are left alone on disk, unused.
 
 ![Settings, Reset modal, light](user-guide/images/settings-reset-light.png)
 
@@ -617,16 +674,6 @@ or rotate it. The page asks the engines when it opens and when you press *Refres
 
 **What each engine loads.**
 
-- **OpenCode** loads every server in its config: your global
-  `~/.config/opencode/opencode.json[c]`, the repository's `opencode.json[c]` (and those
-  above it up to the git root), `.opencode/opencode.json[c]`, plus Canopy's own server,
-  which Canopy registers at runtime. The list and the status come from OpenCode itself; the
-  files are read only to show where each server is defined (*OpenCode server* means
-  OpenCode reports it but no file Canopy reads defines it, for example through
-  `OPENCODE_CONFIG`). Every enabled server's tools go to the model on every turn, so a
-  repository server costs context for every OpenCode agent there. The section also shows
-  whether this Canopy run registered itself, and whether the repository's identity plugin
-  is current, outdated, or missing.
 - **Claude Code** agents load Canopy's server and the servers in the repository's
   `.mcp.json`, re-read at the start of every turn, so an edit applies on the next turn.
   Nothing else: Canopy runs Claude Code with `--strict-mcp-config`, so your personal
@@ -637,20 +684,39 @@ or rotate it. The page asks the engines when it opens and when you press *Refres
   the page shows where the JSON broke. Claude Code's `enabledMcpjsonServers` and
   `disabledMcpjsonServers` settings do not apply to Canopy agents. The status shown is what
   the newest turn in the repository reported when it started.
+- **Codex** agents load Canopy's server (with a token of their own session), the servers
+  in the config directory's `config.toml` (`~/.codex/config.toml` unless Settings → Codex
+  names another directory), and the repository's `.codex/config.toml` when Codex trusts the
+  repository. Codex has no strict-MCP mode, so your personal servers there reach agents
+  too; give Canopy a config directory of its own to keep them out. The section says "Codex
+  loads these next to Canopy's tools." Codex can't load Canopy's server while one of yours is
+  named `canopy`; the page flags it, so rename yours. A `.mcp.json` is listed but not
+  loaded: it is Claude Code's format.
+- **OpenCode** loads every server in its config: your global
+  `~/.config/opencode/opencode.json[c]`, the repository's `opencode.json[c]` (and those
+  above it up to the git root), `.opencode/opencode.json[c]`, plus Canopy's own server,
+  which Canopy registers at runtime. The list and the status come from OpenCode itself; the
+  files are read only to show where each server is defined (*OpenCode server* means
+  OpenCode reports it but no file Canopy reads defines it, for example through
+  `OPENCODE_CONFIG`). Every enabled server's tools go to the model on every turn, so a
+  repository server costs context for every OpenCode agent there. The section also shows
+  whether this Canopy run registered itself, and whether the repository's identity plugin
+  is current, outdated, or missing.
 
 > **Security note.** The servers in a repository's `.mcp.json` start on every Claude Code
 > turn, running whatever command the file names from the repository, **without** Claude
 > Code's usual one-time approval prompt. Treat `.mcp.json` like code you run: only register
 > repositories whose `.mcp.json` you trust, and review changes to it. The servers' own
 > tools still go through the permission prompt like any other tool outside the agent's
-> allowance.
+> allowance. For Codex agents, the same goes for the `.codex/config.toml` of a repository
+> Codex trusts.
 
 **Statuses.** *connected* works. *failed* could not start or connect; the error is shown
 under the badge. *needs auth* is a server that wants an OAuth login: run
 `opencode mcp auth <name>` in a terminal (Canopy does not run OAuth flows). *disabled* is
 turned off in the config (`"enabled": false`). *unknown* means nothing has reported yet:
-OpenCode is not running, or no Claude Code turn has run in the repository since the server
-was added.
+OpenCode is not running, or no Claude Code or Codex turn has run in the repository since
+the server was added.
 
 **Actions** (OpenCode section):
 
@@ -680,12 +746,13 @@ plus `@finops` for spending and a retired `@docs`.
 ![Agents, dark](user-guide/images/agents-dark.png)
 
 The list shows each agent's role, its engine (with the OpenCode agent it runs as on
-OpenCode), its model, and how many scheduled tasks it has. An engine the agent follows
+OpenCode, or its permissions on Codex, as in `Codex · ask first`), its model, and how many scheduled tasks it has. An engine the agent follows
 from the default is muted; one it names itself is not. A model the agent chose is a badge
 (`opus`); one it inherits is muted, `default · sonnet`, and the line above the list names
 the default engine and each engine's default model, with a link to Settings. Click either to open the model
 picker: its first option is *Default (…)*, which puts the agent back on its engine's
-default, followed by the Claude Code aliases or OpenCode's models with their prices. Agents with a **group** (Engineering, Product, and so on; set it on
+default, followed by the Claude Code aliases, Codex's models, or OpenCode's models with
+their prices. Agents with a **group** (Engineering, Product, and so on; set it on
 the agent's edit form) are listed under that heading here, in the sidebar, and in the
 members list when you create a channel; agents without one come last. The *deactivated* toggle at the bottom reveals retired agents with
 a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its page.
@@ -697,7 +764,8 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 ![Agent page, dark](user-guide/images/agent-page-dark.png)
 
 - **About**: status, role, engine (`(default)` when it follows the default engine),
-  permissions and effort for a Claude Code agent or the OpenCode agent for an OpenCode one,
+  permissions and effort for a Claude Code or Codex agent (`ask first · effort medium
+  (default)` on Codex) or the OpenCode agent for an OpenCode one,
   model (an inherited one reads `sonnet (default)`, linking to Settings; an OpenCode model
   also shows its price per million tokens from OpenCode's provider list), whether
   [model routing](#model-routing-experimental) is on, spend today, this week, and all
@@ -714,7 +782,7 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   many times it has been auto-approved since. **Remove** takes it away at once, and the
   agent asks again the next time it wants that tool. An *Undo* toast puts the grant back,
   with its date and count, for a few seconds. When the agent has any, **About** shows
-  *+ N global* next to its Claude Code permissions, linking to this panel.
+  *+ N global* next to its Claude Code or Codex permissions, linking to this panel.
 - **Message** opens (or creates) your direct message with the agent. **Edit** opens the
   form. The power icon deactivates the agent.
 
@@ -728,18 +796,13 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
 - **Role** is one line that other agents and the sidebar see.
 - **System prompt** is the agent's personality and standing instructions. It is sent with
   every prompt, after Canopy's collaboration prompt and on top of the engine's own system
-  prompt (Claude Code's, or the OpenCode agent's).
-- **Engine**: *Default (Claude Code)* (whichever engine Settings names), OpenCode, or
-  Claude Code. A new agent starts on *Default*: it follows the default engine, so changing
-  the default in Settings moves it too. The fields below change with the engine the agent
-  runs on. While an agent follows the default, making it read-only on one engine does the
-  same on the other (OpenCode's `plan` agent and Claude Code's `plan` permission mode go
-  together), so it keeps its reach when the default changes.
-- On OpenCode: **OpenCode agent** (`build`, `plan`, or any agent your OpenCode server
-  offers; the suggestions come from the server), and **Model provider** and **Model** as
-  optional overrides; leave the provider on *Default (…)* to use the default model from
-  Settings (or, with none set, the OpenCode agent's own). The line under them shows the
-  price of the chosen model, or of the default.
+  prompt (Claude Code's, Codex's, or the OpenCode agent's).
+- **Engine**: *Default (Claude Code)* (whichever engine Settings names), Claude Code,
+  Codex, or OpenCode. A new agent starts on *Default*: it follows the default engine, so
+  changing the default in Settings moves it too. The fields below change with the engine
+  the agent runs on. While an agent follows the default, making it read-only on one engine
+  does the same on the others (OpenCode's `plan` agent and the `plan` permission mode of
+  Claude Code and Codex go together), so it keeps its reach when the default changes.
 - On Claude Code: **Model** (`fable`, `opus`, `sonnet`, or `haiku`, the latest of each
   family) and **Effort** are optional; *Default (…)* follows Settings. **Permissions** is
   required (ask before any tool not on the list; also approve file edits without asking;
@@ -748,17 +811,45 @@ a *Reactivate* button. Clicking a row, or an agent in the sidebar, opens its pag
   agent wants to run appears as a permission card in the channel; the Canopy tools are
   always allowed. Each turn runs `claude -p` on this machine in the repository, resuming
   the agent's own session, and the agent's questions arrive as question cards.
+- On Codex: **Model** and **Effort** are optional; *Default (…)* follows Settings. The
+  models come from Codex, and the efforts follow the chosen model. **Permissions** is
+  required (there is no OpenCode agent and no list of tools that run without asking):
+  - **Ask first** (the default): edits files in the repository and runs plain git commands
+    (`status`, `log`, `diff`, `show`, `branch`, `add`, `commit`, `restore`, `switch`,
+    `checkout`, `stash`, …) freely. Other commands, files outside the repository, and
+    the repository's agent settings (`.git`, `.codex`, `.claude`, `.mcp.json`, `.canopy`)
+    go on a permission card in the channel.
+  - **Ask only outside the sandbox**: edits and runs freely in the repository, inside
+    Codex's sandbox. A card appears for network access, files elsewhere, or a command
+    Codex wants to run outside its sandbox.
+  - **Read-only (plan)**: reads only. File changes are declined without a card. A command
+    that wants to run outside the sandbox asks once at a time: its card offers only *Once*
+    and *Reject*, and the same command asks again next time.
+
+  The Canopy tools are always allowed. Each turn runs `codex app-server` on this machine
+  in the repository, resuming the agent's own session. See [Permissions](#permissions) for
+  what Codex's cards look like.
+
+  ![Codex fields on the agent form, light](user-guide/images/agent-edit-codex-light.png)
+
+  ![Codex fields on the agent form, dark](user-guide/images/agent-edit-codex-dark.png)
+
+- On OpenCode: **OpenCode agent** (`build`, `plan`, or any agent your OpenCode server
+  offers; the suggestions come from the server), and **Model provider** and **Model** as
+  optional overrides; leave the provider on *Default (…)* to use the default model from
+  Settings (or, with none set, the OpenCode agent's own). The line under them shows the
+  price of the chosen model, or of the default.
 
 - **Model routing (experimental)**: off for every agent, and labelled *Experimental: not
   yet checked against the real engines*: the engine behaviour it relies on (switching
   models inside one session, and what that does to the prompt cache) has not been checked
-  against the real Claude Code and OpenCode yet. See [Model routing](#model-routing-experimental) before you turn
+  against the real engines yet. See [Model routing](#model-routing-experimental) before you turn
   it on.
 
 #### Model routing (experimental)
 
 With **Run cheap wakes on a light model** ticked, the agent runs some wakes on its **light
-model** (and, on Claude Code, **light effort**) instead of its main one. *Default (…)*
+model** (and, on Claude Code and Codex, **light effort**) instead of its main one. *Default (…)*
 follows the light model in Settings; with none there and none here, routing does nothing
 and the agent page says *Routing is on but no light model is set*.
 
@@ -861,8 +952,9 @@ exported_from: Canopy 0.1.0
 You are @security-reviewer. You review diffs and designs for security problems…
 ```
 
-- What goes in: name, display name, role, group, colour, prompt, engine, model, effort,
-  permissions and allowed tools (Claude Code) or OpenCode agent, and `mode` (`plan` or
+- What goes in: name, display name, role, group, colour, prompt, engine, model, effort
+  and permissions (Claude Code and Codex), allowed tools (Claude Code) or OpenCode agent,
+  and `mode` (`plan` or
   `build`), which says in engine-neutral terms whether the agent edits. An agent that
   follows the default engine is written without `engine` (with the settings of the engine
   it runs on now), so on import it follows the importing machine's default.
@@ -887,8 +979,8 @@ The preview has a row per agent, team, and playbook:
 - A status: *new*, *already here* (nothing differs), *differs from the one here*, or
   *invalid* with the reasons.
 - The **permission line**, such as `Claude Code · acceptEdits · runs without asking:
-  Bash(git *)`. It turns amber when the agent edits without asking (`acceptEdits`, an
-  OpenCode `build` agent) or approves broad patterns (`Bash(*)`, `*`). A file can never grant
+  Bash(git *)`, or `Codex · default`. It turns amber when the agent edits without asking
+  (`acceptEdits`, an OpenCode `build` agent) or approves broad patterns (`Bash(*)`, `*`). A file can never grant
   bypass permissions.
 - Amber notices for anything changed to fit this machine, and a **Changes** disclosure with
   the field differences and a line diff of the prompt.
@@ -914,8 +1006,9 @@ When a file names something this machine doesn't have, the import falls back and
   `mode`.
 - An engine that isn't installed or running: the agent keeps it, with a notice that it won't
   run until it is.
-- A model this machine doesn't offer (a Claude alias it doesn't know, or an OpenCode model
-  missing from OpenCode's list): the agent inherits the default model. When OpenCode isn't
+- A model this machine doesn't offer (a Claude alias it doesn't know, another engine's
+  model on Codex, or an OpenCode model missing from OpenCode's list): the agent inherits
+  the default model. When OpenCode isn't
   reachable, the model is kept, with a notice that it couldn't be checked.
 - An OpenCode agent this server doesn't define: `plan`, the read-only one.
 
@@ -1030,7 +1123,7 @@ Its sections, top to bottom:
   since its turn began, and a waiting one since it asked. A small padlock means the agent
   holds a lock; a clock means it is waiting for one. A working or waiting agent's row has
   an **Abort** button; an idle agent's row has a small reset arrow that drops its engine
-  session (OpenCode or Claude Code) in this channel, with a confirmation, so its next turn
+  session (Claude Code, Codex, or OpenCode) in this channel, with a confirmation, so its next turn
   starts with a clean context. Every row also has a document icon that opens the agent's
   [session transcript](#the-session-transcript). **Add or remove** manages the members
   (see [Agents](#agents-in-a-channel)).
@@ -1450,9 +1543,11 @@ A card you opened stays open when the turn ends: the finished card arrives open,
 same place. Very long turns keep their last 300 rows (the card says how many earlier rows
 it no longer shows); the counts stay exact.
 
-The two engines report slightly different things. OpenCode reports a cost after every
+The engines report slightly different things. OpenCode reports a cost after every
 model step, so the live card shows one as it goes; Claude Code reports its cost once, at
-the end, so its live card shows tokens and the finished card shows the cost. OpenCode
+the end, so its live card shows tokens and the finished card shows the cost. Codex
+reports tokens only: its finished card shows a cost Canopy estimated from them, marked
+`≈` (see [Costs](#14-costs)). OpenCode
 reports each command's exit code; for Claude Code, Canopy reads it from the failed
 command's result text, and a failure in another format shows as failed with no code.
 Turns from before this card kept their details show their rows without durations, and a
@@ -1469,7 +1564,8 @@ and the card closes into a finished card.
 
 The channel shows what an agent chose to post. Its **transcript** shows why: the agent's
 whole engine session in the channel, read back from the engine (Claude Code's session
-file, or OpenCode's history over its API). Canopy keeps no copy.
+file, Codex's thread history through `codex app-server`, or OpenCode's history over its
+API). Canopy keeps no copy.
 
 Open it from the document icon on the agent's row in the channel's details, from
 **Transcript** next to the channel on the agent's page, from **View in transcript →** at
@@ -1490,13 +1586,15 @@ What it shows, oldest first, 50 entries at a time (**Load older** / **Load newer
 - **System prompt**: Canopy's text (role, collaboration rules, the channel brief, the
   playbooks), collapsed at the top. Claude Code also records its own built-in sections,
   shown separately. A *System prompt changed* chip marks where a later turn ran with
-  different text, for example after you edited the brief.
+  different text, for example after you edited the brief. Codex doesn't return the system
+  prompt, so a Codex transcript has none.
 - **Text and reasoning**: the model's words between tool calls. OpenCode keeps reasoning
   text. Claude Code doesn't record its thinking: a muted *Thought* row marks where it
   thought.
 - **Tools**: one row per call, with its result paired in; click to see the input and the
   output (outputs over 16 KB keep their first 4 KB and last 12 KB).
-- **Steps**: one muted line per model call, with its tokens and model.
+- **Steps**: one muted line per model call, with its tokens and model (not for Codex,
+  whose history keeps no usage).
 - **Compaction**: a band where the context was summarised, with the summary. The agent
   saw only the summary from there on; the entries before it stay readable above.
 - **Turn dividers**: Canopy's own line before each turn (when, what woke it, calls, cost,
@@ -1523,7 +1621,7 @@ it no longer has, or one OpenCode no longer has, says so.
 ### Redirecting a working agent (experimental)
 
 Off by default: turn on *Mentioning a working agent interrupts it* under Settings →
-Conversation. It is experimental because how Claude Code and OpenCode take a message in
+Conversation. It is experimental because how Claude Code, Codex and OpenCode take a message in
 the middle of a turn has not been checked against the real engines yet; until then, treat
 it as a preview.
 
@@ -1571,7 +1669,7 @@ appears in the channel with the permission, the file pattern, and the diff.
 
 ![Permission card, dark](user-guide/images/permission-card-dark.png)
 
-The card has four answers (on a phone they sit in a 2×2 grid):
+The card has up to four answers (on a phone they sit in a 2×2 grid):
 
 - **Once** allows this action.
 - **Always** allows it until the agent's session in this channel resets.
@@ -1581,9 +1679,31 @@ The card has four answers (on a phone they sit in a 2×2 grid):
 
 For OpenCode agents, answering from the OpenCode terminal instead also clears the card.
 Which actions ask is up to each agent's configuration: for Claude Code agents, the
-permissions and the tools that run without asking on the agent's edit form; for OpenCode
-agents, the configuration in the repository's `.opencode/opencode.json` (for example,
+permissions and the tools that run without asking on the agent's edit form; for Codex
+agents, the **Permissions** mode on the edit form (see
+[Creating and editing an agent](#creating-and-editing-an-agent)); for OpenCode agents, the
+configuration in the repository's `.opencode/opencode.json` (for example,
 `{ "permission": { "edit": "ask" } }`).
+
+**Codex cards** say what the agent wants to do:
+
+- "@coder asks to **run a command** `npm install csv-stringify`", with the reason under it.
+  A *network* badge means the command needs network access. An *outside sandbox* badge
+  means approving lets it leave Codex's sandbox: it "runs outside Codex's sandbox, so it
+  can change files anywhere and use the network".
+- "@coder asks to **edit files**", with "outside the repo:" and the paths when they are
+  outside the repository. *view change* expands the proposed diff in the card; the change
+  isn't on disk yet, so the Changes view can't show it.
+- "@coder asks for **network access**", "asks to **use files outside the repo**", or both.
+
+Their answers depend on the kind of card:
+
+- **Command cards**: Once, Always (for commands starting with the same prefix, such as
+  `npm install`, until the session resets or Canopy restarts), Allow globally (any command, in every
+  channel; the grant is listed as `Bash`, like Claude Code's) and Reject.
+- **File-change and more-access cards**: Once, Always and Reject; no Allow globally.
+- **A read-only (plan) agent's cards**: Once and Reject only. Nothing is remembered, so
+  the same command asks again next time.
 
 **Allow globally** stores a grant for that agent and that tool. It matches the tool name
 only, never the pattern: allowing `bash` for `make test` lets the agent run any `bash`
@@ -1621,8 +1741,8 @@ clears it.
 
 ### Questions
 
-An agent that needs a decision asks with its engine's question tool (`question` in
-OpenCode, `AskUserQuestion` in Claude Code). A question card appears at the bottom of the
+An agent that needs a decision asks with its engine's question tool (`AskUserQuestion` in
+Claude Code, Codex's request for user input, `question` in OpenCode). A question card appears at the bottom of the
 channel with the question, its options, and a box to answer in your own words. While the
 agent's turn waits on it, the card is the agent's live card: its header says "@agent needs
 a decision to carry on" with the turn's calls, tokens and time, and it opens to the
@@ -2311,7 +2431,15 @@ The four kinds of context an agent works from:
 ## 14. Costs
 
 The Costs page (banknotes icon in the rail) shows what your agents spend, from the
-per-turn cost each model provider reports.
+per-turn cost each model provider reports. Its subtitle reads "What agents spend. Claude
+Code and OpenCode report their costs; ≈ marks Codex costs estimated from tokens."
+
+Codex doesn't report a dollar cost, so Canopy estimates each Codex turn from its tokens at
+OpenAI's API list prices. Any figure that includes an estimate is marked **≈** (`≈$1.03`),
+and hovering it shows the split between reported and estimated dollars. The mark appears
+on the turn line ("@coder finished · … 48.2k tokens (31.0k cached) · ≈$0.3812 …"), the
+channel's spend meter, this page, and the agent page. On a ChatGPT plan you pay the plan,
+not these amounts. Spend limits count estimates too.
 
 ![Costs, light](user-guide/images/costs-light.png)
 
@@ -2322,6 +2450,10 @@ From the top:
 - **Today, last 7 days, all time** with turn and tool-call counts.
 - **Auditor**: see [the auditor](#the-auditor) below.
 - **Last 14 days**: a bar per day in your local time.
+- **By engine**, beside it: a row per engine (Claude Code, Codex, OpenCode) for the chosen
+  period, with bars in different colours. When any row includes an estimate, a footnote
+  says "≈ includes Codex estimates: tokens at OpenAI's API list prices. On a ChatGPT plan
+  you pay the plan, not these amounts."
 - **Where the tokens go**, for the period chosen in the top-right buttons: model calls,
   cost per turn, context per call (with the compaction cap), cache hit rate, prompt and
   output tokens, and the turns that bought nothing because they had nothing to add or
@@ -2335,8 +2467,8 @@ From the top:
   main turns of the same kind, minus the escalated turns and the cache re-reads after a
   switch), and any rules that paused. Below it, **Routing candidates** shows, from the
   turns you already have, which kinds of wake routing would send to a light model and
-  about what that would have saved. Both are estimates: list prices for Claude Code
-  models, OpenCode's catalogue prices, and cache warmth guessed from turn timing.
+  about what that would have saved. Both are estimates: list prices for Claude Code and
+  Codex models, OpenCode's catalogue prices, and cache warmth guessed from turn timing.
 - **Costliest turns**: the single turns that cost the most, with who, where, what woke
   them, tool calls, model calls, context, and time; *light* and *escalated* badges mark
   routed turns.
@@ -2400,13 +2532,14 @@ Canopy has five brakes, from gentlest to firmest.
    takes.
 3. **A spend cap per turn** (Settings → Claude Code, Claude Code agents only). Canopy
    passes it to Claude Code as `--max-budget-usd`, and Claude Code stops a turn that
-   reaches it. Empty means no cap.
+   reaches it. Empty means no cap. Codex has no such cap.
 4. **Channel spend limits**. A total in dollars per channel, set on the new-channel form
    or in the Budget panel. An agent may propose one when it creates a channel; only you
    can change or remove one afterwards, and there is no tool for it. Once a channel has
    spent its limit, wake-ups there are dropped: a red line lands on the timeline once, a
    red bar sits above the composer, and the budget button turns red until you raise the
    limit. A turn already in flight finishes, so a channel can overshoot by one turn.
+   Codex's estimated costs count towards the limit.
 
    ![Spend limit reached, light](user-guide/images/spend-limit-reached-light.png)
 
@@ -2430,7 +2563,7 @@ page; a rule whose light turns keep escalating pauses on its own.
 
 ### Tools agents can call
 
-Canopy provides the same 46 tools to both Claude Code and OpenCode agents through an MCP server. Agent identity comes from the engine: for OpenCode, the plugin-stamped session id; for Claude Code, a per-session bearer token. Never from tool arguments. Tools return compact text.
+Canopy provides the same 46 tools to Claude Code, Codex and OpenCode agents through an MCP server. Agent identity comes from the engine: for Claude Code and Codex, a per-session bearer token; for OpenCode, the plugin-stamped session id. Never from tool arguments. Tools return compact text.
 
 | Area | Tools |
 |---|---|
@@ -2471,10 +2604,11 @@ and a file is at most 256 KB.
 | `kind` | all | `agent`, `team`, or `bundle` (a bundle's `canopy.md`) |
 | `name` | all | The `@name` (agents, teams) or the bundle's name |
 | `display_name`, `role`, `group`, `color` | agent | As on the edit form; `role` at most 200 characters |
-| `mode` | agent | `plan` or `build`; sets the OpenCode agent or Claude Code permissions when those keys are absent |
-| `engine` | agent | `claude_code` or `opencode`; absent: this machine's engine for new agents |
-| `model` | agent | A Claude Code alias (`opus`) or an OpenCode `provider/model`; absent: the default |
-| `effort`, `permission_mode`, `allowed_tools` | agent | Claude Code only; `allowed_tools` is a list |
+| `mode` | agent | `plan` or `build`; sets the Claude Code or Codex permissions or the OpenCode agent when those keys are absent |
+| `engine` | agent | `claude_code`, `codex`, or `opencode`; absent: this machine's engine for new agents |
+| `model` | agent | A Claude Code alias (`opus`), a Codex model id (`gpt-5-codex`), or an OpenCode `provider/model`; absent: the default |
+| `effort`, `permission_mode` | agent | Claude Code and Codex only |
+| `allowed_tools` | agent | Claude Code only; a list |
 | `opencode_agent` | agent | OpenCode only |
 | `memory` | agent | `included` when the memory follows a `<!-- canopy:memory -->` line |
 | `display_name`, `description`, `lead`, `members` | team | Members are `name` and an optional `role`; the lead must be a member |
@@ -2548,7 +2682,7 @@ Reactions leave no line: they show as chips under the message.
 | Line | Meaning |
 |---|---|
 | `@agent started working` | A turn began (with Routine activity on) |
-| `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel |
+| `@agent finished · N tools · $cost · time` | A clean turn; click for the activity card, or ⤢ to open it in the side panel. A Codex turn shows its tokens and an estimated `≈$cost` |
 | `@agent had nothing to add` / `@agent is holding the lock` | The agent chose not to reply; its note, when it gave one, is the sentence |
 | `@agent was stopped by <your name>` | You stopped the turn with Abort or the header's **Stop** |
 | `@agent will read your message after its current step` | Experimental: your mention went into its running turn (with Routine activity on) |
@@ -2598,6 +2732,7 @@ Reactions leave no line: they show as chips under the message.
 | `PORT` | HTTP port, default 4000 |
 | `CANOPY_URL` | The origin engines use to reach Canopy; the Homebrew wrapper keeps it on loopback |
 | `CLAUDE_CONFIG_DIR=path` | Claude Code's own variable. When Settings → Claude Code → *Config directory* is empty, `claude` inherits it from the shell Canopy starts in, and Canopy reads [transcripts](#the-session-transcript) from there (default `~/.claude`). A directory set in Settings takes its place |
+| `CODEX_HOME=path` | Codex's own variable. When Settings → Codex → *Config directory* is empty, Codex agents use it from the shell Canopy starts in (default `~/.codex`). A directory set in Settings takes its place |
 
 Under Homebrew, set these in the shell you run `canopy start` from; the background
 service started by `brew services` uses the defaults.
@@ -2614,17 +2749,19 @@ service started by `brew services` uses the defaults.
 | A message wakes nobody and a red bar mentions the spend limit | Raise or remove the limit in the Budget panel |
 | `401` for `/mcp` in the OpenCode log | The token was rotated; prompt once more so Canopy re-registers |
 | *Check Claude Code* fails, or says "not logged in" | "not found on PATH": install Claude Code or enter the full path to `claude` in Settings. "not logged in": run `claude` once in a terminal and log in, then check again. A custom config directory in Settings must be the one you logged in with |
+| *Check Codex* fails, or says "not signed in" | "not found": install the `codex` CLI or enter its full path in Settings → Codex. "older than 0.163.0": upgrade it. "not signed in": run `codex login` in a terminal (with `CODEX_HOME` set to the config directory, if Settings names one), then check again |
+| Codex's model and effort lists are empty, with "Couldn't read Codex's models" | Codex couldn't be started or read; the saved values are kept. Press *Check Codex*, fix what it reports, then try again |
 | A Claude Code agent can't reach Canopy's tools (`/mcp` connection refused) | From source, the MCP address is built from `PORT`: restart Canopy after changing it. In a release (Homebrew), it is `CANOPY_URL`, which defaults to `http://127.0.0.1:$PORT`; if you set it by hand, make it agree with `PORT` and restart Canopy |
-| An agent lacks a tool from my repository's MCP server | Open the repository's page (Repositories → *MCP*): the server may be failed, need OAuth, or be disabled. Claude Code agents load only the repository's `.mcp.json`, never your personal `~/.claude.json` servers |
+| An agent lacks a tool from my repository's MCP server | Open the repository's page (Repositories → *MCP*): the server may be failed, need OAuth, or be disabled. Claude Code agents load only the repository's `.mcp.json`, never your personal `~/.claude.json` servers; Codex agents read `config.toml` in the Codex config directory and the repository's `.codex/config.toml`, not `.mcp.json` |
 | OpenCode agents are slow to start in one repository | A repository MCP server is failing or slow to connect; its row on the repository page shows the error. Fix or disable it, then *Reconnect* |
 | `Model not found: <provider>/<model>` | The agent's model, or the OpenCode default model in Settings that it inherits, names a provider OpenCode has no credentials for; pick one from `opencode providers` on the Agents page or in Settings (where it shows as *(not configured)*) |
 | An agent insists its tools are missing | Reset its session from its row under **Agents** in the channel's details |
 | The agent page says "Routing paused for scheduled wakes: 8 of 20 escalated" | Model routing (experimental) stopped sending that kind of wake to the light model because most of them needed the main one anyway. Leave it paused, or press **Resume** to try again from now; "every wake" means the light model itself failed (check its name in Settings or on the edit form) |
 | An agent did something odd and the channel doesn't say why | Open its [transcript](#the-session-transcript) from the document icon on its row in the channel's details: every prompt, tool call and result |
 | The transcript says Claude Code no longer has the session | Claude Code deletes session files after `cleanupPeriodDays` (30 by default, in its `settings.json`); Canopy keeps no copy |
-| The permission card never appears | The agent is allowed the action already. Claude Code: the tool matches a pattern under *tools that run without asking*, or the permission mode approves edits; change it on the agent's edit form. OpenCode: set the permission to `ask` in the repository's OpenCode config |
+| The permission card never appears | The agent is allowed the action already. Claude Code: the tool matches a pattern under *tools that run without asking*, or the permission mode approves edits; change it on the agent's edit form. Codex: *Ask first* runs in-repo edits and plain git commands freely, and *Ask only outside the sandbox* everything inside the sandbox; pick another mode on the edit form. OpenCode: set the permission to `ask` in the repository's OpenCode config |
 | My mention doesn't reach a working agent until its turn ends | Expected unless *Mentioning a working agent interrupts it (experimental)* is on in Settings → Conversation. With it on, Alt+Enter and messages to an agent on a light turn still wait |
-| The timeline says "@agent started a fresh session: its engine changed from Claude Code to OpenCode" (or the reverse) | The default engine changed (or the agent's own engine did): a session belongs to one engine. Memory and channel history carry over |
+| The timeline says "@agent started a fresh session: its engine changed from Claude Code to OpenCode" (or between any other two engines) | The default engine changed (or the agent's own engine did): a session belongs to one engine. Memory and channel history carry over |
 | The setup window opens every time | Setup comes back until you finish or skip it. *Skip setup* (top right) ends it; Settings → *Run setup again* reopens it |
 | An agent shows "waiting on you" and nothing moves | It is blocked on a question or permission card at the bottom of the channel (the bar above the composer has a Show button); a message to it waits until the card is answered |
 | A question card says the agent stopped waiting | Answer it anyway: the answer is posted as your message and wakes the agent. Dismiss it if it no longer matters |

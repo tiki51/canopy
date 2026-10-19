@@ -1,7 +1,8 @@
 defmodule Canopy.Engine do
   @moduledoc """
   The execution engine contract: what the channel runtime needs from the
-  harness that runs an agent's session (OpenCode today, Claude Code next).
+  harness that runs an agent's session. Three engines exist: Claude Code,
+  Codex and OpenCode (`names/0` lists the configured ones in that order).
 
   An engine owns the private session of each agent in a channel. Canopy asks it
   to start sessions, send prompts, abort, compact, answer permission and
@@ -245,14 +246,39 @@ defmodule Canopy.Engine do
   @doc "Engine name => adapter module, from `config :canopy, :engines`."
   def engines, do: Application.get_env(:canopy, :engines, @default_engines)
 
-  def names, do: engines() |> Map.keys() |> Enum.sort()
+  # The order every picker, card row and breakdown shows engines in.
+  @order ~w(claude_code codex opencode)
+
+  @doc """
+  The configured engine names, in display order: Claude Code, Codex,
+  OpenCode. Engines missing from `config :canopy, :engines` are left out;
+  configured engines this module doesn't know come last, sorted.
+  """
+  def names do
+    configured = Map.keys(engines())
+    known = Enum.filter(@order, &(&1 in configured))
+    known ++ Enum.sort(configured -- @order)
+  end
 
   def module!(name) when is_binary(name), do: Map.fetch!(engines(), name)
 
-  @labels %{"opencode" => "OpenCode", "claude_code" => "Claude Code"}
+  @labels %{"opencode" => "OpenCode", "claude_code" => "Claude Code", "codex" => "Codex"}
 
   @doc "The engine's name as people read it (`\"Claude Code\"`)."
   def label(name) when is_binary(name), do: Map.get(@labels, name, name)
+
+  @doc "`[{label, name}]` in `names/0` order, for selects."
+  def options, do: Enum.map(names(), &{label(&1), &1})
+
+  @doc """
+  Sorts `list` by the position of `key_fun.(item)` in `names/0`; items whose
+  key is not a configured engine come last, in their original order.
+  """
+  def sort_by_engine(list, key_fun) when is_function(key_fun, 1) do
+    index = names() |> Enum.with_index() |> Map.new()
+    last = map_size(index)
+    Enum.sort_by(list, &Map.get(index, key_fun.(&1), last))
+  end
 
   @doc """
   The adapter for an agent or session (anything with an `engine` name). An

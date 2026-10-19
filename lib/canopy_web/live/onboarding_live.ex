@@ -35,11 +35,18 @@ defmodule CanopyWeb.OnboardingLive do
 
   alias Canopy.{Repositories, Settings}
   alias Canopy.Agents.Agent
-  alias Canopy.Engine.ClaudeCode
+  alias Canopy.Engine.{ClaudeCode, Codex}
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Repositories.Repository
   alias Canopy.Settings.Presets
-  alias CanopyWeb.{AppearanceComponents, EngineComponents, NotifyComponents, PresetComponents}
+
+  alias CanopyWeb.{
+    CodexOptions,
+    AppearanceComponents,
+    EngineComponents,
+    NotifyComponents,
+    PresetComponents
+  }
 
   @steps [
     %{id: "you", label: "You"},
@@ -66,9 +73,11 @@ defmodule CanopyWeb.OnboardingLive do
 
   @team_fields ["serialize_turns", "chatter_pause", "chatter_limit"]
   @claude_fields ["claude_default_model", "claude_default_effort"]
+  @codex_fields ["codex_default_model", "codex_default_effort"]
   @opencode_fields ["opencode_default_provider", "opencode_default_model"]
 
   @claude_guide "https://tiki51.github.io/canopy-site/getting-started/claude-code/"
+  @codex_guide "https://tiki51.github.io/canopy-site/getting-started/codex/"
   @opencode_guide "https://tiki51.github.io/canopy-site/getting-started/opencode/"
 
   @doc "The setup steps, in order, as `%{id, label}`."
@@ -97,6 +106,9 @@ defmodule CanopyWeb.OnboardingLive do
       |> assign(:name_suggestion, nil)
       |> assign(:name_form, name_form(setting))
       |> assign(:claude_check, nil)
+      |> assign(:codex_check, nil)
+      |> assign(:codex_models, [])
+      |> assign(:codex_models_state, :loading)
       |> assign(:opencode_health, nil)
       |> assign(:providers, [])
       |> assign(:providers_state, :loading)
@@ -228,27 +240,19 @@ defmodule CanopyWeb.OnboardingLive do
       |> reset_model_on_new_provider(params["_target"])
 
     setting = socket.assigns.setting
-    providers = socket.assigns.providers
 
     changed =
-      [@claude_fields, @opencode_fields]
+      [@claude_fields, @codex_fields, @opencode_fields]
       |> Enum.map(&Map.take(attrs, &1))
       |> Enum.filter(fn group ->
-        changeset =
-          setting
-          |> Settings.change(group)
-          |> Providers.validate(providers, opencode_fields())
-
+        changeset = setting |> Settings.change(group) |> validate_defaults(socket.assigns)
         changeset.errors == [] and changeset.changes != %{}
       end)
 
     :ok = Enum.each(changed, &save_defaults/1)
     setting = if changed == [], do: setting, else: Settings.get()
 
-    shown =
-      setting
-      |> Settings.change(attrs)
-      |> Providers.validate(providers, opencode_fields())
+    shown = setting |> Settings.change(attrs) |> validate_defaults(socket.assigns)
 
     shown = if quiet_errors?(shown), do: shown, else: Map.put(shown, :action, :validate)
 
@@ -380,6 +384,33 @@ defmodule CanopyWeb.OnboardingLive do
   def handle_async(:claude_check, {:exit, reason}, socket),
     do: {:noreply, assign(socket, :claude_check, {:error, "check crashed: #{inspect(reason)}"})}
 
+  # Codex's models are listed once the check finds it ready, so a broken
+  # Codex isn't started twice at once.
+  def handle_async(:codex_check, {:ok, result}, socket) do
+    socket =
+      if codex_ready?(result),
+        do: start_async(socket, :codex_models, fn -> Canopy.Codex.Models.list(refresh: true) end),
+        else: socket
+
+    {:noreply, socket |> assign(:codex_check, result) |> preselect_engine()}
+  end
+
+  def handle_async(:codex_check, {:exit, reason}, socket),
+    do:
+      {:noreply,
+       socket
+       |> assign(:codex_check, {:error, "check crashed: #{inspect(reason)}"})
+       |> preselect_engine()}
+
+  def handle_async(:codex_models, {:ok, {:ok, models}}, socket),
+    do: {:noreply, socket |> assign(:codex_models, models) |> assign(:codex_models_state, :ok)}
+
+  def handle_async(:codex_models, {:ok, {:error, reason}}, socket),
+    do: {:noreply, codex_models_failed(socket, reason)}
+
+  def handle_async(:codex_models, {:exit, reason}, socket),
+    do: {:noreply, codex_models_failed(socket, "crashed: #{inspect(reason)}")}
+
   # A path that works is the binary from now on.
   def handle_async(:claude_path, {:ok, {binary, {:ok, _info} = result}}, socket) do
     socket =
@@ -479,15 +510,18 @@ defmodule CanopyWeb.OnboardingLive do
     end
   end
 
-  # Both engines (and OpenCode's model list, from the saved URL) at once.
+  # Every engine (and Codex's and OpenCode's model lists) at once.
   defp check_engines(socket) do
     url = socket.assigns.setting.opencode_url
 
     socket
     |> assign(:claude_check, :checking)
+    |> assign(:codex_check, :checking)
+    |> assign(:codex_models_state, :loading)
     |> assign(:opencode_health, :checking)
     |> assign(:providers_state, :loading)
     |> start_async(:claude_check, fn -> ClaudeCode.check() end)
+    |> start_async(:codex_check, fn -> Codex.check() end)
     |> start_async(:opencode_health, fn -> Client.impl().health(base_url: url) end)
     |> start_async(:providers, fn -> Providers.list(base_url: url) end)
   end
@@ -557,6 +591,15 @@ defmodule CanopyWeb.OnboardingLive do
 
   defp opencode_fields, do: {:opencode_default_provider, :opencode_default_model}
 
+  defp validate_defaults(changeset, assigns) do
+    changeset
+    |> Providers.validate(assigns.providers, opencode_fields())
+    |> Canopy.Codex.Models.validate(
+      assigns.codex_models,
+      {:codex_default_model, :codex_default_effort}
+    )
+  end
+
   # Only the engines that passed offer a default; OpenCode's selects are
   # disabled (so not submitted) until its model list is in. No provider means
   # OpenCode's own default, whatever the model select still holds.
@@ -584,7 +627,13 @@ defmodule CanopyWeb.OnboardingLive do
         %{}
       end
 
-    Map.merge(claude, opencode)
+    # Its selects are disabled (so not submitted) until its model list is in.
+    codex =
+      if codex_ready?(assigns.codex_check),
+        do: Map.take(params, @codex_fields),
+        else: %{}
+
+    claude |> Map.merge(codex) |> Map.merge(opencode)
   end
 
   # Another provider's model is never the new provider's: start over.
@@ -616,6 +665,14 @@ defmodule CanopyWeb.OnboardingLive do
       {:ok, _} = Settings.put_default_effort("claude_code", attrs["claude_default_effort"])
     end
 
+    if Map.has_key?(attrs, "codex_default_model") do
+      {:ok, _} = Settings.put_default_model("codex", %{model_id: attrs["codex_default_model"]})
+    end
+
+    if Map.has_key?(attrs, "codex_default_effort") do
+      {:ok, _} = Settings.put_default_effort("codex", attrs["codex_default_effort"])
+    end
+
     if Map.has_key?(attrs, "opencode_default_provider") do
       {:ok, _} =
         Settings.put_default_model("opencode", %{
@@ -628,28 +685,46 @@ defmodule CanopyWeb.OnboardingLive do
   end
 
   defp claude_ready?(check), do: match?({:ok, %{logged_in: true}}, check)
+
+  defp codex_models_failed(socket, reason) do
+    reason = if is_binary(reason), do: reason, else: inspect(reason)
+    socket |> assign(:codex_models, []) |> assign(:codex_models_state, {:error, reason})
+  end
+
+  defp codex_ready?(check), do: match?({:ok, _}, check) and Codex.readiness(check) == :ready
   defp opencode_ready?(health), do: match?({:ok, _}, health)
 
-  defp checking?(assigns), do: :checking in [assigns.claude_check, assigns.opencode_health]
+  defp checking?(assigns),
+    do: :checking in [assigns.claude_check, assigns.codex_check, assigns.opencode_health]
 
-  # Once both checks are in, the default engine follows what is ready until
-  # the user picks one (on this visit or before it): Claude Code ready (alone
-  # or with OpenCode) → Claude Code; only OpenCode → OpenCode; neither → left
-  # alone.
+  # Each engine's last check and whether it passed, keyed by engine.
+  defp engine_checks(assigns) do
+    %{
+      "claude_code" => {assigns.claude_check, claude_ready?(assigns.claude_check)},
+      "codex" => {assigns.codex_check, codex_ready?(assigns.codex_check)},
+      "opencode" => {assigns.opencode_health, opencode_ready?(assigns.opencode_health)}
+    }
+  end
+
+  # Once every check is in, the default engine follows what is ready until
+  # the user picks one (on this visit or before it), in engine order: Claude
+  # Code ready → Claude Code; else Codex ready → Codex; else OpenCode ready →
+  # OpenCode; none → left alone.
   # It is saved like every control here, since the starter agents follow the
   # default: on a Mac with only Claude Code they would otherwise sit on an
   # OpenCode that isn't running. A *Check again* re-applies the rule.
   defp preselect_engine(socket) do
-    %{claude_check: claude, opencode_health: opencode, setting: setting} = socket.assigns
+    checks = engine_checks(socket.assigns)
+    results = Enum.map(checks, fn {_engine, {check, _ready}} -> check end)
 
     pick =
       cond do
         socket.assigns.engine_picked -> nil
-        :checking in [claude, opencode] or nil in [claude, opencode] -> nil
-        claude_ready?(claude) -> "claude_code"
-        opencode_ready?(opencode) -> "opencode"
-        true -> nil
+        :checking in results or nil in results -> nil
+        true -> Enum.find(Canopy.Engine.names(), &match?({_, true}, checks[&1]))
       end
+
+    setting = socket.assigns.setting
 
     with engine when is_binary(engine) <- pick,
          true <- engine != Settings.default_engine(setting),
@@ -767,8 +842,7 @@ defmodule CanopyWeb.OnboardingLive do
           <%= if @finished do %>
             <.done
               setting={@setting}
-              claude_check={@claude_check}
-              opencode_health={@opencode_health}
+              checks={engine_checks(assigns)}
               added_repository={@added_repository}
               repositories={@repositories}
             />
@@ -1030,6 +1104,9 @@ defmodule CanopyWeb.OnboardingLive do
     <.engines_section
       saved={@saved[:engines]}
       claude_check={@claude_check}
+      codex_check={@codex_check}
+      codex_models={@codex_models}
+      codex_models_state={@codex_models_state}
       opencode_health={@opencode_health}
       opencode_url={@setting.opencode_url}
       setting={@setting}
@@ -1166,6 +1243,9 @@ defmodule CanopyWeb.OnboardingLive do
 
   attr :saved, :any, required: true
   attr :claude_check, :any, required: true
+  attr :codex_check, :any, required: true
+  attr :codex_models, :list, required: true
+  attr :codex_models_state, :any, required: true
   attr :opencode_health, :any, required: true
   attr :opencode_url, :string, required: true
   attr :setting, :any, required: true
@@ -1179,10 +1259,12 @@ defmodule CanopyWeb.OnboardingLive do
     assigns =
       assigns
       |> assign(:claude_ready, claude_ready?(assigns.claude_check))
+      |> assign(:codex_ready, codex_ready?(assigns.codex_check))
       |> assign(:opencode_ready, opencode_ready?(assigns.opencode_health))
       |> assign(:checking, checking?(assigns))
       |> assign(:default_engine, Settings.default_engine(assigns.setting))
       |> assign(:claude_guide, @claude_guide)
+      |> assign(:codex_guide, @codex_guide)
       |> assign(:opencode_guide, @opencode_guide)
 
     ~H"""
@@ -1191,7 +1273,7 @@ defmodule CanopyWeb.OnboardingLive do
         Agents do their work through a coding engine installed on this Mac. You need at least one.
       </:description>
 
-      <div class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-3 lg:grid-cols-3">
         <div
           id="welcome-claude"
           data-state={engine_state(@claude_check, @claude_ready)}
@@ -1258,6 +1340,42 @@ defmodule CanopyWeb.OnboardingLive do
         </div>
 
         <div
+          id="welcome-codex"
+          data-state={engine_state(@codex_check, @codex_ready)}
+          class="flex flex-col gap-2 rounded-xl bg-base-200/60 p-4 ring-1 ring-inset ring-base-300/60"
+        >
+          <div class="flex items-center gap-2">
+            <.engine_icon state={engine_state(@codex_check, @codex_ready)} />
+            <h3 class="text-sm font-semibold">Codex</h3>
+          </div>
+          <div id="welcome-codex-status" class="text-sm text-base-content/80" role="status">
+            <%= case @codex_check do %>
+              <% value when value in [nil, :checking] -> %>
+                <span class="text-base-content/60">Checking…</span>
+              <% {:ok, %{logged_in: true} = info} -> %>
+                Codex {info.version}, {codex_signed_in(info)}.
+              <% {:ok, _info} -> %>
+                Installed, but not signed in. Run <code class="font-mono">codex login</code>
+                in a terminal, then <em>Check again</em>.
+              <% {:error, reason} -> %>
+                <%= if Codex.readiness(@codex_check) == :not_found do %>
+                  Not found. Install it from <a
+                    href="https://github.com/openai/codex"
+                    target="_blank"
+                    class="link link-primary"
+                  >
+                    github.com/openai/codex</a>.
+                <% else %>
+                  Codex didn't answer.
+                <% end %>
+                <span id="welcome-codex-error" class="mt-1 block font-mono text-xs text-error">
+                  {reason}
+                </span>
+            <% end %>
+          </div>
+        </div>
+
+        <div
           id="welcome-opencode"
           data-state={engine_state(@opencode_health, @opencode_ready)}
           class="flex flex-col gap-2 rounded-xl bg-base-200/60 p-4 ring-1 ring-inset ring-base-300/60"
@@ -1313,15 +1431,22 @@ defmodule CanopyWeb.OnboardingLive do
           readiness={
             %{
               "claude_code" => readiness(@claude_check, @claude_ready),
+              "codex" => readiness(@codex_check, @codex_ready),
               "opencode" => readiness(@opencode_health, @opencode_ready)
             }
           }
-          not_ready={%{"claude_code" => "Not ready", "opencode" => "Not running"}}
+          not_ready={
+            %{
+              "claude_code" => "Not ready",
+              "codex" => codex_not_ready(@codex_check),
+              "opencode" => "Not running"
+            }
+          }
         />
       </div>
 
       <div
-        :if={!@checking and !@claude_ready and !@opencode_ready}
+        :if={!@checking and !@claude_ready and !@codex_ready and !@opencode_ready}
         id="welcome-no-engine"
         class="alert alert-soft alert-warning mt-6 text-sm"
       >
@@ -1330,12 +1455,13 @@ defmodule CanopyWeb.OnboardingLive do
           No engine is ready yet. You can finish setup now, but agents won't reply until one
           works. Getting started guides:
           <a href={@claude_guide} target="_blank" class="link">Claude Code</a>
+          · <a href={@codex_guide} target="_blank" class="link">Codex</a>
           · <a href={@opencode_guide} target="_blank" class="link">OpenCode</a>
         </span>
       </div>
 
       <.form
-        :if={@claude_ready or @opencode_ready}
+        :if={@claude_ready or @codex_ready or @opencode_ready}
         for={@form}
         id="welcome-engines-form"
         phx-change="save_engines"
@@ -1373,6 +1499,81 @@ defmodule CanopyWeb.OnboardingLive do
                 prompt="Claude Code's own default"
                 options={Agent.efforts()}
               />
+            </div>
+            <div
+              :if={engine == "codex" and @codex_ready}
+              id="welcome-codex-defaults"
+              class="grid gap-x-3 sm:grid-cols-2"
+            >
+              <%= if @codex_models_state == :ok do %>
+                <.input
+                  field={@form[:codex_default_model]}
+                  type="select"
+                  id="welcome-codex-default-model"
+                  label="Codex model"
+                  prompt="Codex's own default"
+                  options={
+                    CodexOptions.model_options(@codex_models, @form[:codex_default_model].value)
+                  }
+                />
+                <.input
+                  field={@form[:codex_default_effort]}
+                  type="select"
+                  id="welcome-codex-default-effort"
+                  label="Codex effort"
+                  prompt={
+                    CodexOptions.effort_prompt(
+                      @codex_models,
+                      @form[:codex_default_model].value,
+                      nil,
+                      "Codex's own default"
+                    )
+                  }
+                  options={
+                    CodexOptions.effort_options(
+                      @codex_models,
+                      @form[:codex_default_model].value,
+                      nil,
+                      @form[:codex_default_effort].value
+                    )
+                  }
+                />
+              <% else %>
+                <.input
+                  field={@form[:codex_default_model]}
+                  type="select"
+                  id="welcome-codex-default-model"
+                  label="Codex model"
+                  prompt={
+                    if @codex_models_state == :loading,
+                      do: "Loading models…",
+                      else: "Codex sent no models"
+                  }
+                  options={List.wrap(@setting.codex_default_model)}
+                  disabled
+                />
+                <.input
+                  field={@form[:codex_default_effort]}
+                  type="select"
+                  id="welcome-codex-default-effort"
+                  label="Codex effort"
+                  prompt={
+                    if @codex_models_state == :loading,
+                      do: "Loading models…",
+                      else: "Codex sent no models"
+                  }
+                  options={List.wrap(@setting.codex_default_effort)}
+                  disabled
+                />
+                <p
+                  :if={match?({:error, _}, @codex_models_state)}
+                  id="welcome-codex-models-unavailable"
+                  class="-mt-1 text-xs text-warning sm:col-span-2"
+                >
+                  Couldn't read Codex's models: {elem(@codex_models_state, 1)}. Codex uses its own
+                  defaults; you can set them later in Settings.
+                </p>
+              <% end %>
             </div>
             <div
               :if={engine == "opencode" and @opencode_ready}
@@ -1457,6 +1658,19 @@ defmodule CanopyWeb.OnboardingLive do
   defp readiness(value, _ready) when value in [nil, :checking], do: :checking
   defp readiness(_value, true), do: :ready
   defp readiness(_value, false), do: :not_ready
+
+  defp codex_not_ready({:ok, _}), do: "Not signed in"
+  defp codex_not_ready(check) when check in [nil, :checking], do: "Not ready"
+
+  defp codex_not_ready(check),
+    do: if(Codex.readiness(check) == :not_found, do: "Not found", else: "Not ready")
+
+  defp codex_signed_in(%{auth_method: "api_key"}), do: "signed in with an API key"
+
+  defp codex_signed_in(%{auth_method: "chatgpt"} = info),
+    do: "signed in with ChatGPT" <> if(info[:plan], do: " (#{info.plan})", else: "")
+
+  defp codex_signed_in(_info), do: "signed in"
 
   defp engine_state(value, _ready) when value in [nil, :checking], do: "checking"
   defp engine_state(_value, true), do: "ready"
@@ -1562,8 +1776,7 @@ defmodule CanopyWeb.OnboardingLive do
   end
 
   attr :setting, :any, required: true
-  attr :claude_check, :any, required: true
-  attr :opencode_health, :any, required: true
+  attr :checks, :map, required: true, doc: "engine => {last check, ready?}"
   attr :added_repository, :any, required: true
   attr :repositories, :list, required: true
 
@@ -1571,7 +1784,8 @@ defmodule CanopyWeb.OnboardingLive do
     assigns =
       assigns
       |> assign(:defaults, Settings.default_models())
-      |> assign(:claude_effort, Settings.default_effort("claude_code", assigns.setting))
+      |> assign(:efforts, Settings.default_efforts())
+      |> assign(:engines, Canopy.Engine.names())
       |> assign(:preset_name, preset_name(Presets.match(assigns.setting)))
       |> assign(:named, assigns.setting.user_display_name not in [nil, "", "You"])
 
@@ -1606,8 +1820,8 @@ defmodule CanopyWeb.OnboardingLive do
           <AppearanceComponents.current_appearance id="summary-appearance" />.
         </.summary_line>
         <.summary_line id="summary-engines" href={~p"/settings#claude-panel"} icon="hero-cpu-chip">
-          Engines: Claude Code {engine_mark(@claude_check, claude_ready?(@claude_check))},
-          OpenCode {engine_mark(@opencode_health, opencode_ready?(@opencode_health))}.
+          <%!-- one span per engine and no whitespace between them, so no space before a comma --%>
+          Engines: <span :for={{engine, i} <- Enum.with_index(@engines)}>{if i > 0, do: ", "}{Canopy.Engine.label(engine)} {engine_mark(@checks[engine])}</span>.
         </.summary_line>
         <.summary_line
           id="summary-default-engine"
@@ -1617,8 +1831,7 @@ defmodule CanopyWeb.OnboardingLive do
           Default engine: <strong>{Canopy.Engine.label(Settings.default_engine(@setting))}</strong>.
         </.summary_line>
         <.summary_line id="summary-model" href={~p"/settings#claude-panel"} icon="hero-sparkles">
-          Default model: Claude Code <strong>{model_text(@defaults["claude_code"])}</strong>{if @claude_effort,
-            do: " (effort #{@claude_effort})"}, OpenCode <strong>{model_text(@defaults["opencode"])}</strong>.
+          Default model: <span :for={{engine, i} <- Enum.with_index(@engines)}>{if i > 0, do: ", "}{Canopy.Engine.label(engine)} <strong>{model_text(@defaults[engine])}</strong>{effort_text(@efforts[engine])}</span>.
         </.summary_line>
         <.summary_line id="summary-pace" href={~p"/settings#chatter-panel"} icon="hero-hand-raised">
           Agents: <strong>{@preset_name}</strong>.
@@ -1665,9 +1878,12 @@ defmodule CanopyWeb.OnboardingLive do
     """
   end
 
-  defp engine_mark(value, _ready) when value in [nil, :checking], do: "…"
-  defp engine_mark(_value, true), do: "✓"
-  defp engine_mark(_value, false), do: "✗"
+  defp engine_mark({value, _ready}) when value in [nil, :checking], do: "…"
+  defp engine_mark({_value, true}), do: "✓"
+  defp engine_mark(_check), do: "✗"
+
+  defp effort_text(effort) when is_binary(effort), do: " (effort #{effort})"
+  defp effort_text(_effort), do: ""
 
   defp model_text(%{model_provider: p, model_id: m}) when is_binary(p) and is_binary(m),
     do: "#{p}/#{m}"

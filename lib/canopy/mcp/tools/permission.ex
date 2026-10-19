@@ -21,12 +21,14 @@ defmodule Canopy.MCP.Tools.Permission do
 
   @impl true
   def execute(params, frame) do
+    # Codex sessions authenticate the same way, but their approvals arrive on
+    # the turn's own stdout; only Claude Code asks through this tool.
     case Identity.from_frame(frame) do
-      {:ok, ctx} ->
+      {:ok, %{session: %{engine: "claude_code"}} = ctx} ->
         reply = prompt(ctx, params)
         Tool.reply(JSON.encode!(reply), frame)
 
-      {:error, _} ->
+      _ ->
         Tool.error("the permission tool is for Claude Code sessions only", frame)
     end
   end

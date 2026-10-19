@@ -1,0 +1,4 @@
+{"await_thread":true}
+{"await":"turn/start"}
+{"send":{"id":$ID,"result":{"turn":{"id":"$TURN","status":"inProgress","items":[]}}}}
+{"send":{"method":"turn/started","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"inProgress","items":[]}}}}

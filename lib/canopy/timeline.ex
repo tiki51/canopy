@@ -168,6 +168,30 @@ defmodule Canopy.Timeline do
     end
   end
 
+  @doc """
+  Rewrites `engine_session_id` from `old` to `new` in the payloads of a
+  session row's events (`ref_id`), for an engine that renames its session
+  mid-turn (Codex: placeholder to thread id). Without it the turn's
+  `agent_started` would list as an earlier session the engine never had.
+  Returns the number of events rewritten.
+  """
+  def rename_engine_session(row_id, old, new)
+      when is_binary(row_id) and is_binary(old) and is_binary(new) do
+    {n, _} =
+      Event
+      |> where(
+        [e],
+        e.ref_id == ^row_id and
+          fragment("json_extract(?, '$.engine_session_id')", e.payload) == ^old
+      )
+      |> update([e],
+        set: [payload: fragment("json_set(?, '$.engine_session_id', ?)", e.payload, ^new)]
+      )
+      |> Repo.update_all([])
+
+    n
+  end
+
   @doc "The agent's latest finished turn in the channel (its `agent_turn_completed` event), or nil."
   def last_turn(channel_id, agent_id) do
     Event

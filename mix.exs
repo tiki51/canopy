@@ -100,6 +100,8 @@ defmodule Canopy.MixProject do
       # Canopy additions
       {:req, "~> 0.5"},
       {:anubis_mcp, "~> 2.0"},
+      # Codex's config.toml (MCP inventory, shell env exclude, name clash)
+      {:toml, "~> 0.7"},
       {:mox, "~> 1.2", only: :test}
     ]
   end

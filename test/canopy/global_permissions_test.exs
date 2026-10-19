@@ -145,6 +145,11 @@ defmodule Canopy.GlobalPermissionsTest do
     assert GlobalPermissions.grantable?("Bash")
     assert GlobalPermissions.grantable?("external_directory")
     assert GlobalPermissions.grantable?("mcp__github__create_issue")
+    # Codex: a global Bash grant covers every command, as for Claude Code;
+    # file changes and more-access requests are never granted globally
+    refute GlobalPermissions.grantable?("file_change")
+    refute GlobalPermissions.grantable?("permissions")
+    refute GlobalPermissions.grantable?(" File_Change ")
   end
 
   test "record_use counts the use and records the line", %{channel: channel, agent: agent} do

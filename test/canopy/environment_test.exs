@@ -96,7 +96,8 @@ defmodule Canopy.EnvironmentTest do
                memories: 1,
                documents: 1,
                document_bytes: document.byte_size,
-               cost_usd: 0.25
+               cost_usd: 0.25,
+               cost_estimated: 0.0
              }
 
       assert preview.deleted.messages >= 1

@@ -788,7 +788,11 @@ defmodule CanopyWeb.AgentsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/agents")
       assert has_element?(view, "#model-#{oc.id}", "default")
-      assert has_element?(view, "#default-model-claude_code", "its own default")
+      assert has_element?(view, "#default-model-claude_code", "Claude Code's own default")
+      assert has_element?(view, "#default-model-codex", "Codex's own default")
+      assert has_element?(view, "#default-model-opencode", "OpenCode's own default")
+      # the words aren't set like a model id
+      refute has_element?(view, "#default-model-codex .font-mono")
 
       set_defaults()
       # the page follows Settings without a reload
@@ -798,6 +802,7 @@ defmodule CanopyWeb.AgentsLiveTest do
       assert has_element?(view, "#model-#{own.id}.badge", "opus")
       assert has_element?(view, "#default-model-claude_code", "sonnet")
       assert has_element?(view, "#default-model-opencode", "opencode/claude-haiku-4-5")
+      assert has_element?(view, "#default-model-claude_code .font-mono", "sonnet")
       assert has_element?(view, "#default-models-settings[href='/settings']")
     end
 

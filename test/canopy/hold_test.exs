@@ -76,6 +76,64 @@ defmodule Canopy.HoldTest do
     refute Hold.billing_error?("error_max_turns")
   end
 
+  test "recognises Codex's usage limits, not its rate limits or sign-in errors" do
+    usage = %{
+      "name" => "usageLimitExceeded",
+      "data" => %{"message" => "You've hit your usage limit. Try again later."}
+    }
+
+    assert Hold.billing_error?(usage)
+    assert Hold.billing_error?("You've hit your usage limit. Upgrade to Pro.")
+    assert Hold.billing_error?(%{"name" => "usageLimitExceeded"})
+    assert Hold.billing_error?(%{"name" => "insufficient_quota", "data" => %{"message" => "x"}})
+
+    # a map with any other name doesn't decide; its first line is checked as
+    # text by the runtime (record_agent_error), which still catches the wording
+    refute Hold.billing_error?(%{
+             "name" => "codex",
+             "data" => %{"message" => "You've hit your usage limit"}
+           })
+
+    assert Hold.billing_error?("You've hit your usage limit")
+
+    refute Hold.billing_error?(%{"name" => "codex", "data" => %{"message" => "stream closed"}})
+
+    refute Hold.billing_error?(%{
+             "name" => "rateLimitExceeded",
+             "data" => %{"message" => "Rate limit reached for requests"}
+           })
+
+    refute Hold.billing_error?(%{"name" => "serverOverloaded", "data" => %{"message" => "busy"}})
+
+    refute Hold.billing_error?(%{
+             "name" => "unauthorized",
+             "data" => %{"message" => "Codex is not signed in: run `codex login`"}
+           })
+
+    refute Hold.billing_error?(%{"name" => "httpConnectionFailed"})
+    refute Hold.billing_error?(%{"name" => "contextWindowExceeded"})
+    refute Hold.billing_error?(%{})
+  end
+
+  test "Claude Code and OpenCode error maps never engage the hold on deeper text" do
+    # billing words below the first line (a stderr dump, an API body) don't count
+    refute Hold.billing_error?(%{
+             "name" => "APIError",
+             "data" => %{"message" => "Request failed\nsee https://example.com/billing (402)"}
+           })
+
+    refute Hold.billing_error?(%{
+             "name" => "claude_code",
+             "data" => %{"message" => "exited 1\nCredit balance is too low"}
+           })
+
+    refute Hold.billing_error?(%{"name" => "UnknownError"})
+
+    # their first line, checked as text, still decides as before
+    assert Hold.billing_error?("Credit balance is too low")
+    assert Hold.billing_error?("insufficient_quota: add credits")
+  end
+
   test "a Claude Code error result carries the wording through to the check" do
     {events, _} =
       Canopy.ClaudeCode.Events.normalize(

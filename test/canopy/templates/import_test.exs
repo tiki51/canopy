@@ -12,12 +12,25 @@ defmodule Canopy.Templates.ImportTest do
 
   setup :verify_on_exit!
 
+  # every engine registered, whatever config.exs has yet
+  setup do
+    engines = Application.get_env(:canopy, :engines)
+    Application.put_env(:canopy, :engines, Map.put_new(engines, "codex", Canopy.Engine.Codex))
+    on_exit(fn -> Application.put_env(:canopy, :engines, engines) end)
+    :ok
+  end
+
   @providers [%{id: "openai", name: "OpenAI", models: ["gpt-5.4"], pricing: %{}}]
 
-  # Both engines ready, OpenCode offering one model and the built-in agents.
+  # Every engine ready, OpenCode offering one model and the built-in agents.
   defp machine(overrides \\ []) do
     struct(
-      %Machine{claude_code: true, opencode: {:ok, @providers}, opencode_agents: ~w(build plan)},
+      %Machine{
+        claude_code: true,
+        codex: true,
+        opencode: {:ok, @providers},
+        opencode_agents: ~w(build plan)
+      },
       overrides
     )
   end
@@ -94,6 +107,48 @@ defmodule Canopy.Templates.ImportTest do
 
       assert %{risky: true} = bold.permission
       assert bold.permission.text =~ "runs without asking: Bash(*)"
+
+      # Codex has no tool list: its permission mode is its reach
+      codex = item(plan(template("cx", "engine: codex\npermission_mode: plan")))
+      assert %{risky: false, text: "Codex · plan"} = codex.permission
+
+      codex = item(plan(template("cx", "engine: codex\npermission_mode: acceptEdits")))
+      assert %{risky: true, text: "Codex · acceptEdits"} = codex.permission
+    end
+
+    test "a Codex agent's diff counts Codex's fields only" do
+      Fixtures.agent_fixture(%{
+        name: "cx",
+        engine: "codex",
+        model_id: "gpt-6.1-sol",
+        effort: "high",
+        system_prompt: "You are the agent."
+      })
+
+      same =
+        item(
+          plan(
+            template(
+              "cx",
+              "engine: codex\nmode: build\nmodel: gpt-6.1-sol\neffort: high\nrole: Test agent"
+            )
+          )
+        )
+
+      assert same.status == :identical
+
+      changed =
+        item(
+          plan(
+            template(
+              "cx",
+              "engine: codex\nmode: build\nmodel: gpt-6.1-sol\neffort: ultra\nrole: Test agent"
+            )
+          )
+        )
+
+      assert changed.status == :conflict
+      assert [{:effort, "high", "ultra"}] = changed.diff
     end
 
     test "rename suggestions are free, unique, and at most 40 characters" do
@@ -273,13 +328,13 @@ defmodule Canopy.Templates.ImportTest do
 
   describe "machine fallbacks" do
     test "an engine this Canopy doesn't know makes the agent follow the default engine" do
-      text = template("futurist", "engine: codex\nmode: plan\nmodel: gpt-9")
+      text = template("futurist", "engine: warp\nmode: plan\nmodel: gpt-9")
       item = item(plan(text))
       assert %{engine: nil, opencode_agent: "plan", model_id: nil} = item.attrs
 
       assert Enum.any?(
                item.notices,
-               &(&1 =~ "engine codex isn't supported here; using the default engine (OpenCode)")
+               &(&1 =~ "engine warp isn't supported here; using the default engine (OpenCode)")
              )
 
       assert item.errors == []
@@ -389,6 +444,26 @@ defmodule Canopy.Templates.ImportTest do
 
       plan = Import.choose(plan, %{item.id => %{"engine" => "opencode"}})
       assert %{engine: "opencode", opencode_agent: "plan"} = item(plan).attrs
+    end
+
+    test "Codex not installed keeps the engine, with a notice" do
+      text = template("needs-codex", "engine: codex\nmode: plan\nmodel: gpt-6.1-sol")
+      item = item(plan(text, machine: machine(codex: false)))
+
+      assert %{engine: "codex", permission_mode: "plan", model_id: "gpt-6.1-sol"} = item.attrs
+      assert Enum.any?(item.notices, &(&1 =~ "Codex isn't installed"))
+      assert item.errors == []
+
+      ready = item(plan(text))
+      refute Enum.any?(ready.notices, &(&1 =~ "Codex isn't installed"))
+    end
+
+    test "engine_ready?/2 knows every engine" do
+      assert Machine.engine_ready?(machine(), "codex")
+      refute Machine.engine_ready?(machine(codex: false), "codex")
+      assert Machine.engine_ready?(machine(), "claude_code")
+      assert Machine.engine_ready?(machine(), "opencode")
+      refute Machine.engine_ready?(machine(), "warp")
     end
 
     test "probe/0 asks OpenCode for its models and agents" do

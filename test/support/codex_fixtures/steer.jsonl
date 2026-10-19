@@ -1,0 +1,10 @@
+{"include":"turn-start.jsonl"}
+{"send":{"method":"item/started","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"commandExecution","id":"exec-1","command":"/bin/zsh -lc 'mix test'","cwd":"/repo","status":"inProgress","commandActions":[{"type":"unknown","command":"mix test"}],"aggregatedOutput":null,"exitCode":null,"durationMs":null}}}}
+{"await":"turn/steer"}
+{"send":{"id":$ID,"result":{"turnId":"$TURN"}}}
+{"send":{"method":"item/started","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"userMessage","id":"um-2","clientId":"$STEER","content":[{"type":"text","text":"also this","text_elements":[]}]}}}}
+{"send":{"method":"item/completed","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"commandExecution","id":"exec-1","command":"/bin/zsh -lc 'mix test'","cwd":"/repo","status":"completed","commandActions":[{"type":"unknown","command":"mix test"}],"aggregatedOutput":"3 tests, 0 failures\n","exitCode":0,"durationMs":1200}}}}
+{"send":{"method":"item/agentMessage/delta","params":{"threadId":"$THREAD","turnId":"$TURN","itemId":"msg-5","delta":"Steered."}}}
+{"send":{"method":"item/completed","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"agentMessage","id":"msg-5","text":"Steered.","phase":"final_answer"}}}}
+{"send":{"method":"thread/tokenUsage/updated","params":{"threadId":"$THREAD","turnId":"$TURN","tokenUsage":{"total":{"totalTokens":620,"inputTokens":600,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":20,"reasoningOutputTokens":0},"last":{"totalTokens":620,"inputTokens":600,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":20,"reasoningOutputTokens":0},"modelContextWindow":258400}}}}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"completed","items":[],"error":null}}}}

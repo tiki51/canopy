@@ -30,6 +30,8 @@ defmodule CanopyWeb.OnboardingLiveTest do
     Repo.update_all(Setting, set: [onboarded_at: nil, user_display_name: "You"])
     stub(OC, :health, fn _opts -> {:error, {:transport, %{reason: :econnrefused}}} end)
     stub(OC, :providers, fn _opts -> {:error, {:transport, %{reason: :econnrefused}}} end)
+    # these cases are about Claude Code and OpenCode; Codex's are in CodexSettingsTest
+    codex_missing()
     :ok
   end
 
@@ -49,6 +51,11 @@ defmodule CanopyWeb.OnboardingLiveTest do
   defp claude_missing do
     config = Application.get_env(:canopy, :claude_code, [])
     put_env(:canopy, :claude_code, Keyword.put(config, :binary, "no-such-claude-binary"))
+  end
+
+  defp codex_missing do
+    config = Application.get_env(:canopy, :codex, [])
+    put_env(:canopy, :codex, Keyword.put(config, :binary, "no-such-codex-binary"))
   end
 
   defp opencode_running do

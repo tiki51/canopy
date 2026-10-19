@@ -21,8 +21,10 @@ defmodule CanopyWeb.AgentsLive do
   Settings ("Default (…)" in the form's engine select, muted in the list),
   and everything engine-specific on these pages (the model choices,
   permissions, prices) follows the engine it runs on. An agent with no model
-  (or, on Claude Code, no effort) of its own inherits its engine's default
-  from Settings; the list, the picker, and the form show which default that is.
+  (or, on Claude Code or Codex, no effort) of its own inherits its engine's
+  default from Settings; the list, the picker, and the form show which default
+  that is. Codex's models and their efforts come from `Canopy.Codex.Models`,
+  loaded in the background when a form or the picker needs them.
 
   Model routing (experimental, off by default and unverified until the Phase
   0 spike): the form's Routing section turns it on per agent and picks the
@@ -46,7 +48,7 @@ defmodule CanopyWeb.AgentsLive do
 
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
-  alias CanopyWeb.Nav
+  alias CanopyWeb.{CodexOptions, CostFormat, Nav}
 
   import CanopyWeb.TimelineComponents, only: [schedule_list: 1, message_text: 1]
 
@@ -61,6 +63,8 @@ defmodule CanopyWeb.AgentsLive do
       |> assign(:providers, [])
       |> assign(:model_picker, nil)
       |> assign(:server_defaults, %{})
+      |> assign(:codex_models, [])
+      |> assign(:codex_models_state, nil)
       |> assign_defaults()
       |> assign(:show_inactive, false)
       |> assign(:agent, nil)
@@ -110,7 +114,8 @@ defmodule CanopyWeb.AgentsLive do
          socket
          |> assign(:agent, nil)
          |> assign(:page_title, "New agent")
-         |> assign_form(Agents.change(%Agent{}))}
+         |> assign_form(Agents.change(%Agent{}))
+         |> maybe_load_codex_models(retry: true)}
 
       {action, %{"id" => id}} when action in [:show, :edit] ->
         case Agents.get(id) do
@@ -129,7 +134,13 @@ defmodule CanopyWeb.AgentsLive do
               |> load_agent_details()
 
             {:noreply,
-             if(action == :edit, do: assign_form(socket, Agents.change(agent)), else: socket)}
+             if(action == :edit,
+               do:
+                 socket
+                 |> assign_form(Agents.change(agent))
+                 |> maybe_load_codex_models(retry: true),
+               else: socket
+             )}
         end
     end
   end
@@ -208,10 +219,10 @@ defmodule CanopyWeb.AgentsLive do
     changeset =
       (socket.assigns.agent || %Agent{})
       |> Agents.change(blank_to_nil(params))
-      |> maybe_validate_model(socket.assigns.providers, socket.assigns.default_engine)
+      |> maybe_validate_model(socket.assigns)
       |> Map.put(:action, :validate)
 
-    {:noreply, assign_form(socket, changeset)}
+    {:noreply, socket |> assign_form(changeset) |> maybe_load_codex_models()}
   end
 
   def handle_event("save", %{"agent" => params}, socket) do
@@ -221,7 +232,7 @@ defmodule CanopyWeb.AgentsLive do
     checked =
       editing
       |> Agents.change(params)
-      |> maybe_validate_model(socket.assigns.providers, socket.assigns.default_engine)
+      |> maybe_validate_model(socket.assigns)
 
     result =
       cond do
@@ -397,8 +408,18 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   def handle_event("open_model_picker", %{"id" => id}, socket) do
-    {:noreply, assign(socket, :model_picker, Agents.get!(id))}
+    agent = Agents.get!(id)
+
+    socket =
+      if engine_of(agent, socket.assigns.default_engine) == "codex",
+        do: load_codex_models(socket, retry: true),
+        else: socket
+
+    {:noreply, assign(socket, :model_picker, agent)}
   end
+
+  def handle_event("retry_codex_models", _params, socket),
+    do: {:noreply, load_codex_models(socket, retry: true, refresh: true)}
 
   def handle_event("close_model_picker", _params, socket),
     do: {:noreply, assign(socket, :model_picker, nil)}
@@ -471,6 +492,52 @@ defmodule CanopyWeb.AgentsLive do
 
   def handle_async(:providers, _other, socket), do: {:noreply, assign(socket, :providers, [])}
 
+  def handle_async(:codex_models, {:ok, {:ok, models}}, socket),
+    do: {:noreply, socket |> assign(:codex_models, models) |> assign(:codex_models_state, :ok)}
+
+  def handle_async(:codex_models, {:ok, {:error, reason}}, socket),
+    do: {:noreply, codex_models_failed(socket, reason)}
+
+  def handle_async(:codex_models, {:exit, reason}, socket),
+    do: {:noreply, codex_models_failed(socket, "crashed: #{inspect(reason)}")}
+
+  defp codex_models_failed(socket, reason) do
+    reason = if is_binary(reason), do: reason, else: inspect(reason)
+    socket |> assign(:codex_models, []) |> assign(:codex_models_state, {:error, reason})
+  end
+
+  # Codex's model list, once the form is on Codex (it is cached by
+  # `Canopy.Codex.Models`, so opening the form again is cheap). A failure
+  # sticks until the form is opened again or Try again is pressed (`retry:`),
+  # so a broken Codex isn't started on every keystroke.
+  defp maybe_load_codex_models(socket, opts \\ []) do
+    if form_engine(socket.assigns.form[:engine].value, socket.assigns.default_engine) == "codex",
+      do: load_codex_models(socket, opts),
+      else: socket
+  end
+
+  defp load_codex_models(socket, opts) do
+    state = socket.assigns.codex_models_state
+
+    cond do
+      not connected?(socket) ->
+        socket
+
+      state in [:loading, :ok] ->
+        socket
+
+      match?({:error, _}, state) and not Keyword.get(opts, :retry, false) ->
+        socket
+
+      true ->
+        list_opts = if Keyword.get(opts, :refresh, false), do: [refresh: true], else: []
+
+        socket
+        |> assign(:codex_models_state, :loading)
+        |> start_async(:codex_models, fn -> Canopy.Codex.Models.list(list_opts) end)
+    end
+  end
+
   # The OpenCode model to price: the agent's (or form's) own, else Canopy's
   # default, else OpenCode's own as far as Canopy can tell. With the source.
   defp priced_model({p, m}, _defaults, _server_defaults) when is_binary(p) and is_binary(m),
@@ -489,10 +556,12 @@ defmodule CanopyWeb.AgentsLive do
     end
   end
 
+  # No price per agent on Claude Code or Codex.
   defp agent_price_line(agent, providers, defaults, server_defaults) do
-    if engine_of(agent, defaults.engine) == "claude_code",
-      do: nil,
-      else: opencode_price_line(agent, providers, defaults, server_defaults)
+    case engine_of(agent, defaults.engine) do
+      "opencode" -> opencode_price_line(agent, providers, defaults, server_defaults)
+      _engine -> nil
+    end
   end
 
   defp opencode_price_line(agent, providers, defaults, server_defaults) do
@@ -529,15 +598,30 @@ defmodule CanopyWeb.AgentsLive do
   defp price_of(providers, p, m),
     do: Providers.price_text(Providers.pricing(providers, p, m), providers, p)
 
-  # The provider check only makes sense for agents OpenCode runs; Claude Code
-  # models are checked against the alias list by the schema.
-  defp maybe_validate_model(changeset, providers, default_engine) do
-    if form_engine(Ecto.Changeset.get_field(changeset, :engine), default_engine) == "opencode",
-      do:
+  # OpenCode models are checked against its providers and Codex models (with
+  # their efforts) against its model list; Claude Code models are checked
+  # against the alias list by the schema.
+  defp maybe_validate_model(changeset, assigns) do
+    case form_engine(Ecto.Changeset.get_field(changeset, :engine), assigns.default_engine) do
+      "opencode" ->
         changeset
-        |> Providers.validate(providers)
-        |> Providers.validate(providers, {:light_model_provider, :light_model_id}),
-      else: changeset
+        |> Providers.validate(assigns.providers)
+        |> Providers.validate(assigns.providers, {:light_model_provider, :light_model_id})
+
+      "codex" ->
+        changeset
+        |> Canopy.Codex.Models.validate(assigns.codex_models, {:model_id, :effort},
+          default_model: default_model_id(assigns.defaults, "codex")
+        )
+        |> Canopy.Codex.Models.validate(
+          assigns.codex_models,
+          {:light_model_id, :light_effort},
+          default_model: get_in(assigns.light_defaults, ["codex", :model_id])
+        )
+
+      _engine ->
+        changeset
+    end
   end
 
   defp model_saved(agent, defaults) do
@@ -583,6 +667,7 @@ defmodule CanopyWeb.AgentsLive do
     |> assign(:default_engine, default_engine)
     |> assign(:defaults, Map.put(Settings.default_models(), :engine, default_engine))
     |> assign(:default_effort, Settings.default_effort("claude_code"))
+    |> assign(:default_efforts, Settings.default_efforts())
     |> assign(:light_defaults, Settings.light_profiles())
   end
 
@@ -666,7 +751,7 @@ defmodule CanopyWeb.AgentsLive do
         ],
         into: %{} do
       row = Canopy.Costs.by_agent(since) |> Enum.find(&(&1.key == agent_id))
-      {key, if(row, do: row.cost, else: 0.0)}
+      {key, if(row, do: Map.take(row, [:cost, :estimated]), else: %{cost: 0.0, estimated: 0.0})}
     end
   end
 
@@ -721,11 +806,26 @@ defmodule CanopyWeb.AgentsLive do
   # The engine an agent runs on: its own, else the default.
   defp engine_of(%Agent{engine: engine}, default_engine), do: engine || default_engine
 
+  # The page header follows the engine select, saved or not; Default reads as
+  # the default engine's line.
+  defp form_subtitle(engine) do
+    own =
+      case engine do
+        "claude_code" -> "Claude Code's own system prompt still applies."
+        "codex" -> "Codex's own instructions still apply."
+        "opencode" -> "OpenCode's own agent prompt still applies."
+        other -> "#{engine_label(other)}'s own prompt still applies."
+      end
+
+    "The role and system prompt are sent with every prompt; " <> own
+  end
+
   # The engine the form's agent runs on (the select sends "" for the default).
   defp form_engine(value, default_engine) when value in [nil, ""], do: default_engine
   defp form_engine(value, _default_engine), do: value
 
   defp default_model_label("claude_code"), do: "Claude Code default"
+  defp default_model_label("codex"), do: "Codex default"
   defp default_model_label(_engine), do: "OpenCode default"
 
   # The engine's default model from Settings as a label, or nil when the
@@ -741,13 +841,42 @@ defmodule CanopyWeb.AgentsLive do
   # The "Default (…)" option of a model select.
   defp default_option(defaults, engine) do
     case default_label(defaults, engine) do
-      nil -> if engine == "claude_code", do: "Claude Code's own default", else: "OpenCode default"
+      nil -> own_default_option(engine)
       label -> "Default (#{label})"
     end
   end
 
+  defp own_default_option("claude_code"), do: "Claude Code's own default"
+  defp own_default_option("codex"), do: "Codex's own default"
+  defp own_default_option(_engine), do: "OpenCode default"
+
   defp default_effort_option(nil), do: "Claude Code's own default"
   defp default_effort_option(effort), do: "Default (#{effort})"
+
+  # A Codex effort select left on Default: the effort set in Settings, else
+  # the effective model's own default, else Codex's.
+  defp codex_effort_option(setting_effort, _models, _model, _fallback, _default)
+       when is_binary(setting_effort),
+       do: "Default (#{setting_effort})"
+
+  defp codex_effort_option(_setting_effort, models, model, fallback, default),
+    do: CodexOptions.effort_prompt(models, model, fallback, default)
+
+  defp codex_permission_options do
+    [
+      {"Ask first (default)", "default"},
+      {"Ask only outside the sandbox", "acceptEdits"},
+      {"Read-only (plan)", "plan"}
+    ]
+  end
+
+  # The short form in the list and on the agent page.
+  defp codex_permission_short("acceptEdits"), do: "outside sandbox"
+  defp codex_permission_short("plan"), do: "read-only"
+  defp codex_permission_short(_mode), do: "ask first"
+
+  # The model a Codex default stands for, from Settings (nil: Codex's own).
+  defp default_model_id(defaults, engine), do: get_in(defaults, [engine, :model_id])
 
   # The "Default (…)" option of a light model select: the engine's light
   # model from Settings, or none.
@@ -764,9 +893,9 @@ defmodule CanopyWeb.AgentsLive do
     end
   end
 
-  defp light_effort_option(light_defaults) do
-    case get_in(light_defaults, ["claude_code", :effort]) do
-      nil -> "Default (Claude Code picks)"
+  defp light_effort_option(light_defaults, engine) do
+    case get_in(light_defaults, [engine, :effort]) do
+      nil -> "Default (#{engine_label(engine)} picks)"
       effort -> "Default (#{effort})"
     end
   end
@@ -810,6 +939,7 @@ defmodule CanopyWeb.AgentsLive do
   defp effort_text(_agent, default), do: " · effort #{default} (default)"
 
   defp settings_anchor("claude_code"), do: ~p"/settings" <> "#claude-panel"
+  defp settings_anchor("codex"), do: ~p"/settings" <> "#codex-panel"
   defp settings_anchor(_engine), do: ~p"/settings" <> "#opencode-panel"
 
   defp permission_mode_options do
@@ -874,7 +1004,7 @@ defmodule CanopyWeb.AgentsLive do
     ~H"""
     <Layouts.page
       title="Agents"
-      subtitle="Named coworkers backed by Claude Code or OpenCode and a role prompt"
+      subtitle="Named coworkers backed by Claude Code, Codex or OpenCode and a role prompt"
       max_width="max-w-none"
     >
       <:actions>
@@ -914,11 +1044,14 @@ defmodule CanopyWeb.AgentsLive do
         <span>Default models:</span>
         <%= for {engine, index} <- Enum.with_index(Canopy.Engine.names()) do %>
           <span :if={index > 0} aria-hidden="true">·</span>
+          <%!-- a model id in mono; with none set, the engine's own default, in words --%>
           <span id={"default-model-#{engine}"}>
-            {engine_label(engine)}
-            <span class={["font-mono", default_label(@defaults, engine) && "text-base-content/80"]}>
-              {default_label(@defaults, engine) || "its own default"}
-            </span>
+            <%= if label = default_label(@defaults, engine) do %>
+              {engine_label(engine)}
+              <span class="font-mono text-base-content/80">{label}</span>
+            <% else %>
+              {engine_label(engine)}'s own default
+            <% end %>
           </span>
         <% end %>
         <span aria-hidden="true">·</span>
@@ -991,9 +1124,11 @@ defmodule CanopyWeb.AgentsLive do
                 class="min-w-0 truncate text-sm"
                 title={
                   "#{if is_nil(agent.engine), do: "Default engine: "}" <>
-                    if engine_of(agent, @default_engine) == "claude_code",
-                      do: "Claude Code · #{agent.permission_mode}",
-                      else: "OpenCode · agent #{agent.opencode_agent}"
+                    case engine_of(agent, @default_engine) do
+                      "claude_code" -> "Claude Code · #{agent.permission_mode}"
+                      "codex" -> "Codex · #{codex_permission_short(agent.permission_mode)}"
+                      _ -> "OpenCode · agent #{agent.opencode_agent}"
+                    end
                 }
               >
                 <span
@@ -1002,7 +1137,10 @@ defmodule CanopyWeb.AgentsLive do
                 >{engine_label(engine_of(agent, @default_engine))}</span><span
                   :if={engine_of(agent, @default_engine) == "opencode"}
                   class="text-base-content/60"
-                > · {agent.opencode_agent}</span>
+                > · {agent.opencode_agent}</span><span
+                  :if={engine_of(agent, @default_engine) == "codex"}
+                  class="text-base-content/60"
+                > · {codex_permission_short(agent.permission_mode)}</span>
               </span>
               <button
                 type="button"
@@ -1149,6 +1287,8 @@ defmodule CanopyWeb.AgentsLive do
         engine={engine_of(@model_picker, @default_engine)}
         providers={@providers}
         defaults={@defaults}
+        codex_models={@codex_models}
+        codex_models_state={@codex_models_state}
       />
     </Layouts.page>
     """
@@ -1197,6 +1337,8 @@ defmodule CanopyWeb.AgentsLive do
   attr :providers, :list, required: true
   attr :defaults, :map, required: true
   attr :engine, :string, required: true, doc: "the engine the agent runs on"
+  attr :codex_models, :list, default: []
+  attr :codex_models_state, :any, default: nil
 
   defp model_picker(assigns) do
     ~H"""
@@ -1239,6 +1381,22 @@ defmodule CanopyWeb.AgentsLive do
             <code class="font-mono">opencode serve</code>
             and reload, or set the model on the agent's own page.
           </p>
+          <p
+            :if={
+              @engine == "codex" and
+                (match?({:error, _}, @codex_models_state) or
+                   (@codex_models_state == :ok and @codex_models == []))
+            }
+            id="model-picker-empty"
+            class="px-3 py-6 text-center text-xs text-base-content/60"
+          >
+            No models to choose from: {if @codex_models_state == :ok,
+              do: "Codex listed none",
+              else: "Codex didn't answer"}. Check Codex in <.link
+              navigate={settings_anchor("codex")}
+              class="link"
+            >Settings</.link>.
+          </p>
 
           <button
             type="button"
@@ -1267,6 +1425,8 @@ defmodule CanopyWeb.AgentsLive do
                     Canopy's {engine_label(@engine)} default · change in Settings
                   <% @engine == "claude_code" -> %>
                     Whatever Claude Code is set to use; pick a default in Settings.
+                  <% @engine == "codex" -> %>
+                    Whatever Codex is set to use; pick a default in Settings.
                   <% true -> %>
                     Whatever <code class="font-mono">{@agent.opencode_agent}</code>
                     is configured to use.
@@ -1296,6 +1456,43 @@ defmodule CanopyWeb.AgentsLive do
                 class={["size-4 shrink-0", !current_model?(@agent, nil, model) && "invisible"]}
               />
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
+            </button>
+          </div>
+
+          <div :if={@engine == "codex"} id="model-picker-codex" class="mt-1">
+            <p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
+              Codex
+            </p>
+            <p
+              :if={@codex_models_state in [nil, :loading]}
+              id="model-picker-loading"
+              class="px-3 py-2 text-xs text-base-content/60"
+            >
+              Loading models…
+            </p>
+            <button
+              :for={model <- @codex_models}
+              type="button"
+              id={model_dom_id("codex", model.id)}
+              phx-click="pick_model"
+              phx-value-provider=""
+              phx-value-model={model.id}
+              class={[
+                "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition hover:bg-base-300/60",
+                current_model?(@agent, nil, model.id) && "bg-primary/10"
+              ]}
+            >
+              <.icon
+                name="hero-check-mini"
+                class={["size-4 shrink-0", !current_model?(@agent, nil, model.id) && "invisible"]}
+              />
+              <span class="min-w-0 flex-1 truncate text-sm">{model.label}</span>
+              <span
+                :if={model.label != model.id}
+                class="shrink-0 font-mono text-[11px] text-base-content/60"
+              >
+                {model.id}
+              </span>
             </button>
           </div>
 
@@ -1461,10 +1658,23 @@ defmodule CanopyWeb.AgentsLive do
                     (<.link navigate={~p"/settings" <> "#engine-panel"} class="link">default</.link>)
                   </span>
                 </dd>
-                <%= if engine_of(@agent, @default_engine) == "claude_code" do %>
+                <%= if engine_of(@agent, @default_engine) in ["claude_code", "codex"] do %>
                   <dt class="text-base-content/60">Permissions</dt>
-                  <dd id="agent-permissions" class="font-mono text-xs">
-                    {@agent.permission_mode}{effort_text(@agent, @default_effort)}
+                  <dd
+                    id="agent-permissions"
+                    class={[
+                      "text-xs",
+                      engine_of(@agent, @default_engine) == "claude_code" && "font-mono"
+                    ]}
+                  >
+                    <%= if engine_of(@agent, @default_engine) == "codex" do %>
+                      {codex_permission_short(@agent.permission_mode)}{effort_text(
+                        @agent,
+                        @default_efforts["codex"]
+                      )}
+                    <% else %>
+                      {@agent.permission_mode}{effort_text(@agent, @default_effort)}
+                    <% end %>
                     <a
                       :if={@agent_grants != []}
                       href="#agent-global-permissions"
@@ -1517,9 +1727,18 @@ defmodule CanopyWeb.AgentsLive do
                 </dd>
                 <dt class="text-base-content/60">Spend</dt>
                 <dd id="agent-spend" class="text-xs tabular-nums">
-                  {Canopy.Costs.money(@agent_spend.today)} today · {Canopy.Costs.money(
-                    @agent_spend.week
-                  )} this week · {Canopy.Costs.money(@agent_spend.all)} all time
+                  <span title={CostFormat.estimate_title(@agent_spend.today)}>
+                    {CostFormat.money(@agent_spend.today)}
+                  </span>
+                  today ·
+                  <span title={CostFormat.estimate_title(@agent_spend.week)}>
+                    {CostFormat.money(@agent_spend.week)}
+                  </span>
+                  this week ·
+                  <span title={CostFormat.estimate_title(@agent_spend.all)}>
+                    {CostFormat.money(@agent_spend.all)}
+                  </span>
+                  all time
                 </dd>
               </dl>
             </div>
@@ -1793,7 +2012,7 @@ defmodule CanopyWeb.AgentsLive do
     ~H"""
     <Layouts.page
       title={if @agent, do: "Edit @#{@agent.name}", else: "New agent"}
-      subtitle="The role and system prompt are sent with every prompt; OpenCode's own agent prompt still applies."
+      subtitle={form_subtitle(form_engine(@form[:engine].value, @default_engine))}
       max_width="max-w-4xl"
     >
       <:actions>
@@ -1866,135 +2085,221 @@ defmodule CanopyWeb.AgentsLive do
             label="Engine"
             options={engine_options(@default_engine)}
           />
-          <%= if form_engine(@form[:engine].value, @default_engine) == "claude_code" do %>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <.input
-                field={@form[:model_id]}
-                type="select"
-                id="claude-model"
-                label="Model"
-                prompt={default_option(@defaults, "claude_code")}
-                options={Agent.claude_models()}
-              />
-              <.input
-                field={@form[:effort]}
-                type="select"
-                id="claude-effort"
-                label="Effort"
-                prompt={default_effort_option(@default_effort)}
-                options={Agent.efforts()}
-              />
-              <.input
-                field={@form[:permission_mode]}
-                type="select"
-                id="claude-permission-mode"
-                label="Permissions"
-                options={permission_mode_options()}
-              />
-            </div>
-            <.input
-              field={@form[:allowed_tools]}
-              type="textarea"
-              id="claude-allowed-tools"
-              label="Tools that run without asking (one per line or comma-separated; blank for the default set)"
-              rows="3"
-              placeholder="Read, Glob, Grep, Edit, Write, Bash(git *)"
-              class="w-full textarea font-mono text-xs leading-relaxed"
-            />
-            <p class="text-xs text-base-content/60">
-              Permissions: <em>ask first</em>
-              puts every tool not on the list on a permission
-              card in the channel; <em>auto-approve edits</em>
-              also lets file edits through; <em>read-only</em>
-              is plan mode. The Canopy tools are always allowed. Model aliases <code class="font-mono">fable</code>, <code class="font-mono">opus</code>, <code class="font-mono">sonnet</code>, and
-              <code class="font-mono">haiku</code>
-              name the latest of each family; Claude Code picks the exact version. <em>Default</em>
-              follows the model and effort set in <.link
-                navigate={settings_anchor("claude_code")}
-                class="link"
-              >Settings</.link>.
-            </p>
-          <% else %>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <.input
-                field={@form[:opencode_agent]}
-                type="select"
-                id="opencode-agents"
-                label="OpenCode agent"
-                options={opencode_agent_options(@opencode_agents, @form[:opencode_agent].value)}
-              />
-              <%= if @providers != [] do %>
-                <.input
-                  field={@form[:model_provider]}
-                  type="select"
-                  label="Model provider (optional)"
-                  prompt={default_option(@defaults, "opencode")}
-                  options={Providers.provider_options(@providers, @form[:model_provider].value)}
-                />
+          <%= case form_engine(@form[:engine].value, @default_engine) do %>
+            <% "claude_code" -> %>
+              <div class="grid gap-3 sm:grid-cols-3">
                 <.input
                   field={@form[:model_id]}
                   type="select"
-                  label="Model (optional)"
+                  id="claude-model"
+                  label="Model"
+                  prompt={default_option(@defaults, "claude_code")}
+                  options={Agent.claude_models()}
+                />
+                <.input
+                  field={@form[:effort]}
+                  type="select"
+                  id="claude-effort"
+                  label="Effort"
+                  prompt={default_effort_option(@default_effort)}
+                  options={Agent.efforts()}
+                />
+                <.input
+                  field={@form[:permission_mode]}
+                  type="select"
+                  id="claude-permission-mode"
+                  label="Permissions"
+                  options={permission_mode_options()}
+                />
+              </div>
+              <.input
+                field={@form[:allowed_tools]}
+                type="textarea"
+                id="claude-allowed-tools"
+                label="Tools that run without asking (one per line or comma-separated; blank for the default set)"
+                rows="3"
+                placeholder="Read, Glob, Grep, Edit, Write, Bash(git *)"
+                class="w-full textarea font-mono text-xs leading-relaxed"
+              />
+              <p class="text-xs text-base-content/60">
+                Permissions: <em>ask first</em>
+                puts every tool not on the list on a permission
+                card in the channel; <em>auto-approve edits</em>
+                also lets file edits through; <em>read-only</em>
+                is plan mode. The Canopy tools are always allowed. Model aliases <code class="font-mono">fable</code>, <code class="font-mono">opus</code>, <code class="font-mono">sonnet</code>, and
+                <code class="font-mono">haiku</code>
+                name the latest of each family; Claude Code picks the exact version. <em>Default</em>
+                follows the model and effort set in <.link
+                  navigate={settings_anchor("claude_code")}
+                  class="link"
+                >Settings</.link>.
+              </p>
+            <% "codex" -> %>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <.input
+                  field={@form[:model_id]}
+                  type="select"
+                  id="codex-model"
+                  label="Model"
                   prompt={
-                    if @form[:model_provider].value, do: "Pick a model", else: "Pick a provider first"
+                    if @codex_models_state in [nil, :loading],
+                      do: "Loading models…",
+                      else: default_option(@defaults, "codex")
                   }
                   options={
-                    Providers.model_options(
-                      @providers,
-                      @form[:model_provider].value,
-                      @form[:model_id].value
+                    if @codex_models_state == :ok,
+                      do: CodexOptions.model_options(@codex_models, @form[:model_id].value),
+                      else: List.wrap(@form[:model_id].value)
+                  }
+                  disabled={@codex_models_state in [nil, :loading]}
+                />
+                <.input
+                  field={@form[:effort]}
+                  type="select"
+                  id="codex-effort"
+                  label="Effort"
+                  prompt={
+                    codex_effort_option(
+                      @default_efforts["codex"],
+                      @codex_models,
+                      @form[:model_id].value,
+                      default_model_id(@defaults, "codex"),
+                      "Codex's own default"
                     )
                   }
-                  disabled={
-                    is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
+                  options={
+                    CodexOptions.effort_options(
+                      @codex_models,
+                      @form[:model_id].value,
+                      default_model_id(@defaults, "codex"),
+                      @form[:effort].value
+                    )
                   }
-                />
-              <% else %>
-                <.input
-                  field={@form[:model_provider]}
-                  type="text"
-                  label="Model provider (optional)"
-                  placeholder="opencode"
-                  autocomplete="off"
-                  spellcheck="false"
+                  disabled={@codex_models_state in [nil, :loading]}
                 />
                 <.input
-                  field={@form[:model_id]}
-                  type="text"
-                  label="Model id (optional)"
-                  placeholder="claude-haiku-4-5"
-                  autocomplete="off"
-                  spellcheck="false"
+                  field={@form[:permission_mode]}
+                  type="select"
+                  id="codex-permission-mode"
+                  label="Permissions"
+                  options={codex_permission_options()}
                 />
-              <% end %>
-            </div>
-            <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
-              {form_price_line(@form, @providers, @defaults, @server_defaults)}
-            </p>
-            <p class="text-xs text-base-content/60">
-              <code class="font-mono">build</code>
-              can edit files; <code class="font-mono">plan</code>
-              is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
-              once a repository is registered and <code class="font-mono">opencode serve</code>
-              is up.
-              <%= cond do %>
-                <% default_label(@defaults, "opencode") -> %>
-                  Leave the model blank to use the default, {default_label(@defaults, "opencode")} (<.link
-                    navigate={settings_anchor("opencode")}
-                    class="link"
-                  >Settings</.link>).
-                <% @providers != [] -> %>
-                  Leave the model blank to use that agent's default.
-                <% true -> %>
-                  Leave the model blank to use OpenCode's default.
-              <% end %>
-            </p>
+              </div>
+              <p
+                :if={match?({:error, _}, @codex_models_state)}
+                id="codex-models-unavailable"
+                class="-mt-1 text-xs text-warning"
+              >
+                Couldn't read Codex's models: {elem(@codex_models_state, 1)}. Check Codex in <.link
+                  navigate={settings_anchor("codex")}
+                  class="link"
+                >Settings</.link>, then <button
+                  type="button"
+                  id="codex-models-retry"
+                  phx-click="retry_codex_models"
+                  class="link"
+                >try again</button>.
+              </p>
+              <p id="codex-permissions-help" class="text-xs text-base-content/60">
+                Permissions: <em>ask first</em>
+                edits files in the repo and runs plain git commands freely, and puts other
+                commands, files outside the repo and the repo's agent settings
+                (<code class="font-mono">.git</code>, <code class="font-mono">.codex</code>, <code class="font-mono">.claude</code>, <code class="font-mono">.mcp.json</code>, <code class="font-mono">.canopy</code>)
+                on a permission card in the channel; <em>ask only outside the sandbox</em>
+                edits and runs freely in the repo, with a card for network or files elsewhere;
+                <em>read-only</em>
+                reads; a command outside the sandbox asks, once at a time. Model and effort lists
+                come from Codex. <em>Default</em>
+                follows the model and effort set in <.link
+                  navigate={settings_anchor("codex")}
+                  class="link"
+                >Settings</.link>. The Canopy tools are always allowed.
+              </p>
+            <% _ -> %>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <.input
+                  field={@form[:opencode_agent]}
+                  type="select"
+                  id="opencode-agents"
+                  label="OpenCode agent"
+                  options={opencode_agent_options(@opencode_agents, @form[:opencode_agent].value)}
+                />
+                <%= if @providers != [] do %>
+                  <.input
+                    field={@form[:model_provider]}
+                    type="select"
+                    label="Model provider (optional)"
+                    prompt={default_option(@defaults, "opencode")}
+                    options={Providers.provider_options(@providers, @form[:model_provider].value)}
+                  />
+                  <.input
+                    field={@form[:model_id]}
+                    type="select"
+                    label="Model (optional)"
+                    prompt={
+                      if @form[:model_provider].value,
+                        do: "Pick a model",
+                        else: "Pick a provider first"
+                    }
+                    options={
+                      Providers.model_options(
+                        @providers,
+                        @form[:model_provider].value,
+                        @form[:model_id].value
+                      )
+                    }
+                    disabled={
+                      is_nil(@form[:model_provider].value) or @form[:model_provider].value == ""
+                    }
+                  />
+                <% else %>
+                  <.input
+                    field={@form[:model_provider]}
+                    type="text"
+                    label="Model provider (optional)"
+                    placeholder="opencode"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <.input
+                    field={@form[:model_id]}
+                    type="text"
+                    label="Model id (optional)"
+                    placeholder="claude-haiku-4-5"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                <% end %>
+              </div>
+              <p :if={@providers != []} id="model-price" class="-mt-1 text-xs text-base-content/60">
+                {form_price_line(@form, @providers, @defaults, @server_defaults)}
+              </p>
+              <p class="text-xs text-base-content/60">
+                <code class="font-mono">build</code>
+                can edit files; <code class="font-mono">plan</code>
+                is read-only, a good fit for advisory roles. Agents from your OpenCode config appear
+                once a repository is registered and <code class="font-mono">opencode serve</code>
+                is up.
+                <%= cond do %>
+                  <% default_label(@defaults, "opencode") -> %>
+                    Leave the model blank to use the default, {default_label(@defaults, "opencode")} (<.link
+                      navigate={settings_anchor("opencode")}
+                      class="link"
+                    >Settings</.link>).
+                  <% @providers != [] -> %>
+                    Leave the model blank to use that agent's default.
+                  <% true -> %>
+                    Leave the model blank to use OpenCode's default.
+                <% end %>
+              </p>
           <% end %>
           <.routing_fields
             form={@form}
             engine={form_engine(@form[:engine].value, @default_engine)}
             providers={@providers}
             light_defaults={@light_defaults}
+            codex_models={@codex_models}
+            codex_models_state={@codex_models_state}
           />
           <div class="flex items-center gap-2 pt-1">
             <.button type="submit" variant="primary" id="save-agent">
@@ -2011,6 +2316,8 @@ defmodule CanopyWeb.AgentsLive do
   attr :providers, :list, required: true
   attr :light_defaults, :map, required: true
   attr :engine, :string, required: true, doc: "the engine the form's agent runs on"
+  attr :codex_models, :list, default: []
+  attr :codex_models_state, :any, default: nil
 
   # Model routing on the edit form: off by default, experimental, with the
   # light model and effort in the same pattern as the main ones.
@@ -2062,11 +2369,45 @@ defmodule CanopyWeb.AgentsLive do
             type="select"
             id="claude-light-effort"
             label="Light effort"
-            prompt={light_effort_option(@light_defaults)}
+            prompt={light_effort_option(@light_defaults, "claude_code")}
             options={Agent.efforts()}
           />
         </div>
-      <% else %>
+      <% end %>
+      <%= if @engine == "codex" do %>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <.input
+            field={@form[:light_model_id]}
+            type="select"
+            id="codex-light-model"
+            label="Light model"
+            prompt={light_default_option(@light_defaults, "codex")}
+            options={
+              if @codex_models_state == :ok,
+                do: CodexOptions.model_options(@codex_models, @form[:light_model_id].value),
+                else: List.wrap(@form[:light_model_id].value)
+            }
+            disabled={@codex_models_state in [nil, :loading]}
+          />
+          <.input
+            field={@form[:light_effort]}
+            type="select"
+            id="codex-light-effort"
+            label="Light effort"
+            prompt={light_effort_option(@light_defaults, "codex")}
+            options={
+              CodexOptions.effort_options(
+                @codex_models,
+                @form[:light_model_id].value,
+                get_in(@light_defaults, ["codex", :model_id]),
+                @form[:light_effort].value
+              )
+            }
+            disabled={@codex_models_state in [nil, :loading]}
+          />
+        </div>
+      <% end %>
+      <%= if @engine not in ["claude_code", "codex"] do %>
         <div class="grid gap-3 sm:grid-cols-2">
           <%= if @providers != [] do %>
             <.input

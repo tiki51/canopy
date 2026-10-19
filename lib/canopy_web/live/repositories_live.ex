@@ -467,7 +467,7 @@ defmodule CanopyWeb.RepositoriesLive do
               </div>
 
               <.engine_section
-                :for={engine <- inventory.engines}
+                :for={engine <- Canopy.Engine.sort_by_engine(inventory.engines, & &1.engine)}
                 engine={engine}
                 open?={engine.in_use? or MapSet.member?(@expanded, engine.engine)}
                 busy?={@busy?}
@@ -577,6 +577,13 @@ defmodule CanopyWeb.RepositoriesLive do
           </div>
         </dl>
 
+        <p
+          :if={@engine.engine == "codex"}
+          id="mcp-codex-note"
+          class="text-xs text-base-content/60"
+        >
+          Codex loads these next to Canopy's tools.
+        </p>
         <.server_table
           id={"mcp-servers-#{@engine.engine}"}
           engine={@engine.engine}

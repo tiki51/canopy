@@ -1,8 +1,9 @@
 defmodule CanopyWeb.CostsLive do
   @moduledoc """
-  Spend, from the cost OpenCode reports per turn: totals, a daily bar for the
-  last two weeks, and breakdowns by agent, channel, and model for a chosen
-  period. Updates live as turns finish. The Model routing card (experimental)
+  Spend, from the cost Claude Code and OpenCode report per turn and the cost
+  estimated from Codex's tokens (marked `≈`, see `CanopyWeb.CostFormat`):
+  totals, a daily bar for the last two weeks next to the split by engine, and
+  breakdowns by agent, channel, model and trigger for a chosen period. Updates live as turns finish. The Model routing card (experimental)
   shows routed agents, light turns, escalations, and the estimated net
   saving once routing runs, and the routing candidates with an estimated
   saving before it does.
@@ -12,6 +13,7 @@ defmodule CanopyWeb.CostsLive do
 
   alias Canopy.Costs
   alias Canopy.Costs.{Auditor, Routing}
+  alias CanopyWeb.{CostFormat, EngineComponents}
 
   @periods [today: "Today", week: "7 days", month: "30 days", all: "All time"]
   @page 6
@@ -108,6 +110,7 @@ defmodule CanopyWeb.CostsLive do
     |> assign(:by_channel, Costs.by_channel(since))
     |> assign(:by_model, Costs.by_model(since))
     |> assign(:by_trigger, Costs.by_trigger(since))
+    |> assign(:by_engine, Costs.by_engine(since))
     |> assign(:efficiency, Costs.efficiency(since))
     |> assign(:top_turns, Costs.top_turns(since, @page))
     |> assign(:budgets, Costs.channel_budgets())
@@ -195,7 +198,7 @@ defmodule CanopyWeb.CostsLive do
     >
       <Layouts.page
         title="Costs"
-        subtitle="What agents spend, as reported by the model providers through OpenCode"
+        subtitle="What agents spend. Claude Code and OpenCode report their costs; ≈ marks Codex costs estimated from tokens."
         max_width="max-w-none"
       >
         <:actions>
@@ -219,29 +222,44 @@ defmodule CanopyWeb.CostsLive do
 
         <.auditor_panel auditor={@auditor} agents={@agents} focus={@audit_focus} />
 
-        <Layouts.panel id="cost-days" title="Last 14 days" description="Per day, your local time.">
-          <div class="flex h-36 items-end gap-1">
-            <div
-              :for={day <- @by_day}
-              id={"day-#{day.day}"}
-              class="flex h-full flex-1 flex-col items-center justify-end"
-              title={"#{day.day}: #{Costs.money(day.cost)} · #{count(day.turns, "turn")}"}
-            >
-              <span :if={day.cost > 0} class="mb-1 text-[9px] tabular-nums text-base-content/60">
-                {Costs.money(day.cost)}
-              </span>
+        <div class="grid gap-6 lg:grid-cols-3">
+          <Layouts.panel
+            id="cost-days"
+            title="Last 14 days"
+            description="Per day, your local time."
+            class="lg:col-span-2"
+          >
+            <div class="flex h-36 items-end gap-1">
               <div
-                class={[
-                  "w-full rounded-t",
-                  day.cost > 0 && "bg-primary/70",
-                  day.cost == 0 && "bg-base-300"
-                ]}
-                style={"height: #{max(2, share(day.cost, Enum.max_by(@by_day, & &1.cost).cost))}%"}
-              />
-              <span class="mt-1 text-[9px] text-base-content/60">{Calendar.strftime(day.day, "%d")}</span>
+                :for={day <- @by_day}
+                id={"day-#{day.day}"}
+                class="flex h-full flex-1 flex-col items-center justify-end"
+                title={
+                "#{day.day}: #{CostFormat.money(day)} · #{count(day.turns, "turn")}" <>
+                  if(CostFormat.estimated?(day.estimated),
+                    do: " (#{CostFormat.estimate_title(day)})",
+                    else: ""
+                  )
+              }
+              >
+                <span :if={day.cost > 0} class="mb-1 text-[9px] tabular-nums text-base-content/60">
+                  {CostFormat.money(day)}
+                </span>
+                <div
+                  class={[
+                    "w-full rounded-t",
+                    day.cost > 0 && "bg-primary/70",
+                    day.cost == 0 && "bg-base-300"
+                  ]}
+                  style={"height: #{max(2, share(day.cost, Enum.max_by(@by_day, & &1.cost).cost))}%"}
+                />
+                <span class="mt-1 text-[9px] text-base-content/60">{Calendar.strftime(day.day, "%d")}</span>
+              </div>
             </div>
-          </div>
-        </Layouts.panel>
+          </Layouts.panel>
+
+          <.by_engine rows={@by_engine} total={@period_total.cost} />
+        </div>
 
         <Layouts.panel
           id="efficiency"
@@ -250,7 +268,12 @@ defmodule CanopyWeb.CostsLive do
         >
           <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
             <.metric id="eff-steps" label="Model calls" value={@efficiency.steps} />
-            <.metric id="eff-avg-cost" label="Per turn" value={Costs.money(@efficiency.avg_cost)} />
+            <.metric
+              id="eff-avg-cost"
+              label="Per turn"
+              value={CostFormat.money(@efficiency.avg_cost, @efficiency.avg_estimated)}
+              title={CostFormat.estimate_title(@efficiency.avg_cost, @efficiency.avg_estimated)}
+            />
             <.metric
               id="eff-context"
               label="Context per call"
@@ -274,13 +297,13 @@ defmodule CanopyWeb.CostsLive do
               id="eff-passed"
               label="Nothing to add"
               value={@efficiency.passed.turns}
-              hint={Costs.money(@efficiency.passed.cost) <> " for no reply"}
+              hint={CostFormat.money(@efficiency.passed) <> " for no reply"}
             />
             <.metric
               id="eff-errors"
               label="Error turns"
               value={@efficiency.errors.turns}
-              hint={"#{Costs.money(@efficiency.errors.cost)} · #{count(@efficiency.compactions, "compaction")}"}
+              hint={"#{CostFormat.money(@efficiency.errors)} · #{count(@efficiency.compactions, "compaction")}"}
             />
           </dl>
         </Layouts.panel>
@@ -352,7 +375,15 @@ defmodule CanopyWeb.CostsLive do
                   </thead>
                   <tbody>
                     <tr :for={t <- @top_turns} id={"turn-#{t.id}"}>
-                      <td class="tabular-nums font-medium">{Costs.money(t.cost)}</td>
+                      <td
+                        class="tabular-nums font-medium"
+                        title={
+                          t.cost_estimated &&
+                            CostFormat.estimate_title(t.cost, t.cost)
+                        }
+                      >
+                        {CostFormat.money(t.cost, if(t.cost_estimated, do: t.cost, else: 0))}
+                      </td>
                       <td>{t.agent}</td>
                       <td>
                         <.link
@@ -426,8 +457,11 @@ defmodule CanopyWeb.CostsLive do
                   >
                     {b.label}
                   </.link>
-                  <span class={["shrink-0 tabular-nums", b.reached? && "text-error"]}>
-                    {Costs.money(b.spent)} / {Costs.money(b.limit)}
+                  <span
+                    class={["shrink-0 tabular-nums", b.reached? && "text-error"]}
+                    title={CostFormat.estimate_title(b.spent, b[:estimated])}
+                  >
+                    {CostFormat.money(b.spent, b[:estimated])} / {Costs.money(b.limit)}
                   </span>
                 </div>
                 <div class="mt-1 h-1.5 w-full overflow-hidden rounded bg-base-300">
@@ -458,10 +492,11 @@ defmodule CanopyWeb.CostsLive do
   attr :label, :string, required: true
   attr :value, :any, required: true
   attr :hint, :string, default: nil
+  attr :title, :string, default: nil
 
   defp metric(assigns) do
     ~H"""
-    <div id={@id}>
+    <div id={@id} title={@title}>
       <dt class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">
         {@label}
       </dt>
@@ -603,7 +638,9 @@ defmodule CanopyWeb.CostsLive do
           </tbody>
         </table>
         <p class="mt-1 text-[11px] text-base-content/60">
-          Light models: {Enum.map_join(@candidates.light_models, " · ", fn {engine, model} ->
+          Light models: {@candidates.light_models
+          |> Canopy.Engine.sort_by_engine(&elem(&1, 0))
+          |> Enum.map_join(" · ", fn {engine, model} ->
             "#{Canopy.Engine.label(engine)} #{model || "none set"}#{if @candidates.assumed[engine], do: " (assumed)", else: ""}"
           end)}. List prices; cache warmth guessed from how soon each turn followed the last.
         </p>
@@ -620,11 +657,52 @@ defmodule CanopyWeb.CostsLive do
     ~H"""
     <div id={@id} class="rounded-xl border border-base-300 bg-base-200 px-5 py-4">
       <p class="text-[11px] font-semibold uppercase tracking-wider text-base-content/60">{@label}</p>
-      <p class="mt-1 text-2xl font-semibold tabular-nums">{Costs.money(@total.cost)}</p>
+      <p class="mt-1 text-2xl font-semibold tabular-nums" title={CostFormat.estimate_title(@total)}>
+        {CostFormat.money(@total)}
+      </p>
       <p class="mt-0.5 text-xs text-base-content/60">
         {count(@total.turns, "turn")} · {count(@total.tools, "tool call")}
       </p>
     </div>
+    """
+  end
+
+  attr :rows, :list, required: true
+  attr :total, :float, required: true
+
+  # Spend per engine, in engine order, each bar in its engine's colour.
+  # Always drawn, so the row with the daily bars doesn't jump.
+  defp by_engine(assigns) do
+    assigns =
+      assign(assigns, :estimated?, Enum.any?(assigns.rows, &CostFormat.estimated?(&1.estimated)))
+
+    ~H"""
+    <Layouts.panel id="by-engine" title="By engine" description="For the chosen period.">
+      <ul :if={@rows != []} class="flex flex-col divide-y divide-base-300">
+        <li :for={row <- @rows} id={"by-engine-#{row.key}"} class="py-2 text-sm">
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="min-w-0 truncate font-medium">{row.label}</span>
+            <span class="shrink-0 tabular-nums" title={CostFormat.estimate_title(row)}>
+              {CostFormat.money(row)}
+            </span>
+          </div>
+          <div class="mt-1 h-1.5 w-full overflow-hidden rounded bg-base-300">
+            <div
+              class={["h-full rounded", EngineComponents.engine_bar_class(row.key)]}
+              style={"width: #{share(row.cost, @total)}%"}
+            />
+          </div>
+          <p class="mt-1 text-[11px] text-base-content/60">
+            {count(row.turns, "turn")} · {count(row.tools, "tool call")} · {duration(row.duration_ms)}
+          </p>
+        </li>
+      </ul>
+      <p :if={@rows == []} class="text-xs text-base-content/60">Nothing in this period.</p>
+      <p :if={@estimated?} id="by-engine-estimate-note" class="mt-2 text-xs text-base-content/60">
+        ≈ includes Codex estimates: tokens at OpenAI's API list prices. On a ChatGPT plan you pay
+        the plan, not these amounts.
+      </p>
+    </Layouts.panel>
     """
   end
 
@@ -658,7 +736,9 @@ defmodule CanopyWeb.CostsLive do
               </.link>
               <span :if={not (@link == :channel and is_binary(row.key))}>{row.label}</span>
             </span>
-            <span class="shrink-0 tabular-nums">{Costs.money(row.cost)}</span>
+            <span class="shrink-0 tabular-nums" title={CostFormat.estimate_title(row)}>
+              {CostFormat.money(row)}
+            </span>
           </div>
           <div class="mt-1 h-1.5 w-full overflow-hidden rounded bg-base-300">
             <div class="h-full rounded bg-secondary/70" style={"width: #{share(row.cost, @total)}%"} />

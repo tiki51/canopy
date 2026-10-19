@@ -555,8 +555,15 @@ defmodule CanopyWeb.Layouts do
     <header class="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-base-300 px-3 sm:px-6">
       <div class="flex min-w-0 items-center gap-3">
         <.menu_button />
-        <h1 class="truncate text-base font-semibold">{@title}</h1>
-        <p :if={@subtitle} class="truncate text-xs text-base-content/60">{@subtitle}</p>
+        <%!-- the title never shrinks for the subtitle (a shrinkable title loses a fraction of a pixel
+             whenever the subtitle truncates, and shows an ellipsis); it truncates only when it alone
+             is wider than the room left beside the menu button and the actions --%>
+        <div class="flex min-w-0 items-center gap-3">
+          <h1 class="max-w-full shrink-0 truncate text-base font-semibold">{@title}</h1>
+          <p :if={@subtitle} class="min-w-0 truncate text-xs text-base-content/60">
+            {@subtitle}
+          </p>
+        </div>
       </div>
       <div :if={@actions != []} class="flex shrink-0 items-center gap-2">
         {render_slot(@actions)}

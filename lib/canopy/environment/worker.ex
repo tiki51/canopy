@@ -109,6 +109,7 @@ defmodule Canopy.Environment.Worker do
         pause_oban()
         Canopy.Runtime.Supervisor.stop_all_channels()
         Canopy.ClaudeCode.Supervisor.stop_all_turns()
+        Canopy.Codex.Supervisor.stop_all_turns()
         {:ok, ctx}
 
       {:error, :timeout} ->

@@ -90,8 +90,8 @@ test.describe("settings", () => {
     await page.locator("#claude-default-effort").selectOption("");
     await page.locator("#save-claude").click();
     await gotoLive(page, "/agents");
-    await expect(page.locator("#default-model-opencode")).toContainText("its own default");
-    await expect(page.locator("#default-model-claude_code")).toContainText("its own default");
+    await expect(page.locator("#default-model-opencode")).toContainText("OpenCode's own default");
+    await expect(page.locator("#default-model-claude_code")).toContainText("Claude Code's own default");
   });
 
   test("the default engine moves the seeded agents with it", async ({ page }) => {
@@ -115,6 +115,39 @@ test.describe("settings", () => {
     } finally {
       // back to OpenCode (bin/server.sh) for the specs that follow
       sql("UPDATE settings SET default_engine = 'opencode'");
+    }
+  });
+
+  test("three engine cards, and Check Codex against the fake", async ({ page }) => {
+    await gotoLive(page, "/settings");
+    const cards = page.locator("#default-engine-choice [role=radio]");
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(0)).toHaveAttribute("id", "default-engine-choice-claude_code");
+    await expect(cards.nth(1)).toHaveAttribute("id", "default-engine-choice-codex");
+    await expect(cards.nth(2)).toHaveAttribute("id", "default-engine-choice-opencode");
+    // found on PATH, not checked on mount
+    const codex = page.locator("#default-engine-choice-codex");
+    await expect(codex).toHaveAttribute("data-ready", "installed");
+
+    await page.locator("#check-codex").click();
+    await expect(page.locator("#codex-check-result")).toContainText("signed in");
+    await expect(codex).toHaveAttribute("data-ready", "ready");
+
+    // a default model and effort from Codex's list, shown on the Agents hint
+    const model = page.locator("#codex-default-model");
+    await expect(model).toBeEnabled();
+    const id = await model.locator("option").nth(1).getAttribute("value");
+    try {
+      await model.selectOption(id!);
+      const effort = page.locator("#codex-default-effort");
+      const level = await effort.locator("option").nth(1).getAttribute("value");
+      await effort.selectOption(level!);
+      await page.locator("#save-codex").click();
+      await expect(page.locator("#flash-info")).toContainText("Saved.");
+      await gotoLive(page, "/agents");
+      await expect(page.locator("#default-model-codex")).toContainText(id!);
+    } finally {
+      sql("UPDATE settings SET codex_default_model = NULL, codex_default_effort = NULL");
     }
   });
 

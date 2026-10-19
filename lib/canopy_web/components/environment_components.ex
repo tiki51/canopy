@@ -399,7 +399,12 @@ defmodule CanopyWeb.EnvironmentComponents do
             {n(@d.documents)} · {Canopy.Documents.size_label(@d.document_bytes)}
           </dd>
           <dt>Cost history</dt>
-          <dd class="text-right tabular-nums">{Canopy.Costs.money(@d.cost_usd)}</dd>
+          <dd
+            class="text-right tabular-nums"
+            title={CanopyWeb.CostFormat.estimate_title(@d.cost_usd, @d[:cost_estimated])}
+          >
+            {CanopyWeb.CostFormat.money(@d.cost_usd, @d[:cost_estimated])}
+          </dd>
         </dl>
       </section>
       <section class="rounded-lg border border-base-300 bg-base-100 p-3">
@@ -411,7 +416,7 @@ defmodule CanopyWeb.EnvironmentComponents do
           </li>
         </ul>
         <p class="mt-2 text-xs text-base-content/60">
-          Claude Code / OpenCode session files on disk are left alone; Canopy just forgets them.
+          Claude Code, Codex and OpenCode session files on disk are left alone; Canopy just forgets them.
         </p>
       </section>
     </div>

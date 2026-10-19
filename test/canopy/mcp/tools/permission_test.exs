@@ -259,6 +259,58 @@ defmodule Canopy.MCP.Tools.PermissionTest do
     assert message =~ "Claude Code sessions only"
   end
 
+  test "a Codex session is refused when the assign carries the row id, as the auth plug's does",
+       ctx do
+    codex = Fixtures.agent_fixture(%{engine: "codex"})
+
+    session =
+      Fixtures.session_fixture(%{
+        channel: ctx.channel,
+        agent_id: codex.id,
+        engine: "codex",
+        engine_session_id: Ecto.UUID.generate(),
+        mcp_token: AgentSessions.generate_mcp_token()
+      })
+
+    params = %{tool_name: "Bash", input: %{"command" => "ls"}, tool_use_id: "toolu_cx_id"}
+
+    assert {:error, "the permission tool is for Claude Code sessions only"} =
+             MCPHelpers.execute(Permission, params, %{
+               canopy_session: %{
+                 id: session.id,
+                 engine: "codex",
+                 engine_session_id: session.engine_session_id
+               }
+             })
+
+    refute_receive {:telemetry, _, %Event{type: :approval_required}}, 100
+    assert PermissionRequests.pending_for_channel(ctx.channel.id) == []
+  end
+
+  test "a Codex session calling the tool is refused, with no card", ctx do
+    agent = Fixtures.agent_fixture(%{engine: "codex"})
+
+    session =
+      Fixtures.session_fixture(%{
+        channel: ctx.channel,
+        agent_id: agent.id,
+        engine: "codex",
+        engine_session_id: Ecto.UUID.generate(),
+        mcp_token: AgentSessions.generate_mcp_token()
+      })
+
+    assert {:error, message} =
+             MCPHelpers.call_as_session(
+               Permission,
+               %{tool_name: "Bash", input: %{"command" => "ls"}, tool_use_id: "toolu_cx"},
+               session
+             )
+
+    assert message == "the permission tool is for Claude Code sessions only"
+    refute_receive {:telemetry, _, %Event{type: :approval_required}}, 100
+    assert PermissionRequests.pending_for_channel(ctx.channel.id) == []
+  end
+
   test "open prompts show up in the engine's reconciliation", ctx do
     task = ask(ctx, %{tool_name: "Bash", input: %{"command" => "ls"}, tool_use_id: "toolu_r"})
     assert_receive {:telemetry, _, %Event{type: :approval_required}}, 5_000

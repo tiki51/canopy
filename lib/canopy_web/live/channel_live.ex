@@ -70,7 +70,7 @@ defmodule CanopyWeb.ChannelLive do
   alias Canopy.Playbooks.{Run, Runs}
   alias Canopy.Runtime.{Activity, Commands}
   alias Canopy.Timeline.ActivityDetails
-  alias CanopyWeb.{Attachments, FileViewer, Nav, PlaybookComponents, PlaybookStart}
+  alias CanopyWeb.{Attachments, CostFormat, FileViewer, Nav, PlaybookComponents, PlaybookStart}
   alias Canopy.Tasks.Task
 
   @page_size 100
@@ -688,7 +688,7 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:addable_agents, [])
     |> assign(:addable_teams, [])
     |> assign(:editing_budget?, false)
-    |> assign(:spent, Costs.channel_total(id))
+    |> assign_spend(id)
     |> assign(:editing_schedules?, false)
     |> assign_schedules(id)
     |> assign(:taking_lock?, false)
@@ -1531,10 +1531,10 @@ defmodule CanopyWeb.ChannelLive do
     do: socket |> refresh_channel() |> assign_branch() |> watch_locks() |> Nav.refresh_nav()
 
   defp react_to(socket, %{event_type: "agent_turn_completed"}),
-    do: assign(socket, :spent, Costs.channel_total(cid(socket)))
+    do: assign_spend(socket, cid(socket))
 
   defp react_to(socket, %{event_type: "spend_limit_" <> _}),
-    do: socket |> refresh_channel() |> assign(:spent, Costs.channel_total(cid(socket)))
+    do: socket |> refresh_channel() |> assign_spend(cid(socket))
 
   # an agent's edit (or another window's) shows at once; an open editor keeps
   # what was typed and says the brief moved under it
@@ -2912,6 +2912,7 @@ defmodule CanopyWeb.ChannelLive do
             agent_statuses={@agent_statuses}
             schedule_count={@schedule_count}
             spent={@spent}
+            spent_estimated={@spent_estimated}
             locks={@locks}
             now={@now}
             run={@run}
@@ -3093,6 +3094,7 @@ defmodule CanopyWeb.ChannelLive do
             :if={limit_reached?(@channel, @spent) and !Channels.archived?(@channel)}
             channel={@channel}
             spent={@spent}
+            spent_estimated={@spent_estimated}
           />
           <.paused_bar :if={@paused? and !Channels.archived?(@channel)} stopped?={@stopped?} />
           <.awaiting_bar
@@ -3236,6 +3238,7 @@ defmodule CanopyWeb.ChannelLive do
           schedule_count={@schedule_count}
           editing_schedules?={@editing_schedules?}
           spent={@spent}
+          spent_estimated={@spent_estimated}
           editing_budget?={@editing_budget?}
           compact?={@compact?}
         />
@@ -3377,16 +3380,25 @@ defmodule CanopyWeb.ChannelLive do
   defp playbook_chip_icon(%{status: "awaiting_approval"}), do: "hero-hand-raised-mini"
   defp playbook_chip_icon(_run), do: "hero-book-open-mini"
 
-  defp spend_text(channel, spent) do
-    Costs.money(spent) <>
+  # What the channel has spent and the part of it estimated from Codex
+  # tokens (`≈` on the meter); the limit is checked against the whole.
+  defp assign_spend(socket, channel_id) do
+    %{cost: cost, estimated: estimated} = Costs.channel_spend(channel_id)
+    socket |> assign(:spent, cost) |> assign(:spent_estimated, estimated)
+  end
+
+  # `≈$1.03 / $5.00`: the limit itself is never an estimate.
+  defp spend_text(channel, spent, estimated) do
+    CostFormat.money(spent, estimated) <>
       if channel.spend_limit, do: " / " <> Costs.money(channel.spend_limit), else: ""
   end
 
   # `$44.69 · no limit`, `$44.69 of $50.00`: Details › Automation › Spend
-  defp spend_value(%{spend_limit: limit}, spent) when is_number(limit),
-    do: Costs.money(spent) <> " of " <> Costs.money(limit)
+  defp spend_value(%{spend_limit: limit}, spent, estimated) when is_number(limit),
+    do: CostFormat.money(spent, estimated) <> " of " <> Costs.money(limit)
 
-  defp spend_value(_channel, spent), do: Costs.money(spent) <> " · no limit"
+  defp spend_value(_channel, spent, estimated),
+    do: CostFormat.money(spent, estimated) <> " · no limit"
 
   # Who needs the user first: waiting on you, then working, queued, idle.
   @status_rank %{awaiting_user: 0, busy: 1, queued: 2}
@@ -3468,6 +3480,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :agent_statuses, :map, required: true
   attr :schedule_count, :integer, default: 0
   attr :spent, :float, default: 0.0
+  attr :spent_estimated, :float, default: 0.0
   attr :locks, :list, default: []
   attr :now, :any, default: nil
   attr :run, :any, default: nil
@@ -3613,14 +3626,24 @@ defmodule CanopyWeb.ChannelLive do
             ]}
             phx-click="open_details"
             phx-value-section="spend"
-            title="What this channel has spent, and its limit"
-            aria-label={"Spend " <> spend_text(@channel, @spent)}
+            title={
+              CostFormat.estimate_title(@spent, @spent_estimated) ||
+                "What this channel has spent, and its limit"
+            }
+            aria-label={
+              "Spend " <>
+                spend_text(@channel, @spent, @spent_estimated) <>
+                case CostFormat.estimate_title(@spent, @spent_estimated) do
+                  nil -> ""
+                  split -> " (#{split})"
+                end
+            }
           >
             <.icon
               name="hero-banknotes-mini"
               class={["size-4", !limit_reached?(@channel, @spent) && "text-base-content/60"]}
             />
-            {spend_text(@channel, @spent)}
+            {spend_text(@channel, @spent, @spent_estimated)}
           </button>
           <button
             type="button"
@@ -3805,6 +3828,7 @@ defmodule CanopyWeb.ChannelLive do
   attr :schedule_count, :integer, default: 0, doc: "how many of `schedules` are active"
   attr :editing_schedules?, :boolean, default: false
   attr :spent, :float, default: 0.0
+  attr :spent_estimated, :float, default: 0.0
   attr :editing_budget?, :boolean, default: false
   attr :compact?, :boolean, default: true
 
@@ -4028,7 +4052,9 @@ defmodule CanopyWeb.ChannelLive do
               value_class={["tabular-nums", limit_reached?(@channel, @spent) && "text-error"]}
             >
               <:value>
-                <span id="budget-spent">{spend_value(@channel, @spent)}</span>
+                <span id="budget-spent" title={CostFormat.estimate_title(@spent, @spent_estimated)}>
+                  {spend_value(@channel, @spent, @spent_estimated)}
+                </span>
               </:value>
               <.budget_panel channel={@channel} />
             </.disclosure>
@@ -4488,6 +4514,7 @@ defmodule CanopyWeb.ChannelLive do
 
   attr :channel, :map, required: true
   attr :spent, :float, required: true
+  attr :spent_estimated, :float, default: 0.0
 
   defp limit_bar(assigns) do
     ~H"""
@@ -4497,7 +4524,9 @@ defmodule CanopyWeb.ChannelLive do
     >
       <.icon name="hero-banknotes-mini" class="size-4 text-error" />
       <span>
-        Spend limit reached: {Costs.money(@spent)} of {Costs.money(@channel.spend_limit)}. Agents stay
+        Spend limit reached: {CostFormat.money(@spent, @spent_estimated)} of {Costs.money(
+          @channel.spend_limit
+        )}. Agents stay
         quiet here until you raise it.
       </span>
       <button

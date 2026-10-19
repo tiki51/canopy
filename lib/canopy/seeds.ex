@@ -261,8 +261,9 @@ defmodule Canopy.Seeds do
   # (priv/templates/agents), so the gallery can re-add one that was changed or
   # retired. They get no engine and no model of their own: they follow the
   # default engine and its default model from Settings. Their `mode` sets
-  # both engines' reach (OpenCode's agent, Claude Code's permission mode), so
-  # a `plan` starter is read-only whichever engine is the default.
+  # every engine's reach (OpenCode's agent, the permission mode Claude Code
+  # and Codex read), so a `plan` starter is read-only whichever engine is the
+  # default.
   defp starter_agents do
     for template <- Canopy.Templates.Gallery.seed_agents() do
       {attrs, _notices} = Canopy.Templates.AgentTemplate.attrs(template, "opencode")

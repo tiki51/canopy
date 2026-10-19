@@ -202,3 +202,68 @@ test.describe("layout", () => {
     }
   });
 });
+
+// An admin page's subtitle gives way before its title: at 1280 px the Agents
+// title shows whole beside its long subtitle and the header's buttons.
+test("an admin page title never truncates before its subtitle", async ({ page }) => {
+  for (const [path, name] of [
+    ["/agents", "Agents"],
+    ["/costs", "Costs"],
+  ]) {
+    for (const width of [1280, 1024, 900]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto(path);
+      const title = page.locator("header h1", { hasText: name });
+      await expect(title).toBeVisible();
+      // the laid-out text against its box, unrounded: scrollWidth/clientWidth
+      // round a fraction of a pixel away, and that fraction is an ellipsis
+      const [text, box] = await title.evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return [range.getBoundingClientRect().width, el.getBoundingClientRect().width];
+      });
+      expect(text, `${path} at ${width}px`).toBeLessThanOrEqual(box);
+    }
+  }
+});
+
+// Below lg the menu button shares the header row, so a long title (an agent's
+// @name here) truncates in what is left beside it and the actions; it never
+// runs under them.
+test("a long page title truncates beside the menu button and actions", async ({ page }) => {
+  const name = (uniq("long-header-title").replace(/[^a-z0-9-]/g, "") + "x".repeat(40)).slice(0, 40);
+  await gotoLive(page, "/agents/new");
+  await page.getByLabel("Name (slug, used as @name)").fill(name);
+  await page.getByLabel("Display name").fill("Long Title");
+  await page.getByLabel("Role (one line)").fill("Has a long name");
+  await page.locator("#save-agent").click();
+  await expect(page).toHaveURL(/\/agents\/agt_/);
+
+  for (const width of [800, 640, 480]) {
+    await page.setViewportSize({ width, height: 800 });
+    const header = page.locator("header", { has: page.locator("h1", { hasText: `@${name}` }) });
+    const title = header.locator("h1");
+    await expect(header.getByLabel("Open the menu")).toBeVisible();
+
+    const box = await header.evaluate((el) => {
+      const h1 = el.querySelector("h1")!;
+      const range = document.createRange();
+      range.selectNodeContents(h1);
+      const t = h1.getBoundingClientRect();
+      return {
+        left: t.left,
+        right: t.right,
+        width: t.width,
+        text: range.getBoundingClientRect().width,
+        menuRight: el.querySelector('[aria-label="Open the menu"]')!.getBoundingClientRect().right,
+        actionsLeft: el.lastElementChild!.getBoundingClientRect().left,
+      };
+    });
+
+    expect(box.left, `title clear of the menu at ${width}px`).toBeGreaterThanOrEqual(box.menuRight);
+    expect(box.right, `title clear of the actions at ${width}px`).toBeLessThanOrEqual(box.actionsLeft);
+    // narrow, the 41 characters can only fit truncated
+    if (width < 600) expect(box.text, `title truncated at ${width}px`).toBeGreaterThan(box.width);
+    await expect(title).toHaveCSS("text-overflow", "ellipsis");
+  }
+});

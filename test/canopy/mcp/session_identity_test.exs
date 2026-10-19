@@ -44,9 +44,38 @@ defmodule Canopy.MCP.SessionIdentityTest do
     refute conn.halted
 
     assert conn.assigns.canopy_session == %{
+             id: ctx.claude_session.id,
              engine: "claude_code",
              engine_session_id: ctx.claude_session.engine_session_id
            }
+  end
+
+  test "a Codex session token assigns the row id, which survives the thread-id rename", ctx do
+    codex = Fixtures.agent_fixture(%{engine: "codex"})
+
+    session =
+      Fixtures.session_fixture(%{
+        channel: ctx.channel,
+        agent_id: codex.id,
+        engine: "codex",
+        engine_session_id: "cx-pending-" <> Ecto.UUID.generate(),
+        mcp_token: AgentSessions.generate_mcp_token()
+      })
+
+    conn = call_plug(session.mcp_token)
+    refute conn.halted
+    assert %{id: id, engine: "codex"} = assign = conn.assigns.canopy_session
+    assert id == session.id
+
+    # the first turn renames the session to Codex's thread id after the MCP
+    # connection was made; the assign it carries still resolves
+    thread = Ecto.UUID.generate()
+    assert {:ok, ^thread} = AgentSessions.put_engine_session_id(session.id, thread)
+
+    assert {:ok, identity} = Identity.from_frame(%{assigns: %{canopy_session: assign}})
+    assert identity.session.id == session.id
+    assert identity.session.engine_session_id == thread
+    assert identity.agent.id == codex.id
   end
 
   test "an unknown token is refused" do

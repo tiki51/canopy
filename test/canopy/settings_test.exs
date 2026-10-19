@@ -3,6 +3,14 @@ defmodule Canopy.SettingsTest do
 
   alias Canopy.{Settings, Users}
 
+  # every engine registered, whatever config.exs has yet
+  setup do
+    engines = Application.get_env(:canopy, :engines)
+    Application.put_env(:canopy, :engines, Map.put_new(engines, "codex", Canopy.Engine.Codex))
+    on_exit(fn -> Application.put_env(:canopy, :engines, engines) end)
+    :ok
+  end
+
   test "get/0 creates the default row with a token on first call" do
     setting = Settings.get()
     assert setting.id == "default"
@@ -60,6 +68,7 @@ defmodule Canopy.SettingsTest do
 
       assert Settings.default_models() == %{
                "claude_code" => %{model_provider: nil, model_id: "sonnet"},
+               "codex" => %{model_provider: nil, model_id: nil},
                "opencode" => %{model_provider: "opencode", model_id: "gpt-5-nano"}
              }
 
@@ -104,7 +113,12 @@ defmodule Canopy.SettingsTest do
       assert Settings.default_effort("claude_code") == nil
       assert {:ok, _} = Settings.put_default_effort("claude_code", "high")
       assert Settings.default_effort("claude_code") == "high"
-      assert Settings.default_efforts() == %{"claude_code" => "high", "opencode" => nil}
+
+      assert Settings.default_efforts() == %{
+               "claude_code" => "high",
+               "codex" => nil,
+               "opencode" => nil
+             }
 
       assert {:error, changeset} = Settings.put_default_effort("claude_code", "ultra")
       assert %{claude_default_effort: ["is invalid"]} = errors_on(changeset)
@@ -153,7 +167,7 @@ defmodule Canopy.SettingsTest do
     end
 
     test "only an engine Canopy has is accepted" do
-      assert {:error, changeset} = Settings.put_default_engine("codex")
+      assert {:error, changeset} = Settings.put_default_engine("warp")
       assert %{default_engine: [_]} = errors_on(changeset)
       assert Settings.get().default_engine == nil
     end
@@ -246,6 +260,7 @@ defmodule Canopy.SettingsTest do
 
       assert Settings.light_profiles() == %{
                "claude_code" => %{model_provider: nil, model_id: "haiku", effort: "low"},
+               "codex" => %{model_provider: nil, model_id: nil, effort: nil},
                "opencode" => %{model_provider: "opencode", model_id: "small", effort: nil}
              }
 
@@ -270,6 +285,114 @@ defmodule Canopy.SettingsTest do
       {:ok, _} = Settings.put_light_profile("claude_code", %{model_id: "haiku"})
       assert_receive {:settings, :light_profiles_changed}
       refute_receive {:settings, :default_models_changed}, 50
+    end
+  end
+
+  describe "Codex" do
+    test "the binary defaults to codex on PATH; the config dir is optional" do
+      setting = Settings.get()
+      assert setting.codex_binary == "codex"
+      assert setting.codex_config_dir == nil
+
+      assert {:ok, setting} = Settings.update(%{codex_binary: "  /opt/bin/codex  "})
+      assert setting.codex_binary == "/opt/bin/codex"
+
+      # blank goes back to the default
+      assert {:ok, %{codex_binary: "codex"}} = Settings.update(%{codex_binary: " "})
+    end
+
+    test "the config directory expands HOME, must be absolute, and blank clears it" do
+      assert {:ok, setting} = Settings.update(%{codex_config_dir: " ~/.codex-agents "})
+      assert setting.codex_config_dir == Path.join(System.user_home!(), ".codex-agents")
+
+      assert {:error, changeset} = Settings.update(%{codex_config_dir: "relative/path"})
+      assert %{codex_config_dir: ["must be an absolute path"]} = errors_on(changeset)
+
+      assert {:ok, %{codex_config_dir: nil}} = Settings.update(%{codex_config_dir: ""})
+    end
+
+    test "normalize_config_dir/1 serves both engines; the Claude name still works" do
+      alias Canopy.Settings.Setting
+
+      home = System.user_home!()
+      assert Setting.normalize_config_dir("~") == home
+      assert Setting.normalize_config_dir(" /tmp/x ") == "/tmp/x"
+      assert Setting.normalize_config_dir("  ") == nil
+      assert Setting.normalize_config_dir(nil) == nil
+      assert Setting.normalize_claude_config_dir("~/a") == Path.join(home, "a")
+    end
+
+    test "the default model has no provider and round-trips; models are trimmed" do
+      assert Settings.default_model("codex") == %{model_provider: nil, model_id: nil}
+
+      assert {:ok, _} =
+               Settings.put_default_model("codex", %{
+                 model_provider: "x",
+                 model_id: " gpt-6.1-sol "
+               })
+
+      assert Settings.default_model("codex") == %{model_provider: nil, model_id: "gpt-6.1-sol"}
+      assert Settings.default_models()["codex"] == %{model_provider: nil, model_id: "gpt-6.1-sol"}
+
+      # a Claude Code alias is another engine's model
+      assert {:error, changeset} = Settings.put_default_model("codex", %{model_id: "opus"})
+      assert %{codex_default_model: [_]} = errors_on(changeset)
+
+      assert {:ok, _} = Settings.put_default_model("codex", %{model_id: nil})
+      assert Settings.default_model("codex").model_id == nil
+    end
+
+    test "the default effort takes Codex's levels, ultra included" do
+      assert Settings.effort?("codex")
+      assert Settings.effort?("claude_code")
+      refute Settings.effort?("opencode")
+      refute Settings.effort?(nil)
+
+      assert {:ok, _} = Settings.put_default_effort("codex", "ultra")
+      assert Settings.default_effort("codex") == "ultra"
+      assert Settings.default_efforts()["codex"] == "ultra"
+
+      assert {:error, changeset} = Settings.put_default_effort("codex", "minimal")
+      assert %{codex_default_effort: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "the light profile round-trips with an effort, validated like the defaults" do
+      assert {:ok, _} =
+               Settings.put_light_profile("codex", %{model_id: "gpt-5.6-terra", effort: "low"})
+
+      assert Settings.light_profile("codex") ==
+               %{model_provider: nil, model_id: "gpt-5.6-terra", effort: "low"}
+
+      assert Settings.light_profiles()["codex"] == Settings.light_profile("codex")
+
+      assert {:error, cs} = Settings.put_light_profile("codex", %{model_id: "haiku"})
+      assert %{codex_light_model: [_]} = errors_on(cs)
+      assert {:error, cs} = Settings.put_light_profile("codex", %{effort: "huge"})
+      assert %{codex_light_effort: [_]} = errors_on(cs)
+    end
+
+    test "a stale model on one engine doesn't block saving another's" do
+      # a row holding a value today's rules refuse, written around the changeset
+      Settings.get() |> Ecto.Changeset.change(codex_default_model: "opus") |> Repo.update!()
+
+      assert {:ok, _} = Settings.put_default_model("claude_code", %{model_id: "sonnet"})
+      assert {:ok, _} = Settings.update(%{codex_binary: "codex"})
+    end
+
+    test "changes are broadcast like the other engines'" do
+      Settings.subscribe()
+
+      {:ok, _} = Settings.put_default_model("codex", %{model_id: "gpt-6-luna"})
+      assert_receive {:settings, :default_models_changed}
+
+      {:ok, _} = Settings.put_default_effort("codex", "high")
+      assert_receive {:settings, :default_models_changed}
+
+      {:ok, _} = Settings.put_light_profile("codex", %{model_id: "gpt-5.6-terra"})
+      assert_receive {:settings, :light_profiles_changed}
+
+      {:ok, _} = Settings.update(%{codex_binary: "/usr/local/bin/codex"})
+      refute_receive {:settings, _}, 50
     end
   end
 end

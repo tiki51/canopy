@@ -50,6 +50,7 @@ defmodule Canopy.Runtime.Activity do
           entries: [entry],
           tool_count: non_neg_integer,
           cost: float,
+          cost_estimated: boolean,
           tallies: %{atom => non_neg_integer},
           dropped: non_neg_integer,
           tokens: non_neg_integer,
@@ -68,6 +69,8 @@ defmodule Canopy.Runtime.Activity do
       entries: [],
       tool_count: 0,
       cost: 0.0,
+      # some of `cost` is an estimate (Codex: tokens at list prices)
+      cost_estimated: false,
       tallies: %{},
       dropped: 0,
       tokens: 0,
@@ -138,7 +141,8 @@ defmodule Canopy.Runtime.Activity do
         card
         | steps: card.steps ++ [%{key: key, tokens: tokens, cost: cost}],
           tokens: card.tokens + tokens,
-          cost: card.cost + cost
+          cost: card.cost + cost,
+          cost_estimated: Map.get(card, :cost_estimated, false) or data[:cost_estimated] == true
       }
     end
   end
@@ -897,6 +901,7 @@ defmodule Canopy.Runtime.Activity do
       | entries: entries,
         tool_count: integer(payload["tools"]) || Enum.count(entries, &(&1.kind == :tool)),
         cost: if(is_number(payload["cost"]), do: payload["cost"], else: 0.0),
+        cost_estimated: payload["cost_estimated"] == true,
         tallies: tallies,
         dropped: integer(meta["dropped"]) || 0,
         tokens: integer(meta["tokens"]) || 0,

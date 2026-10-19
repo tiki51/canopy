@@ -4,7 +4,7 @@ Read `AGENTS.md` first; it carries the Phoenix 1.8 / LiveView 1.2 conventions th
 
 ## What this is
 
-Local-first Slack-like collaboration layer for AI coding agents, with Claude Code as the primary execution engine and OpenCode as the second. Elixir 1.20 / OTP 28, Phoenix 1.8, LiveView 1.2, SQLite via `ecto_sqlite3`, `req` for HTTP, `anubis_mcp` for the MCP server.
+Local-first Slack-like collaboration layer for AI coding agents, with Claude Code as the primary execution engine, and Codex and OpenCode as the others. Elixir 1.20 / OTP 28, Phoenix 1.8, LiveView 1.2, SQLite via `ecto_sqlite3`, `req` for HTTP, `anubis_mcp` for the MCP server.
 
 ## Commands
 
@@ -38,10 +38,10 @@ npx playwright test tests/channel.spec.ts                   # single spec
 - Never commit or push unless the user explicitly asks in the current request.
 - Bind to `127.0.0.1` by default. `CANOPY_BIND=0.0.0.0` (dev only) is the user's opt-in for
   showing it on a trusted network; there is no login yet, so never make it the default.
-- Agent identity in MCP tools comes from two trusted sources only: the `canopy_session_id` stamped by the OpenCode plugin, or the per-session bearer token a Claude Code process presents (assigned as `:canopy_session` by `Canopy.MCP.AuthPlug`). Never from model-supplied values.
-- Keep OpenCode HTTP details inside `Canopy.OpenCode.*`. The runtime talks to engines only through `Canopy.Engine` adapters (`Canopy.Engine.ClaudeCode` and `Canopy.Engine.OpenCode`) and normalized `Canopy.Engine.Event`s; never add an engine branch to the channel server, put it in the adapter.
+- Agent identity in MCP tools comes from two trusted sources only: the `canopy_session_id` stamped by the OpenCode plugin, or the per-session bearer token a Claude Code or Codex process presents (assigned as `:canopy_session` by `Canopy.MCP.AuthPlug`, with the session row's id, which survives a Codex session's rename to its thread id). Never from model-supplied values.
+- Keep OpenCode HTTP details inside `Canopy.OpenCode.*`. The runtime talks to engines only through `Canopy.Engine` adapters (`Canopy.Engine.ClaudeCode`, `Canopy.Engine.Codex` and `Canopy.Engine.OpenCode`) and normalized `Canopy.Engine.Event`s; never add an engine branch to the channel server, put it in the adapter.
 - Run `mix precommit` before declaring a phase done.
-- Tests never spawn the real `claude` CLI: `config/test.exs` points `config :canopy, :claude_code` at `test/support/fake_claude.sh`, which prints the jsonl named by `FAKE_CLAUDE_SCRIPT`. Verified stream shapes live in `test/support/claude_code_fixtures/`.
+- Tests never spawn the real `claude` CLI: `config/test.exs` points `config :canopy, :claude_code` at `test/support/fake_claude.sh`, which prints the jsonl named by `FAKE_CLAUDE_SCRIPT`. Verified stream shapes live in `test/support/claude_code_fixtures/`. Likewise `config :canopy, :codex` points at `test/support/fake_codex.sh`, a JSON-RPC app-server that plays `FAKE_CODEX_SCRIPT` (directives in `test/support/codex_fixtures/`) or answers on its own (`FAKE_CODEX_ACCOUNT`, `FAKE_CODEX_MODELS`).
 - Routing rule to remember: a user message that mentions an agent wakes that agent, not the owner. Demo prompts should say "the researcher agent" unless the mention is intended.
 - Scheduled agent tasks are Oban jobs (`Canopy.Schedules`, queue `schedules`, SQLite Lite engine).
   Tests use `Oban.Testing` with `Oban.drain_queue/1`; never sleep to wait for a fire.
