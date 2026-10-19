@@ -44,6 +44,8 @@ defmodule Canopy.Templates.Import do
 
   @claude_fields ~w(display_name role group color engine permission_mode effort allowed_tools model_id
                     routing_enabled light_model_id light_effort system_prompt)a
+  @codex_fields ~w(display_name role group color engine permission_mode effort model_id
+                   routing_enabled light_model_id light_effort system_prompt)a
   @opencode_fields ~w(display_name role group color engine opencode_agent model_provider model_id
                       routing_enabled light_model_provider light_model_id system_prompt)a
   @broad_tools ["*", "Bash", "Bash(*)", "Bash(* *)"]
@@ -342,6 +344,12 @@ defmodule Canopy.Templates.Import do
         {attrs, ["Claude Code isn't installed on this machine; the agent won't run until it is"]}
   end
 
+  defp fit_machine(attrs, "codex", machine) do
+    if machine.codex,
+      do: {attrs, []},
+      else: {attrs, ["Codex isn't installed on this machine; the agent won't run until it is"]}
+  end
+
   defp fit_machine(attrs, "opencode", machine) do
     {attrs, model_notices} = fit_opencode_model(attrs, machine.opencode)
     {attrs, agent_notices} = fit_opencode_agent(attrs, machine.opencode_agents)
@@ -402,9 +410,11 @@ defmodule Canopy.Templates.Import do
   # prompt when it changes. Only the fields the engine uses count.
   defp diff(existing, attrs) do
     fields =
-      if Agents.effective_engine(attrs) == "claude_code",
-        do: @claude_fields,
-        else: @opencode_fields
+      case Agents.effective_engine(attrs) do
+        "claude_code" -> @claude_fields
+        "codex" -> @codex_fields
+        _ -> @opencode_fields
+      end
 
     changes =
       Enum.flat_map(fields, fn field ->
@@ -467,6 +477,14 @@ defmodule Canopy.Templates.Import do
     %{
       text: "Claude Code · #{attrs.permission_mode} · #{tools_text}",
       risky: attrs.permission_mode == "acceptEdits" or Enum.any?(tools, &(&1 in @broad_tools))
+    }
+  end
+
+  # Codex has no tool list: the permission mode is its whole reach
+  def permission(%{engine: "codex"} = attrs) do
+    %{
+      text: "Codex · #{attrs.permission_mode}",
+      risky: attrs.permission_mode == "acceptEdits"
     }
   end
 

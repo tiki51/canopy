@@ -62,6 +62,10 @@ if config_env() == :dev do
   if ms = System.get_env("CANOPY_CLAUDE_STALL_MS") do
     config :canopy, :claude_code, stall_ms: String.to_integer(ms)
   end
+
+  if ms = System.get_env("CANOPY_CODEX_STALL_MS") do
+    config :canopy, :codex, stall_ms: String.to_integer(ms)
+  end
 end
 
 if config_env() == :prod do

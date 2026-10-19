@@ -407,6 +407,7 @@ defmodule Canopy.Runtime.ChannelServer do
       {:reply, {:error, :archived}, state}
     else
       request = PermissionRequests.get!(request_id)
+      reply = once_only_reply(request, reply)
 
       case reply == :global && PermissionRequests.grant_check(request) do
         {:error, _} = error -> {:reply, error, state}
@@ -745,6 +746,21 @@ defmodule Canopy.Runtime.ChannelServer do
       nil -> {:noreply, state}
       who -> {:noreply, handle_execution(event, who, touch_turn(state, sid, event))}
     end
+  end
+
+  # A session's engine id changed under it (Codex names its thread on the
+  # first turn; the session was created under a placeholder). Everything keyed
+  # by the old id moves to the new one, and the server follows the new topic
+  # before the turn broadcasts anything there: the turn waits for the ack.
+  def handle_info({:engine_session_renamed, old, new, ack}, state) do
+    state =
+      case Map.get(state.index, old) do
+        nil -> state
+        _who -> rename_session(state, old, new)
+      end
+
+    with {pid, ref} when is_pid(pid) <- ack, do: send(pid, {:engine_session_renamed_ack, ref})
+    {:noreply, state}
   end
 
   # a card here was answered Allow globally (see sweep_others/1)
@@ -1141,12 +1157,15 @@ defmodule Canopy.Runtime.ChannelServer do
     if state.limit_noted == limit do
       state
     else
+      spend = Costs.channel_spend(state.channel.id)
+
       {:ok, _} =
         Timeline.record(%{
           channel_id: state.channel.id,
           event_type: "spend_limit_reached",
           ref_id: state.channel.id,
-          payload: %{"limit" => limit, "spent" => Costs.channel_total(state.channel.id)}
+          # `estimated`: the part of `spent` that is an estimate (Codex), for the ≈
+          payload: %{"limit" => limit, "spent" => spend.cost, "estimated" => spend.estimated}
         })
 
       %{state | limit_noted: limit}
@@ -2058,6 +2077,8 @@ defmodule Canopy.Runtime.ChannelServer do
       tools: 0,
       files: MapSet.new(),
       cost: 0.0,
+      # some of `cost` is an estimate (Codex: tokens at list prices)
+      cost_estimated?: false,
       passed: nil,
       # set once the agent posts through Canopy tools during this turn
       posted?: false,
@@ -2422,6 +2443,49 @@ defmodule Canopy.Runtime.ChannelServer do
     }
   end
 
+  defp rename_session(state, old, new) do
+    if Map.has_key?(state.index, new) do
+      state
+    else
+      :ok = Engine.subscribe_session(new)
+      Phoenix.PubSub.unsubscribe(Canopy.PubSub, Engine.session_topic(old))
+      rekey = fn map -> rekey(map, old, new) end
+
+      renamed = fn
+        %{engine_session_id: ^old} = s -> %{s | engine_session_id: new}
+        s -> s
+      end
+
+      sessions = Map.new(state.sessions, fn {agent_id, s} -> {agent_id, renamed.(s)} end)
+
+      turns =
+        state.turns
+        |> rekey.()
+        |> Map.new(fn {sid, turn} ->
+          {sid,
+           if(is_map(turn[:session]), do: %{turn | session: renamed.(turn.session)}, else: turn)}
+        end)
+
+      %{
+        state
+        | sessions: sessions,
+          index: rekey.(state.index),
+          turns: turns,
+          queues: rekey.(state.queues),
+          steered_ends: rekey.(state.steered_ends),
+          routing_cache: rekey.(state.routing_cache),
+          auto_approved: rekey.(state.auto_approved)
+      }
+    end
+  end
+
+  defp rekey(map, old, new) do
+    case Map.pop(map, old) do
+      {nil, map} -> map
+      {value, map} -> Map.put(map, new, value)
+    end
+  end
+
   defp put_root(state, session) do
     state = subscribe_once(state, session)
 
@@ -2550,7 +2614,13 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp handle_execution(%{type: :turn_usage, data: %{cost: cost}} = event, _who, state)
        when is_number(cost) do
-    update_turn(state, event.session_id, fn turn -> %{turn | cost: turn.cost + cost} end)
+    estimated? = Map.get(event.data, :cost_estimated) == true
+
+    update_turn(state, event.session_id, fn turn ->
+      turn
+      |> Map.put(:cost, turn.cost + cost)
+      |> Map.put(:cost_estimated?, Map.get(turn, :cost_estimated?, false) or estimated?)
+    end)
   end
 
   # A permission or question prompt holds the agent's tool call open until
@@ -2718,9 +2788,18 @@ defmodule Canopy.Runtime.ChannelServer do
 
     # the engine's report of an abort the user asked for is not an error
     cond do
-      Map.get(turn, :stopped?) -> finish_turn(state, event.session_id, who, :stopped)
-      Map.get(turn, :interrupted?) -> finish_turn(state, event.session_id, who, :interrupted)
-      true -> record_agent_error(state, event, who, error_message(error))
+      Map.get(turn, :stopped?) ->
+        finish_turn(state, event.session_id, who, :stopped)
+
+      Map.get(turn, :interrupted?) ->
+        finish_turn(state, event.session_id, who, :interrupted)
+
+      true ->
+        # the error's name decides for Codex (`usageLimitExceeded`), whatever its wording
+        if is_map(error) and Canopy.Hold.billing_error?(error),
+          do: Canopy.Hold.engage(error_message(error))
+
+        record_agent_error(state, event, who, error_message(error))
     end
   end
 
@@ -2853,9 +2932,15 @@ defmodule Canopy.Runtime.ChannelServer do
                 for(%{held?: false} = s <- Map.get(turn, :steers, []), do: s.message_id),
               # where the turn sits in the engine's own history (the transcript)
               "engine_session_id" => turn.session.engine_session_id,
-              "engine_message_ids" => message_ids_payload(Map.get(turn, :engine_message_ids))
+              "engine_message_ids" => message_ids_payload(Map.get(turn, :engine_message_ids)),
+              "engine" => turn.session.engine
             }
             |> then(&if Map.get(turn, :adopted?), do: Map.put(&1, "adopted", true), else: &1)
+            |> then(
+              &if Map.get(turn, :cost_estimated?),
+                do: Map.put(&1, "cost_estimated", true),
+                else: &1
+            )
             |> Map.merge(routing_payload(turn))
         }
 
@@ -3450,6 +3535,18 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # A once-only card (a read-only Codex agent's command outside the sandbox)
+  # offers Once and Reject only: Always or Allow globally from a stale tab or a
+  # crafted event counts as Once, so no rule or grant is kept for it.
+  defp once_only_reply(%PermissionRequest{metadata: %{"once_only" => true}}, reply)
+       when reply in [:always, :global],
+       do: :once
+
+  # a Codex git command no Always rule could match (`git push`) offers no Always
+  defp once_only_reply(%PermissionRequest{metadata: %{"no_always" => true}}, :always), do: :once
+
+  defp once_only_reply(_request, reply), do: reply
+
   defp answer_permission(state, request, reply) do
     {mod, es, state} = engine_for_request(state, request)
 
@@ -3543,21 +3640,26 @@ defmodule Canopy.Runtime.ChannelServer do
   # A fresh prompt the agent's grant covers is answered Once at once, with a
   # line instead of a card. A prompt already recorded (a replay, a reopen)
   # keeps its card, and one already auto-approved is not answered again.
-  # When the engine reply fails the card is shown after all.
+  # When the engine reply fails the card is shown after all. A once-only
+  # prompt (a read-only Codex agent's command outside the sandbox) always
+  # shows its card: no grant answers it.
   defp auto_approve(state, event, session, req) do
     cond do
       auto_approved?(state, event.session_id, req["id"]) ->
         {:approved, state}
 
       grant =
-          is_nil(PermissionRequests.get_by_opencode_id(req["id"] || "")) && session &&
-            GlobalPermissions.match(session.agent_id, req["permission"]) ->
+          (not once_only?(req) and is_nil(PermissionRequests.get_by_opencode_id(req["id"] || ""))) &&
+            session && GlobalPermissions.match(session.agent_id, req["permission"]) ->
         auto_approve(state, event, session, req, grant)
 
       true ->
         {:card, state}
     end
   end
+
+  # Claude Code and OpenCode requests may carry no metadata at all.
+  defp once_only?(req), do: get_in(req, ["metadata", "once_only"]) == true
 
   defp auto_approved?(_state, _sid, nil), do: false
 

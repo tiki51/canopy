@@ -6,6 +6,24 @@ defmodule Canopy.PermissionRequestsTest do
   alias Canopy.{GlobalPermissions, PermissionRequests, Timeline}
   alias Canopy.PermissionRequests.PermissionRequest
 
+  test "a Codex request's requested event carries its action" do
+    %{channel: channel, session: session} = scenario()
+    Timeline.subscribe(channel.id)
+
+    {:ok, _} =
+      PermissionRequests.record(%{
+        channel_id: channel.id,
+        agent_session_id: session.id,
+        opencode_permission_id: "per_cx",
+        permission: "Bash",
+        patterns: ["ls -la"],
+        metadata: %{"action" => "command", "command" => "ls -la"}
+      })
+
+    assert_receive {:timeline, %Timeline.Event{event_type: "permission_requested"} = event}
+    assert event.payload["action"] == "command"
+  end
+
   test "record/1 is idempotent per OpenCode id and resolve/2 records the reply" do
     %{channel: channel, session: session, agent: agent} = scenario()
     Timeline.subscribe(channel.id)
@@ -29,6 +47,7 @@ defmodule Canopy.PermissionRequestsTest do
     assert_receive {:timeline, %Timeline.Event{event_type: "permission_requested"} = event}
     assert event.agent.id == agent.id
     assert event.payload["patterns"] == ["mix test"]
+    refute Map.has_key?(event.payload, "action")
     refute_receive {:timeline, %Timeline.Event{event_type: "permission_requested"}}
 
     assert [%{id: id}] = PermissionRequests.pending_for_channel(channel.id)
@@ -43,6 +62,25 @@ defmodule Canopy.PermissionRequestsTest do
 
     assert {:ok, %{status: "rejected"}} = PermissionRequests.resolve(resolved, :reject)
     assert PermissionRequests.get_by_opencode_id("per_1").metadata == %{"diff" => "--- a\n+++ b"}
+  end
+
+  test "the resolved event carries the card's action, for the timeline line" do
+    %{channel: channel, session: session} = scenario()
+    Timeline.subscribe(channel.id)
+
+    {:ok, request} =
+      PermissionRequests.record(%{
+        channel_id: channel.id,
+        agent_session_id: session.id,
+        opencode_permission_id: "cdx-7",
+        permission: "Bash",
+        patterns: ["git status"],
+        metadata: %{"action" => "command"}
+      })
+
+    assert {:ok, _} = PermissionRequests.resolve(request, :once)
+    assert_receive {:timeline, %Timeline.Event{event_type: "permission_resolved"} = event}
+    assert event.payload["action"] == "command"
   end
 
   describe "Allow globally" do
@@ -131,6 +169,24 @@ defmodule Canopy.PermissionRequestsTest do
       refute_received {:timeline, %Timeline.Event{event_type: "permission_resolved"}}
       assert_receive {:global_permissions, :changed, _}
       assert GlobalPermissions.get(ctx.agent.id, "bash").use_count == 1
+    end
+
+    test "waiting_for_agent_tool leaves out once-only cards, which no grant answers", ctx do
+      {:ok, once_only} =
+        PermissionRequests.record(%{
+          channel_id: ctx.channel.id,
+          agent_session_id: ctx.session.id,
+          opencode_permission_id: "cdx-plan-1",
+          permission: "Bash",
+          patterns: ["npm install"],
+          metadata: %{"action" => "command", "unsandboxed" => true, "once_only" => true}
+        })
+
+      plain = request(ctx.channel, ctx.session, "cdx-plain-1", "Bash")
+
+      ids = Enum.map(PermissionRequests.waiting_for_agent_tool(ctx.agent.id, "Bash"), & &1.id)
+      assert plain.id in ids
+      refute once_only.id in ids
     end
 
     test "waiting_for_agent_tool finds the agent's attached cards for the tool", ctx do

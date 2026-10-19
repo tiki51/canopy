@@ -137,20 +137,30 @@ defmodule Canopy.Agents do
   @doc """
   The effort the agent runs at, as `%{effort: e, source: s}`, resolved like
   `effective_model/1`: its own, else the engine's default, else nil (the
-  engine picks; OpenCode has no effort setting).
+  engine picks; OpenCode has no effort setting). An effort of its own that
+  its effective engine doesn't take (Codex's `ultra` left on an agent that
+  follows a default now on Claude Code) is passed over, without being
+  cleared.
   """
   def effective_effort(agent, setting \\ nil) do
+    setting = setting || Settings.get()
+    engine = effective_engine(agent, setting)
+
     case Map.get(agent, :effort) do
       effort when is_binary(effort) and effort != "" ->
-        %{effort: effort, source: :agent}
+        if effort in Agent.efforts(engine),
+          do: %{effort: effort, source: :agent},
+          else: default_effort(engine, setting)
 
       _ ->
-        setting = setting || Settings.get()
+        default_effort(engine, setting)
+    end
+  end
 
-        case Settings.default_effort(effective_engine(agent, setting), setting) do
-          effort when is_binary(effort) -> %{effort: effort, source: :default}
-          _ -> %{effort: nil, source: :engine}
-        end
+  defp default_effort(engine, setting) do
+    case Settings.default_effort(engine, setting) do
+      effort when is_binary(effort) -> %{effort: effort, source: :default}
+      _ -> %{effort: nil, source: :engine}
     end
   end
 
@@ -194,8 +204,8 @@ defmodule Canopy.Agents do
     setting = setting || Settings.get()
     engine = effective_engine(agent, setting)
     default = Settings.light_profile(engine, setting)
-    # only Claude Code has an effort setting; OpenCode routes the model only
-    efforts? = engine == "claude_code"
+    # Claude Code and Codex have an effort setting; OpenCode routes the model only
+    efforts? = Settings.effort?(engine)
 
     # like the main model, a light model left from another engine is passed over
     own_model =
@@ -206,7 +216,14 @@ defmodule Canopy.Agents do
         _ -> nil
       end
 
-    own_effort = efforts? && present(Map.get(agent, :light_effort))
+    own_effort =
+      with true <- efforts?,
+           effort when is_binary(effort) <- present(Map.get(agent, :light_effort)),
+           true <- effort in Agent.efforts(engine) do
+        effort
+      else
+        _ -> nil
+      end
 
     {provider, model} =
       if own_model,
@@ -344,8 +361,8 @@ defmodule Canopy.Agents do
   Puts every active agent on the default engine by clearing its own. An
   agent that changes engine this way loses its model and light model, as
   switching engine on its form does (a model belongs to one engine); one
-  already on the default's engine keeps them. Each keeps its reach on both
-  engines (read-only stays read-only). Returns how many changed. Only ever
+  already on the default's engine keeps them. Each keeps its reach on every
+  engine (read-only stays read-only). Returns how many changed. Only ever
   runs when the user asks.
   """
   def inherit_default_engine do
@@ -369,9 +386,10 @@ defmodule Canopy.Agents do
     {:ok, count}
   end
 
-  # The agent's own engine cleared, with its reach written to both engines'
-  # fields (as the agent changeset keeps them for agents on the default), and
-  # its models dropped when it changes engine.
+  # The agent's own engine cleared, with its reach written to every engine's
+  # fields (OpenCode's agent, the permission mode Claude Code and Codex read,
+  # as the agent changeset keeps them for agents on the default), and its
+  # models dropped when it changes engine.
   defp inherit_engine_changes(agent, default) do
     reach =
       case Agent.execution_mode(agent) do

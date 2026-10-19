@@ -21,9 +21,11 @@ defmodule Canopy.GlobalPermissions do
 
   @topic "global_permissions"
 
-  # OpenCode's repeated-call guard (a grant would switch it off for good) and
-  # the question tools, which are answers rather than permissions
-  @not_grantable ~w(doom_loop askuserquestion question)
+  # OpenCode's repeated-call guard (a grant would switch it off for good), the
+  # question tools, which are answers rather than permissions, and Codex's
+  # file-change and more-access requests, which are about paths and reach
+  # rather than a tool (a global grant would cover any file, any access)
+  @not_grantable ~w(doom_loop askuserquestion question file_change permissions)
 
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
 

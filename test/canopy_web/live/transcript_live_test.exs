@@ -136,6 +136,34 @@ defmodule CanopyWeb.TranscriptLiveTest do
     assert has_element?(view, "#transcript-load-older")
   end
 
+  test "a turn whose cost is an estimate (Codex) marks it ≈ in its divider", ctx do
+    now = ~U[2026-10-01 10:05:02.000000Z]
+
+    turn =
+      Repo.insert!(%TimelineEvent{
+        channel_id: ctx.channel.id,
+        agent_id: ctx.coder.id,
+        event_type: "agent_turn_completed",
+        ref_id: ctx.coder_session.id,
+        payload: %{
+          "tools" => 0,
+          "outcome" => "ok",
+          "trigger" => "user",
+          "cost" => 0.0102,
+          "cost_estimated" => true,
+          "duration_ms" => 2_000,
+          "engine_session_id" => @basic,
+          "engine_message_ids" => %{"first" => "msg_02A", "last" => "msg_02A"}
+        },
+        inserted_at: now,
+        updated_at: now
+      })
+
+    view = open(ctx.conn, tpath(ctx, turn: turn.id))
+
+    assert has_element?(view, "#transcript-turn-#{turn.id}", "≈$0.0102")
+  end
+
   test "the session picker switches to a reset session", ctx do
     {:ok, _} =
       Timeline.record(%{

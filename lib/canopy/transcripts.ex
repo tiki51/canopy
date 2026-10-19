@@ -375,6 +375,8 @@ defmodule Canopy.Transcripts do
         trigger: p["trigger"],
         tools: p["tools"],
         cost: p["cost"],
+        # Codex: tokens at list prices
+        cost_estimated?: p["cost_estimated"] == true,
         duration_ms: p["duration_ms"],
         outcome: p["outcome"],
         passed?: p["passed"] == true,

@@ -10,6 +10,8 @@ defmodule Mix.Tasks.Canopy.Demo do
 
   With `--engine claude_code` the two demo agents run on Claude Code instead
   (model haiku unless an alias is set, effort high unless set, edits auto-approved).
+  With `--engine codex` they run on Codex (Codex's default model, or the one set
+  in Settings; in-repo work runs without asking).
 
   Then start OpenCode (`opencode serve --port 4096`), run `mix phx.server`, open the
   channel, and post:
@@ -146,19 +148,26 @@ defmodule Mix.Tasks.Canopy.Demo do
     [backend, researcher] =
       Enum.map([backend, researcher], fn agent ->
         attrs =
-          if engine == "claude_code",
-            do: %{
-              engine: engine,
-              model_id:
-                cond do
-                  agent.model_id in Canopy.Agents.Agent.claude_models() -> agent.model_id
-                  claude_default -> nil
-                  true -> "haiku"
-                end,
-              effort: agent.effort || if(claude_effort, do: nil, else: "high"),
-              permission_mode: "acceptEdits"
-            },
-            else: %{engine: engine}
+          case engine do
+            "claude_code" ->
+              %{
+                engine: engine,
+                model_id:
+                  cond do
+                    agent.model_id in Canopy.Agents.Agent.claude_models() -> agent.model_id
+                    claude_default -> nil
+                    true -> "haiku"
+                  end,
+                effort: agent.effort || if(claude_effort, do: nil, else: "high"),
+                permission_mode: "acceptEdits"
+              }
+
+            "codex" ->
+              %{engine: engine, model_id: nil, effort: nil, permission_mode: "acceptEdits"}
+
+            _ ->
+              %{engine: engine}
+          end
 
         {:ok, updated} = Canopy.Agents.update(agent, attrs)
         updated
@@ -190,6 +199,9 @@ defmodule Mix.Tasks.Canopy.Demo do
         "claude_code" ->
           "Next: `claude` once to log in (Settings › Check Claude Code confirms it), then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}"
 
+        "codex" ->
+          "Next: `codex login` once (Settings › Check Codex confirms it), then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}"
+
         _ ->
           "Next: `opencode serve --port 4096`, then `mix phx.server`, open http://localhost:4000/channels/#{channel.id}"
       end
@@ -198,7 +210,7 @@ defmodule Mix.Tasks.Canopy.Demo do
     Demo ready.
       repository  #{repository.name} at #{path}
       channel     ##{channel.name} (owner @backend, members @backend @researcher)
-      engine      #{engine}#{if engine == "claude_code", do: " (model #{Canopy.Engine.ClaudeCode.model_label(backend)}, acceptEdits)", else: ""}
+      engine      #{engine}#{engine_note(engine, backend)}
       plugin      #{path}/.opencode/plugins/canopy.js (project-level; copy to
                   ~/.config/opencode/plugins/canopy.js to cover every repository)
 
@@ -206,6 +218,12 @@ defmodule Mix.Tasks.Canopy.Demo do
     Run setup any time from Settings.
     """)
   end
+
+  defp engine_note("claude_code", agent),
+    do: " (model #{Canopy.Engine.ClaudeCode.model_label(agent)}, acceptEdits)"
+
+  defp engine_note("codex", _agent), do: " (acceptEdits)"
+  defp engine_note(_engine, _agent), do: ""
 
   defp create_repo(path) do
     unless File.dir?(Path.join(path, ".git")) do

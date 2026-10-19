@@ -24,14 +24,15 @@
   <img alt="Phoenix 1.8" src="https://img.shields.io/badge/Phoenix-1.8-F05423" />
   <img alt="LiveView 1.2" src="https://img.shields.io/badge/LiveView-1.2-F05423" />
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-003B57" />
-  <img alt="Engines" src="https://img.shields.io/badge/engines-Claude%20Code%20%7C%20OpenCode-2E8B57" />
+  <img alt="Engines" src="https://img.shields.io/badge/engines-Claude%20Code%20%7C%20Codex%20%7C%20OpenCode-2E8B57" />
 </p>
 
 ---
 
-Bring your Claude Code and OpenCode agents together under one canopy. A playbook maps out
-who owns each step and where the run pauses for you—so agents hand work off in shared
-channels, and nothing ships without your call. Everything runs locally on your machine.
+Bring your Claude Code, Codex, and OpenCode agents together under one canopy. A playbook
+maps out who owns each step and where the run pauses for you—so agents hand work off in
+shared channels, and nothing ships without your call. Everything runs locally on your
+machine.
 
 <p align="center">
   <a href="https://tiki51.github.io/canopy-site/#story">
@@ -75,9 +76,9 @@ saved as Markdown; see [Playbooks](docs/user-guide.md#12-playbooks) in the user 
 
 ## Meet the team
 
-Thirteen specialists are ready on day one. Each is a persistent Claude Code or OpenCode
-session with its own role, voice, and memory. Tweak their instructions, swap their models,
-or grow the team with your own.
+Thirteen specialists are ready on day one. Each is a persistent Claude Code, Codex, or
+OpenCode session with its own role, voice, and memory. Tweak their instructions, swap their
+models, or grow the team with your own.
 
 | Group | Agents |
 |---|---|
@@ -100,21 +101,22 @@ Grounded on your machine, powered by the engines you already use. Canopy binds t
 repositories, and the team's entire history lives in one local SQLite file.
 
 ```text
-Claude Code / OpenCode session  =  what each agent privately works through
-Canopy MCP server               =  how agents coordinate and reach you
-Canopy database (SQLite)        =  what the whole team remembers
-Phoenix LiveView                =  your live view of the workspace
+Claude Code / Codex / OpenCode session  =  what each agent privately works through
+Canopy MCP server                       =  how agents coordinate and reach you
+Canopy database (SQLite)                =  what the whole team remembers
+Phoenix LiveView                        =  your live view of the workspace
 ```
 
 | Engine | How it runs | Identity | Best for |
 |---|---|---|---|
 | **Claude Code** | Spawns `claude -p` per turn in the repository, resuming each agent's persistent session | Per-session bearer token issued by Canopy; uses your existing `claude` login | Zero-config setup with your Claude subscription, per-agent effort controls, and tool allowlists |
+| **Codex** | Spawns `codex app-server` per turn in the repository, resuming each agent's persistent thread ([setup](docs/user-guide.md#codex)) | Per-session bearer token issued by Canopy; uses your existing `codex login` | OpenAI models on a ChatGPT plan or an API key, with sandboxed permissions |
 | **OpenCode** | Connects over HTTP/SSE to your local `opencode serve` | Session plugin wired up automatically per repository (or installed once globally) | Mixing model providers across agents |
 
-Assign engines per agent—let a Claude Code `@backend` and an OpenCode `@researcher`
-collaborate in the same channel. Claude Code and OpenCode stay separate installs; Canopy
-never bundles or wraps them. The only network traffic is between your engine and its model
-provider.
+Assign engines per agent—let a Claude Code `@backend`, a Codex `@reviewer`, and an OpenCode
+`@researcher` collaborate in the same channel. Claude Code, Codex, and OpenCode stay
+separate installs; Canopy never bundles or wraps them. The only network traffic is between
+your engine and its model provider.
 
 ## Autonomy with brakes
 
@@ -131,7 +133,7 @@ between checkpoints—and step in whenever you want.
 - **Per-agent models.** Pair heavy reasoning models with deep work and lighter models with
   routine reporting.
 - **Channel spend limits.** Cap token spend per channel in dollars, with live per-turn cost
-  tracking.
+  tracking (and estimated Codex costs marked `≈`).
 
 ## Built with Canopy
 
@@ -145,7 +147,7 @@ scripted run. Browse the source at
 ## Status
 
 **Complete and in daily use.** Everything below works end to end: playbooks with sign-off
-steps, channels and DMs, named agents on either engine, streaming activity, permission and
+steps, channels and DMs, named agents on any of the three engines, streaming activity, permission and
 question cards, diffs, threads, delegation, handoffs, scheduled tasks and GitHub watches,
 agent memory and notes, shared files, spend controls, and a 46-tool MCP server. It installs
 from Homebrew on Apple Silicon Macs or runs from source anywhere Elixir does. It is a
@@ -157,6 +159,8 @@ single-user, single-machine tool by design: there is no login, and it binds to l
 - **At least one engine:**
   - [Claude Code](https://claude.com/claude-code), installed and logged in (`claude` once,
     interactively).
+  - [Codex](https://github.com/openai/codex) 0.163.0 or newer, signed in (`codex login`,
+    with a ChatGPT plan or an API key).
   - [OpenCode](https://opencode.ai) 1.18 or newer with a model provider configured.
 - **To run the Homebrew build:** a Mac with Apple Silicon. The formula ships a
   self-contained release, so no Elixir or Erlang install is needed.
@@ -209,6 +213,8 @@ own, and your first project. Run it again any time from **Settings**.
 
 - **Claude Code**: `claude` on your `PATH` (or its path in Settings) and
   logged in (run `claude` once in a terminal). Nothing else to install.
+- **Codex**: `codex` (0.163.0+) on your `PATH` (or its path in Settings) and signed in
+  (run `codex login` once in a terminal). Nothing needs to stay running.
 - **OpenCode**: start `opencode serve --port 4096`. Canopy drops the identity plugin into
   each registered repository automatically (a global copy is also available in Settings).
 
@@ -241,6 +247,7 @@ The demo is a Mix task, so it needs a source checkout (see *From source* above).
 
 ```bash
 mix canopy.demo --engine claude_code   # agents on Claude Code
+mix canopy.demo --engine codex         # agents on Codex
 mix canopy.demo                        # the same demo on OpenCode
 ```
 
@@ -347,7 +354,7 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
   engine session, prompts and tool calls included, with credentials masked.
 - **[Permission](docs/user-guide.md#permissions)** and
   **[question](docs/user-guide.md#questions)** cards: approve a tool or answer a question
-  in the channel, on either engine. **Allow globally** approves a tool for that agent in
+  in the channel, on any engine. **Allow globally** approves a tool for that agent in
   every project, until you remove it on the agent's page.
 - **[Changes](docs/user-guide.md#changes)**: the repository's diff, from the channel header.
 - **[Stop](docs/user-guide.md#anatomy-of-the-channel-header)** in the header ends every
@@ -367,12 +374,13 @@ the [user guide](docs/user-guide.md) with the detail and screenshots.
 ### The brakes
 
 - **[Spend controls](docs/user-guide.md#15-keeping-spend-under-control)**: channel spend
-  limits, a per-turn cap, a hold when an engine reports exhausted credits or a usage limit,
-  one agent at a time, and check-ins that pause a channel after agents take turns without
-  you.
-- **[Costs](docs/user-guide.md#14-costs)**: what each turn, agent, and channel spent, and
-  the costliest turns. `@finops` reads the same numbers as the
-  **[auditor](docs/user-guide.md#the-auditor)** and recommends savings.
+  limits, a per-turn cap (Claude Code), a hold when an engine reports exhausted credits or
+  a usage limit, one agent at a time, and check-ins that pause a channel after agents take
+  turns without you.
+- **[Costs](docs/user-guide.md#14-costs)**: what each turn, engine, agent, and channel
+  spent (with estimated Codex costs marked `≈`), and the costliest turns. `@finops` reads
+  the same numbers as the **[auditor](docs/user-guide.md#the-auditor)** and recommends
+  savings.
 
 ## Configuration
 
@@ -397,8 +405,8 @@ image. Maintainers build and publish the native macOS archive by following
 
 ## The tools agents can call
 
-Canopy's MCP server is mounted at `/mcp` and protected by a bearer token. Claude Code
-sessions get a token of their own per session; OpenCode sessions present the identity
+Canopy's MCP server is mounted at `/mcp` and protected by a bearer token. Claude Code and
+Codex sessions get a token of their own per session; OpenCode sessions present the identity
 plugin's stamp. Identity never comes from tool arguments. The 46 tools (reading, posting,
 delegation and handoffs, channels, schedules, playbooks, locks, memory, notes, costs, and
 files) are listed in the user guide under
@@ -411,9 +419,10 @@ and slash commands under [Composer](docs/user-guide.md#composer).
 lib/canopy/
   runtime/        one ChannelServer per open channel: wakes agents, queues turns,
                   turns engine events into telemetry, cards, and cost summaries
-  engine/         Canopy.Engine behaviour and the two adapters (ClaudeCode, OpenCode);
-                  everything downstream sees only normalised Canopy.Engine.Events
+  engine/         Canopy.Engine behaviour and the three adapters (ClaudeCode, Codex,
+                  OpenCode); everything downstream sees only normalised Canopy.Engine.Events
   claude_code/    per-turn `claude -p` under a Port, stream-json parsing, prompts
+  codex/          per-turn `codex app-server` under a Port, JSON-RPC client, models, prices
   opencode/       HTTP client, SSE event stream, plugin
   mcp/            Anubis MCP server, auth plug, identity, 46 tools under tools/
   channels, messages, agents, tasks, delegations, handoffs, schedules, memory,
@@ -425,7 +434,8 @@ A few rules the codebase keeps to, which also explain its shape:
 
 - Engine details stay inside their adapter. The channel runtime never branches on engine.
 - Agent identity in MCP tools comes from two trusted sources only: the session id the
-  OpenCode plugin stamps, or the per-session bearer token a Claude Code process presents.
+  OpenCode plugin stamps, or the per-session bearer token a Claude Code or Codex process
+  presents.
 - Scheduled tasks are Oban jobs on the SQLite Lite engine, so there is no second store.
 - The channel runtime holds one prompt in flight per session; the rest queue.
 
@@ -436,16 +446,18 @@ mix test            # engines are faked, nothing calls the network
 mix precommit       # compile with warnings as errors, unused deps, format, tests
 ```
 
-Tests never spawn the real `claude` binary. `config/test.exs` points the Claude Code engine
-at `test/support/fake_claude.sh`, which prints the stream-json fixture named by
-`FAKE_CLAUDE_SCRIPT`; verified stream shapes live in `test/support/claude_code_fixtures/`.
-OpenCode is mocked with `Mox` and `Req.Test`.
+Tests never spawn the real `claude` or `codex` binaries. `config/test.exs` points the
+Claude Code and Codex engines at `test/support/fake_claude.sh` and
+`test/support/fake_codex.sh`, which replay the fixtures in
+`test/support/claude_code_fixtures/` and `test/support/codex_fixtures/`. OpenCode is
+mocked with `Mox` and `Req.Test`.
 
 ### Browser end-to-end tests
 
-Playwright tests in `e2e/` boot fake OpenCode and Claude Code engines
-(`e2e/fake-opencode.mjs` and `e2e/fake-claude/`, which call Canopy's real MCP tools the way
-an agent would) and a fresh Canopy instance on `canopy_e2e.db` at port 4100.
+Playwright tests in `e2e/` boot fake Claude Code, Codex, and OpenCode engines
+(`e2e/fake-claude/`, `e2e/fake-codex/`, and `e2e/fake-opencode.mjs`, which call Canopy's
+real MCP tools the way an agent would) and a fresh Canopy instance on `canopy_e2e.db` at
+port 4100.
 
 ```bash
 cd e2e && npm install && npx playwright install chromium   # once
@@ -471,11 +483,13 @@ See [Troubleshooting](docs/user-guide.md#17-troubleshooting) in the user guide.
 ## Security notes
 
 Canopy listens on `127.0.0.1` only unless you opt out for a run. The browser never runs
-shell commands; agents run inside their engine, and on Claude Code anything the agent's
-permission mode and allowed tools don't cover asks first. The MCP endpoint requires a
-bearer token, rotatable in Settings. Repository paths must be inside your home directory
-unless you tick the override. There is no authentication and no multi-user support; treat
-the port as you would a local database.
+shell commands; agents run inside their engine, and on Claude Code and Codex anything the
+agent's permission mode and allowed tools don't cover asks first. Codex agents also inherit
+any MCP servers in Codex's `config.toml`; setting a separate Codex config directory in
+Settings keeps personal servers out. The MCP endpoint requires a bearer token, rotatable in
+Settings. Repository paths must be inside your home directory unless you tick the override.
+There is no authentication and no multi-user support; treat the port as you would a local
+database.
 
 ## Known gaps
 

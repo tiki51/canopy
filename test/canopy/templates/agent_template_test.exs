@@ -24,6 +24,13 @@ defmodule Canopy.Templates.AgentTemplateTest do
 
   defp own(agent), do: Map.take(agent, @fields)
 
+  setup do
+    engines = Application.get_env(:canopy, :engines)
+    Application.put_env(:canopy, :engines, Map.put_new(engines, "codex", Canopy.Engine.Codex))
+    on_exit(fn -> Application.put_env(:canopy, :engines, engines) end)
+    :ok
+  end
+
   describe "round trip" do
     test "model routing travels: routing, light model, light effort" do
       claude =
@@ -111,6 +118,91 @@ defmodule Canopy.Templates.AgentTemplateTest do
       assert text =~ "allowed_tools:\n  - Bash(git diff *)\n  - Read\n  - Grep\n"
       assert text =~ "mode: build"
       refute text =~ "opencode_agent"
+    end
+  end
+
+  describe "Codex" do
+    test "an agent round-trips its model, effort, permission mode and light profile" do
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "codey",
+          engine: "codex",
+          model_id: "gpt-6.1-sol",
+          effort: "ultra",
+          permission_mode: "acceptEdits",
+          routing_enabled: true,
+          light_model_id: "gpt-5.6-terra",
+          light_effort: "low",
+          system_prompt: "Ship it."
+        })
+
+      {attrs, text} = round_trip(agent)
+      assert attrs == own(agent)
+      assert text =~ "engine: codex"
+      assert text =~ "model: gpt-6.1-sol"
+      assert text =~ "effort: ultra"
+      assert text =~ "permission_mode: acceptEdits"
+      assert text =~ "light_model: gpt-5.6-terra"
+      assert text =~ "mode: build"
+      refute text =~ "opencode_agent"
+      refute text =~ "allowed_tools"
+    end
+
+    test "an agent on a Codex default is written with Codex's settings and no engine" do
+      {:ok, _} = Canopy.Settings.put_default_engine("codex")
+
+      agent =
+        Fixtures.agent_fixture(%{
+          name: "follower",
+          model_id: "gpt-6-luna",
+          permission_mode: "plan"
+        })
+
+      text = AgentTemplate.encode(agent)
+      refute text =~ "engine:"
+      assert text =~ "model: gpt-6-luna"
+      assert text =~ "mode: plan"
+      assert text =~ "permission_mode: plan"
+    end
+
+    test "mode sets the permission mode; another engine's model and keys are left out" do
+      {:ok, t} = decode("mode: plan")
+
+      assert {%{permission_mode: "plan", opencode_agent: "plan"}, []} =
+               AgentTemplate.attrs(t, "codex")
+
+      {:ok, t} =
+        decode(
+          "engine: claude_code\nmode: build\nmodel: opus\neffort: high\nallowed_tools:\n  - Read"
+        )
+
+      {attrs, [notice]} = AgentTemplate.attrs(t, "codex")
+      assert %{permission_mode: "default", model_id: nil, effort: nil, allowed_tools: nil} = attrs
+      assert notice =~ "effort, allowed_tools, model opus don't apply to Codex"
+
+      # a file without an engine: Codex keeps its own keys, drops the others
+      {:ok, t} = decode("model: gpt-6.1-sol\neffort: ultra\nopencode_agent: review")
+      {attrs, [notice]} = AgentTemplate.attrs(t, "codex")
+      assert %{model_id: "gpt-6.1-sol", effort: "ultra"} = attrs
+      assert notice =~ "opencode_agent doesn't apply to Codex"
+    end
+
+    test "a Claude alias or an OpenCode provider/model isn't a Codex model" do
+      {:ok, t} = decode("engine: codex\nmodel: sonnet\nlight_model: openai/gpt-5.4")
+      {attrs, notices} = AgentTemplate.attrs(t, "codex")
+      assert %{model_id: nil, light_model_id: nil} = attrs
+
+      assert notices == [
+               "model sonnet isn't a Codex model; using the default model",
+               "light_model openai/gpt-5.4 isn't a Codex model; using the default light model"
+             ]
+    end
+
+    test "a Codex file read for OpenCode drops the Codex keys, with a notice" do
+      {:ok, t} = decode("engine: codex\nmode: plan\nmodel: gpt-6.1-sol\neffort: ultra")
+      {attrs, [notice]} = AgentTemplate.attrs(t, "opencode")
+      assert %{opencode_agent: "plan", model_id: nil, model_provider: nil, effort: nil} = attrs
+      assert notice =~ "effort, model gpt-6.1-sol don't apply to OpenCode"
     end
   end
 

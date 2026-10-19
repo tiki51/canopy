@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The e2e stand-in for the `codex` binary: bin/server.sh puts this directory
+# on PATH, so Canopy's default binary name ("codex") resolves here.
+exec "${NODE:-node}" "$(dirname "$0")/codex.mjs" "$@"

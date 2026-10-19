@@ -42,6 +42,22 @@ defmodule Canopy.Runtime.ActivityTest do
     assert_in_delta card.cost, 0.003, 0.00001
   end
 
+  test "an estimated step marks the card's cost estimated, and a stored card keeps it" do
+    exact = Activity.fold_all([ev(:step_completed, %{part_id: "s1", cost: 0.01})])
+    refute exact.cost_estimated
+
+    card =
+      Activity.fold_all([
+        ev(:step_completed, %{part_id: "s1", cost: 0.01}),
+        ev(:step_completed, %{part_id: "s2", cost: 0.02, cost_estimated: true}),
+        ev(:step_completed, %{part_id: "s3", cost: 0.01})
+      ])
+
+    assert card.cost_estimated
+    assert Activity.card_from_payload(%{"cost" => 0.04, "cost_estimated" => true}).cost_estimated
+    refute Activity.card_from_payload(%{"cost" => 0.04}).cost_estimated
+  end
+
   test "rows are labelled by category, and completion replaces the running row" do
     card =
       Activity.fold_all([

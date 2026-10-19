@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Boots Canopy for the Playwright suite on its own SQLite database and port,
 # pointed at the fake OpenCode server, with the fake Claude Code
-# (e2e/fake-claude/claude) first on PATH. Invoked by playwright.config.ts.
+# (e2e/fake-claude/claude) and the fake Codex (e2e/fake-codex/codex) first on
+# PATH. Invoked by playwright.config.ts.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-export PATH="$PWD/e2e/fake-claude:$PATH"
+export PATH="$PWD/e2e/fake-claude:$PWD/e2e/fake-codex:$PATH"
 # Run from inside Canopy (an agent's shell) this would be the real library;
 # e2e documents belong next to the e2e database.
 unset CANOPY_FILES_DIR
@@ -27,8 +28,17 @@ export PHX_SERVER=true
 # A Claude Code turn that prints nothing this long is killed (120 s outside the
 # suite); short enough for a spec to wait past it, longer than any fake hold.
 export CANOPY_CLAUDE_STALL_MS="${CANOPY_CLAUDE_STALL_MS:-10000}"
+# The same for a Codex turn's app-server.
+export CANOPY_CODEX_STALL_MS="${CANOPY_CODEX_STALL_MS:-10000}"
 FAKE_URL="http://127.0.0.1:${FAKE_OPENCODE_PORT:-4396}"
 REPO="$PWD/tmp/e2e-repo"
+# Codex reads its config.toml (MCP servers, shell policy) from $CODEX_HOME, and
+# Canopy lists those servers on a repository's MCP page: a fresh one per boot
+# keeps the machine's ~/.codex out of every spec (the fake's rollout paths
+# point there too).
+export CODEX_HOME="$PWD/tmp/e2e-codex-home"
+rm -rf "$CODEX_HOME"
+mkdir -p "$CODEX_HOME"
 
 rm -f "$CANOPY_DB" "$CANOPY_DB-shm" "$CANOPY_DB-wal"
 # Backups an environment spec's reset left behind when it died before its own

@@ -2,8 +2,9 @@ defmodule Canopy.CostsTest do
   use Canopy.DataCase, async: false
 
   import Canopy.Fixtures
+  import Ecto.Query
 
-  alias Canopy.{Costs, Timeline}
+  alias Canopy.{Costs, Repo, Timeline}
 
   defp turn(channel, agent, cost, extra \\ %{}) do
     {:ok, _} =
@@ -30,7 +31,7 @@ defmodule Canopy.CostsTest do
     other_agent = agent_fixture(%{name: "spender"})
     {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, other_agent)
 
-    assert Costs.total() == %{cost: 0.0, turns: 0, tools: 0}
+    assert Costs.total() == %{cost: 0.0, estimated: 0.0, turns: 0, tools: 0}
 
     turn(channel, agent, 0.25)
     turn(channel, agent, 0.05, %{"model" => "openai/gpt-5.4"})
@@ -67,6 +68,145 @@ defmodule Canopy.CostsTest do
     assert Costs.money(1.8) == "$1.80"
     assert Costs.money(0.0042) == "$0.0042"
     assert Costs.money(nil) == "$0.00"
+  end
+
+  describe "estimated costs and engines" do
+    setup do
+      # Codex may not be registered yet; by_engine/1 only reads the names
+      old = Application.get_env(:canopy, :engines)
+
+      Application.put_env(
+        :canopy,
+        :engines,
+        Map.put(old, "codex", Canopy.Engine.Codex)
+      )
+
+      on_exit(fn -> Application.put_env(:canopy, :engines, old) end)
+
+      %{channel: channel, agent: agent, session: session} = scenario()
+      coder = agent_fixture(%{name: "coder"})
+      codex_session = session_fixture(%{channel: channel, agent_id: coder.id, engine: "codex"})
+
+      on = fn who, ref, cost, extra ->
+        {:ok, _} =
+          Timeline.record(%{
+            channel_id: channel.id,
+            agent_id: who.id,
+            event_type: "agent_turn_completed",
+            ref_id: ref,
+            payload:
+              Map.merge(
+                %{"outcome" => "ok", "cost" => cost, "tools" => 1, "duration_ms" => 1_000},
+                extra
+              )
+          })
+      end
+
+      # Codex turns: one recording its engine, one from before the payload did
+      on.(coder, codex_session.id, 0.3, %{
+        "engine" => "codex",
+        "cost_estimated" => true,
+        "model" => "gpt-5-codex",
+        "trigger" => "user"
+      })
+
+      on.(coder, codex_session.id, 0.2, %{"cost_estimated" => true, "model" => "gpt-5-codex"})
+      # an OpenCode turn whose session row says so
+      on.(agent, session.id, 1.0, %{"model" => "opencode/big", "trigger" => "user"})
+
+      # a Claude Code session dropped since: its reset line names the engine
+      {:ok, _} =
+        Timeline.record(%{
+          channel_id: channel.id,
+          agent_id: agent.id,
+          event_type: "session_reset",
+          ref_id: "as_gone",
+          payload: %{"engine" => "claude_code", "by" => "engine_change"}
+        })
+
+      on.(agent, "as_gone", 0.5, %{"model" => "custom"})
+      # no engine, no session: Claude Code by its model name, else OpenCode
+      on.(agent, nil, 0.25, %{"model" => "sonnet"})
+      on.(agent, nil, 0.05, %{"model" => "opencode/small"})
+
+      %{channel: channel, coder: coder}
+    end
+
+    test "every aggregate carries the estimated part of its cost", %{channel: channel} do
+      assert %{cost: cost, estimated: estimated, turns: 6} = Costs.total()
+      assert_in_delta cost, 2.3, 1.0e-9
+      assert_in_delta estimated, 0.5, 1.0e-9
+
+      assert [%{estimated: +0.0}, %{label: "@coder", estimated: e1}] = Costs.by_agent()
+      assert_in_delta e1, 0.5, 1.0e-9
+
+      assert [%{estimated: e2}] = Costs.by_channel()
+      assert_in_delta e2, 0.5, 1.0e-9
+
+      models = Map.new(Costs.by_model(), &{&1.key, &1})
+      assert_in_delta models["gpt-5-codex"].estimated, 0.5, 1.0e-9
+      assert models["opencode/big"].estimated == 0.0
+
+      triggers = Map.new(Costs.by_trigger(), &{&1.key, &1})
+      assert_in_delta triggers["user"].estimated, 0.3, 1.0e-9
+      assert_in_delta triggers["unknown"].estimated, 0.2, 1.0e-9
+
+      assert %{estimated: e3} = List.last(Costs.by_day(2))
+      assert_in_delta e3, 0.5, 1.0e-9
+      assert %{estimated: +0.0} = hd(Costs.by_day(2))
+
+      eff = Costs.efficiency()
+      assert_in_delta eff.estimated, 0.5, 1.0e-9
+      assert_in_delta eff.avg_estimated, 0.5 / 6, 1.0e-9
+
+      top = Costs.top_turns(nil, 6)
+      assert Enum.count(top, & &1.cost_estimated) == 2
+      assert %{cost: 1.0, cost_estimated: false} = hd(top)
+
+      assert %{cost: c4, estimated: e4} = Costs.channel_spend(channel.id)
+      assert_in_delta c4, 2.3, 1.0e-9
+      assert_in_delta e4, 0.5, 1.0e-9
+      assert Costs.channel_spend("ch_none") == %{cost: 0.0, estimated: 0.0}
+    end
+
+    test "the spend limit counts estimates", %{channel: channel} do
+      # 1.8 reported + 0.5 estimated: over 2.00 only with the estimates
+      assert_in_delta Costs.channel_total(channel.id), 2.3, 1.0e-9
+
+      {:ok, _} = Canopy.Channels.set_spend_limit(channel, 2.0)
+      assert [%{reached?: true, spent: spent, estimated: estimated}] = Costs.channel_budgets()
+      assert_in_delta spent, 2.3, 1.0e-9
+      assert_in_delta estimated, 0.5, 1.0e-9
+    end
+
+    test "by_engine/1 in engine order, older turns falling back to their session or model" do
+      assert [claude, codex, opencode] = Costs.by_engine()
+
+      assert %{key: "claude_code", label: "Claude Code", turns: 2, tools: 2} = claude
+      assert_in_delta claude.cost, 0.75, 1.0e-9
+      assert claude.estimated == 0.0
+
+      assert %{key: "codex", label: "Codex", turns: 2, duration_ms: 2_000} = codex
+      assert_in_delta codex.cost, 0.5, 1.0e-9
+      assert_in_delta codex.estimated, 0.5, 1.0e-9
+
+      assert %{key: "opencode", label: "OpenCode", turns: 2} = opencode
+      assert_in_delta opencode.cost, 1.05, 1.0e-9
+
+      assert Costs.models_on("codex") == ["gpt-5-codex"]
+    end
+
+    test "by_engine/1 leaves out engines with no turns in the period" do
+      Repo.update_all(
+        from(e in Canopy.Timeline.Event,
+          where: fragment("json_extract(?, '$.model')", e.payload) != "gpt-5-codex"
+        ),
+        set: [inserted_at: ~U[2020-01-01 00:00:00.000000Z]]
+      )
+
+      assert [%{key: "codex", turns: 2}] = Costs.by_engine(Costs.since(:week))
+      assert length(Costs.by_engine()) == 3
+    end
   end
 
   test "money puts a minus sign before the dollar and never shows a negative zero" do
@@ -168,8 +308,8 @@ defmodule Canopy.CostsDetailTest do
            }
 
     assert_in_delta eff.cache_rate, 40_000 / 60_000, 0.001
-    assert eff.passed == %{turns: 1, cost: 0.5}
-    assert eff.errors == %{turns: 1, cost: 0.25}
+    assert eff.passed == %{turns: 1, cost: 0.5, estimated: 0.0}
+    assert eff.errors == %{turns: 1, cost: 0.25, estimated: 0.0}
     assert eff.compactions == 1
     assert_in_delta eff.avg_cost, 2.75 / 3, 0.0001
 
@@ -252,6 +392,6 @@ defmodule Canopy.CostsDetailTest do
 
     # the report names the defaults, so the auditor can recommend a cheaper one
     assert Report.render(:week) =~
-             "Default models (Settings; agents without a model of their own use them): Claude Code sonnet; OpenCode opencode/gpt-5-nano. 1 of 2 active agents use them."
+             "Default models (Settings; agents without a model of their own use them): Claude Code sonnet; Codex its own default; OpenCode opencode/gpt-5-nano. 1 of 2 active agents use them."
   end
 end

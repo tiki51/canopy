@@ -57,6 +57,15 @@ config :canopy, :claude_code,
   binary: Path.expand("../test/support/fake_claude.sh", __DIR__),
   default_config_dir: Path.expand("../test/support/claude_code_fixtures/none", __DIR__)
 
+# Codex turns spawn a script that speaks canned JSON-RPC (see test/support/fake_codex.sh).
+# Its config dir is a fixture, never the real ~/.codex; the model list is never cached,
+# so no test sees another's.
+config :canopy, :codex,
+  binary: Path.expand("../test/support/fake_codex.sh", __DIR__),
+  default_config_dir: Path.expand("../test/support/codex_fixtures/home", __DIR__),
+  models_cache_ms: 0,
+  rename_ack_ms: 1_000
+
 # The repository page's MCP inventory reads config files from fixtures, never
 # the real home (see Canopy.MCP.Inventory).
 config :canopy, :mcp_inventory,

@@ -312,6 +312,23 @@ defmodule CanopyWeb.ChannelLive.Transcript do
     end
   end
 
+  # The followed session took its engine's own id (a Codex session's first
+  # turn names its thread): move to the new topic and read the row again.
+  def handle_info(
+        {:engine_session_renamed, old, new, _ack},
+        %{assigns: %{followed: old}} = socket
+      ) do
+    sessions = Transcripts.list_sessions(socket.assigns.channel.id, socket.assigns.agent.id)
+    session = Enum.find(sessions, &(&1.engine_session_id == new)) || List.first(sessions)
+
+    {:noreply,
+     socket
+     |> assign(:sessions, sessions)
+     |> assign(:session, session)
+     |> follow_session(session)
+     |> load([])}
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
 
   # -- Render -----------------------------------------------------------------------
@@ -993,7 +1010,8 @@ defmodule CanopyWeb.ChannelLive.Transcript do
       turn.steered > 0 &&
         ngettext("took 1 message mid-turn", "took %{count} messages mid-turn", turn.steered),
       is_integer(turn.tools) && turn.tools > 0 && ngettext("1 call", "%{count} calls", turn.tools),
-      is_number(turn.cost) && turn.cost > 0 && Activity.format_cost(turn.cost),
+      is_number(turn.cost) && turn.cost > 0 &&
+        CanopyWeb.CostFormat.format_cost(turn.cost, Map.get(turn, :cost_estimated?)),
       TimelineComponents.format_duration(turn.duration_ms),
       turn.outcome not in [nil, "ok"] && turn.outcome
     ]

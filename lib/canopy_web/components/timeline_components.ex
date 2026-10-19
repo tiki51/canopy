@@ -980,7 +980,9 @@ defmodule CanopyWeb.TimelineComponents do
             <span class="sm:hidden">{short_tally(@card)}</span>
             <span class="ml-auto flex shrink-0 items-center gap-2">
               <span :if={@card.tokens > 0}>{format_tokens(@card.tokens)} tok</span>
-              <span :if={@card.cost > 0}>{format_cost(@card.cost)}</span>
+              <span :if={@card.cost > 0}>
+                {CanopyWeb.CostFormat.format_cost(@card.cost, Map.get(@card, :cost_estimated))}
+              </span>
               <span :if={@card.model} class="max-sm:hidden">{@card.model}</span>
             </span>
           </span>
@@ -2470,17 +2472,7 @@ defmodule CanopyWeb.TimelineComponents do
         <div class="flex min-w-0 flex-1 items-center gap-2">
           <.icon name="hero-shield-exclamation" class="size-5 shrink-0 text-warning" />
           <div class="min-w-0 flex-1 text-sm">
-            <span class="font-medium">@{requester_name(@request, @names)}</span>
-            {if @request.detached_at, do: "asked for", else: "asks for"}
-            <span class="font-semibold">{@request.permission}</span>
-            permission
-            <span :if={@request.patterns != []} class="text-base-content/60">
-              on
-              <code
-                :for={pattern <- @request.patterns}
-                class="mr-1 rounded bg-base-300/60 px-1 font-mono text-xs [overflow-wrap:anywhere]"
-              >{pattern}</code>
-            </span>
+            <.permission_head request={@request} name={requester_name(@request, @names)} />
           </div>
         </div>
         <div class="grid grid-cols-2 gap-1.5 sm:flex sm:shrink-0 sm:items-center">
@@ -2488,6 +2480,7 @@ defmodule CanopyWeb.TimelineComponents do
             type="button"
             id={"permission-#{@request.id}-once"}
             class="btn btn-sm btn-primary sm:btn-xs"
+            title={once_title(@request.metadata)}
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="once"
@@ -2495,10 +2488,11 @@ defmodule CanopyWeb.TimelineComponents do
             Once
           </button>
           <button
+            :if={!once_only?(@request) && !no_always?(@request)}
             type="button"
             id={"permission-#{@request.id}-always"}
             class="btn btn-sm btn-primary btn-soft sm:btn-xs"
-            title="Until this session resets"
+            title={always_title(@request.metadata)}
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="always"
@@ -2506,11 +2500,18 @@ defmodule CanopyWeb.TimelineComponents do
             Always
           </button>
           <button
-            :if={@request.agent_session && Canopy.GlobalPermissions.grantable?(@request.permission)}
+            :if={
+              @request.agent_session && !once_only?(@request) &&
+                Canopy.GlobalPermissions.grantable?(@request.permission)
+            }
             type="button"
             id={"permission-#{@request.id}-global"}
             class="btn btn-sm btn-secondary btn-soft sm:btn-xs"
-            title={global_title(requester_name(@request, @names), @request.permission)}
+            title={
+              if action(@request) == "command",
+                do: "Run any command without asking, in every channel",
+                else: global_title(requester_name(@request, @names), @request.permission)
+            }
             phx-click="respond_permission"
             phx-value-id={@request.id}
             phx-value-reply="global"
@@ -2538,14 +2539,199 @@ defmodule CanopyWeb.TimelineComponents do
         so and it can do it again.
       </p>
       <.diff_view
-        :if={is_binary(@request.metadata["diff"]) and @request.metadata["diff"] != ""}
+        :if={diff?(@request)}
         id={"permission-#{@request.id}-diff"}
         diff={@request.metadata["diff"]}
-        class="max-h-72 border-t border-warning/20 bg-base-100/60 py-2"
+        class={[
+          "max-h-72 border-t border-warning/20 bg-base-100/60 py-2",
+          action(@request) == "file_change" && "hidden"
+        ]}
       />
     </section>
     """
   end
+
+  attr :request, :map, required: true
+  attr :name, :string, required: true
+
+  # The card's head line. Codex requests carry `metadata["action"]` and read
+  # as what the agent wants to do; any other request names its tool.
+  defp permission_head(%{request: request} = assigns) do
+    assigns =
+      assigns
+      |> assign(:detached, request.detached_at != nil)
+      |> assign(:meta, request.metadata || %{})
+      |> assign(:paths, request_paths(request))
+
+    ~H"""
+    <%= case action(@request) do %>
+      <% "command" -> %>
+        <span class="font-medium">@{@name}</span>
+        {if @detached, do: "asked to", else: "asks to"}
+        <span class="font-semibold">run a command</span>
+        <code
+          id={"permission-#{@request.id}-command"}
+          class="mt-0.5 line-clamp-2 rounded bg-base-300/60 px-1 font-mono text-xs [overflow-wrap:anywhere]"
+          title={command_text(@request)}
+        >{command_text(@request)}</code>
+        <span :if={@meta["network"]} class="badge badge-ghost badge-xs">network</span>
+        <span :if={@meta["unsandboxed"]} class="badge badge-warning badge-xs">
+          outside sandbox
+        </span>
+        <.permission_reason request={@request} />
+      <% "file_change" -> %>
+        <span class="font-medium">@{@name}</span>
+        {if @detached, do: "asked to", else: "asks to"}
+        <span class="font-semibold">edit files</span>
+        <span :if={@meta["outside_repo"]} class="text-base-content/60">outside the repo:</span>
+        <.path_chips paths={@paths} />
+        <button
+          :if={diff?(@request)}
+          type="button"
+          id={"permission-#{@request.id}-view-change"}
+          class="group link link-hover text-xs text-base-content/70"
+          aria-controls={"permission-#{@request.id}-diff"}
+          aria-expanded="false"
+          phx-click={
+            JS.toggle(to: "#permission-#{@request.id}-diff", display: "block")
+            |> JS.toggle_attribute({"aria-expanded", "true", "false"})
+          }
+        >
+          <span class="group-aria-expanded:hidden">view change</span>
+          <span class="hidden group-aria-expanded:inline">hide change</span>
+        </button>
+        <.permission_reason request={@request} />
+      <% "permissions" -> %>
+        <span class="font-medium">@{@name}</span>
+        {access_head(@meta["network"] == true, @paths != [], @detached)}
+        <.path_chips :if={@paths != []} paths={@paths} />
+        <.permission_reason request={@request} />
+      <% _ -> %>
+        <span class="font-medium">@{@name}</span>
+        {if @detached, do: "asked for", else: "asks for"}
+        <span class="font-semibold">{@request.permission}</span>
+        permission
+        <span :if={@request.patterns != []} class="text-base-content/60">
+          on
+          <code
+            :for={pattern <- @request.patterns}
+            class="mr-1 rounded bg-base-300/60 px-1 font-mono text-xs [overflow-wrap:anywhere]"
+          >{pattern}</code>
+        </span>
+    <% end %>
+    """
+  end
+
+  attr :paths, :list, required: true
+
+  # The first three paths, then how many more.
+  defp path_chips(assigns) do
+    assigns =
+      assigns
+      |> assign(:shown, Enum.take(assigns.paths, 3))
+      |> assign(:more, max(length(assigns.paths) - 3, 0))
+
+    ~H"""
+    <code
+      :for={path <- @shown}
+      class="mr-1 rounded bg-base-300/60 px-1 font-mono text-xs [overflow-wrap:anywhere]"
+    >{path}</code>
+    <span :if={@more > 0} class="text-xs text-base-content/60">+{@more} more</span>
+    """
+  end
+
+  attr :request, :map, required: true
+
+  defp permission_reason(assigns) do
+    assigns = assign(assigns, :text, reason_text(assigns.request.metadata || %{}))
+
+    ~H"""
+    <span
+      :if={@text}
+      id={"permission-#{@request.id}-reason"}
+      class="block text-xs text-base-content/60"
+    >
+      {@text}
+    </span>
+    """
+  end
+
+  @unsandboxed_note "runs outside Codex's sandbox, so it can change files anywhere and use the network"
+  @read_only_note "read-only agent: runs outside Codex's sandbox, so it can change files and use the network"
+
+  defp reason_text(meta) do
+    note =
+      cond do
+        meta["once_only"] == true -> @read_only_note
+        meta["unsandboxed"] == true -> @unsandboxed_note
+        true -> nil
+      end
+
+    [meta["reason"], note]
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp access_head(true, true, detached),
+    do: "#{if detached, do: "asked", else: "asks"} for network access and files outside the repo"
+
+  defp access_head(true, false, detached),
+    do: "#{if detached, do: "asked", else: "asks"} for network access"
+
+  defp access_head(false, true, detached),
+    do: "#{if detached, do: "asked", else: "asks"} to use files outside the repo"
+
+  defp access_head(false, false, detached),
+    do: "#{if detached, do: "asked", else: "asks"} for more access"
+
+  defp action(%{metadata: %{"action" => action}}) when is_binary(action), do: action
+  defp action(_request), do: nil
+
+  defp once_only?(request), do: get_in(request.metadata || %{}, ["once_only"]) == true
+
+  # A git command outside the ask-first allowlist: no Always rule could match it.
+  defp no_always?(request), do: get_in(request.metadata || %{}, ["no_always"]) == true
+
+  defp diff?(request) do
+    case get_in(request.metadata || %{}, ["diff"]) do
+      diff when is_binary(diff) and diff != "" -> true
+      _ -> false
+    end
+  end
+
+  defp command_text(request),
+    do: get_in(request.metadata || %{}, ["command"]) || Enum.join(request.patterns, " ")
+
+  defp request_paths(request) do
+    case get_in(request.metadata || %{}, ["paths"]) do
+      [_ | _] = paths -> paths
+      _ -> List.wrap(request.patterns)
+    end
+  end
+
+  defp once_title(%{"once_only" => true}), do: "Runs outside Codex's sandbox, this time only"
+  defp once_title(%{"unsandboxed" => true}), do: "Runs outside Codex's sandbox: this time only"
+  defp once_title(_metadata), do: nil
+
+  defp always_title(%{"action" => "command"} = meta) do
+    scope =
+      case meta["always_prefix"] do
+        prefix when is_binary(prefix) and prefix != "" ->
+          ~s(For commands starting with "#{prefix}", until this session resets)
+
+        _ ->
+          "For this command, until this session resets"
+      end
+
+    if meta["unsandboxed"] == true,
+      do: "Runs outside Codex's sandbox: " <> lower_first(scope),
+      else: scope
+  end
+
+  defp always_title(_metadata), do: "Until this session resets"
 
   @doc "A unified diff with added and removed lines tinted."
   attr :id, :string, required: true
@@ -2767,7 +2953,7 @@ defmodule CanopyWeb.TimelineComponents do
           else: "#{by} cleared the channel brief"
 
       "spend_limit_reached" ->
-        "spend limit reached: #{Canopy.Costs.money(p["spent"])} of #{Canopy.Costs.money(p["limit"])}; agents stay quiet here until the limit is raised"
+        "spend limit reached: #{CanopyWeb.CostFormat.money(p["spent"], p["estimated"])} of #{Canopy.Costs.money(p["limit"])}; agents stay quiet here until the limit is raised"
 
       "repository_switched" ->
         by = if p["by"] == "user", do: user, else: p["by"]
@@ -2801,16 +2987,28 @@ defmodule CanopyWeb.TimelineComponents do
         "resumed a schedule for #{agent}: #{schedule_timing(p)} · #{p["instruction"]}"
 
       "permission_requested" ->
-        "#{agent} asked for #{p["permission"]} permission" <>
-          suffix(Enum.join(List.wrap(p["patterns"]), ", "))
+        head =
+          if p["action"] in ["command", "file_change", "permissions"],
+            do: "#{agent} asked to #{action_verb(p["action"])}",
+            else: "#{agent} asked for #{p["permission"]} permission"
+
+        head <> suffix(Enum.join(List.wrap(p["patterns"]), ", "))
 
       "permission_resolved" ->
-        if p["status"] == "global",
-          do:
-            "#{p["permission"]} permission allowed globally for #{agent}" <> delivered_suffix(p),
-          else:
+        cond do
+          p["action"] in ["command", "file_change", "permissions"] and
+              p["status"] in ["once", "always"] ->
+            "#{user} let #{agent} #{action_verb(p["action"])} " <>
+              if(p["status"] == "once", do: "once", else: "for the session") <>
+              delivered_suffix(p)
+
+          p["status"] == "global" ->
+            "#{p["permission"]} permission allowed globally for #{agent}" <> delivered_suffix(p)
+
+          true ->
             "#{p["permission"]} permission #{permission_status(p["status"])}" <>
               delivered_suffix(p)
+        end
 
       "permission_auto_approved" ->
         "#{agent} ran #{p["permission"]} without asking · global permission" <>
@@ -3259,11 +3457,33 @@ defmodule CanopyWeb.TimelineComponents do
       if(p["outcome"] == "ok", do: mid_turn(p["interrupted_by"])),
       count(p["tools"], "tool"),
       count(length(List.wrap(p["files"])), "file"),
-      if(is_number(p["cost"]) and p["cost"] > 0, do: format_cost(p["cost"])),
+      if(p["cost_estimated"] == true, do: estimated_tokens(p["tokens"])),
+      if(is_number(p["cost"]) and p["cost"] > 0,
+        do: CanopyWeb.CostFormat.format_cost(p["cost"], p["cost_estimated"])
+      ),
       format_duration(p["duration_ms"])
     ]
     |> Enum.reject(&is_nil/1)
   end
+
+  # A Codex turn's cost is estimated from its tokens, so the line says how
+  # many: `48.2k tokens (31k cached)`.
+  defp estimated_tokens(%{} = tokens) do
+    total =
+      ~w(input output cache_read cache_write)
+      |> Enum.map(&Map.get(tokens, &1))
+      |> Enum.filter(&is_number/1)
+      |> Enum.sum()
+
+    cached = Map.get(tokens, "cache_read")
+
+    if total > 0 do
+      "#{format_tokens(total)} tokens" <>
+        if(is_number(cached) and cached > 0, do: " (#{format_tokens(cached)} cached)", else: "")
+    end
+  end
+
+  defp estimated_tokens(_tokens), do: nil
 
   # The messages the user steered into a turn that finished on its own.
   defp mid_turn([_]), do: "took 1 message mid-turn"
@@ -3355,6 +3575,10 @@ defmodule CanopyWeb.TimelineComponents do
 
   defp task_changes(%{"status" => status}) when is_binary(status), do: "status → #{status}"
   defp task_changes(_), do: nil
+
+  defp action_verb("command"), do: "run a command"
+  defp action_verb("file_change"), do: "edit files"
+  defp action_verb("permissions"), do: "have more access"
 
   defp permission_status("once"), do: "granted once"
   defp permission_status("always"), do: "granted for the session"

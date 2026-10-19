@@ -10,28 +10,35 @@ defmodule Canopy.Settings do
   @id "default"
 
   # Per engine, the columns holding its default model as {provider, model}
-  # (Claude Code has no provider), and its default effort where it has one.
+  # (Claude Code and Codex have no provider), and its default effort where it
+  # has one.
   @model_fields %{
     "claude_code" => {nil, :claude_default_model},
+    "codex" => {nil, :codex_default_model},
     "opencode" => {:opencode_default_provider, :opencode_default_model}
   }
-  @effort_fields %{"claude_code" => :claude_default_effort}
+  @effort_fields %{"claude_code" => :claude_default_effort, "codex" => :codex_default_effort}
   @default_fields [
     :default_engine,
     :claude_default_model,
     :claude_default_effort,
+    :codex_default_model,
+    :codex_default_effort,
     :opencode_default_provider,
     :opencode_default_model
   ]
   # The same, for the light model routed agents run cheap wakes on.
   @light_model_fields %{
     "claude_code" => {nil, :claude_light_model},
+    "codex" => {nil, :codex_light_model},
     "opencode" => {:opencode_light_provider, :opencode_light_model}
   }
-  @light_effort_fields %{"claude_code" => :claude_light_effort}
+  @light_effort_fields %{"claude_code" => :claude_light_effort, "codex" => :codex_light_effort}
   @light_fields [
     :claude_light_model,
     :claude_light_effort,
+    :codex_light_model,
+    :codex_light_effort,
     :opencode_light_provider,
     :opencode_light_model
   ]
@@ -129,8 +136,8 @@ defmodule Canopy.Settings do
 
   @doc """
   The model an agent of `engine` with no model of its own runs on, as
-  `%{model_provider: p, model_id: m}`. Claude Code has no provider; both nil
-  means the engine picks (Claude Code's or OpenCode's own default).
+  `%{model_provider: p, model_id: m}`. Claude Code and Codex have no
+  provider; both nil means the engine picks (the engine's own default).
   """
   def default_model(engine, setting \\ nil) when is_binary(engine) do
     setting = setting || get()
@@ -155,8 +162,9 @@ defmodule Canopy.Settings do
 
   @doc """
   Sets an engine's default model from `%{model_provider: p, model_id: m}`
-  (nils clear it; Claude Code ignores the provider). Validated like an
-  agent's own model; whether OpenCode offers the pair is the caller's check.
+  (nils clear it; Claude Code and Codex ignore the provider). Validated like
+  an agent's own model; whether Codex or OpenCode offers it is the caller's
+  check.
   """
   def put_default_model(engine, attrs) when is_binary(engine) and is_map(attrs) do
     case Map.fetch(@model_fields, engine) do
@@ -173,6 +181,10 @@ defmodule Canopy.Settings do
         unsupported(engine, :model_id, "has no default model")
     end
   end
+
+  @doc "Whether `engine` has an effort setting (Claude Code and Codex; OpenCode has none)."
+  def effort?(engine) when is_binary(engine), do: Map.has_key?(@effort_fields, engine)
+  def effort?(_engine), do: false
 
   @doc """
   The effort an agent of `engine` with no effort of its own runs at; nil when
@@ -191,7 +203,7 @@ defmodule Canopy.Settings do
     Map.new(Canopy.Engine.names(), &{&1, default_effort(&1, setting)})
   end
 
-  @doc "Sets an engine's default effort (one of `Agent.efforts/0`, or nil to clear it)."
+  @doc "Sets an engine's default effort (one of `Agent.efforts/1`, or nil to clear it)."
   def put_default_effort(engine, effort) when is_binary(engine) do
     case Map.fetch(@effort_fields, engine) do
       {:ok, field} -> update(%{field => effort})
@@ -204,7 +216,7 @@ defmodule Canopy.Settings do
   @doc """
   The light profile a routed agent of `engine` with no light model of its own
   runs cheap wakes on, as `%{model_provider, model_id, effort}`; all nil when
-  none is set. Claude Code has no provider, OpenCode no effort.
+  none is set. Claude Code and Codex have no provider, OpenCode no effort.
   """
   def light_profile(engine, setting \\ nil) when is_binary(engine) do
     setting = setting || get()
@@ -227,8 +239,8 @@ defmodule Canopy.Settings do
 
   @doc """
   Sets an engine's light profile from `%{model_provider, model_id, effort}`
-  (nils clear; keys left out are left alone; Claude Code ignores the
-  provider, OpenCode the effort). Validated like the default model.
+  (nils clear; keys left out are left alone; Claude Code and Codex ignore
+  the provider, OpenCode the effort). Validated like the default model.
   Broadcasts `{:settings, :light_profiles_changed}`.
   """
   def put_light_profile(engine, attrs) when is_binary(engine) and is_map(attrs) do

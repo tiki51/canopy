@@ -1,0 +1,96 @@
+{
+  "data": [
+    {
+      "id": "gpt-5-codex",
+      "model": "gpt-5-codex",
+      "displayName": "GPT-5 Codex",
+      "description": "",
+      "hidden": false,
+      "isDefault": true,
+      "defaultReasoningEffort": "medium",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "high",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "id": "gpt-5",
+      "model": "gpt-5",
+      "displayName": "GPT-5",
+      "description": "",
+      "hidden": false,
+      "isDefault": false,
+      "defaultReasoningEffort": "medium",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "high",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "max",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "id": "gpt-5-codex-mini",
+      "model": "gpt-5-codex-mini",
+      "displayName": "GPT-5 Codex Mini",
+      "description": "",
+      "hidden": false,
+      "isDefault": false,
+      "defaultReasoningEffort": "medium",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": ""
+        },
+        {
+          "reasoningEffort": "high",
+          "description": ""
+        }
+      ]
+    },
+    {
+      "id": "internal-preview",
+      "model": "internal-preview",
+      "displayName": "Hidden",
+      "description": "",
+      "hidden": true,
+      "isDefault": false,
+      "defaultReasoningEffort": null,
+      "supportedReasoningEfforts": []
+    }
+  ],
+  "nextCursor": null
+}

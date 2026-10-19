@@ -54,6 +54,16 @@ defmodule Canopy.AgentSessions do
 
   def get!(id), do: AgentSession |> Repo.get!(id) |> Repo.preload(@identity_preloads)
 
+  @doc "The session with its identity preloads, or nil."
+  def get(id) when is_binary(id) do
+    case Repo.get(AgentSession, id) do
+      nil -> nil
+      session -> Repo.preload(session, @identity_preloads)
+    end
+  end
+
+  def get(_id), do: nil
+
   def list_for_channel(channel_id) do
     Repo.all(
       from s in AgentSession,
@@ -73,6 +83,21 @@ defmodule Canopy.AgentSessions do
     session
     |> AgentSession.status_changeset(status, error)
     |> Repo.update()
+  end
+
+  @doc """
+  Renames the session's engine id: Codex picks its thread id on the first
+  turn, and the session was created under a placeholder (`Canopy.Engine.Codex`).
+  The engine has the session from now on, so it is marked seen too.
+  """
+  def put_engine_session_id(session_id, engine_session_id)
+      when is_binary(session_id) and is_binary(engine_session_id) do
+    {n, _} =
+      Repo.update_all(from(s in AgentSession, where: s.id == ^session_id),
+        set: [engine_session_id: engine_session_id, last_seen_at: DateTime.utc_now()]
+      )
+
+    if n == 1, do: {:ok, engine_session_id}, else: {:error, :not_found}
   end
 
   def touch(%AgentSession{} = session) do

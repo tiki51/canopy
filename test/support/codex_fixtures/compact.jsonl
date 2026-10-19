@@ -1,0 +1,7 @@
+{"await_thread":true}
+{"await":"thread/compact/start"}
+{"send":{"id":$ID,"result":{}}}
+{"send":{"method":"turn/started","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"inProgress","items":[]}}}}
+{"send":{"method":"item/completed","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"contextCompaction","id":"cmp-1"}}}}
+{"send":{"method":"thread/tokenUsage/updated","params":{"threadId":"$THREAD","turnId":"$TURN","tokenUsage":{"total":{"totalTokens":250,"inputTokens":200,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":50,"reasoningOutputTokens":0},"last":{"totalTokens":250,"inputTokens":200,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":50,"reasoningOutputTokens":0},"modelContextWindow":258400}}}}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"completed","items":[],"error":null}}}}

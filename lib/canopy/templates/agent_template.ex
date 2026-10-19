@@ -8,9 +8,10 @@ defmodule Canopy.Templates.AgentTemplate do
   The frontmatter is engine-neutral where it can be: `mode` (`plan` or
   `build`) says what the agent may do, and `attrs/2` turns it into the
   engine's own setting when the engine-specific key is absent. `model` is a
-  Claude Code alias (`opus`) or an OpenCode `provider/model`. Model routing
-  (experimental) travels as `routing: true`, `light_model` (the same kind of
-  model as `model`), and `light_effort` (Claude Code only).
+  Claude Code alias (`opus`), a Codex model id (`gpt-5-codex`) or an
+  OpenCode `provider/model`. Model routing (experimental) travels as
+  `routing: true`, `light_model` (the same kind of model as `model`), and
+  `light_effort` (Claude Code and Codex).
 
   `decode/2` checks the file (frontmatter, version, kind, field types); the
   agent's own rules (name, enums, models) stay with `Agent.changeset/2`.
@@ -34,6 +35,7 @@ defmodule Canopy.Templates.AgentTemplate do
                 opencode_agent memory exported_from light_model light_effort)
   @known_keys ["canopy_template", "kind", "allowed_tools", "routing" | @text_keys]
   @claude_code_keys ~w(permission_mode effort allowed_tools light_effort)
+  @codex_keys ~w(permission_mode effort light_effort)
   @opencode_keys ~w(opencode_agent)
 
   defstruct name: nil,
@@ -90,6 +92,15 @@ defmodule Canopy.Templates.AgentTemplate do
             effort: agent.effort,
             permission_mode: agent.permission_mode,
             allowed_tools: Agent.allowed_tools_list(agent),
+            light_model: agent.light_model_id,
+            light_effort: agent.light_effort
+          ]
+
+        "codex" ->
+          [
+            model: agent.model_id,
+            effort: agent.effort,
+            permission_mode: agent.permission_mode,
             light_model: agent.light_model_id,
             light_effort: agent.light_effort
           ]
@@ -356,10 +367,10 @@ defmodule Canopy.Templates.AgentTemplate do
   worked out for the default engine (`Canopy.Settings.default_engine/1`) and
   `engine` stays nil.
 
-  Both engines' mode settings always follow `mode` (`plan` → OpenCode's
-  `plan` agent and Claude Code's `plan` permission mode), so the agent keeps
-  its reach when its engine changes; the engine's own key, when the file
-  names it, wins for that engine.
+  Every engine's mode setting always follows `mode` (`plan` → OpenCode's
+  `plan` agent and the `plan` permission mode Claude Code and Codex read),
+  so the agent keeps its reach when its engine changes; the engine's own
+  key, when the file names it, wins for that engine.
 
   Engine-specific keys apply when they belong to `engine` and the file named
   that engine or none; otherwise they are dropped with a notice. `model` is
@@ -449,6 +460,29 @@ defmodule Canopy.Templates.AgentTemplate do
      |> Map.new(fn {k, v} -> {k, if(v == false, do: nil, else: v)} end), notices ++ light_notices}
   end
 
+  defp engine_attrs(t, "codex", own?) do
+    permission_mode =
+      (own? && t.permission_mode) ||
+        case t.mode do
+          "plan" -> "plan"
+          _ -> "default"
+        end
+
+    {model, notices} = codex_model(own? && t.model, "model", "the default model")
+
+    {light_model, light_notices} =
+      codex_model(own? && t.light_model, "light_model", "the default light model")
+
+    {%{
+       permission_mode: permission_mode,
+       effort: own? && t.effort,
+       model_id: model,
+       light_model_id: light_model,
+       light_effort: own? && t.light_effort
+     }
+     |> Map.new(fn {k, v} -> {k, if(v == false, do: nil, else: v)} end), notices ++ light_notices}
+  end
+
   defp engine_attrs(t, _opencode, own?) do
     opencode_agent =
       (own? && t.opencode_agent) ||
@@ -498,6 +532,16 @@ defmodule Canopy.Templates.AgentTemplate do
      }, notices ++ light_notices}
   end
 
+  # A Codex model is a bare id: a Claude Code alias or an OpenCode
+  # provider/model is another engine's, so the agent inherits instead.
+  defp codex_model(value, _key, _fallback) when value in [nil, false], do: {nil, []}
+
+  defp codex_model(model, key, fallback) do
+    if model in Agent.claude_models() or String.contains?(model, "/"),
+      do: {nil, ["#{key} #{model} isn't a Codex model; using #{fallback}"]},
+      else: {model, []}
+  end
+
   # A setting the chosen engine has no use for is named, never silently lost.
   defp dropped_keys(t, engine, own?) do
     keys =
@@ -511,7 +555,12 @@ defmodule Canopy.Templates.AgentTemplate do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Enum.map(&elem(&1, 0))
 
-    for_engine = if engine == "claude_code", do: @claude_code_keys, else: @opencode_keys
+    for_engine =
+      case engine do
+        "claude_code" -> @claude_code_keys
+        "codex" -> @codex_keys
+        _ -> @opencode_keys
+      end
 
     dropped =
       if own?, do: Enum.reject(keys, &(&1 in for_engine)), else: keys

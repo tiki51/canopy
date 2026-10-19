@@ -111,6 +111,7 @@ defmodule Canopy.Runtime.Prompts do
   defp engine_name(agent) do
     case engine(agent) do
       "claude_code" -> "Claude Code"
+      "codex" -> "Codex"
       _ -> "OpenCode"
     end
   end
@@ -130,8 +131,27 @@ defmodule Canopy.Runtime.Prompts do
       "claude_code" ->
         "Your identity travels with every Canopy tool call; there is nothing to set. Questions you ask with AskUserQuestion reach the user as a card in the channel, and their answer usually comes back to you in the same turn. If they have not answered within a few minutes the tool tells you so: end your turn then, and their answer reaches you later as a new message. A `/compact` message means Canopy is compacting your context; nothing is asked of you."
 
+      "codex" ->
+        "Your identity travels with every Canopy tool call; there is nothing to set, so never pass a session id. You run inside Codex's sandbox: when something needs more than the sandbox allows, the user gets a permission card in the channel saying what and why, and the action waits for their answer. If they reject it, it is declined: take another approach, or say in the channel what you needed. " <>
+          codex_sandbox_note(agent)
+
       _ ->
         "Never set `canopy_session_id`; Canopy fills it in."
+    end
+  end
+
+  # What a Codex agent's permission mode means for its approvals (the
+  # sandbox and approval policy `Canopy.Codex.Command` maps it to).
+  defp codex_sandbox_note(agent) do
+    case Map.get(agent, :permission_mode) do
+      "plan" ->
+        "Your sandbox is read-only: you can't write files, and a file change is declined without asking. A command that has to run outside the sandbox (to reach the network, say) needs the user's approval every time, one command at a time; no approval carries over to the next command, so ask only for what you need."
+
+      "acceptEdits" ->
+        "Work inside this repository runs without asking; a command that has to run outside the sandbox (to reach the network or write outside the repository) asks first, and once approved it runs without the sandbox."
+
+      _ ->
+        "Edits inside this repository and plain git commands run without asking; every other command asks first, and once approved it still runs inside the sandbox."
     end
   end
 

@@ -1,7 +1,7 @@
 // Captures the screenshots used by docs/manual-testing.md. Only runs when
 // SCREENSHOTS=1 so the normal suite stays fast:  SCREENSHOTS=1 npx playwright test screenshots
 import { test, expect } from "@playwright/test";
-import { createChannel, send, timeline, clickHeader, openDetails } from "./helpers";
+import { createChannel, send, timeline, clickHeader, openDetails, gotoLive } from "./helpers";
 
 const enabled = process.env.SCREENSHOTS === "1";
 const dir = "../docs/screenshots";
@@ -13,9 +13,13 @@ test.describe("screenshots for the manual testing guide", () => {
   test.use({ viewport: { width: 1280, height: 820 } });
 
   test("capture every screen", async ({ page }) => {
-    await page.goto("/settings");
+    await gotoLive(page, "/settings");
     await page.locator("#check-connection").click();
     await expect(page.locator("#health-result")).toContainText(/fake/);
+    await page.locator("#check-codex").click();
+    await expect(page.locator("#default-engine-choice-codex")).toHaveAttribute("data-ready", "ready");
+    // the clicks scrolled down to the panels: back to the engine cards
+    await page.locator("#engine-panel").scrollIntoViewIfNeeded();
     await shot(page, "01-settings");
 
     await page.goto("/repositories");

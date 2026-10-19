@@ -139,14 +139,18 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#setup-step-you")).toHaveAttribute("data-state", "done");
     await expect(page.locator("#welcome-claude")).toHaveAttribute("data-state", "ready");
     await expect(page.locator("#welcome-claude-status")).toContainText("priya@acme.example");
+    await expect(page.locator("#welcome-codex")).toHaveAttribute("data-state", "ready");
+    await expect(page.locator("#welcome-codex-status")).toContainText("signed in");
     await expect(page.locator("#welcome-opencode")).toHaveAttribute("data-state", "ready");
     await expect(page.locator("#welcome-opencode-status")).toContainText("fake-1.0");
     await expect(page.locator("#welcome-opencode-default-provider")).toBeEnabled();
-    // default engine: both ready, so Claude Code, saved at once; a pick saves too
+    // default engine: all ready, so Claude Code (the first), saved at once; a pick saves too
     const opencodeCard = page.locator("#welcome-engine-choice-opencode");
+    const codexCard = page.locator("#welcome-engine-choice-codex");
     const claudeCard = page.locator("#welcome-engine-choice-claude_code");
     await expect(claudeCard).toHaveAttribute("aria-checked", "true");
     await expect(claudeCard).toHaveAttribute("data-ready", "ready");
+    await expect(codexCard).toHaveAttribute("data-ready", "ready");
     await expect(opencodeCard).toHaveAttribute("data-ready", "ready");
     await expect.poll(() => sql("SELECT default_engine FROM settings")).toBe("claude_code");
     await opencodeCard.click();
@@ -207,7 +211,7 @@ test.describe("first-run setup", () => {
     await expect(page.locator("#summary-name")).toContainText("Priya");
     // every palette and mode is in the page; CSS shows the ones in force
     await expect(page.locator("#summary-look")).toContainText(/Moss & Paper,\s+dark/, { useInnerText: true });
-    await expect(page.locator("#summary-engines")).toContainText(/Claude Code ✓,\s+OpenCode ✓/);
+    await expect(page.locator("#summary-engines")).toContainText("Claude Code ✓, Codex ✓, OpenCode ✓.");
     await expect(page.locator("#summary-default-engine")).toContainText("Claude Code");
     await expect(page.locator("#summary-model")).toContainText("sonnet");
     await expect(page.locator("#summary-pace")).toContainText("Careful");

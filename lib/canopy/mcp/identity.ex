@@ -33,8 +33,7 @@ defmodule Canopy.MCP.Identity do
   @spec resolve(map(), map() | nil) :: {:ok, t()} | {:error, String.t()}
   def resolve(params, frame \\ nil)
 
-  def resolve(_params, %{assigns: %{canopy_session: %{engine: engine, engine_session_id: id}}}),
-    do: resolve_engine_session(engine, id)
+  def resolve(_params, %{assigns: %{canopy_session: %{} = assign}}), do: resolve_assign(assign)
 
   def resolve(params, _frame) when is_map(params) do
     params
@@ -44,8 +43,7 @@ defmodule Canopy.MCP.Identity do
 
   @doc "The identity a session-authenticated connection carries; `{:error, _}` for the OpenCode path."
   @spec from_frame(map()) :: {:ok, t()} | {:error, String.t()}
-  def from_frame(%{assigns: %{canopy_session: %{engine: engine, engine_session_id: id}}}),
-    do: resolve_engine_session(engine, id)
+  def from_frame(%{assigns: %{canopy_session: %{} = assign}}), do: resolve_assign(assign)
 
   def from_frame(_frame), do: {:error, @unknown}
 
@@ -56,8 +54,20 @@ defmodule Canopy.MCP.Identity do
 
   def resolve_session_id(_), do: {:error, @unknown}
 
-  defp resolve_engine_session(engine, session_id) do
-    case AgentSessions.get_by_engine_id(engine, session_id) do
+  # By the session row's id when the assign carries it (it survives a Codex
+  # session's rename to its thread id); else by engine and engine session id.
+  defp resolve_assign(%{id: id}) when is_binary(id), do: identity(AgentSessions.get(id))
+
+  defp resolve_assign(%{engine: engine, engine_session_id: sid}),
+    do: resolve_engine_session(engine, sid)
+
+  defp resolve_assign(_assign), do: {:error, @unknown}
+
+  defp resolve_engine_session(engine, session_id),
+    do: identity(AgentSessions.get_by_engine_id(engine, session_id))
+
+  defp identity(session) do
+    case session do
       %{agent: agent, channel: %{repository: repository} = channel} = session
       when not is_nil(agent) and not is_nil(channel) ->
         # Reload the channel with the full preload set (owner, task, members)

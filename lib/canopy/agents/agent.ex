@@ -9,15 +9,32 @@ defmodule Canopy.Agents.Agent do
 
   @name_regex ~r/^[a-z0-9][a-z0-9_-]*$/
 
-  # Claude Code permission modes Canopy offers: prompts for everything not
-  # allowed, auto-approves edits, or read-only planning. Never bypass.
+  # Claude Code and Codex permission modes Canopy offers: prompts for
+  # everything not allowed, auto-approves edits, or read-only planning.
+  # Never bypass.
   @permission_modes ~w(default acceptEdits plan)
   @efforts ~w(low medium high xhigh max)
+  # every effort some Codex model offers (codex 0.163 `model/list`); which
+  # ones a given model takes is `Canopy.Codex.Models.validate/3`'s check
+  @codex_efforts ~w(low medium high xhigh max ultra)
   # the aliases Claude Code resolves to the latest model of each family
   @claude_models ~w(fable opus sonnet haiku)
+  # engines that name a model without a provider
+  @providerless_engines ~w(claude_code codex)
 
   def permission_modes, do: @permission_modes
+
+  @doc "Claude Code's efforts (`efforts/1` for another engine)."
   def efforts, do: @efforts
+
+  @doc """
+  The efforts an agent of `engine` may name: Claude Code's levels, or for
+  Codex the union its models offer. Other engines have no effort setting and
+  accept Claude Code's list, as before.
+  """
+  def efforts("codex"), do: @codex_efforts
+  def efforts(_engine), do: @efforts
+
   def claude_models, do: @claude_models
 
   @type t :: %__MODULE__{}
@@ -35,8 +52,9 @@ defmodule Canopy.Agents.Agent do
     field :opencode_agent, :string, default: "build"
     field :model_provider, :string
     field :model_id, :string
-    # Claude Code: how tool calls are approved, the effort level, and the
-    # tools that run without asking (one pattern per line; blank = the default set)
+    # Claude Code and Codex: how tool calls are approved, and the effort
+    # level; Claude Code only: the tools that run without asking (one
+    # pattern per line; blank = the default set; Codex ignores it)
     field :permission_mode, :string, default: "default"
     field :effort, :string
     field :allowed_tools, :string
@@ -83,11 +101,10 @@ defmodule Canopy.Agents.Agent do
     |> validate_inclusion(:engine, Canopy.Engine.names())
     |> validate_inclusion(:permission_mode, @permission_modes)
     |> update_change(:effort, &blank_to_nil/1)
-    |> validate_inclusion(:effort, @efforts)
     |> update_change(:light_effort, &blank_to_nil/1)
-    |> validate_inclusion(:light_effort, @efforts)
     |> update_change(:allowed_tools, &blank_to_nil/1)
     |> drop_stale_models()
+    |> validate_efforts()
     |> validate_claude_code()
     |> validate_model()
     |> validate_light_model()
@@ -118,8 +135,8 @@ defmodule Canopy.Agents.Agent do
     case {engine, Map.get(agent, :opencode_agent), Map.get(agent, :permission_mode)} do
       {"opencode", "plan", _} -> :plan
       {"opencode", "build", _} -> :build
-      {"claude_code", _, "plan"} -> :plan
-      {"claude_code", _, _} -> :build
+      {engine, _, "plan"} when engine in @providerless_engines -> :plan
+      {engine, _, _} when engine in @providerless_engines -> :build
       _ -> nil
     end
   end
@@ -145,8 +162,8 @@ defmodule Canopy.Agents.Agent do
 
   # An agent on the default engine keeps its reach when the default changes:
   # making it read-only (or not) through one engine's field does the same
-  # through the other's (OpenCode's `plan` agent, Claude Code's `plan`
-  # permission mode). Only when one of the two changes; a change that names
+  # through the other's (OpenCode's `plan` agent, the `plan` permission mode
+  # Claude Code and Codex read). Only when one of the two changes; a change that names
   # both (a template, say) is taken as given.
   defp sync_reach(changeset) do
     agent = changeset.changes[:opencode_agent]
@@ -201,10 +218,28 @@ defmodule Canopy.Agents.Agent do
        else: changeset |> put_change(provider_field, nil) |> put_change(model_field, nil)
   end
 
-  # A Claude Code agent names its permissions; a blank model or effort
-  # inherits the default from Settings. Claude Code has no providers.
+  # The efforts the effective engine takes (`efforts/1`), checked when an
+  # effort changes. An effort left from another engine (Codex's `ultra` on an
+  # agent now on Claude Code, say) is dropped when the field itself didn't
+  # change, as a stale model is, so the agent inherits the default effort.
+  defp validate_efforts(changeset) do
+    efforts = efforts(effective_engine(changeset))
+
+    Enum.reduce([:effort, :light_effort], changeset, fn field, acc ->
+      value = get_field(acc, field)
+
+      cond do
+        changed?(acc, field) -> validate_inclusion(acc, field, efforts)
+        is_nil(value) or value in efforts -> acc
+        true -> put_change(acc, field, nil)
+      end
+    end)
+  end
+
+  # A Claude Code or Codex agent names its permissions; a blank model or
+  # effort inherits the default from Settings. Neither has providers.
   defp validate_claude_code(changeset) do
-    if effective_engine(changeset) == "claude_code" do
+    if effective_engine(changeset) in @providerless_engines do
       changeset
       |> put_change(:model_provider, nil)
       |> put_change(:light_model_provider, nil)
@@ -259,9 +294,10 @@ defmodule Canopy.Agents.Agent do
   @doc """
   What is wrong with a model choice for an engine, as `[{field, message}]`
   keyed `:model_provider` / `:model_id`; nil for both means "inherit". A
-  Claude Code model is one of `claude_models/0`; an OpenCode model names both
-  its provider and its id, or neither. Whether OpenCode actually offers the
-  pair is checked against its live list by the UI.
+  Claude Code model is one of `claude_models/0`; a Codex model is any id but
+  a Claude Code alias (no provider); an OpenCode model names both its
+  provider and its id, or neither. Whether Codex or OpenCode actually offers
+  the model is checked against its live list by the UI.
   """
   def model_errors("claude_code", _provider, nil), do: []
 
@@ -271,6 +307,14 @@ defmodule Canopy.Agents.Agent do
       else: [model_id: "must be one of #{Enum.join(@claude_models, ", ")}"]
   end
 
+  def model_errors("codex", _provider, nil), do: []
+
+  def model_errors("codex", _provider, model) do
+    if model in @claude_models,
+      do: [model_id: "is a Claude Code model; pick a Codex model"],
+      else: []
+  end
+
   def model_errors(_engine, nil, nil), do: []
   def model_errors(_engine, nil, _model), do: [model_provider: "pick a provider for this model"]
   def model_errors(_engine, provider, nil), do: [model_id: "pick a model from #{provider}"]
@@ -278,16 +322,19 @@ defmodule Canopy.Agents.Agent do
 
   @doc """
   Whether `engine` can run an agent's own model, or whether it was left from
-  the other engine (when the default engine changed under an agent that
-  follows it). Claude Code runs only its aliases; OpenCode runs anything
-  but a bare Claude Code alias, so an older half-filled OpenCode row counts
-  as before. No model always fits.
+  another engine (when the default engine changed under an agent that
+  follows it). Claude Code runs only its aliases; Codex runs any bare model
+  id but a Claude Code alias; OpenCode runs only a model with its provider
+  (a bare id is a Claude Code or Codex model, and OpenCode can't route it).
+  No model always fits.
   """
   def model_fits?(_engine, _provider, nil), do: true
   def model_fits?("claude_code", _provider, model), do: model in @claude_models
 
-  def model_fits?(_engine, provider, model),
-    do: not (is_nil(provider) and model in @claude_models)
+  def model_fits?("codex", provider, model),
+    do: is_nil(provider) and model not in @claude_models
+
+  def model_fits?(_engine, provider, _model), do: not is_nil(provider)
 
   defp normalize_name(name) when is_binary(name) do
     name |> String.trim() |> String.trim_leading("@") |> String.downcase()

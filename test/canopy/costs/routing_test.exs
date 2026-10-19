@@ -151,6 +151,55 @@ defmodule Canopy.Costs.RoutingTest do
       catalog = %{"opencode/small" => %{input: 0.1, output: 0.4, cache_read: 0.01}}
       assert [%{routed: 1}] = Routing.candidates(nil, catalog: catalog).rows
     end
+
+    test "a Codex turn is priced from the Codex list prices, never OpenCode's catalogue", ctx do
+      # until Codex is registered everywhere; candidates/2 only reads the names
+      engines = Application.get_env(:canopy, :engines)
+      Application.put_env(:canopy, :engines, Map.put(engines, "codex", Canopy.Engine.Codex))
+      on_exit(fn -> Application.put_env(:canopy, :engines, engines) end)
+
+      # set directly: the setting's validation asks Codex for its models
+      Canopy.Settings.get()
+      |> Ecto.Changeset.change(codex_light_model: "gpt-5-mini")
+      |> Repo.update!()
+
+      tokens = %{
+        "input" => 1_000_000,
+        "output" => 100_000,
+        # inside output for Codex: not charged again
+        "reasoning" => 50_000,
+        "cache_read" => 1_000_000,
+        "cache_write" => 0
+      }
+
+      # failed before its usage: no recorded cost, priced from its tokens.
+      # One recording its engine, one known by its model alone.
+      turn(ctx, %{
+        "trigger" => "scheduled",
+        "engine" => "codex",
+        "model" => "gpt-5-codex",
+        "cost" => 0,
+        "tokens" => tokens
+      })
+
+      turn(
+        ctx,
+        %{"trigger" => "scheduled", "model" => "gpt-5-codex", "cost" => 0, "tokens" => tokens},
+        session: "as_two"
+      )
+
+      # a catalogue that would price it otherwise is not asked
+      catalog = %{"gpt-5-mini" => %{input: 100.0, output: 100.0, cache_read: 100.0}}
+      c = Routing.candidates(nil, catalog: catalog)
+      assert c.light_models["codex"] == "gpt-5-mini"
+      refute c.assumed["codex"]
+
+      assert [%{kind: "scheduled", routed: 2} = row] = c.rows
+      # gpt-5-codex: 1M in at $1.25 + 1M cached at $0.125 + 0.1M out at $10
+      assert_in_delta row.cost, 2 * (1.25 + 0.125 + 1.0), 1.0e-9
+      # gpt-5-mini: 1M in at $0.25 + 1M cached at $0.025 + 0.1M out at $2
+      assert_in_delta row.light_cost, 2 * (0.25 + 0.025 + 0.2), 1.0e-9
+    end
   end
 
   describe "once routing runs" do

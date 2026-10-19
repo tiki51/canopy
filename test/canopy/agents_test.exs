@@ -444,4 +444,90 @@ defmodule Canopy.AgentsTest do
       assert {:error, :not_paused} = Agents.resume_routing(agent.id, "scheduled")
     end
   end
+
+  describe "Codex" do
+    alias Canopy.Settings
+
+    setup do
+      engines = Application.get_env(:canopy, :engines)
+      Application.put_env(:canopy, :engines, Map.put_new(engines, "codex", Canopy.Engine.Codex))
+      on_exit(fn -> Application.put_env(:canopy, :engines, engines) end)
+      :ok
+    end
+
+    test "model and effort usage, and inheriting the defaults, per engine" do
+      own =
+        agent_fixture(%{name: "cx-own", engine: "codex", model_id: "gpt-6-luna", effort: "ultra"})
+
+      plain = agent_fixture(%{name: "cx-default", engine: "codex"})
+      cc = agent_fixture(%{name: "cc", engine: "claude_code", model_id: "opus", effort: "high"})
+
+      assert Agents.model_usage("codex") == %{default: 1, own: 1}
+      assert Agents.effort_usage("codex") == %{default: 1, own: 1}
+
+      {:ok, _} = Settings.put_default_model("codex", %{model_id: "gpt-6.1-sol"})
+      {:ok, _} = Settings.put_default_effort("codex", "medium")
+
+      assert Agents.effective_model(plain) ==
+               %{model_provider: nil, model_id: "gpt-6.1-sol", source: :default}
+
+      assert Agents.effective_effort(plain) == %{effort: "medium", source: :default}
+      assert Agents.effective_effort(own) == %{effort: "ultra", source: :agent}
+
+      assert {:ok, 1} = Agents.inherit_default_model("codex")
+      assert {:ok, 1} = Agents.inherit_default_effort("codex")
+      assert %{model_id: nil, effort: nil} = Agents.get!(own.id)
+      # another engine's agents are left alone
+      assert %{model_id: "opus", effort: "high"} = Agents.get!(cc.id)
+      assert Agents.model_usage("codex") == %{default: 2, own: 0}
+    end
+
+    test "agents on a Codex default count under Codex" do
+      _follower = agent_fixture(%{name: "follower"})
+      {:ok, _} = Settings.put_default_engine("codex")
+      assert Agents.model_usage("codex") == %{default: 1, own: 0}
+      assert Agents.effort_usage("codex") == %{default: 1, own: 0}
+      assert Agents.model_usage("opencode") == %{default: 0, own: 0}
+    end
+
+    test "light profiles carry an effort, as for Claude Code" do
+      {:ok, _} = Settings.put_default_engine("codex")
+
+      {:ok, _} =
+        Settings.put_light_profile("codex", %{model_id: "gpt-5.6-terra", effort: "low"})
+
+      follower = agent_fixture(%{name: "follower"})
+
+      assert Agents.effective_profile(follower, :light) ==
+               %{model_provider: nil, model_id: "gpt-5.6-terra", effort: "low", source: :default}
+
+      {:ok, follower} = Agents.update(follower, %{light_effort: "ultra"})
+
+      assert Agents.effective_profile(follower, :light) ==
+               %{model_provider: nil, model_id: "gpt-5.6-terra", effort: "ultra", source: :agent}
+    end
+
+    test "inherit_default_engine/0 keeps a Codex agent's reach through its permission mode" do
+      planner =
+        agent_fixture(%{
+          name: "planner",
+          engine: "codex",
+          model_id: "gpt-6-luna",
+          permission_mode: "plan"
+        })
+
+      builder = agent_fixture(%{name: "builder", engine: "codex", permission_mode: "acceptEdits"})
+
+      assert {:ok, 2} = Agents.inherit_default_engine()
+
+      assert %{engine: nil, model_id: nil, opencode_agent: "plan", permission_mode: "plan"} =
+               Agents.get!(planner.id)
+
+      assert %{opencode_agent: "build", permission_mode: "acceptEdits"} = Agents.get!(builder.id)
+
+      # and back onto a Codex default, the planner is still read-only
+      {:ok, _} = Settings.put_default_engine("codex")
+      assert Canopy.Agents.Agent.execution_mode(Agents.get!(planner.id)) == :plan
+    end
+  end
 end

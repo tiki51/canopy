@@ -9,9 +9,10 @@ defmodule Canopy.Costs.Routing do
       delegations split into the task and the report by `delegation_ids`.
     * `candidates/1` — what routing the light kinds would have saved: each
       candidate turn re-priced on the light model. **Estimates**: Claude
-      Code prices come from `config :canopy, :claude_list_prices`, OpenCode
-      prices from its catalogue, and cache warmth is guessed from how soon a
-      session's turn followed its previous one.
+      Code prices come from `config :canopy, :claude_list_prices`, Codex
+      prices from `Canopy.Codex.Pricing`, OpenCode prices from its
+      catalogue, and cache warmth is guessed from how soon a session's turn
+      followed its previous one.
     * `by_route/1`, `routing_savings/1`, `rule_stats/1` — light turns once
       routing runs, their escalations, and the net saving (an estimate
       against a baseline of the agent's main turns of the same kind).
@@ -24,6 +25,7 @@ defmodule Canopy.Costs.Routing do
 
   alias Canopy.{Agents, Repo, Settings}
   alias Canopy.Agents.Agent
+  alias Canopy.Codex.Pricing
   alias Canopy.OpenCode.Providers
   alias Canopy.Runtime.Routing
   alias Canopy.Timeline.Event
@@ -76,6 +78,7 @@ defmodule Canopy.Costs.Routing do
       cache_read: fragment("COALESCE(json_extract(?, '$.tokens.cache_read'), 0)", e.payload),
       cache_write: fragment("COALESCE(json_extract(?, '$.tokens.cache_write'), 0)", e.payload),
       model: fragment("json_extract(?, '$.model')", e.payload),
+      engine: fragment("json_extract(?, '$.engine')", e.payload),
       profile: fragment("json_extract(?, '$.profile')", e.payload),
       escalated: fragment("COALESCE(json_extract(?, '$.escalated'), 0)", e.payload),
       model_switch: fragment("COALESCE(json_extract(?, '$.model_switch'), 0)", e.payload)
@@ -206,7 +209,7 @@ defmodule Canopy.Costs.Routing do
       |> with_warmth()
       |> Enum.filter(&candidate?/1)
       |> Enum.map(fn t ->
-        engine = engine_of(t.model, claude)
+        engine = engine_of(t, claude)
         model = Map.get(light, engine)
 
         cond do
@@ -216,10 +219,10 @@ defmodule Canopy.Costs.Routing do
           is_nil(model) or model.label == t.model ->
             Map.put(t, :fate, :no_estimate)
 
-          price = price_of(model.label, claude, catalog) ->
+          price = price_of(engine, model.label, claude, catalog) ->
             t
             |> Map.put(:fate, :light)
-            |> Map.put(:cost, main_cost(t, claude))
+            |> Map.put(:cost, main_cost(t, engine, claude))
             |> Map.put(:light_cost, token_cost(t, price, t.warm?))
 
           true ->
@@ -267,7 +270,7 @@ defmodule Canopy.Costs.Routing do
       %{model_provider: p, model_id: m} when is_binary(p) and is_binary(m) ->
         %{label: p <> "/" <> m, assumed?: false}
 
-      %{model_id: m} when is_binary(m) and engine == "claude_code" ->
+      %{model_id: m} when is_binary(m) and engine in ["claude_code", "codex"] ->
         %{label: m, assumed?: false}
 
       _ when engine == "claude_code" ->
@@ -278,35 +281,58 @@ defmodule Canopy.Costs.Routing do
     end
   end
 
-  defp engine_of(model, claude) do
+  # The engine the turn recorded, else one guessed from its model: a Claude
+  # list-price alias, a model in the Codex price table (before OpenCode, so a
+  # Codex turn is never priced from OpenCode's catalogue), else OpenCode.
+  defp engine_of(%{engine: engine}, _claude) when is_binary(engine), do: engine
+
+  defp engine_of(%{model: model}, claude) do
     cond do
       Map.has_key?(claude, model) or model == "claude default" -> "claude_code"
+      model == "codex default" or Pricing.known?(model) -> "codex"
       true -> "opencode"
     end
   end
 
-  defp price_of(label, claude, catalog) do
+  # Codex prices are OpenAI list prices (a model without one of its own takes
+  # the default); a cache write is priced as input, and reasoning is part of
+  # output, so it is not charged again.
+  defp price_of("codex", label, _claude, _catalog) do
+    p = Pricing.price(label)
+
+    %{
+      input: p.input,
+      output: p.output,
+      cache_read: p.cached_input,
+      cache_write: p.input,
+      reasoning: 0.0
+    }
+  end
+
+  defp price_of(_engine, label, claude, catalog) do
     case Map.get(claude, label) || Map.get(catalog || %{}, label) do
       %{input: i} = p when is_number(i) and i > 0 -> Map.put_new(p, :cache_write, i * 1.25)
       _ -> nil
     end
   end
 
-  # What the turn cost on main: what it recorded. A Claude Code turn with no
-  # recorded cost (it failed before its result) is priced from its tokens at
-  # list price instead. (Claude Code turns once recorded the session's running
-  # total; the upgrade that fixed it corrected the old turns too.)
-  defp main_cost(%{cost: cost}, _claude) when cost > 0, do: cost
+  # What the turn cost on main: what it recorded. A Claude Code or Codex turn
+  # with no recorded cost (it failed before its result) is priced from its
+  # tokens at list price instead. (Claude Code turns once recorded the
+  # session's running total; the upgrade that fixed it corrected the old
+  # turns too.)
+  defp main_cost(%{cost: cost}, _engine, _claude) when cost > 0, do: cost
 
-  defp main_cost(t, claude) do
-    case price_of(t.model, claude, %{}) do
+  defp main_cost(t, engine, claude) do
+    case price_of(engine, t.model, claude, %{}) do
       nil -> t.cost
       price -> token_cost(t, price, false)
     end
   end
 
   # Dollars for the turn's tokens at `price`. On a light model, a warm turn's
-  # main cache is no use: its first call writes the context.
+  # main cache is no use: its first call writes the context. Reasoning is
+  # charged at the output rate unless the price says otherwise.
   defp token_cost(t, price, cold_light?) do
     {reads, writes} =
       if cold_light?,
@@ -314,7 +340,8 @@ defmodule Canopy.Costs.Routing do
         else: {t.cache_read, t.cache_write}
 
     (t.input * price.input + reads * Map.get(price, :cache_read, 0) +
-       writes * price.cache_write + (t.output + t.reasoning) * price.output) / 1_000_000
+       writes * price.cache_write + t.output * price.output +
+       t.reasoning * Map.get(price, :reasoning, price.output)) / 1_000_000
   end
 
   # "provider/model" => pricing, from OpenCode's catalogue when it answers.

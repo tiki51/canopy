@@ -1,11 +1,11 @@
 defmodule CanopyWeb.SettingsLive do
   @moduledoc """
   Settings: the default engine agents without one of their own run on (with
-  which engines are ready and how many agents follow it), the OpenCode server
-  URL (with a connection check), the Claude Code
-  binary (with a version and login check), the `gh` binary GitHub watches use
-  (with the same check), each engine's default model (and
-  Claude Code's default effort) with how many agents use it, each engine's
+  which engines are ready and how many agents follow it), the Claude Code and
+  Codex binaries (with a version and login check), the OpenCode server URL
+  (with a connection check), the `gh` binary GitHub watches use (with the same
+  check), each engine's default model (and Claude Code's and Codex's default
+  effort) with how many agents use it, each engine's
   light model for model routing (experimental), the local user's display name,
   appearance (light/dark mode and colour palette, kept in the browser), the
   collaboration preamble every agent is given, and the MCP section (identity
@@ -30,6 +30,7 @@ defmodule CanopyWeb.SettingsLive do
 
   alias CanopyWeb.{
     AppearanceComponents,
+    CodexOptions,
     EngineComponents,
     EnvironmentComponents,
     NotifyComponents,
@@ -56,6 +57,12 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
      |> assign(:claude_check, nil)
      |> assign(:claude_found, claude_found?())
+     |> assign(:codex_form, to_form(Settings.change(setting), id: "codex-form"))
+     |> assign(:codex_check, nil)
+     |> assign(:codex_found, codex_found?())
+     |> assign(:codex_models, [])
+     |> assign(:codex_models_state, :loading)
+     |> then(&if(connected?(&1), do: load_codex_models(&1), else: &1))
      |> assign(:gh_form, to_form(Settings.change(setting), id: "gh-form"))
      |> assign(:gh_check, nil)
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
@@ -184,18 +191,85 @@ defmodule CanopyWeb.SettingsLive do
   # Clears every active agent's own model (or effort) on that engine, after
   # the confirmation on the button.
   def handle_event("inherit_default", %{"engine" => engine, "kind" => kind}, socket)
-      when engine in ["claude_code", "opencode"] and kind in ["model", "effort"] do
-    {:ok, count} =
-      if kind == "model",
-        do: Agents.inherit_default_model(engine),
-        else: Agents.inherit_default_effort(engine)
+      when kind in ["model", "effort"] do
+    if engine in Canopy.Engine.names(),
+      do: inherit_default(socket, engine, kind),
+      else: {:noreply, socket}
+  end
 
-    message =
-      if count == 1,
-        do: "1 #{Canopy.Engine.label(engine)} agent now uses the default #{kind}.",
-        else: "#{count} #{Canopy.Engine.label(engine)} agents now use the default #{kind}."
+  @codex_fields [
+    "codex_binary",
+    "codex_config_dir",
+    "codex_default_model",
+    "codex_default_effort",
+    "codex_light_model",
+    "codex_light_effort"
+  ]
 
-    {:noreply, socket |> assign_usage() |> put_flash(:info, message)}
+  def handle_event("validate_codex", %{"setting" => params}, socket) do
+    changeset =
+      socket.assigns.setting
+      |> Settings.change(Map.take(params, @codex_fields))
+      |> validate_codex_models(socket.assigns.codex_models)
+      |> Map.put(:action, :validate)
+
+    {:noreply,
+     socket
+     |> assign(:codex_form, to_form(changeset, id: "codex-form"))
+     |> assign(:codex_check, nil)}
+  end
+
+  # A model or effort Codex doesn't offer is refused, as OpenCode's defaults
+  # are; while the model list is away the selects are disabled, so they are
+  # not submitted and keep their value.
+  def handle_event("save_codex", %{"setting" => params}, socket) do
+    attrs = Map.take(params, @codex_fields)
+
+    checked =
+      socket.assigns.setting
+      |> Settings.change(attrs)
+      |> validate_codex_models(socket.assigns.codex_models)
+
+    result =
+      if checked.errors == [],
+        do: Settings.update(attrs),
+        else: {:error, Map.put(checked, :action, :update)}
+
+    case result do
+      {:ok, setting} ->
+        {:noreply,
+         socket
+         |> assign(:setting, setting)
+         |> assign(:codex_form, to_form(Settings.change(setting), id: "codex-form"))
+         |> assign_usage()
+         |> put_flash(:info, codex_saved(checked))
+         |> load_codex_models()}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :codex_form, to_form(changeset, id: "codex-form"))}
+    end
+  end
+
+  # Runs the binary named in the form (saved or not): version and login
+  # state, then (once the check is back, so one app-server at a time) the
+  # model list of that binary and config directory.
+  def handle_event("check_codex", _params, socket) do
+    binary = socket.assigns.codex_form[:codex_binary].value |> to_string() |> String.trim()
+    config_dir = socket.assigns.codex_form[:codex_config_dir].value
+
+    if binary == "" do
+      {:noreply, assign(socket, :codex_check, {:error, "enter the binary first"})}
+    else
+      {:noreply,
+       socket
+       |> assign(:codex_check, :checking)
+       |> assign(:codex_models_state, :loading)
+       |> assign(:codex_target,
+         binary: binary,
+         config_dir: Canopy.Settings.Setting.normalize_config_dir(config_dir)
+       )
+       |> start_async(:codex_check, fn -> Canopy.Engine.Codex.check(binary, config_dir) end)}
+    end
   end
 
   @claude_fields [
@@ -615,6 +689,32 @@ defmodule CanopyWeb.SettingsLive do
   def handle_async(:claude_check, {:ok, result}, socket),
     do: {:noreply, assign(socket, :claude_check, result)}
 
+  # A check that got through has just read the model list into the cache.
+  def handle_async(:codex_check, {:ok, result}, socket) do
+    refresh = if match?({:ok, _}, result), do: [], else: [refresh: true]
+
+    {:noreply,
+     socket
+     |> assign(:codex_check, result)
+     |> load_codex_models(checked_target(socket) ++ refresh)}
+  end
+
+  def handle_async(:codex_check, {:exit, reason}, socket) do
+    {:noreply,
+     socket
+     |> assign(:codex_check, {:error, "check crashed: #{inspect(reason)}"})
+     |> load_codex_models(checked_target(socket) ++ [refresh: true])}
+  end
+
+  def handle_async(:codex_models, {:ok, {:ok, models}}, socket),
+    do: {:noreply, socket |> assign(:codex_models, models) |> assign(:codex_models_state, :ok)}
+
+  def handle_async(:codex_models, {:ok, {:error, reason}}, socket),
+    do: {:noreply, codex_models_failed(socket, describe_error(reason))}
+
+  def handle_async(:codex_models, {:exit, reason}, socket),
+    do: {:noreply, codex_models_failed(socket, "crashed: #{inspect(reason)}")}
+
   def handle_async(:gh_check, {:ok, result}, socket),
     do: {:noreply, assign(socket, :gh_check, result)}
 
@@ -626,6 +726,20 @@ defmodule CanopyWeb.SettingsLive do
 
   def handle_async(:health, {:exit, reason}, socket) do
     {:noreply, assign(socket, :health, {:error, "check crashed: #{inspect(reason)}"})}
+  end
+
+  defp inherit_default(socket, engine, kind) do
+    {:ok, count} =
+      if kind == "model",
+        do: Agents.inherit_default_model(engine),
+        else: Agents.inherit_default_effort(engine)
+
+    message =
+      if count == 1,
+        do: "1 #{Canopy.Engine.label(engine)} agent now uses the default #{kind}.",
+        else: "#{count} #{Canopy.Engine.label(engine)} agents now use the default #{kind}."
+
+    {:noreply, socket |> assign_usage() |> put_flash(:info, message)}
   end
 
   defp normalize_health({:ok, %{} = body}) do
@@ -697,16 +811,42 @@ defmodule CanopyWeb.SettingsLive do
     |> start_async(:providers, fn -> Providers.list() end)
   end
 
+  # From the saved binary and config directory, or the ones Check Codex ran.
+  defp load_codex_models(socket, opts \\ []) do
+    socket
+    |> assign(:codex_models_state, :loading)
+    |> start_async(:codex_models, fn -> Canopy.Codex.Models.list(opts) end)
+  end
+
+  defp codex_models_failed(socket, reason) do
+    socket |> assign(:codex_models, []) |> assign(:codex_models_state, {:error, reason})
+  end
+
+  defp checked_target(socket), do: Map.get(socket.assigns, :codex_target, [])
+
+  defp validate_codex_models(changeset, models) do
+    changeset
+    |> Canopy.Codex.Models.validate(models, {:codex_default_model, :codex_default_effort})
+    |> Canopy.Codex.Models.validate(models, {:codex_light_model, :codex_light_effort})
+  end
+
+  # Model usage for every engine; effort usage for those with a default effort.
   defp assign_usage(socket) do
+    usage =
+      Map.new(Canopy.Engine.names(), fn engine ->
+        usage = %{model: Agents.model_usage(engine)}
+
+        usage =
+          if Settings.effort?(engine),
+            do: Map.put(usage, :effort, Agents.effort_usage(engine)),
+            else: usage
+
+        {engine, usage}
+      end)
+
     socket
     |> assign(:engine_usage, Agents.engine_usage())
-    |> assign(:usage, %{
-      "claude_code" => %{
-        model: Agents.model_usage("claude_code"),
-        effort: Agents.effort_usage("claude_code")
-      },
-      "opencode" => %{model: Agents.model_usage("opencode")}
-    })
+    |> assign(:usage, usage)
   end
 
   defp engine_usage_text(%{default: default, own: own}) do
@@ -746,7 +886,28 @@ defmodule CanopyWeb.SettingsLive do
         {_, _} -> :not_ready
       end
 
-    %{"claude_code" => claude, "opencode" => opencode}
+    %{"claude_code" => claude, "codex" => codex_readiness(assigns), "opencode" => opencode}
+  end
+
+  defp codex_readiness(%{codex_check: :checking}), do: :checking
+  defp codex_readiness(%{codex_check: nil, codex_found: true}), do: :installed
+  defp codex_readiness(%{codex_check: nil}), do: :not_ready
+  defp codex_readiness(%{codex_check: {:error, "enter the binary first"}}), do: :not_ready
+
+  defp codex_readiness(%{codex_check: check}),
+    do: if(Canopy.Engine.Codex.readiness(check) == :ready, do: :ready, else: :not_ready)
+
+  # What the Codex card says when it is not ready (`Canopy.Engine.Codex.readiness/1`).
+  defp codex_not_ready(nil), do: "Not found"
+  defp codex_not_ready(:checking), do: "Not found"
+  defp codex_not_ready({:error, "enter the binary first"}), do: "Not set"
+
+  defp codex_not_ready(check) do
+    case Canopy.Engine.Codex.readiness(check) do
+      :signed_out -> "Not signed in"
+      :not_found -> "Not found"
+      _ -> "Check failed"
+    end
   end
 
   defp engine_not_ready(assigns) do
@@ -758,7 +919,24 @@ defmodule CanopyWeb.SettingsLive do
         _ -> "Not found"
       end
 
-    %{"claude_code" => claude, "opencode" => "Not running"}
+    %{
+      "claude_code" => claude,
+      "codex" => codex_not_ready(assigns.codex_check),
+      "opencode" => "Not running"
+    }
+  end
+
+  defp engine_titles(assigns) do
+    if codex_not_ready(assigns.codex_check) == "Not signed in" and
+         codex_readiness(assigns) == :not_ready,
+       do: %{"codex" => "Run codex login in a terminal"},
+       else: %{}
+  end
+
+  defp codex_found? do
+    not is_nil(System.find_executable(Canopy.Engine.Codex.binary_name()))
+  rescue
+    _ -> false
   end
 
   defp claude_found? do
@@ -788,6 +966,23 @@ defmodule CanopyWeb.SettingsLive do
 
       true ->
         "Claude Code settings saved."
+    end
+  end
+
+  defp codex_saved(changeset) do
+    cond do
+      Ecto.Changeset.changed?(changeset, :codex_default_model) ->
+        default_saved("codex", "model")
+
+      Ecto.Changeset.changed?(changeset, :codex_default_effort) ->
+        default_saved("codex", "effort")
+
+      Ecto.Changeset.changed?(changeset, :codex_light_model) or
+          Ecto.Changeset.changed?(changeset, :codex_light_effort) ->
+        "Saved. Routed agents without a light model of their own use it from their next light turn."
+
+      true ->
+        "Codex settings saved."
     end
   end
 
@@ -853,6 +1048,7 @@ defmodule CanopyWeb.SettingsLive do
               selected={Settings.default_engine(@setting)}
               readiness={engine_readiness(assigns)}
               not_ready={engine_not_ready(assigns)}
+              titles={engine_titles(assigns)}
             />
             <div
               id="engine-usage"
@@ -873,6 +1069,262 @@ defmodule CanopyWeb.SettingsLive do
               </button>
             </div>
           </div>
+        </Layouts.panel>
+
+        <Layouts.panel
+          id="claude-panel"
+          title="Claude Code"
+        >
+          <:subtitle>
+            Agents on the Claude Code engine run <code>claude -p</code>
+            on this machine, one process per turn, using your Claude login.
+          </:subtitle>
+          <.form
+            for={@claude_form}
+            id="claude-form"
+            phx-change="validate_claude"
+            phx-submit="save_claude"
+            class="flex flex-col gap-3"
+          >
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_binary]}
+                type="text"
+                label="Binary (name on PATH or a path)"
+                placeholder="claude"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@claude_form[:claude_config_dir]}
+                type="text"
+                label="Config directory (optional)"
+                placeholder="~/.claude (your own login)"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@claude_form[:claude_max_budget_usd]}
+                type="number"
+                step="0.01"
+                min="0"
+                label="Spend cap per turn, USD (optional)"
+                placeholder="none"
+              />
+            </div>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_default_model]}
+                type="select"
+                id="claude-default-model"
+                label="Default model"
+                prompt="Claude Code's own default"
+                options={Agent.claude_models()}
+              />
+              <.input
+                field={@claude_form[:claude_default_effort]}
+                type="select"
+                id="claude-default-effort"
+                label="Default effort"
+                prompt="Claude Code's own default"
+                options={Agent.efforts()}
+              />
+            </div>
+            <div id="claude-light" class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@claude_form[:claude_light_model]}
+                type="select"
+                id="claude-light-model"
+                label="Light model (routing, experimental)"
+                prompt="No light model"
+                options={Agent.claude_models()}
+              />
+              <.input
+                field={@claude_form[:claude_light_effort]}
+                type="select"
+                id="claude-light-effort"
+                label="Light effort"
+                prompt="Claude Code picks"
+                options={Agent.efforts()}
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <.default_usage
+                id="claude-model-usage"
+                engine="claude_code"
+                kind="model"
+                usage={@usage["claude_code"].model}
+              />
+              <.default_usage
+                id="claude-effort-usage"
+                engine="claude_code"
+                kind="effort"
+                usage={@usage["claude_code"].effort}
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <.button type="submit" variant="primary" id="save-claude">Save</.button>
+              <button type="button" id="check-claude" class="btn btn-soft" phx-click="check_claude">
+                Check Claude Code
+              </button>
+              <.claude_check_result check={@claude_check} />
+            </div>
+            <div id="claude-help" class="text-sm text-base-content/70">
+              <p>
+                Agents without a model or effort of their own use these defaults from their next turn.
+              </p>
+              <.more id="claude-help-more">
+                <p>Set a model or effort per agent on its edit form to override them.</p>
+                <p id="claude-light-experimental">
+                  The light model is used only by agents with model routing turned on, and every
+                  agent starts with it off. Experimental: not yet checked against the real engines.
+                </p>
+                <p>
+                  Leave the config directory empty to use your own Claude Code login and settings
+                  (your personal MCP servers are still kept out of agent sessions; the
+                  repository's <code class="font-mono">.mcp.json</code>
+                  servers are loaded). Point it at a directory of its own to isolate agents; run
+                  <code class="font-mono">claude</code>
+                  once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
+                  set to log in there.
+                </p>
+              </.more>
+            </div>
+          </.form>
+        </Layouts.panel>
+
+        <Layouts.panel id="codex-panel" title="Codex">
+          <:subtitle>
+            Agents on the Codex engine run <code>codex app-server</code>
+            on this machine, one process per turn, using your Codex login (ChatGPT plan or API key).
+          </:subtitle>
+          <.form
+            for={@codex_form}
+            id="codex-form"
+            phx-change="validate_codex"
+            phx-submit="save_codex"
+            class="flex flex-col gap-3"
+          >
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.input
+                field={@codex_form[:codex_binary]}
+                type="text"
+                label="Binary (name on PATH or a path)"
+                placeholder="codex"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <.input
+                field={@codex_form[:codex_config_dir]}
+                type="text"
+                label="Config directory (optional)"
+                placeholder="~/.codex (your own login)"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <.codex_model_select
+                field={@codex_form[:codex_default_model]}
+                id="codex-default-model"
+                label="Default model"
+                prompt="Codex's own default"
+                models={@codex_models}
+                state={@codex_models_state}
+                saved={@setting.codex_default_model}
+              />
+              <.codex_effort_select
+                field={@codex_form[:codex_default_effort]}
+                id="codex-default-effort"
+                label="Default effort"
+                prompt={
+                  CodexOptions.effort_prompt(
+                    @codex_models,
+                    @codex_form[:codex_default_model].value,
+                    nil,
+                    "Codex's own default"
+                  )
+                }
+                models={@codex_models}
+                state={@codex_models_state}
+                model={@codex_form[:codex_default_model].value}
+                saved={@setting.codex_default_effort}
+              />
+            </div>
+            <div id="codex-light" class="grid gap-3 sm:grid-cols-3">
+              <.codex_model_select
+                field={@codex_form[:codex_light_model]}
+                id="codex-light-model"
+                label="Light model (routing, experimental)"
+                prompt="No light model"
+                models={@codex_models}
+                state={@codex_models_state}
+                saved={@setting.codex_light_model}
+              />
+              <.codex_effort_select
+                field={@codex_form[:codex_light_effort]}
+                id="codex-light-effort"
+                label="Light effort"
+                prompt="Codex picks"
+                models={@codex_models}
+                state={@codex_models_state}
+                model={@codex_form[:codex_light_model].value}
+                saved={@setting.codex_light_effort}
+              />
+            </div>
+            <p
+              :if={match?({:error, _}, @codex_models_state)}
+              id="codex-models-unavailable"
+              class="-mt-1 text-xs text-warning"
+            >
+              Couldn't read Codex's models: {elem(@codex_models_state, 1)}. Check Codex, then try again.
+            </p>
+            <div class="flex flex-col gap-1">
+              <.default_usage
+                id="codex-model-usage"
+                engine="codex"
+                kind="model"
+                usage={@usage["codex"].model}
+              />
+              <.default_usage
+                :if={@usage["codex"][:effort]}
+                id="codex-effort-usage"
+                engine="codex"
+                kind="effort"
+                usage={@usage["codex"].effort}
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <.button type="submit" variant="primary" id="save-codex">Save</.button>
+              <button type="button" id="check-codex" class="btn btn-soft" phx-click="check_codex">
+                Check Codex
+              </button>
+              <.codex_check_result check={@codex_check} />
+            </div>
+            <div id="codex-help" class="text-sm text-base-content/70">
+              <p>
+                Agents without a model or effort of their own use these defaults from their next turn.
+              </p>
+              <.more id="codex-help-more">
+                <p>Set a model or effort per agent on its edit form to override them.</p>
+                <p id="codex-light-experimental">
+                  The light model is used only by agents with model routing turned on, and every
+                  agent starts with it off. Experimental: not yet checked against the real engines.
+                </p>
+                <p>
+                  Leave the config directory empty to use your own Codex login and settings in <code class="font-mono">~/.codex</code>. Point it at a directory of its own to
+                  isolate agents; run <code class="font-mono">codex login</code>
+                  once with <code class="font-mono">CODEX_HOME</code>
+                  set to log in there.
+                </p>
+                <p id="codex-mcp-note">
+                  Agents also get the MCP servers in this directory's
+                  <code class="font-mono">config.toml</code>
+                  and, when Codex trusts the repository, its <code class="font-mono">.codex/config.toml</code>, next to Canopy's tools. Use a config directory of its own to keep personal servers away from agents.
+                </p>
+              </.more>
+            </div>
+          </.form>
         </Layouts.panel>
 
         <Layouts.panel
@@ -1045,128 +1497,6 @@ defmodule CanopyWeb.SettingsLive do
                 Check connection
               </button>
               <.health_result health={@health} />
-            </div>
-          </.form>
-        </Layouts.panel>
-
-        <Layouts.panel
-          id="claude-panel"
-          title="Claude Code"
-        >
-          <:subtitle>
-            Agents on the Claude Code engine run <code>claude -p</code>
-            on this machine, one process per turn, using your Claude login.
-          </:subtitle>
-          <.form
-            for={@claude_form}
-            id="claude-form"
-            phx-change="validate_claude"
-            phx-submit="save_claude"
-            class="flex flex-col gap-3"
-          >
-            <div class="grid gap-3 sm:grid-cols-3">
-              <.input
-                field={@claude_form[:claude_binary]}
-                type="text"
-                label="Binary (name on PATH or a path)"
-                placeholder="claude"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <.input
-                field={@claude_form[:claude_config_dir]}
-                type="text"
-                label="Config directory (optional)"
-                placeholder="~/.claude (your own login)"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <.input
-                field={@claude_form[:claude_max_budget_usd]}
-                type="number"
-                step="0.01"
-                min="0"
-                label="Spend cap per turn, USD (optional)"
-                placeholder="none"
-              />
-            </div>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <.input
-                field={@claude_form[:claude_default_model]}
-                type="select"
-                id="claude-default-model"
-                label="Default model"
-                prompt="Claude Code's own default"
-                options={Agent.claude_models()}
-              />
-              <.input
-                field={@claude_form[:claude_default_effort]}
-                type="select"
-                id="claude-default-effort"
-                label="Default effort"
-                prompt="Claude Code's own default"
-                options={Agent.efforts()}
-              />
-            </div>
-            <div id="claude-light" class="grid gap-3 sm:grid-cols-3">
-              <.input
-                field={@claude_form[:claude_light_model]}
-                type="select"
-                id="claude-light-model"
-                label="Light model (routing, experimental)"
-                prompt="No light model"
-                options={Agent.claude_models()}
-              />
-              <.input
-                field={@claude_form[:claude_light_effort]}
-                type="select"
-                id="claude-light-effort"
-                label="Light effort"
-                prompt="Claude Code picks"
-                options={Agent.efforts()}
-              />
-            </div>
-            <div class="flex flex-col gap-1">
-              <.default_usage
-                id="claude-model-usage"
-                engine="claude_code"
-                kind="model"
-                usage={@usage["claude_code"].model}
-              />
-              <.default_usage
-                id="claude-effort-usage"
-                engine="claude_code"
-                kind="effort"
-                usage={@usage["claude_code"].effort}
-              />
-            </div>
-            <div class="flex items-center gap-2">
-              <.button type="submit" variant="primary" id="save-claude">Save</.button>
-              <button type="button" id="check-claude" class="btn btn-soft" phx-click="check_claude">
-                Check Claude Code
-              </button>
-              <.claude_check_result check={@claude_check} />
-            </div>
-            <div id="claude-help" class="text-sm text-base-content/70">
-              <p>
-                Agents without a model or effort of their own use these defaults from their next turn.
-              </p>
-              <.more id="claude-help-more">
-                <p>Set a model or effort per agent on its edit form to override them.</p>
-                <p id="claude-light-experimental">
-                  The light model is used only by agents with model routing turned on, and every
-                  agent starts with it off. Experimental: not yet checked against the real engines.
-                </p>
-                <p>
-                  Leave the config directory empty to use your own Claude Code login and settings
-                  (your personal MCP servers are still kept out of agent sessions; the
-                  repository's <code class="font-mono">.mcp.json</code>
-                  servers are loaded). Point it at a directory of its own to isolate agents; run
-                  <code class="font-mono">claude</code>
-                  once with <code class="font-mono">CLAUDE_CONFIG_DIR</code>
-                  set to log in there.
-                </p>
-              </.more>
             </div>
           </.form>
         </Layouts.panel>
@@ -1723,6 +2053,113 @@ defmodule CanopyWeb.SettingsLive do
           <span class="text-error">{reason}</span>
       <% end %>
     </span>
+    """
+  end
+
+  attr :check, :any, required: true
+
+  defp codex_check_result(assigns) do
+    ~H"""
+    <span id="codex-check-result" class="flex items-center gap-1.5 text-sm" role="status">
+      <%= case @check do %>
+        <% nil -> %>
+        <% :checking -> %>
+          <span class="text-base-content/60">Checking…</span>
+        <% {:ok, %{logged_in: true} = info} -> %>
+          <.icon name="hero-check-circle-mini" class="size-4 text-success" />
+          <span class="text-success">
+            Codex {info.version} at <code class="font-mono">{info.path}</code>
+            · {codex_signed_in(info)}
+          </span>
+        <% {:ok, info} -> %>
+          <.icon name="hero-exclamation-circle-mini" class="size-4 text-warning" />
+          <span class="text-warning">
+            Codex {info.version} at <code class="font-mono">{info.path}</code>
+            · not signed in: run <code class="font-mono">codex login</code>
+          </span>
+        <% {:error, reason} -> %>
+          <.icon name="hero-x-circle-mini" class="size-4 text-error" />
+          <span class="text-error">{reason}</span>
+      <% end %>
+    </span>
+    """
+  end
+
+  defp codex_signed_in(%{auth_method: "api_key"}), do: "signed in with an API key"
+
+  defp codex_signed_in(%{auth_method: "chatgpt"} = info),
+    do: "signed in with ChatGPT" <> if(info[:plan], do: " (#{info.plan})", else: "")
+
+  defp codex_signed_in(_info), do: "signed in"
+
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :prompt, :string, required: true
+  attr :models, :list, required: true
+  attr :state, :any, required: true, doc: ":loading, :ok or {:error, reason}"
+  attr :saved, :string, default: nil
+
+  # A Codex model select: Codex's list once it is in, else the saved value
+  # only, disabled (so it is not submitted and keeps its value).
+  defp codex_model_select(assigns) do
+    ~H"""
+    <%= if @state == :ok do %>
+      <.input
+        field={@field}
+        type="select"
+        id={@id}
+        label={@label}
+        prompt={@prompt}
+        options={CodexOptions.model_options(@models, @field.value)}
+      />
+    <% else %>
+      <.input
+        field={@field}
+        type="select"
+        id={@id}
+        label={@label}
+        prompt={if @state == :loading, do: "Loading models…", else: @prompt}
+        options={List.wrap(@saved)}
+        disabled
+      />
+    <% end %>
+    """
+  end
+
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :prompt, :string, required: true
+  attr :models, :list, required: true
+  attr :state, :any, required: true
+  attr :model, :any, default: nil, doc: "the model chosen next to it"
+  attr :fallback, :any, default: nil, doc: "the model in effect when none is chosen"
+  attr :saved, :string, default: nil
+
+  # Its options are the efforts of the model chosen beside it.
+  defp codex_effort_select(assigns) do
+    ~H"""
+    <%= if @state == :ok do %>
+      <.input
+        field={@field}
+        type="select"
+        id={@id}
+        label={@label}
+        prompt={@prompt}
+        options={CodexOptions.effort_options(@models, @model, @fallback, @field.value)}
+      />
+    <% else %>
+      <.input
+        field={@field}
+        type="select"
+        id={@id}
+        label={@label}
+        prompt={if @state == :loading, do: "Loading models…", else: @prompt}
+        options={List.wrap(@saved)}
+        disabled
+      />
+    <% end %>
     """
   end
 

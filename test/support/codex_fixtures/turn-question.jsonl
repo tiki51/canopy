@@ -1,0 +1,7 @@
+{"include":"turn-start.jsonl"}
+{"send":{"method":"item/tool/requestUserInput","id":0,"params":{"threadId":"$THREAD","turnId":"$TURN","itemId":"ask-1","isBlocking":true,"autoResolutionMs":null,"questions":[{"id":"q1","header":"Pick","question":"Which database?","isOther":true,"isSecret":false,"options":[{"label":"SQLite","description":"local"},{"label":"Postgres","description":null}]}]}}}
+{"await_response":0}
+{"send":{"method":"item/agentMessage/delta","params":{"threadId":"$THREAD","turnId":"$TURN","itemId":"msg-4","delta":"Thanks."}}}
+{"send":{"method":"item/completed","params":{"threadId":"$THREAD","turnId":"$TURN","item":{"type":"agentMessage","id":"msg-4","text":"Thanks.","phase":"final_answer"}}}}
+{"send":{"method":"thread/tokenUsage/updated","params":{"threadId":"$THREAD","turnId":"$TURN","tokenUsage":{"total":{"totalTokens":930,"inputTokens":900,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":30,"reasoningOutputTokens":0},"last":{"totalTokens":930,"inputTokens":900,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":30,"reasoningOutputTokens":0},"modelContextWindow":258400}}}}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"completed","items":[],"error":null}}}}

@@ -4,6 +4,7 @@ defmodule Canopy.MCP.IdentityTest do
   import Canopy.Fixtures
   import Canopy.MCPHelpers
 
+  alias Canopy.AgentSessions
   alias Canopy.MCP.Identity
   alias Canopy.MCP.Tools.ChannelsList
 
@@ -27,6 +28,64 @@ defmodule Canopy.MCP.IdentityTest do
     assert {:error, ^message} = Identity.resolve(%{canopy_session_id: ""})
     assert {:error, ^message} = Identity.resolve(%{})
     assert {:error, ^message} = Identity.resolve_session_id(nil)
+  end
+
+  describe "a session-authenticated frame" do
+    test "with the row id, resolves by id even after the engine session id changed", ctx do
+      assign = %{
+        id: ctx.session.id,
+        engine: ctx.session.engine,
+        engine_session_id: ctx.session.engine_session_id
+      }
+
+      renamed = "thread-" <> Ecto.UUID.generate()
+      assert {:ok, ^renamed} = AgentSessions.put_engine_session_id(ctx.session.id, renamed)
+
+      for resolve <- [
+            &Identity.from_frame(%{assigns: %{canopy_session: &1}}),
+            &Identity.resolve(%{canopy_session_id: "ses_forged"}, %{
+              assigns: %{canopy_session: &1}
+            })
+          ] do
+        assert {:ok, identity} = resolve.(assign)
+        assert identity.session.id == ctx.session.id
+        assert identity.session.engine_session_id == renamed
+        assert identity.agent.id == ctx.agent.id
+        assert identity.channel.id == ctx.channel.id
+        assert identity.repository.id == ctx.repository.id
+      end
+
+      # the old engine id alone no longer resolves
+      message = Identity.unknown_session_message()
+
+      assert {:error, ^message} =
+               Identity.from_frame(%{
+                 assigns: %{
+                   canopy_session: %{
+                     engine: assign.engine,
+                     engine_session_id: assign.engine_session_id
+                   }
+                 }
+               })
+    end
+
+    test "without the row id, resolves by engine and engine session id as before", ctx do
+      assign = %{engine: ctx.session.engine, engine_session_id: ctx.session.engine_session_id}
+
+      assert {:ok, identity} = Identity.from_frame(%{assigns: %{canopy_session: assign}})
+      assert identity.session.id == ctx.session.id
+      assert identity.agent.id == ctx.agent.id
+    end
+
+    test "an unknown row id or an empty assign is refused" do
+      message = Identity.unknown_session_message()
+
+      assert {:error, ^message} =
+               Identity.from_frame(%{assigns: %{canopy_session: %{id: Ecto.UUID.generate()}}})
+
+      assert {:error, ^message} = Identity.from_frame(%{assigns: %{canopy_session: %{}}})
+      assert {:error, ^message} = Identity.from_frame(%{assigns: %{}})
+    end
   end
 
   test "tools refuse calls without a resolvable session before doing any work" do

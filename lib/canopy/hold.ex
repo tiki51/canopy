@@ -49,13 +49,24 @@ defmodule Canopy.Hold do
 
   @doc """
   Whether an engine error is a billing problem worth stopping for: an
-  exhausted balance or quota, a payment-required response, or (Claude Code)
-  a low credit balance or a reached subscription usage or spend limit.
-  Claude Code's per-turn budget cap and fast-mode limit are not holds.
+  exhausted balance or quota, a payment-required response, (Claude Code)
+  a low credit balance or a reached subscription usage or spend limit, or
+  (Codex) a reached ChatGPT plan usage limit or API quota. Claude Code's
+  per-turn budget cap and fast-mode limit are not holds, nor are Codex's
+  rate limits, overload and sign-in errors.
+
+  Takes the error's message, or the engine's error map
+  (`%{"name" => n, "data" => %{"message" => m}}`), whose Codex error name
+  decides when it is one Canopy knows.
   """
   def billing_error?(reason) when is_binary(reason) do
-    opencode_billing?(reason) or claude_code_billing?(reason)
+    opencode_billing?(reason) or claude_code_billing?(reason) or codex_billing?(reason)
   end
+
+  # Only a Codex error name decides on an error map. Any other map (Claude
+  # Code's, OpenCode's, an unknown Codex name) is false here, and its message
+  # is checked as text by the caller's first-line check, as before.
+  def billing_error?(%{} = error), do: codex_billing?(error) == true
 
   def billing_error?(_), do: false
 
@@ -73,6 +84,25 @@ defmodule Canopy.Hold do
       reason
     )
   end
+
+  # Codex (0.163 `CodexErrorInfo`): the plan's usage limit or the API quota
+  # is a hold; rate limits and overload are retried by Codex, and a signed-out
+  # Codex is a turn error, so those are not. Other names are `:unknown`, and
+  # the message decides through the caller's text check.
+  @codex_holds ~w(usageLimitExceeded insufficient_quota)
+  @codex_not_holds ~w(rateLimitExceeded serverOverloaded unauthorized)
+
+  defp codex_billing?(%{"name" => name}) when name in @codex_holds, do: true
+  defp codex_billing?(%{"name" => name}) when name in @codex_not_holds, do: false
+
+  defp codex_billing?(%{"name" => name}) when is_binary(name) do
+    if String.ends_with?(name, "ConnectionFailed"), do: false, else: :unknown
+  end
+
+  defp codex_billing?(%{}), do: :unknown
+
+  defp codex_billing?(reason) when is_binary(reason),
+    do: Regex.match?(~r/hit your usage limit|\busageLimitExceeded\b/i, reason)
 
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
 

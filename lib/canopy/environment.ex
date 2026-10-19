@@ -42,6 +42,8 @@ defmodule Canopy.Environment do
 
   @doc "What a reset would delete and keep, counted now, and where its backup would go."
   def preview do
+    spent = Canopy.Costs.total(nil)
+
     %{
       deleted: %{
         channels: count("channels", kind: "channel"),
@@ -58,7 +60,8 @@ defmodule Canopy.Environment do
         documents: count("documents"),
         document_bytes:
           Repo.one(from(d in "documents", select: coalesce(sum(d.byte_size), 0))) || 0,
-        cost_usd: Canopy.Costs.total(nil).cost
+        cost_usd: spent.cost,
+        cost_estimated: spent.estimated
       },
       kept: %{repositories: count("repositories")},
       backup_path: Backup.impl().path(NaiveDateTime.local_now())

@@ -65,16 +65,26 @@ defmodule Canopy.PermissionRequests do
   end
 
   defp requested_event(%{request: r}) do
+    payload = %{
+      "permission" => r.permission,
+      "patterns" => r.patterns,
+      "opencode_permission_id" => r.opencode_permission_id
+    }
+
+    # Codex: what the agent wants to do, for the timeline line's verb; other
+    # engines' cards have none, and their events carry no key for it
+    payload =
+      case (r.metadata || %{})["action"] do
+        nil -> payload
+        action -> Map.put(payload, "action", action)
+      end
+
     %{
       channel_id: r.channel_id,
       agent_id: agent_id_of(r),
       event_type: "permission_requested",
       ref_id: r.id,
-      payload: %{
-        "permission" => r.permission,
-        "patterns" => r.patterns,
-        "opencode_permission_id" => r.opencode_permission_id
-      }
+      payload: payload
     }
   end
 
@@ -134,7 +144,8 @@ defmodule Canopy.PermissionRequests do
         |> Map.merge(%{
           "delivered" => opts[:delivered],
           "message_id" => opts[:message_id],
-          "grant_id" => changes[:grant] && changes.grant.id
+          "grant_id" => changes[:grant] && changes.grant.id,
+          "action" => (r.metadata || %{})["action"]
         })
         |> Map.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -172,7 +183,8 @@ defmodule Canopy.PermissionRequests do
 
   @doc """
   Pending requests of the agent's sessions for `tool` (matched like a grant,
-  ignoring case) that the agent still waits on, in every channel. Options:
+  ignoring case) that the agent still waits on, in every channel, leaving out
+  once-only cards (no grant answers those). Options:
   `:channel_id` keeps one channel's.
   """
   def waiting_for_agent_tool(agent_id, tool, opts \\ []) do
@@ -189,6 +201,8 @@ defmodule Canopy.PermissionRequests do
       if cid = opts[:channel_id], do: where(q, [p], p.channel_id == ^cid), else: q
     end)
     |> Repo.all()
+    # a once-only card (a Codex plan agent's command) is never answered by a grant
+    |> Enum.reject(&(get_in(&1.metadata || %{}, ["once_only"]) == true))
   end
 
   @doc """

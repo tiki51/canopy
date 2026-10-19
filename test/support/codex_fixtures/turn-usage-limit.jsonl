@@ -1,0 +1,2 @@
+{"include":"turn-start.jsonl"}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"failed","items":[],"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}}}}}

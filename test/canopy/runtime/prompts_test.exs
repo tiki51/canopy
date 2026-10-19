@@ -123,6 +123,33 @@ defmodule Canopy.Runtime.PromptsTest do
     refute claude =~ "canopy_session_id"
   end
 
+  test "a Codex agent is told its identity is automatic and how its sandbox asks" do
+    {channel, repository} = {%{name: "general"}, %{path: "/repo"}}
+    codex = &Map.merge(agent_with("build"), %{engine: "codex", permission_mode: &1})
+
+    default = Prompts.system(codex.("default"), channel, repository)
+    assert default =~ "Your Codex session is your private workbench"
+    assert default =~ "Your identity travels with every Canopy tool call"
+    assert default =~ "never pass a session id"
+    refute default =~ "canopy_session_id"
+    refute default =~ "AskUserQuestion"
+    assert default =~ "permission card in the channel"
+    assert default =~ "plain git commands run without asking; every other command asks first"
+    assert default =~ "you have write access"
+
+    accept = Prompts.system(codex.("acceptEdits"), channel, repository)
+    assert accept =~ "Work inside this repository runs without asking"
+    assert accept =~ "runs without the sandbox"
+
+    plan = Prompts.system(codex.("plan"), channel, repository)
+    assert plan =~ "Your session is read-only"
+    assert plan =~ "you can't write files"
+    assert plan =~ "needs the user's approval every time, one command at a time"
+    refute plan =~ "you have write access"
+
+    for text <- [default, accept, plan], do: refute(text =~ "{{")
+  end
+
   test "a late answer is a message mentioning the agent that names each question and answer" do
     one = [%{"question" => "Include the attempt number?", "options" => [%{"label" => "Yes"}]}]
 
