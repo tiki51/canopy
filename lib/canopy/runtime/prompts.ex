@@ -511,6 +511,16 @@ defmodule Canopy.Runtime.Prompts do
   end
 
   @doc """
+  Prepended to the wake a turn that hit a usage limit runs again on the
+  agent's fallback model, in a session of its own: it has none of the turn's
+  history, only the channel.
+  """
+  def moved_to_fallback(engine_label, reason) do
+    why = if is_binary(reason) and reason != "", do: " (#{reason})", else: ""
+    "You were moved from #{engine_label}#{why}. Read the channel to catch up.\n\n"
+  end
+
+  @doc """
   Appended to a delegation wake that a message about it joined before the
   delegate started: the message to read, without a second set of instructions.
   """

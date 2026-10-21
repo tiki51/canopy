@@ -658,10 +658,11 @@ repository you own; watches only read.
 - [ ] The rail's **Costs** page shows today / 7 days / all-time totals, a 14-day bar, and
       by-agent, by-channel (linked), by-model breakdowns; the period buttons switch the
       breakdowns and a finishing turn updates the numbers without a reload.
-- [ ] Make OpenCode report a balance error (or engage the hold from `iex` with
-      `Canopy.Hold.engage("test")`) → a red banner on every page, all schedules paused, and a
-      message in a channel adds one "on hold" note and wakes nobody. **Release hold** in the
-      banner clears it, resumes those schedules, and the next message wakes agents again.
+- [ ] Make OpenCode report a balance error (or pause it from `iex` with
+      `Canopy.EnginePauses.engage("opencode", %{kind: "billing", reason: "insufficient balance"})`)
+      → a red banner on every page, the schedules of OpenCode agents with no fallback paused, and
+      a message to one of them adds one "Didn't wake" line and wakes nobody. **Release** in the
+      banner clears it, resumes those schedules, and nudges the agents that waited.
 - [ ] Message and event times show in your local time.
 - [ ] **Where the tokens go** shows model calls, context per call, cache hit rate, prompt and
       output tokens, passed and error turns; **By trigger** groups spend by what woke the

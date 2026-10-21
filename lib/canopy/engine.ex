@@ -157,6 +157,13 @@ defmodule Canopy.Engine do
   @callback model_error?(reason :: String.t()) :: boolean()
 
   @doc """
+  Whether the engine could run a turn now, without asking it: the binary is
+  on PATH (Claude Code, Codex), or a server URL is configured (OpenCode).
+  It never probes. A fallback model is only used on an available engine.
+  """
+  @callback available?() :: boolean()
+
+  @doc """
   The MCP servers this engine gives agents in a repository, for the
   repository page (`Canopy.MCP.Inventory`): what it loads, what is configured
   but not loaded, and live status where the engine reports one. Needs no
@@ -237,7 +244,7 @@ defmodule Canopy.Engine do
               {:ok, transcript_page}
               | {:error, :not_found | :unreachable | :unsupported | term()}
 
-  @optional_callbacks mcp_inventory: 2, steer: 4, transcript: 3, model_error?: 1
+  @optional_callbacks mcp_inventory: 2, steer: 4, transcript: 3, model_error?: 1, available?: 0
 
   # -- Dispatch ---------------------------------------------------------------
 
@@ -266,6 +273,25 @@ defmodule Canopy.Engine do
 
   @doc "The engine's name as people read it (`\"Claude Code\"`)."
   def label(name) when is_binary(name), do: Map.get(@labels, name, name)
+
+  @doc """
+  Whether the named engine is configured and could run a turn now (see
+  `c:available?/0`). An adapter without the callback counts as available.
+  Never probes the engine.
+  """
+  def available?(name) when is_binary(name) do
+    case Map.fetch(engines(), name) do
+      {:ok, mod} ->
+        if Code.ensure_loaded?(mod) and function_exported?(mod, :available?, 0),
+          do: mod.available?(),
+          else: true
+
+      :error ->
+        false
+    end
+  end
+
+  def available?(_name), do: false
 
   @doc "`[{label, name}]` in `names/0` order, for selects."
   def options, do: Enum.map(names(), &{label(&1), &1})

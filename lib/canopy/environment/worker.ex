@@ -177,6 +177,8 @@ defmodule Canopy.Environment.Worker do
     case Clear.run(fn -> inject(ctx, :clearing) end) do
       {:ok, _} ->
         send(ctx.resetter, {:committed, ctx.id})
+        # the clear deleted the pending lifts of the pauses it kept
+        Canopy.EnginePauses.reschedule_all()
         {:ok, %{ctx | sweep_error: sweep(ctx)}}
 
       {:error, reason} when is_exception(reason) ->

@@ -11,13 +11,40 @@ defmodule Canopy.AgentSessions do
 
   @identity_preloads [:agent, channel: [:repository]]
 
-  @doc "Returns the agent's session in a channel (its root session), or nil."
+  @doc """
+  Returns the agent's session in a channel (its primary root session), or
+  nil. A fallback root (`get_fallback_root/2`) is not it.
+  """
   def get_root(channel_id, agent_id) do
     Repo.one(
       from s in AgentSession,
         where:
           s.channel_id == ^channel_id and s.agent_id == ^agent_id and
-            is_nil(s.parent_session_id)
+            is_nil(s.parent_session_id) and is_nil(s.fallback_of)
+    )
+  end
+
+  @doc """
+  The agent's fallback root session in a channel: the one its turns run in
+  while its own engine is paused (`Canopy.Fallback`), or nil.
+  """
+  def get_fallback_root(channel_id, agent_id) do
+    Repo.one(
+      from s in AgentSession,
+        where:
+          s.channel_id == ^channel_id and s.agent_id == ^agent_id and
+            is_nil(s.parent_session_id) and not is_nil(s.fallback_of)
+    )
+  end
+
+  @doc "The agent's root sessions in a channel: the primary and any fallback."
+  def list_roots(channel_id, agent_id) do
+    Repo.all(
+      from s in AgentSession,
+        where:
+          s.channel_id == ^channel_id and s.agent_id == ^agent_id and
+            is_nil(s.parent_session_id),
+        order_by: [asc: s.inserted_at]
     )
   end
 

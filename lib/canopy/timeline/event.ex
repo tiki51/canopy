@@ -29,6 +29,7 @@ defmodule Canopy.Timeline.Event do
     playbook_started playbook_step_started playbook_step_completed playbook_step_skipped
     playbook_approval_requested playbook_approval_resolved playbook_completed playbook_cancelled
     playbook_coordinator_changed playbook_coordinator_kept playbook_stalled
+    engine_fallback engine_paused engine_wake_dropped engine_resumed
   )
 
   schema "timeline_events" do

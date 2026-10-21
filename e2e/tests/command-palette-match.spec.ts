@@ -86,8 +86,8 @@ test.describe("command palette matcher", () => {
     expect(outside).toContain("go-settings");
     expect(outside).not.toContain("go-agents");
     expect(outside).not.toContain("stop-all");
-    expect(outside).not.toContain("release-hold");
-    expect(ids({ hold: true })).toContain("release-hold");
+    expect(outside).not.toContain("resume-engines");
+    expect(ids({ paused: true })).toContain("resume-engines");
 
     const inChannel = ids({ path: "/channels/ch_1", channel: { id: "ch_1", kind: "channel", archived: false } });
     expect(inChannel).toEqual(expect.arrayContaining(["stop-all", "members", "brief", "library"]));

@@ -43,7 +43,9 @@ defmodule Canopy.MCP.Tools.DmStart do
     # The DM's runtime must be up for mentions in the first message to wake anyone.
     {:ok, _} = Runtime.ensure_channel(dm.id)
 
-    case Messages.post_agent_message(dm.id, ctx.agent.id, text) do
+    case Messages.post_agent_message(dm.id, ctx.agent.id, text,
+           fallback: Canopy.Fallback.marker(ctx.session)
+         ) do
       {:ok, message} -> {:ok, message.id}
       {:error, changeset} -> {:error, "could not post: " <> Tool.changeset_reason(changeset)}
     end

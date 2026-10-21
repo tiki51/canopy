@@ -27,6 +27,10 @@ defmodule Canopy.Schedules.Schedule do
     field :check, :map
     field :check_state, :map, default: %{}
     field :playbook, :string
+    # "auto": a nudge Canopy made when the agent's engine paused at a limit
+    # (`Canopy.EnginePauses`), with the pause's id in source_ref; nil otherwise
+    field :source, :string
+    field :source_ref, :string
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -53,6 +57,8 @@ defmodule Canopy.Schedules.Schedule do
       :check,
       :check_state,
       :playbook,
+      :source,
+      :source_ref,
       :channel_id,
       :agent_id,
       :created_by_agent_id
@@ -62,6 +68,7 @@ defmodule Canopy.Schedules.Schedule do
     |> validate_length(:instruction, min: 1, max: 4_000)
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:source, ["auto"])
     |> foreign_key_constraint(:channel_id)
     |> foreign_key_constraint(:agent_id)
   end

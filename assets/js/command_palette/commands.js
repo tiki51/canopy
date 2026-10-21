@@ -4,14 +4,14 @@
 //
 //   {navigate: path}              live navigation
 //   {push: event, payload}        an event for the page (the channel's handlers,
-//                                 or Nav's release_hold on any page)
+//                                 or Nav's resume_engine on any page)
 //   {dmPicker: true}              opens the "new direct message" modal
 //   {theme: "system"|"light"|"dark"}
 //   {notify: true|false}          the desktop notifications master switch
 //   {archive: channelId}          Nav's archive_channel, with the Undo toast
 //   {sectionStep: true}           asks which section to move the channel to
 //
-// `ctx`: {path, hold, channel: {id, kind, archived, section} | null, repoId,
+// `ctx`: {path, paused, channel: {id, kind, archived, section} | null, repoId,
 // repos: [{id, name}], sections: [{id, name}] (the open channel's project),
 // playbooks: [{id, name}], notify: "on" | "off" | "blocked" | "unsupported" |
 // null}. No DOM here.
@@ -66,11 +66,11 @@ const STATIC = [
     action: {notify: true},
   },
   {
-    id: "release-hold",
-    label: "Release hold",
-    keywords: ["billing", "resume", "unpause"],
-    when: ctx => ctx.hold,
-    action: {push: "release_hold"},
+    id: "resume-engines",
+    label: "Resume paused engines",
+    keywords: ["billing", "usage", "limit", "release", "unpause", "hold"],
+    when: ctx => ctx.paused,
+    action: {push: "resume_engine"},
   },
   // the open channel's header buttons, and its Details panel
   {

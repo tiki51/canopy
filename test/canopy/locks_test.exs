@@ -206,6 +206,29 @@ defmodule Canopy.LocksTest do
       assert Locks.list(ctx.repository.id) == []
     end
 
+    test "a grant queued on the agent's own session moves to its fallback session", ctx do
+      {:granted, _} = acquire(ctx, ctx.a_session, turn_ref: "turn_a")
+      {:queued, _, 1, _} = acquire(ctx, ctx.b_session, turn_ref: "turn_b1")
+      [promoted] = Locks.release_turn(ctx.a_session.id, "turn_a")
+
+      fallback =
+        Fixtures.session_fixture(%{
+          channel: ctx.channel,
+          agent_id: ctx.b.id,
+          engine: "codex",
+          fallback_of: ctx.b_session.engine
+        })
+
+      assert [] = Locks.pending_grants(fallback.id, [promoted.id])
+      assert [claim] = Locks.pending_grants([fallback.id, ctx.b_session.id], [promoted.id])
+
+      :ok = Locks.move_grants([claim], fallback.id)
+      :ok = Locks.stamp_turn(fallback.id, [promoted.id], "turn_fb")
+      assert [%{turn_ref: "turn_fb"}] = Locks.for_session(fallback.id)
+      Locks.release_turn(fallback.id, "turn_fb")
+      assert Locks.list(ctx.repository.id) == []
+    end
+
     test "a nil turn releases nothing", ctx do
       {:granted, _} = acquire(ctx, ctx.a_session)
       assert [] = Locks.release_turn(ctx.a_session.id, nil)

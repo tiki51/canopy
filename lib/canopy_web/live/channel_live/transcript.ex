@@ -362,7 +362,7 @@ defmodule CanopyWeb.ChannelLive.Transcript do
       threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
-      hold={@hold}
+      engine_pauses={@engine_pauses}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}

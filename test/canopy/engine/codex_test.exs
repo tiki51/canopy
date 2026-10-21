@@ -382,13 +382,41 @@ defmodule Canopy.Engine.CodexTest do
       assert Canopy.Codex.Approvals.rules(ctx.thread) == []
     end
 
-    test "a usage-limit error holds the workspace", ctx do
+    test "a usage-limit error pauses Codex; with no rate limits known it waits for Release",
+         ctx do
       script(ctx, "turn-usage-limit.jsonl")
       {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} go")
-      assert_receive {:timeline, %{event_type: "agent_error", payload: payload}}, 10_000
-      assert payload["reason"] =~ "usage limit"
-      assert Canopy.Hold.reason()
-      Canopy.Hold.release()
+      assert_receive {:timeline, %{event_type: "engine_paused", payload: payload}}, 10_000
+      assert payload["engine"] == "codex"
+      assert payload["reason"] == "usage limit"
+      assert payload["resets_at"] == nil
+      assert %{kind: "usage", resets_at: nil} = Canopy.EnginePauses.get("codex")
+      refute_received {:timeline, %{event_type: "agent_error"}}
+      assert File.read!(ctx.log) =~ "account/rateLimits/read"
+    end
+
+    test "a usage limit's reset time comes from the rate-limit snapshot", ctx do
+      script(ctx, "turn-usage-limit-with-reset.jsonl")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} go")
+      assert_receive {:timeline, %{event_type: "engine_paused", payload: payload}}, 10_000
+      assert payload["resets_at"] == "2100-01-01T00:00:00.000000Z"
+      assert payload["nudge_at"] == "2100-01-01T00:01:00.000000Z"
+      refute File.read!(ctx.log) =~ "account/rateLimits/read"
+    end
+
+    test "with no snapshot yet, the reset time is read once from account/rateLimits/read", ctx do
+      script(ctx, "turn-usage-limit-read.jsonl")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} go")
+      assert_receive {:timeline, %{event_type: "engine_paused", payload: payload}}, 10_000
+      assert payload["resets_at"] == "2100-01-01T00:00:00.000000Z"
+      assert payload["reason"] == "weekly usage limit"
+    end
+
+    test "a limit reported only on the error notification still reads the reset time", ctx do
+      script(ctx, "turn-usage-limit-error-note.jsonl")
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@#{ctx.coder.name} go")
+      assert_receive {:timeline, %{event_type: "engine_paused", payload: payload}}, 10_000
+      assert payload["resets_at"] == "2100-01-01T00:00:00.000000Z"
     end
   end
 

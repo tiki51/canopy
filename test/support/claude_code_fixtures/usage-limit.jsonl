@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"SESSION_ID","model":"claude-opus-4","mcp_servers":[]}
+{"type":"rate_limit_event","session_id":"SESSION_ID","rate_limit_info":{"status":"rejected","resetsAt":__RESETS_AT__,"rateLimitType":"five_hour","overageStatus":"rejected","unifiedRateLimitFallbackAvailable":false}}
+{"type":"assistant","session_id":"SESSION_ID","message":{"id":"msg_limit","content":[{"type":"text","text":"You've hit your session limit · resets 4:50am (America/Los_Angeles)"}]},"error":"rate_limit"}
+{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"You've hit your session limit · resets 4:50am (America/Los_Angeles)","session_id":"SESSION_ID","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}

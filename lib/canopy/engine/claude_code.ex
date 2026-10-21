@@ -274,6 +274,13 @@ defmodule Canopy.Engine.ClaudeCode do
 
   def model_error?(_reason), do: false
 
+  @impl true
+  def available? do
+    not is_nil(System.find_executable(binary_name()))
+  rescue
+    _ -> false
+  end
+
   # A light profile that does not resolve (routing turned off meanwhile) runs on main.
   defp resolve_profile(agent, :light, settings),
     do:

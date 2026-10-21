@@ -85,7 +85,8 @@ defmodule Canopy.MCP.Tools.ThreadReply do
   defp reply(parent, ctx, text, attachments, to_channel?) do
     case Messages.thread_reply(parent.id, {:agent, ctx.agent.id}, text,
            attachments: attachments,
-           to_channel: to_channel?
+           to_channel: to_channel?,
+           fallback: Canopy.Fallback.marker(ctx.session)
          ) do
       {:ok, reply} ->
         {:ok, reply}

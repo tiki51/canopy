@@ -33,6 +33,7 @@ defmodule CanopyWeb.SettingsLive do
     CodexOptions,
     EngineComponents,
     EnvironmentComponents,
+    FallbackOptions,
     NotifyComponents,
     PresetComponents
   }
@@ -56,10 +57,10 @@ defmodule CanopyWeb.SettingsLive do
      |> assign(:opencode_form, to_form(Settings.change(setting), id: "opencode-form"))
      |> assign(:claude_form, to_form(Settings.change(setting), id: "claude-form"))
      |> assign(:claude_check, nil)
-     |> assign(:claude_found, claude_found?())
+     |> assign(:claude_found, Canopy.Engine.available?("claude_code"))
      |> assign(:codex_form, to_form(Settings.change(setting), id: "codex-form"))
      |> assign(:codex_check, nil)
-     |> assign(:codex_found, codex_found?())
+     |> assign(:codex_found, Canopy.Engine.available?("codex"))
      |> assign(:codex_models, [])
      |> assign(:codex_models_state, :loading)
      |> then(&if(connected?(&1), do: load_codex_models(&1), else: &1))
@@ -203,7 +204,8 @@ defmodule CanopyWeb.SettingsLive do
     "codex_default_model",
     "codex_default_effort",
     "codex_light_model",
-    "codex_light_effort"
+    "codex_light_effort",
+    "codex_fallback"
   ]
 
   def handle_event("validate_codex", %{"setting" => params}, socket) do
@@ -279,7 +281,8 @@ defmodule CanopyWeb.SettingsLive do
     "claude_default_model",
     "claude_default_effort",
     "claude_light_model",
-    "claude_light_effort"
+    "claude_light_effort",
+    "claude_fallback"
   ]
 
   def handle_event("validate_claude", %{"setting" => params}, socket) do
@@ -778,7 +781,8 @@ defmodule CanopyWeb.SettingsLive do
       "opencode_default_provider",
       "opencode_default_model",
       "opencode_light_provider",
-      "opencode_light_model"
+      "opencode_light_model",
+      "opencode_fallback"
     ])
     |> pair_model("opencode_default_provider", "opencode_default_model")
     |> pair_model("opencode_light_provider", "opencode_light_model")
@@ -933,18 +937,6 @@ defmodule CanopyWeb.SettingsLive do
        else: %{}
   end
 
-  defp codex_found? do
-    not is_nil(System.find_executable(Canopy.Engine.Codex.binary_name()))
-  rescue
-    _ -> false
-  end
-
-  defp claude_found? do
-    not is_nil(System.find_executable(Canopy.Engine.ClaudeCode.binary_name()))
-  rescue
-    _ -> false
-  end
-
   defp opencode_saved(changeset) do
     if Ecto.Changeset.changed?(changeset, :opencode_default_provider) or
          Ecto.Changeset.changed?(changeset, :opencode_default_model),
@@ -1003,6 +995,8 @@ defmodule CanopyWeb.SettingsLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign(assigns, :fallback_sources, FallbackOptions.sources(assigns))
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -1013,7 +1007,7 @@ defmodule CanopyWeb.SettingsLive do
       threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
-      hold={@hold}
+      engine_pauses={@engine_pauses}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -1148,6 +1142,13 @@ defmodule CanopyWeb.SettingsLive do
                 options={Agent.efforts()}
               />
             </div>
+            <.fallback_row
+              field={@claude_form[:claude_fallback]}
+              id="claude-fallback"
+              engine="claude_code"
+              sources={@fallback_sources}
+              primary_model={@claude_form[:claude_default_model].value}
+            />
             <div class="flex flex-col gap-1">
               <.default_usage
                 id="claude-model-usage"
@@ -1272,6 +1273,13 @@ defmodule CanopyWeb.SettingsLive do
                 saved={@setting.codex_light_effort}
               />
             </div>
+            <.fallback_row
+              field={@codex_form[:codex_fallback]}
+              id="codex-fallback"
+              engine="codex"
+              sources={@fallback_sources}
+              primary_model={@codex_form[:codex_default_model].value}
+            />
             <p
               :if={match?({:error, _}, @codex_models_state)}
               id="codex-models-unavailable"
@@ -1458,6 +1466,13 @@ defmodule CanopyWeb.SettingsLive do
                 />
               <% end %>
             </div>
+            <.fallback_row
+              field={@opencode_form[:opencode_fallback]}
+              id="opencode-fallback"
+              engine="opencode"
+              sources={@fallback_sources}
+              primary_model={opencode_default(@opencode_form)}
+            />
             <p
               :if={@providers == [] and @providers_state == :error}
               id="opencode-default-unavailable"
@@ -1940,7 +1955,7 @@ defmodule CanopyWeb.SettingsLive do
             } />
           </div>
         </Layouts.panel>
-        <EnvironmentComponents.reset_modal :if={@reset} reset={@reset} hold={@hold} />
+        <EnvironmentComponents.reset_modal :if={@reset} reset={@reset} engine_pauses={@engine_pauses} />
       </Layouts.page>
     </Layouts.app>
     """
@@ -2091,6 +2106,43 @@ defmodule CanopyWeb.SettingsLive do
     do: "signed in with ChatGPT" <> if(info[:plan], do: " (#{info.plan})", else: "")
 
   defp codex_signed_in(_info), do: "signed in"
+
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :id, :string, required: true
+  attr :engine, :string, required: true
+  attr :sources, :map, required: true, doc: "`CanopyWeb.FallbackOptions.sources/1`"
+  attr :primary_model, :string, default: nil, doc: "the engine's default model, left out"
+
+  # The engine's fallback at a usage limit. Never disabled: a saved value
+  # stays an option while its engine's list is away, so it is submitted as is.
+  defp fallback_row(assigns) do
+    ~H"""
+    <div id={"#{@id}-row"} class="flex flex-col gap-1">
+      <div class="grid gap-3 sm:grid-cols-3">
+        <div class="sm:col-span-2">
+          <.input
+            field={@field}
+            type="select"
+            id={@id}
+            label="Fallback at a usage limit"
+            prompt="No fallback"
+            options={FallbackOptions.options(@engine, @sources, @field.value, @primary_model)}
+          />
+        </div>
+      </div>
+      <p id={"#{@id}-help"} class="-mt-1 text-xs text-base-content/60">
+        Agents on {Canopy.Engine.label(@engine)} carry on here until the limit resets, then go back to their own model. On another engine they start a new session. Each agent can choose its own or None on its edit form.
+      </p>
+    </div>
+    """
+  end
+
+  # The OpenCode default as a fallback value names it: "provider/model".
+  defp opencode_default(form) do
+    provider = form[:opencode_default_provider].value
+    model = form[:opencode_default_model].value
+    if blank?(provider) or blank?(model), do: nil, else: "#{provider}/#{model}"
+  end
 
   attr :field, Phoenix.HTML.FormField, required: true
   attr :id, :string, required: true

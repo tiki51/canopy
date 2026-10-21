@@ -37,7 +37,7 @@ defmodule Canopy.Locks do
   @name_format ~r/^[a-z0-9][a-z0-9._:\/-]{0,63}$/
 
   # A waiter granted the lock whose wake never started a turn (held by the
-  # chatter budget, dropped by a hold or the spend limit) gives it up after this.
+  # chatter budget, dropped by an engine pause or the spend limit) gives it up after this.
   @grant_grace_ms :timer.minutes(3)
 
   @doc "The suggested lock name for the test suite and anything that runs it."
@@ -318,7 +318,7 @@ defmodule Canopy.Locks do
 
     * a held claim of an idle session, granted more than #{div(@grant_grace_ms, 60_000)}
       minutes ago, passes on: its grant wake never started (the chatter budget,
-      a hold or the spend limit stopped it), or its turn vanished;
+      an engine pause or the spend limit stopped it), or its turn vanished;
     * a claim held across turns longer than the `lock_hold_minutes` setting
       is released;
     * a line on the repository with waiters and no holder (its holder's row
@@ -472,20 +472,44 @@ defmodule Canopy.Locks do
   # -- Turns ------------------------------------------------------------------
 
   @doc """
-  The claims among `claim_ids` the session was granted from the line and no
-  turn owns yet: what a grant wake can still hand over.
+  The claims among `claim_ids` the session (or any of a list of sessions:
+  an agent's own and fallback roots) was granted from the line and no turn
+  owns yet: what a grant wake can still hand over.
   """
-  def pending_grants(_session_id, []), do: []
+  def pending_grants(_session_ids, []), do: []
 
-  def pending_grants(session_id, claim_ids) do
+  def pending_grants(session_id, claim_ids) when is_binary(session_id),
+    do: pending_grants([session_id], claim_ids)
+
+  def pending_grants(session_ids, claim_ids) when is_list(session_ids) do
     Repo.all(
       from c in Claim,
         where:
-          c.id in ^claim_ids and c.session_id == ^session_id and c.status == "held" and
+          c.id in ^claim_ids and c.session_id in ^session_ids and c.status == "held" and
             is_nil(c.turn_ref),
         order_by: [asc: c.name],
         preload: [:repository]
     )
+  end
+
+  @doc """
+  Moves granted claims no turn owns yet to `session_id`: a claim queued by an
+  agent's own session, granted once its wake runs on the agent's fallback
+  session (or back), so the turn there stamps and releases it.
+  """
+  def move_grants([], _session_id), do: :ok
+
+  def move_grants(claims, session_id) do
+    ids = for c <- claims, c.session_id != session_id, do: c.id
+
+    if ids != [] do
+      Repo.update_all(
+        from(c in Claim, where: c.id in ^ids and c.status == "held" and is_nil(c.turn_ref)),
+        set: [session_id: session_id, updated_at: DateTime.utc_now()]
+      )
+    end
+
+    :ok
   end
 
   @doc """

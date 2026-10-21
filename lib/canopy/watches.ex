@@ -30,7 +30,7 @@ defmodule Canopy.Watches do
 
   Watches fire on new items only; an item that changes is not new. A watch
   delivers only while it is eligible: active, its agent active, its channel
-  open, and agent runs not on hold.
+  open, and its agent not waiting on a paused engine.
   """
 
   require Logger
@@ -226,32 +226,29 @@ defmodule Canopy.Watches do
 
   @doc """
   Checks every watch that is due, a few at a time, then applies what each
-  found, one after another. Nothing runs while agent runs are on hold.
-  Returns how many watches were checked.
+  found, one after another. A watch whose agent waits for a paused engine
+  (`Canopy.EnginePauses`) is left for a later sweep, so nothing it would
+  find is lost. Returns how many watches were checked.
   """
   def sweep(now \\ DateTime.utc_now()) do
-    if Canopy.Hold.active?() do
-      0
-    else
-      watches = Schedules.due_watches(now)
+    watches = now |> Schedules.due_watches() |> Enum.reject(&waiting?/1)
 
-      watches
-      |> Task.async_stream(&{&1.id, safe_probe(&1)},
-        max_concurrency: @concurrency,
-        timeout: @timeout_ms,
-        on_timeout: :kill_task,
-        zip_input_on_exit: true
-      )
-      |> Enum.each(fn
-        {:ok, {id, result}} ->
-          apply_result(id, result, now)
+    watches
+    |> Task.async_stream(&{&1.id, safe_probe(&1)},
+      max_concurrency: @concurrency,
+      timeout: @timeout_ms,
+      on_timeout: :kill_task,
+      zip_input_on_exit: true
+    )
+    |> Enum.each(fn
+      {:ok, {id, result}} ->
+        apply_result(id, result, now)
 
-        {:exit, {watch, reason}} ->
-          apply_result(watch.id, {:error, "the check did not finish: #{inspect(reason)}"}, now)
-      end)
+      {:exit, {watch, reason}} ->
+        apply_result(watch.id, {:error, "the check did not finish: #{inspect(reason)}"}, now)
+    end)
 
-      length(watches)
-    end
+    length(watches)
   end
 
   @doc "Runs one watch's check now and applies what it found."
@@ -410,8 +407,8 @@ defmodule Canopy.Watches do
       new == [] ->
         checked(watch, now, etag_change(etag))
 
-      # not eligible now (paused, agent deactivated, channel archived, a
-      # hold): nothing is marked seen and the ETag stays, so a later check
+      # not eligible now (paused, agent deactivated, channel archived, its
+      # agent waiting on a paused engine): nothing is marked seen and the ETag stays, so a later check
       # finds the items again
       not deliverable?(watch) ->
         checked(watch, now)
@@ -431,8 +428,14 @@ defmodule Canopy.Watches do
   defp etag_change(:keep), do: %{}
 
   defp deliverable?(watch) do
-    not Canopy.Hold.active?() and match?(%Schedule{status: "active"}, Schedules.get(watch.id)) and
-      Schedules.eligible?(watch)
+    match?(%Schedule{status: "active"}, Schedules.get(watch.id)) and
+      Schedules.eligible?(watch) and not waiting?(watch)
+  end
+
+  # its agent's engine is paused and it has no usable fallback
+  defp waiting?(%Schedule{} = watch) do
+    watch = Canopy.Repo.preload(watch, :agent)
+    match?({:wait, _}, Canopy.Fallback.route(watch.agent))
   end
 
   defp record_delivery(watch, items, etag, now, runs_to_start) do

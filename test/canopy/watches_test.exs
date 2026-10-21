@@ -375,13 +375,16 @@ defmodule Canopy.WatchesTest do
     assert watch.check_state["etag"] == "etag-1"
   end
 
-  test "nothing is checked while agent runs are on hold", ctx do
+  test "a watch whose agent waits for a paused engine isn't checked until the lift", ctx do
     expect(GH, :probe, fn _check, nil -> result([]) end)
     watch = create!(ctx)
-    :ok = Canopy.Hold.engage("billing")
-    on_exit(fn -> Canopy.Hold.release() end)
+    engine = Canopy.Agents.effective_engine(Canopy.Agents.get!(watch.agent_id))
+    {:ok, _} = Canopy.EnginePauses.engage(engine, %{kind: "billing", reason: "usage limit"})
     due!(watch)
     assert Watches.sweep() == 0
+
+    :ok = Canopy.EnginePauses.resume(engine)
+    assert Watches.sweep() == 1
   end
 
   # 21

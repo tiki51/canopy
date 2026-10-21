@@ -8,7 +8,10 @@ defmodule Canopy.Engine.Event do
 
     * `:agent_status`      data: `%{status: :idle | :busy | :retry, raw: map}`
     * `:agent_completed`   data: `%{}`
-    * `:agent_error`       data: `%{error: map}`
+    * `:agent_error`       data: `%{error: map, limit: limit | nil}` (`limit`: the
+      usage or billing limit the error stands for, `%{kind: "usage" | "billing",
+      reason, resets_at: DateTime.t() | nil, detail}`, read by the adapter;
+      `Canopy.EnginePauses.engage/3` pauses the engine on it)
     * `:prompts_unconsumed` data: `%{refs: [String.t()]}` (steered messages the
       turn never read, by `Canopy.Engine.steer/4` ref; sent just before the
       turn's `:agent_completed` / `:agent_error`)

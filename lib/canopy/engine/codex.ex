@@ -369,6 +369,13 @@ defmodule Canopy.Engine.Codex do
   def model_error?(_reason), do: false
 
   @impl true
+  def available? do
+    not is_nil(System.find_executable(binary_name()))
+  rescue
+    _ -> false
+  end
+
+  @impl true
   def context_cap, do: @context_cap
 
   defp resolve_profile(agent, :light, settings),

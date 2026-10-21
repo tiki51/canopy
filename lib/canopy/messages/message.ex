@@ -31,6 +31,9 @@ defmodule Canopy.Messages.Message do
     # a user message sent to interrupt: an agent it mentions that is working
     # reads it after its current step, not after its turn (Agent Interrupt)
     field :interrupt, :boolean, default: false
+    # written during a turn on the agent's fallback model, while its own
+    # engine was paused: %{"engine", "model", "from_engine"}; nil otherwise
+    field :fallback, :map
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -66,7 +69,8 @@ defmodule Canopy.Messages.Message do
       :opencode_message_id,
       :sent_to_channel,
       :mentions_user,
-      :interrupt
+      :interrupt,
+      :fallback
     ])
     |> update_change(:body, &String.trim/1)
     |> validate_required([:channel_id, :kind])

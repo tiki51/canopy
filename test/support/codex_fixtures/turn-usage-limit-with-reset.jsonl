@@ -1,0 +1,3 @@
+{"include":"turn-start.jsonl"}
+{"send":{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":4103049600}}}}}
+{"send":{"method":"turn/completed","params":{"threadId":"$THREAD","turn":{"id":"$TURN","status":"failed","items":[],"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}}}}}

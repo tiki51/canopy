@@ -39,7 +39,8 @@ defmodule Canopy.ClaudeCode.Events do
           inputs: map(),
           step: map() | nil,
           steps: non_neg_integer(),
-          cost_bases: [number()]
+          cost_bases: [number()],
+          rate_limit: map() | nil
         }
 
   @doc """
@@ -49,7 +50,7 @@ defmodule Canopy.ClaudeCode.Events do
   """
   def new(cwd \\ nil, opts \\ []) do
     bases = for b <- Keyword.get(opts, :cost_bases, []), is_number(b), do: b
-    %{cwd: cwd, inputs: %{}, step: nil, steps: 0, cost_bases: bases}
+    %{cwd: cwd, inputs: %{}, step: nil, steps: 0, cost_bases: bases, rate_limit: nil}
   end
 
   @doc """
@@ -117,11 +118,19 @@ defmodule Canopy.ClaudeCode.Events do
 
   def normalize(%{"type" => "system"}, acc), do: {[], acc}
 
+  # A rejected one is kept: the result that follows reads its reset time
+  # (`Canopy.ClaudeCode.Limits`).
   def normalize(%{"type" => "rate_limit_event"} = line, acc) do
     case get_in(line, ["rate_limit_info", "status"]) do
-      "allowed" -> {[], acc}
-      nil -> {[], acc}
-      _ -> {[event(:agent_status, %{status: :retry, raw: line})], acc}
+      status when status in [nil, "allowed", "allowed_warning"] ->
+        {[], acc}
+
+      "rejected" ->
+        {[event(:agent_status, %{status: :retry, raw: line})],
+         Map.put(acc, :rate_limit, line["rate_limit_info"])}
+
+      _ ->
+        {[event(:agent_status, %{status: :retry, raw: line})], acc}
     end
   end
 
@@ -285,14 +294,16 @@ defmodule Canopy.ClaudeCode.Events do
         text = present(line["result"]) || line["subtype"] || "error"
 
         event(:agent_error, %{
-          error: %{"name" => line["subtype"] || "error", "data" => %{"message" => text}}
+          error: %{"name" => line["subtype"] || "error", "data" => %{"message" => text}},
+          limit:
+            Canopy.ClaudeCode.Limits.from(Map.get(acc, :rate_limit), text, DateTime.utc_now())
         })
       else
         event(:agent_completed, %{})
       end
 
     # a later result of this process counts from this one
-    {steps ++ [usage_event, outcome], %{acc | cost_bases: [total]}}
+    {steps ++ [usage_event, outcome], Map.merge(acc, %{cost_bases: [total], rate_limit: nil})}
   end
 
   def normalize(_line, acc), do: {[], acc}

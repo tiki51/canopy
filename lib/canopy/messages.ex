@@ -43,6 +43,9 @@ defmodule Canopy.Messages do
       after its turn (default `Canopy.Settings.interrupt_on_mention?/0`, so a
       programmatic post such as a late answer follows the setting); agents'
       messages never interrupt
+    * `:fallback` — an agent's message only: written during a turn on its
+      fallback model (`%{"engine", "model", "from_engine"}`, see
+      `Canopy.Fallback`); nil otherwise
   """
   def post_user_message(channel_id, user_id, body, opts \\ []) do
     insert(%{channel_id: channel_id, user_id: user_id, body: body, kind: "post"}, opts)
@@ -566,7 +569,13 @@ defmodule Canopy.Messages do
     |> Map.put(:opencode_message_id, Keyword.get(opts, :opencode_message_id))
     |> Map.put(:mentions_user, Canopy.Unread.mentions?(attrs.body, Canopy.Users.local()))
     |> Map.put(:interrupt, interrupt?(attrs, opts))
+    |> put_fallback(Keyword.get(opts, :fallback))
   end
+
+  defp put_fallback(%{agent_id: id} = attrs, %{} = fallback) when is_binary(id),
+    do: Map.put(attrs, :fallback, fallback)
+
+  defp put_fallback(attrs, _fallback), do: attrs
 
   # The message (a blank body is fine with attachments) and its attachments
   # in order, as `name` and its attachments step.

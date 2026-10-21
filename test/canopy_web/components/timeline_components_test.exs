@@ -933,4 +933,359 @@ defmodule CanopyWeb.TimelineComponentsTest do
              ) == "a watch found 2 new items for @pm (new pull requests in a/b)"
     end
   end
+
+  describe "engine pause lines" do
+    @names %{"agt_be" => "backend", "agt_de" => "designer", "agt_qa" => "qa"}
+
+    defp pause_line(type, payload, agent_id \\ "agt_be") do
+      TimelineComponents.event_text(
+        %{event_type: type, agent_id: agent_id, payload: payload},
+        @names,
+        "Steven"
+      )
+    end
+
+    defp at(minutes),
+      do: DateTime.utc_now() |> DateTime.add(minutes * 60) |> DateTime.truncate(:second)
+
+    defp t(at), do: TimelineComponents.reset_text(at)
+
+    @switch %{
+      "from_engine" => "claude_code",
+      "from_model" => "opus",
+      "to_engine" => "codex",
+      "to_model" => "gpt-5-codex",
+      "kind" => "usage",
+      "reason" => "usage limit",
+      "new_session" => true,
+      "hit" => true
+    }
+
+    test "engine_fallback: the agent hit the limit and carried on" do
+      reset = at(90)
+      p = Map.put(@switch, "resets_at", DateTime.to_iso8601(reset))
+
+      assert pause_line("engine_fallback", p) ==
+               "@backend hit the Claude Code usage limit (resets #{t(reset)}) and carried on with Codex › gpt-5-codex in a new session. Back to opus at #{t(DateTime.add(reset, 60))}."
+
+      assert pause_line("engine_fallback", %{
+               @switch
+               | "new_session" => false,
+                 "from_model" => nil
+             }) ==
+               "@backend hit the Claude Code usage limit and carried on with Codex › gpt-5-codex. Back to its own model when Claude Code is resumed."
+
+      # a missing hit reads as true
+      assert pause_line("engine_fallback", Map.delete(p, "hit")) ==
+               pause_line("engine_fallback", p)
+    end
+
+    test "engine_fallback with hit false: woken while its engine was already paused" do
+      reset = at(90)
+      p = Map.merge(@switch, %{"hit" => false, "resets_at" => DateTime.to_iso8601(reset)})
+
+      assert pause_line("engine_fallback", p) ==
+               "Claude Code is paused (usage limit, resets #{t(reset)}), so @backend is working on Codex › gpt-5-codex in a new session. Back to opus at #{t(DateTime.add(reset, 60))}."
+
+      assert pause_line("engine_fallback", %{
+               p
+               | "resets_at" => nil,
+                 "new_session" => false,
+                 "from_model" => nil,
+                 "to_engine" => "opencode",
+                 "to_model" => "anthropic/claude-sonnet-4-5"
+             }) ==
+               "Claude Code is paused (usage limit), so @backend is working on OpenCode › anthropic/claude-sonnet-4-5. Back to its own model when Claude Code is resumed."
+    end
+
+    test "engine_paused: no fallback, or one that can't be used" do
+      reset = at(60)
+      nudge = DateTime.add(reset, 60)
+
+      p = %{
+        "engine" => "claude_code",
+        "kind" => "usage",
+        "reason" => "usage limit",
+        "resets_at" => DateTime.to_iso8601(reset),
+        "nudge_at" => DateTime.to_iso8601(nudge),
+        "fallback_unavailable" => nil
+      }
+
+      assert pause_line("engine_paused", p, "agt_de") ==
+               "@designer hit the Claude Code usage limit and has no fallback. It waits for the reset; a nudge is scheduled for #{t(nudge)}."
+
+      assert pause_line(
+               "engine_paused",
+               %{
+                 p
+                 | "fallback_unavailable" => "Codex › gpt-5-codex",
+                   "resets_at" => nil,
+                   "nudge_at" => nil
+               },
+               "agt_de"
+             ) ==
+               "@designer hit the Claude Code usage limit; its fallback Codex › gpt-5-codex can't be used right now. It waits until you release Claude Code."
+    end
+
+    test "a billing pause is the engine's report, not something the agent hit" do
+      billing = %{"kind" => "billing", "reason" => "insufficient balance", "resets_at" => nil}
+
+      assert pause_line(
+               "engine_paused",
+               Map.merge(billing, %{"engine" => "claude_code", "fallback_unavailable" => nil}),
+               "agt_de"
+             ) ==
+               "Claude Code is paused (insufficient balance) and @designer has no fallback. It waits until you release Claude Code."
+
+      assert pause_line(
+               "engine_paused",
+               Map.merge(billing, %{
+                 "engine" => "claude_code",
+                 "fallback_unavailable" => "Codex › gpt-5-codex"
+               }),
+               "agt_de"
+             ) ==
+               "Claude Code is paused (insufficient balance) and @designer's fallback Codex › gpt-5-codex can't be used right now. It waits until you release Claude Code."
+
+      assert pause_line("engine_fallback", Map.merge(@switch, billing)) ==
+               "Claude Code is paused (insufficient balance), so @backend carried on with Codex › gpt-5-codex in a new session. Back to opus when Claude Code is resumed."
+    end
+
+    test "the turn that hit a limit doesn't read as an error" do
+      event = %{
+        id: "evt_9",
+        channel_id: "chn_1",
+        event_type: "agent_turn_completed",
+        agent_id: "agt_be",
+        inserted_at: ~U[2026-10-20 10:00:00Z],
+        payload: %{
+          "outcome" => "error",
+          "duration_ms" => 100,
+          "limit" => %{"kind" => "usage", "reason" => "usage limit", "resets_at" => nil}
+        }
+      }
+
+      assert pause_line("agent_turn_completed", event.payload) =~
+               ~r/^@backend hit the usage limit( ·|$)/
+
+      billing =
+        Map.put(event.payload, "limit", %{"kind" => "billing", "reason" => "insufficient balance"})
+
+      assert pause_line("agent_turn_completed", billing) =~
+               ~r/^@backend stopped: insufficient balance/
+
+      html = render_turn(event)
+      refute html =~ "stopped with an error"
+      assert html =~ "hero-pause-circle-mini"
+      doc = LazyHTML.from_fragment(html)
+      assert ["muted"] = doc |> LazyHTML.query("[data-tone]") |> LazyHTML.attribute("data-tone")
+      # the text sits on the icon's row: nothing before it in the pre-wrap span
+      assert doc |> LazyHTML.query("#line-evt_9 [data-line-text]") |> LazyHTML.text() =~ ~r/^@/
+      # the engine_paused / engine_fallback line beside it is the one to see
+      assert TimelineComponents.activity_class(event) == "routine"
+
+      # a turn with a card shows the pause icon, not the red cross
+      card_html = render_turn(put_in(event.payload["final_text"], "Partway."))
+      assert card_html =~ "hero-pause-circle-mini"
+      refute card_html =~ "hero-x-circle-mini"
+    end
+
+    test "engine_wake_dropped" do
+      reset = at(60)
+      nudge = DateTime.add(reset, 60)
+
+      p = %{
+        "engine" => "claude_code",
+        "resets_at" => DateTime.to_iso8601(reset),
+        "nudge_at" => DateTime.to_iso8601(nudge)
+      }
+
+      assert pause_line("engine_wake_dropped", p, "agt_de") ==
+               "Didn't wake @designer: Claude Code is paused until #{t(reset)}. The #{t(nudge)} nudge will pick this up."
+
+      assert pause_line(
+               "engine_wake_dropped",
+               %{p | "resets_at" => nil, "nudge_at" => nil},
+               "agt_de"
+             ) ==
+               "Didn't wake @designer: Claude Code is paused until you release it."
+    end
+
+    test "engine_resumed: who is back, who was nudged" do
+      p = %{
+        "engine" => "claude_code",
+        "by" => "reset",
+        "returned" => [%{"agent_id" => "agt_be", "model" => "opus"}],
+        "nudged" => ["agt_de"]
+      }
+
+      assert pause_line("engine_resumed", p, nil) ==
+               "Claude Code's limit reset. @backend is back on opus; @designer was nudged to continue."
+
+      assert pause_line(
+               "engine_resumed",
+               %{
+                 p
+                 | "by" => "user",
+                   "returned" => [%{"agent_id" => "agt_be", "model" => nil}],
+                   "nudged" => ["agt_de", "agt_qa"]
+               },
+               nil
+             ) ==
+               "You resumed Claude Code. @backend is back on its own model; @designer and @qa were nudged to continue."
+
+      assert pause_line("engine_resumed", %{p | "returned" => [], "nudged" => []}, nil) ==
+               "Claude Code's limit reset."
+    end
+
+    test "Canopy's own nudge schedule" do
+      run_at = at(61)
+
+      assert pause_line(
+               "schedule_created",
+               %{
+                 "source" => "auto",
+                 "kind" => "once",
+                 "instruction" => "Continue where you left off.",
+                 "run_at" => DateTime.to_iso8601(run_at),
+                 "created_by_agent_id" => nil
+               },
+               "agt_de"
+             ) ==
+               "Canopy scheduled a nudge for @designer: once at #{t(run_at)} · Continue where you left off."
+
+      assert pause_line(
+               "schedule_fired",
+               %{"source" => "auto", "kind" => "once", "instruction" => "Continue."},
+               "agt_de"
+             ) == "Canopy's nudge fired for @designer: Continue."
+    end
+
+    test "tones and icons" do
+      for {type, tone, icon} <- [
+            {"engine_fallback", "warning", "hero-arrows-right-left-mini"},
+            {"engine_paused", "warning", "hero-pause-mini"},
+            {"engine_wake_dropped", "muted", "hero-clock-mini"},
+            {"engine_resumed", "success", "hero-arrow-path-mini"}
+          ] do
+        event = %{
+          id: "evt_1",
+          event_type: type,
+          agent_id: "agt_1",
+          payload: %{"engine" => "claude_code", "from_engine" => "claude_code"},
+          inserted_at: ~U[2026-10-20 10:00:00Z]
+        }
+
+        doc = event |> render_turn() |> LazyHTML.from_fragment()
+        assert [^tone] = doc |> LazyHTML.query("[data-tone]") |> LazyHTML.attribute("data-tone")
+        assert render_turn(event) =~ icon
+        # none of them is routine, so the compact timeline keeps them
+        assert TimelineComponents.activity_class(event) == nil
+      end
+    end
+
+    test "a message written on a fallback carries the chip; others don't" do
+      message = %{
+        id: "msg_1",
+        channel_id: "chn_1",
+        agent_id: "agt_1",
+        agent: %{name: "backend", color: nil},
+        user: nil,
+        kind: "post",
+        body: "Done.",
+        inserted_at: ~U[2026-10-20 10:00:00Z],
+        sent_to_channel: false,
+        thread_id: nil,
+        documents: [],
+        fallback: %{"engine" => "codex", "model" => "gpt-5-codex", "from_engine" => "claude_code"}
+      }
+
+      render = fn message ->
+        assigns = %{message: message}
+
+        rendered_to_string(~H"""
+        <TimelineComponents.message_item message={@message} names={%{}} user_name="Priya" />
+        """)
+      end
+
+      doc = message |> render.() |> LazyHTML.from_fragment()
+      chip = LazyHTML.query(doc, "#message-fallback-msg_1")
+      assert LazyHTML.text(chip) =~ "Codex · fallback"
+
+      assert LazyHTML.attribute(chip, "title") == [
+               "Written on the fallback, Codex › gpt-5-codex, while Claude Code was paused"
+             ]
+
+      refute render.(%{message | fallback: nil}) =~ "message-fallback-"
+    end
+
+    test "a turn on a fallback carries the chip in its header" do
+      event = %{
+        id: "evt_7",
+        channel_id: "chn_1",
+        event_type: "agent_turn_completed",
+        agent_id: "agt_1",
+        inserted_at: ~U[2026-10-20 10:00:00Z],
+        payload: %{
+          "outcome" => "ok",
+          "final_text" => "Done.",
+          "fallback" => %{
+            "engine" => "opencode",
+            "model" => "anthropic/x",
+            "from_engine" => "claude_code"
+          }
+        }
+      }
+
+      assert render_turn(event) =~ ~r/id="turn-evt_7-fallback"[^>]*>\s*OpenCode · fallback/
+      refute render_turn(%{event | payload: Map.delete(event.payload, "fallback")}) =~ "-fallback"
+    end
+
+    test "Canopy's nudge is marked Auto in the schedule list" do
+      schedule = fn id, source ->
+        %{
+          id: id,
+          kind: "once",
+          status: "active",
+          status_reason: nil,
+          source: source,
+          next_run_at: ~U[2026-10-20 15:01:00Z],
+          cron: nil,
+          instruction: "Continue.",
+          agent: %{name: "designer"},
+          channel_id: "chn_1",
+          channel: %{name: "general"}
+        }
+      end
+
+      assigns = %{schedules: [schedule.("sch_1", "auto"), schedule.("sch_2", nil)]}
+
+      html =
+        rendered_to_string(~H"""
+        <TimelineComponents.schedule_list id="sl" schedules={@schedules} />
+        """)
+
+      assert html =~ ~r/id="sl-sch_1-auto"[^>]*>\s*Auto/
+      refute html =~ "sl-sch_2-auto"
+    end
+
+    test "the countdown says the time left, then resuming…" do
+      future = System.os_time(:millisecond) + :timer.minutes(134) + 30_000
+      assigns = %{until: future}
+
+      html =
+        rendered_to_string(~H"""
+        <TimelineComponents.countdown id="cd" until={@until} />
+        """)
+
+      assert html =~ ~r/phx-update="ignore"[^>]*>in 2h 14m</
+      assert TimelineComponents.countdown_text(-1) == "resuming…"
+
+      assigns = %{until: System.os_time(:millisecond) - 1_000}
+
+      assert rendered_to_string(~H"""
+             <TimelineComponents.countdown id="cd" until={@until} />
+             """) =~ "resuming…"
+    end
+  end
 end

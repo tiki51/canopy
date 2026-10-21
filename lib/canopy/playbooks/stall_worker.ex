@@ -53,24 +53,29 @@ defmodule Canopy.Playbooks.StallWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"run_id" => id}}) do
-    cond do
-      # agent runs are on hold: look again later rather than nudge into it
-      Canopy.Hold.active?() ->
-        {:snooze, 600}
+    case Runs.get(id) do
+      nil -> :ok
+      run -> if coordinator_waiting?(run), do: {:snooze, 600}, else: check(run)
+    end
+  end
 
-      run = Runs.get(id) ->
-        case Runs.check_stall(run) do
-          # the successor must exist, or the run is never checked again: a
-          # failed insert fails this job, and Oban retries it
-          {:wait, _due} ->
-            run |> enqueue() |> after_enqueue()
+  # the coordinator's engine is paused and it has no usable fallback: look
+  # again later rather than nudge into it
+  defp coordinator_waiting?(%{coordinator_agent_id: id}) when is_binary(id) do
+    case Canopy.Agents.get(id) do
+      nil -> false
+      agent -> match?({:wait, _}, Canopy.Fallback.route(agent))
+    end
+  end
 
-          _ ->
-            :ok
-        end
+  defp coordinator_waiting?(_run), do: false
 
-      true ->
-        :ok
+  defp check(run) do
+    case Runs.check_stall(run) do
+      # the successor must exist, or the run is never checked again: a
+      # failed insert fails this job, and Oban retries it
+      {:wait, _due} -> run |> enqueue() |> after_enqueue()
+      _ -> :ok
     end
   end
 end

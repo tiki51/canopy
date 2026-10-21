@@ -427,13 +427,21 @@ link_message = fn event, message ->
   |> Repo.update!()
 end
 
-# -- A billing hold, released in the guide ----------------------------------------------
+# -- A billing pause, released in the guide ---------------------------------------------
 #
+# OpenCode paused at a billing limit (no reset time, so it waits for Release).
 # Engaged before any schedule exists, so releasing it later pauses and resumes
 # nothing and the channel timelines stay clean.
 
 unless site?,
-  do: :ok = Canopy.Hold.engage("OpenCode reported: insufficient balance for opencode/gpt-5-nano")
+  do:
+    {:ok, _} =
+      Canopy.EnginePauses.engage("opencode", %{
+        kind: "billing",
+        reason: "insufficient balance",
+        resets_at: nil,
+        detail: "OpenCode reported: insufficient balance for opencode/gpt-5-nano"
+      })
 
 # -- Channels -----------------------------------------------------------------------
 
@@ -679,7 +687,6 @@ Repo.update_all(
   from(r in Canopy.Threads.ThreadRead, where: r.root_id == ^latency_post.id),
   set: [last_read_at: days_ago.(2, 10)]
 )
-
 
 # -- #brand-logo: asking for feedback on an image ----------------------------------------
 
@@ -1087,7 +1094,8 @@ unless site? do
           "status" => "ok",
           "step" => 2,
           "category" => "note",
-          "label" => "The claim was released before the charge returned; moving it into `finally`."
+          "label" =>
+            "The claim was released before the charge returned; moving it into `finally`."
         },
         row.("e4", 2, "edit", "acme/billing/payments.py", %{
           "duration_ms" => 200,

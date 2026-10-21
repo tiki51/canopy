@@ -4,7 +4,7 @@ defmodule CanopyWeb.CommandPaletteLiveTest do
   import Phoenix.LiveViewTest
   import Canopy.PlaybookHelpers, only: [playbook_fixture: 2]
 
-  alias Canopy.{Agents, Channels, Documents, Fixtures, Hold, Runtime}
+  alias Canopy.{Agents, Channels, Documents, EnginePauses, Fixtures, Runtime}
   alias Canopy.OpenCode.ClientMock, as: OC
 
   # the agents and settings pages ask OpenCode for models in the background
@@ -93,12 +93,12 @@ defmodule CanopyWeb.CommandPaletteLiveTest do
     assert %{"t" => "repo"} = item(view, repository.id)
   end
 
-  test "data-context follows the page and the hold", %{conn: conn} do
+  test "data-context follows the page and the engine pauses", %{conn: conn} do
     %{channel: channel} = Fixtures.scenario()
 
     {:ok, view, _html} = live(conn, ~p"/channels/#{channel.id}")
 
-    assert %{"channel_id" => id, "repo_id" => repo_id, "hold" => false} =
+    assert %{"channel_id" => id, "repo_id" => repo_id, "paused" => false} =
              data(view, "data-context")
 
     assert id == channel.id
@@ -106,13 +106,12 @@ defmodule CanopyWeb.CommandPaletteLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/agents")
 
-    assert %{"channel_id" => nil, "path" => "/agents", "hold" => false} =
+    assert %{"channel_id" => nil, "path" => "/agents", "paused" => false} =
              data(view, "data-context")
 
-    :ok = Hold.engage("Insufficient balance")
-    on_exit(fn -> Hold.release() end)
+    {:ok, _} = EnginePauses.engage("opencode", %{kind: "billing", reason: "insufficient balance"})
     _ = :sys.get_state(view.pid)
-    assert %{"hold" => true} = data(view, "data-context")
+    assert %{"paused" => true} = data(view, "data-context")
   end
 
   test "channels, teams and playbooks created elsewhere show up without a reload", %{conn: conn} do

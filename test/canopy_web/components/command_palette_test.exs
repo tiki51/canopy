@@ -95,18 +95,18 @@ defmodule CanopyWeb.CommandPaletteTest do
              current_channel_id: "ch_1",
              current_repository_id: "rep_1",
              current_path: "/channels/ch_1",
-             hold: "Insufficient balance",
+             paused: true,
              sections: [%{id: "sec_1", name: "Payments"}]
            }) == %{
              channel_id: "ch_1",
              repo_id: "rep_1",
              path: "/channels/ch_1",
-             hold: true,
+             paused: true,
              sections: [%{id: "sec_1", name: "Payments"}]
            }
 
-    assert CommandPalette.context(%{current_path: "/agents", hold: nil}) ==
-             %{channel_id: nil, repo_id: nil, path: "/agents", hold: false, sections: []}
+    assert CommandPalette.context(%{current_path: "/agents", paused: false}) ==
+             %{channel_id: nil, repo_id: nil, path: "/agents", paused: false, sections: []}
   end
 
   test "sections/2 lists a repository's sections, or none" do

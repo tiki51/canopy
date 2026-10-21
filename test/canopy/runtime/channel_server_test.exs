@@ -1079,11 +1079,11 @@ defmodule Canopy.Runtime.ChannelServerTest do
     assert_receive {:prompted, "ses_reviewer", _}, 2_000
   end
 
-  test "a billing error engages the hold; held channels drop wakes with one note; release lets a message wake again",
+  test "a billing error pauses the engine; its wakes are dropped with one line; Release lets a message wake again",
        ctx do
     test_pid = self()
     sid = ctx.session.engine_session_id
-    Canopy.Hold.subscribe()
+    Canopy.EnginePauses.subscribe()
 
     stub(OC, :prompt_async, fn _dir, _sid, _body, _opts ->
       send(test_pid, :prompted)
@@ -1101,28 +1101,30 @@ defmodule Canopy.Runtime.ChannelServerTest do
     }
 
     emit(sid, :agent_error, %{error: error})
-    assert_receive {:hold, :engaged}, 2_000
-    assert Canopy.Hold.reason() =~ "Insufficient balance"
+    assert_receive {:engine_pauses, :changed}, 2_000
+    assert %{kind: "billing", resets_at: nil} = Canopy.EnginePauses.get("opencode")
+
+    assert_receive {:timeline,
+                    %{event_type: "engine_paused", payload: %{"engine" => "opencode"}}},
+                   2_000
 
     assert_receive {:timeline,
                     %{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}},
                    2_000
 
-    # while held: no prompt, one note, even across several wakes
+    refute_received {:timeline, %{event_type: "agent_error"}}
+
+    # while paused: no prompt, one line however many wakes are dropped
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "hello?")
     {:ok, _} = Runtime.post_user_message(ctx.channel.id, "anyone?")
     settle()
     refute_receive :prompted, 20
+    assert_received {:timeline, %{event_type: "engine_wake_dropped"}}
+    refute_received {:timeline, %{event_type: "engine_wake_dropped"}}
 
-    assert_receive {:timeline, %{event_type: "message", message: %{kind: "system", body: note}}},
-                   2_000
-
-    assert note =~ "on hold: Insufficient balance"
-    settle()
-    refute_receive {:timeline, %{event_type: "message", message: %{kind: "system"}}}, 20
-
-    :ok = Canopy.Hold.release()
-    {:ok, _} = Runtime.post_user_message(ctx.channel.id, "back")
+    :ok = Canopy.EnginePauses.resume("opencode")
+    assert_receive {:timeline, %{event_type: "engine_resumed", payload: %{"by" => "user"}}}, 2_000
+    # the agent that waited is nudged
     assert_receive :prompted, 2_000
   end
 

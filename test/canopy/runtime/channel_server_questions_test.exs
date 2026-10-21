@@ -286,8 +286,12 @@ defmodule Canopy.Runtime.ChannelServerQuestionsTest do
     [request] = QuestionRequests.pending_for_channel(ctx.channel.id)
 
     flush_timeline()
-    :ok = Canopy.Hold.engage("Insufficient balance")
-    on_exit(fn -> Canopy.Hold.release() end)
+
+    {:ok, _} =
+      Canopy.EnginePauses.engage(Canopy.Agents.effective_engine(ctx.agent), %{
+        kind: "billing",
+        reason: "insufficient balance"
+      })
 
     expect(OC, :reply_question, fn _dir, "que_1", _answers, _opts ->
       {:error, {:http, 404, %{}}}
