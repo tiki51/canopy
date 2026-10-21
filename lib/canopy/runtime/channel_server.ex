@@ -189,6 +189,9 @@ defmodule Canopy.Runtime.ChannelServer do
     # agent_id => [{target, wake, message}] caused by that agent's posts while
     # its turn was still running; released, merged per target, when it ends
     deferred: %{},
+    # agent_id => [{to_agent_id, delegation_id}] it delegated during that same
+    # turn: its deferred mention of such a delegate adds no wake of its own
+    delegated: %{},
     # engine_session_id => when its last turn ended with steers the engine
     # could not confirm (monotonic ms); a busy report soon after is adopted
     steered_ends: %{},
@@ -523,6 +526,7 @@ defmodule Canopy.Runtime.ChannelServer do
       | waiting: [],
         queues: %{},
         deferred: %{},
+        delegated: %{},
         paused: [],
         stopped?: true,
         chatter: 0,
@@ -687,7 +691,12 @@ defmodule Canopy.Runtime.ChannelServer do
     do: {:noreply, apply_switch(%{state | pending_switch?: true})}
 
   def handle_info({:timeline, %Timeline.Event{} = event}, state) do
-    state = event |> note_agent_post(state) |> then(&maybe_refresh_channel(event, &1))
+    state =
+      event
+      |> note_agent_post(state)
+      |> then(&maybe_refresh_channel(event, &1))
+      |> then(&note_delegation(event, &1))
+
     ctx = router_ctx(state)
 
     # Anything the user does resets the budget and drops whatever was held:
@@ -1001,9 +1010,13 @@ defmodule Canopy.Runtime.ChannelServer do
     end
 
     case Map.get(state.index, sid) do
+      # nobody to finish the turn for: what waited on its end goes out here
       nil ->
         Locks.release_turn(turn.session.id, Map.get(turn, :ref))
+
         %{state | turns: Map.delete(state.turns, sid)}
+        |> release_deferred(turn.agent_id)
+        |> release_addenda(sid, turn)
 
       who ->
         finish_turn(state, sid, who, outcome)
@@ -1413,30 +1426,143 @@ defmodule Canopy.Runtime.ChannelServer do
     %{state | deferred: Map.update(state.deferred, agent_id, entries, &(&1 ++ entries))}
   end
 
+  # A delegation an agent makes mid-turn wakes the delegate at once; the
+  # agent's posts in that turn wait for it to end (see release_deferred/2).
+  defp note_delegation(
+         %Timeline.Event{event_type: "delegation_created", ref_id: id, payload: p},
+         state
+       ) do
+    from = p["from_agent_id"]
+
+    if is_binary(from) and p["by"] != "user" and agent_busy?(state, from) do
+      entry = {p["to_agent_id"], id}
+      %{state | delegated: Map.update(state.delegated, from, [entry], &[entry | &1])}
+    else
+      state
+    end
+  end
+
+  defp note_delegation(_event, state), do: state
+
   # Releases the wakes an agent's posts caused during its turn: one wake per
   # target, built from the last post, carrying every attachment and a note
-  # about the earlier posts.
+  # about the earlier posts. A post mentioning an agent it delegated to in
+  # that turn (before or after the delegation) starts no turn of its own: the
+  # delegation is the wake. While that wake still waits, the post joins it (a
+  # line pointing at the message). Once the delegate is at work, the post
+  # waits for that turn to end and then wakes it only if the delegation is
+  # still open (see hand_to_delegate/4).
   defp release_deferred(state, agent_id) do
-    entries = Map.get(state.deferred, agent_id, [])
+    # the agent's session is compacting: the wakes go out once that ends
+    if agent_busy?(state, agent_id) do
+      state
+    else
+      entries = Map.get(state.deferred, agent_id, [])
+      delegated = Map.get(state.delegated, agent_id, [])
 
-    cond do
-      entries == [] ->
+      state = %{
         state
+        | deferred: Map.delete(state.deferred, agent_id),
+          delegated: Map.delete(state.delegated, agent_id)
+      }
 
-      # the agent's session is compacting: the wakes go out once that ends
-      agent_busy?(state, agent_id) ->
-        state
-
-      true ->
-        state = %{state | deferred: Map.delete(state.deferred, agent_id)}
-
-        entries
-        |> Enum.group_by(fn {target, _, _} -> target end)
-        |> Enum.sort_by(fn {_target, [{_, _, first} | _]} -> first.id end)
-        |> Enum.reduce(state, fn {target, group}, acc ->
-          wake_within_budget(acc, target, merge_wakes(group))
-        end)
+      entries
+      |> Enum.group_by(fn {target, _, _} -> target end)
+      |> Enum.sort_by(fn {_target, [{_, _, first} | _]} -> first.id end)
+      |> Enum.reduce(state, fn {target, group}, acc ->
+        case delegations_at_work(acc, target, delegated) do
+          [] -> wake_within_budget(acc, target, merge_wakes(group))
+          ids -> hand_to_delegate(acc, target, merge_wakes(group), ids)
+        end
+      end)
     end
+  end
+
+  # The delegations the poster made to the target in its turn, when their
+  # wake no longer waits anywhere (it has gone out); [] otherwise.
+  defp delegations_at_work(state, {:root, to_agent_id}, delegated) do
+    ids = for {^to_agent_id, id} <- delegated, do: id
+
+    if Enum.any?(pending_wakes(state, to_agent_id), &carries_any?(&1, ids)),
+      do: [],
+      else: ids
+  end
+
+  # The delegate's turn in flight keeps the wake until it ends (a light turn
+  # or a compaction included); with none, the delegate's turn already ended.
+  defp hand_to_delegate(state, {:root, agent_id} = target, wake, ids) do
+    entry = {target, wake, ids}
+
+    with %{engine_session_id: sid} <- Map.get(state.sessions, agent_id),
+         true <- Map.has_key?(state.turns, sid) do
+      update_turn(state, sid, &Map.update(&1, :addenda, [entry], fn a -> a ++ [entry] end))
+    else
+      _ -> deliver_addenda(state, [entry])
+    end
+  end
+
+  # A turn ended with a delegator's posts kept for it: they wake the agent as
+  # the mentions they were, unless every delegation a post was about is done
+  # (the delegate read the channel when it reported). A compaction or re-run
+  # still working the session keeps them until it ends; a stopped channel
+  # drops them.
+  defp release_addenda(%{stopped?: true} = state, _sid, _turn), do: state
+
+  defp release_addenda(state, sid, turn) do
+    case Map.get(turn, :addenda, []) do
+      [] ->
+        state
+
+      addenda ->
+        if Map.has_key?(state.turns, sid),
+          do:
+            update_turn(state, sid, &Map.update(&1, :addenda, addenda, fn a -> a ++ addenda end)),
+          else: deliver_addenda(state, addenda)
+    end
+  end
+
+  # The posts still about an open delegation, one wake per agent.
+  defp deliver_addenda(state, addenda) do
+    addenda
+    |> Enum.filter(fn {_target, _wake, ids} -> Enum.any?(ids, &Delegations.open?/1) end)
+    |> Enum.group_by(fn {target, _, _} -> target end, fn {_, wake, _} -> wake end)
+    |> Enum.reduce(state, fn {target, wakes}, acc -> deliver_addendum(acc, target, wakes) end)
+  end
+
+  # A wake already queued on the agent's session (it drains right after
+  # this) takes the posts along, as prompt/4 merges, so they make one turn.
+  # One at a time: a delegation wake keeps one message id per merge, so each
+  # post keeps its own. With none queued, the posts make one wake.
+  defp deliver_addendum(state, {:root, agent_id} = target, [first | rest] = wakes) do
+    with %{engine_session_id: sid} <- Map.get(state.sessions, agent_id),
+         [queued | more] <- Map.get(state.queues, sid, []) do
+      queued = Enum.reduce(wakes, queued, &merge_wake(&2, &1))
+      %{state | queues: Map.put(state.queues, sid, [queued | more])}
+    else
+      _ -> wake_within_budget(state, target, Enum.reduce(rest, first, &merge_wake(&2, &1)))
+    end
+  end
+
+  defp carries_any?(wake, ids) when is_map(wake),
+    do: Enum.any?(delegation_ids(wake), &(&1 in ids))
+
+  defp carries_any?(_wake, _ids), do: false
+
+  # Every wake still waiting for an agent: in line for the channel, held by
+  # the chatter budget, or queued on its session.
+  defp pending_wakes(state, agent_id) do
+    target = {:root, agent_id}
+
+    in_line =
+      for {^target, wake} <- state.waiting ++ List.wrap(state.paused), do: wake
+
+    queued =
+      case Map.get(state.sessions, agent_id) do
+        %{engine_session_id: sid} -> Map.get(state.queues, sid, [])
+        _ -> []
+      end
+
+    in_line ++ queued
   end
 
   defp merge_wakes([{_target, wake, _message}]), do: wake
@@ -2100,6 +2226,9 @@ defmodule Canopy.Runtime.ChannelServer do
       message_ids: [],
       # messages the user steered into the turn (see steer/3), in order
       steers: [],
+      # [{target, wake, delegation_ids}]: a delegator's posts that mentioned
+      # this agent while it worked (see hand_to_delegate/4), for when it ends
+      addenda: [],
       # the engine message ids of the turn's first and last model calls, so
       # the transcript can find the turn ({first, last}, nil before any)
       engine_message_ids: nil,
@@ -2989,6 +3118,11 @@ defmodule Canopy.Runtime.ChannelServer do
         state = send_rerun(state, session, who, turn, rerun)
 
         state = release_deferred(state, who.agent_id)
+
+        # before the queue drains, so only a compaction or the re-run can be
+        # working the session and keep them; a wake queued there takes them
+        # along instead of following them as a second turn
+        state = release_addenda(state, sid, turn)
 
         state =
           cond do

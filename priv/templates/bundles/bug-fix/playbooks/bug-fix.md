@@ -41,8 +41,8 @@ Ground rules for the whole run:
 - The channel task holds the bug: title "Bug: <symptom>", description with repro steps and current
   status. Keep it current.
 - Give each step to its owner with `canopy_delegate_task`. A delegation must stand alone: the bug, what
-  earlier steps found (`path:line`, failing test name, command), and what done looks like. Don't also
-  @mention the delegate.
+  earlier steps found (`path:line`, failing test name, command), and what done looks like. A post about
+  it @mentions the delegate; that doesn't wake them again while they work on it.
 - Advance with `canopy_playbook_advance` only when the step's "Done when" holds, and put the evidence in
   `result`. Later steps and the user read it there.
 - Test runs take the `tests` lock (`canopy_lock_acquire`).
