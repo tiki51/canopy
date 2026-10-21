@@ -45,7 +45,10 @@ defmodule Canopy.MCP.Tools.MessageSend do
   end
 
   defp post(channel, ctx, text, attachments) do
-    case Messages.post_agent_message(channel.id, ctx.agent.id, text, attachments: attachments) do
+    case Messages.post_agent_message(channel.id, ctx.agent.id, text,
+           attachments: attachments,
+           fallback: Canopy.Fallback.marker(ctx.session)
+         ) do
       {:ok, message} ->
         {:ok, message}
 

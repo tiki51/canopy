@@ -28,9 +28,6 @@ defmodule Canopy.Settings.Setting do
     # the longest an agent may keep a lock it asked to hold across turns
     # before Canopy frees it (Canopy.Locks)
     field :lock_hold_minutes, :integer, default: 30
-    # a global stop on agent activity (Canopy.Hold): why, and since when
-    field :hold_reason, :string
-    field :hold_at, :utc_datetime_usec
     # the agent the Costs page asks to review spend; nil until the user picks one
     field :auditor_agent_id, :string
     # overrides the collaboration preamble Canopy ships; nil/"" uses the default
@@ -66,6 +63,11 @@ defmodule Canopy.Settings.Setting do
     field :codex_light_effort, :string
     field :opencode_light_provider, :string
     field :opencode_light_model, :string
+    # the model an engine's agents move to when it pauses at a usage limit
+    # (`Canopy.Fallback`), as "<engine>:<model>"; nil: no fallback, they wait
+    field :claude_fallback, :string
+    field :codex_fallback, :string
+    field :opencode_fallback, :string
     # when first-run setup was finished or skipped; nil sends `/` to /welcome.
     # Set only by `Canopy.Settings.mark_onboarded/0`, never cast.
     field :onboarded_at, :utc_datetime_usec
@@ -98,8 +100,6 @@ defmodule Canopy.Settings.Setting do
       :interrupt_on_mention,
       :question_wait_minutes,
       :lock_hold_minutes,
-      :hold_reason,
-      :hold_at,
       :auditor_agent_id,
       :collaboration_prompt,
       :claude_binary,
@@ -120,7 +120,10 @@ defmodule Canopy.Settings.Setting do
       :codex_default_model,
       :codex_default_effort,
       :codex_light_model,
-      :codex_light_effort
+      :codex_light_effort,
+      :claude_fallback,
+      :codex_fallback,
+      :opencode_fallback
     ])
     |> update_change(:claude_binary, &trim_or_nil/1)
     |> update_change(:codex_binary, &trim_or_nil/1)
@@ -138,6 +141,9 @@ defmodule Canopy.Settings.Setting do
     |> update_change(:codex_default_effort, &trim_or_nil/1)
     |> update_change(:codex_light_model, &trim_or_nil/1)
     |> update_change(:codex_light_effort, &trim_or_nil/1)
+    |> update_change(:claude_fallback, &trim_or_nil/1)
+    |> update_change(:codex_fallback, &trim_or_nil/1)
+    |> update_change(:opencode_fallback, &trim_or_nil/1)
     |> update_change(:claude_config_dir, &normalize_config_dir/1)
     |> update_change(:codex_config_dir, &normalize_config_dir/1)
     |> validate_required([
@@ -175,6 +181,18 @@ defmodule Canopy.Settings.Setting do
     |> validate_inclusion(:codex_light_effort, Agent.efforts("codex"))
     |> validate_engine_models(@default_model_fields)
     |> validate_engine_models(@light_model_fields)
+    |> validate_fallback(:claude_fallback)
+    |> validate_fallback(:codex_fallback)
+    |> validate_fallback(:opencode_fallback)
+  end
+
+  defp validate_fallback(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      case Canopy.Fallback.error(value) do
+        nil -> []
+        message -> [{field, message}]
+      end
+    end)
   end
 
   # The same rules as an agent's own model (`Agent.model_errors/3`): the

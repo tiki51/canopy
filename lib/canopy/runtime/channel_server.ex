@@ -83,7 +83,7 @@ defmodule Canopy.Runtime.ChannelServer do
   says so, and the agent can call `canopy_escalate`: the turn then ends
   without a reply and the same wake runs again on main, ahead of anything
   else waiting (it is the same work continuing), already counted against the
-  chatter budget, still subject to the hold and the spend limit. A light turn
+  chatter budget, still subject to an engine pause and the spend limit. A light turn
   that fails is re-run once on main the same way. A light turn takes no
   steered messages: they wait and run on main. With routing off (every
   agent, by default) every wake runs on main and nothing above applies.
@@ -102,6 +102,8 @@ defmodule Canopy.Runtime.ChannelServer do
     Channels,
     Costs,
     Delegations,
+    EnginePauses,
+    Fallback,
     GlobalPermissions,
     Locks,
     Messages,
@@ -182,8 +184,6 @@ defmodule Canopy.Runtime.ChannelServer do
     pending_switch?: false,
     # wakes waiting for the channel's one turn at a time (serialize_turns)
     waiting: [],
-    # the hold reason this channel already posted a note for (one note per hold)
-    hold_noted: nil,
     # the spend limit this channel already recorded as reached (one line per limit)
     limit_noted: nil,
     # agent_id => [{target, wake, message}] caused by that agent's posts while
@@ -386,10 +386,30 @@ defmodule Canopy.Runtime.ChannelServer do
     # Rebuilding turns from sessions marked busy would need the engine's word
     # that they still run; the gap is accepted. Child sessions, left from when
     # an agent's delegations ran in sessions of their own, are never woken.
+    #
+    # An agent with a fallback root as well loads the one it routes to now:
+    # `state.sessions` holds one session per agent.
     state.channel.id
     |> AgentSessions.list_for_channel()
     |> Enum.filter(&is_nil(&1.parent_session_id))
-    |> Enum.reduce(state, &put_root(&2, &1))
+    |> Enum.group_by(& &1.agent_id)
+    |> Enum.reduce(state, fn {agent_id, roots}, acc ->
+      put_root(acc, routed_root(agent_id, roots))
+    end)
+  end
+
+  defp routed_root(_agent_id, [root]), do: root
+
+  defp routed_root(agent_id, roots) do
+    primary = Enum.find(roots, &is_nil(&1.fallback_of)) || hd(roots)
+
+    with %{} = agent <- Agents.get(agent_id),
+         {:fallback, %{engine: engine}} <- Fallback.route(agent),
+         %{} = root <- Enum.find(roots, &(&1.fallback_of && &1.engine == engine)) do
+      root
+    else
+      _ -> primary
+    end
   end
 
   @impl true
@@ -447,19 +467,25 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # Drops the agent's root session in this channel so its next wake starts a
   # fresh engine session: the cure for a poisoned or bloated context.
+  # Both roots go: the primary and a fallback one.
   def handle_call({:reset_session, agent_id, by}, _from, state) do
-    session =
-      Map.get(state.sessions, agent_id) || AgentSessions.get_root(state.channel.id, agent_id)
+    roots =
+      [Map.get(state.sessions, agent_id) | AgentSessions.list_roots(state.channel.id, agent_id)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq_by(& &1.id)
 
     cond do
-      is_nil(session) ->
+      roots == [] ->
         {:reply, {:error, :no_session}, state}
 
-      Map.has_key?(state.turns, session.engine_session_id) ->
+      Enum.any?(roots, &Map.has_key?(state.turns, &1.engine_session_id)) ->
         {:reply, {:error, :busy}, state}
 
       true ->
-        {:reply, :ok, drop_session(state, session, %{"by" => by})}
+        # one line for the reset, with the session the agent is on now
+        [first | rest] = roots
+        state = drop_session(state, first, %{"by" => by})
+        {:reply, :ok, Enum.reduce(rest, state, &drop_session(&2, &1, nil))}
     end
   end
 
@@ -1087,10 +1113,11 @@ defmodule Canopy.Runtime.ChannelServer do
       stale_grant?(state, target, text) ->
         state
 
-      # A global hold (billing): drop the wake and say so once per channel.
-      # The user's next message, after releasing the hold, wakes agents again.
-      Canopy.Hold.active?() ->
-        note_hold(state)
+      # Its engine is paused at a limit and it has no usable fallback: the
+      # wake is dropped, said once per pause, and the Auto nudge after the
+      # reset picks it up.
+      match?({:wait, _}, route = engine_route(target)) ->
+        note_waiting(state, target_agent_id(target), elem(route, 1), :dropped)
 
       # The channel has spent its limit: drop the wake and say so once per limit.
       # Raising the limit and posting again wakes agents.
@@ -1185,21 +1212,156 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
-  defp note_hold(state) do
-    reason = Canopy.Hold.reason()
+  # -- Engine pauses ------------------------------------------------------------
+  #
+  # An engine paused at a usage or billing limit (`Canopy.EnginePauses`):
+  # its agents run on their fallback model (`Canopy.Fallback`) or wait. Each
+  # (pause, agent, channel) gets one line per state.
 
-    if state.hold_noted == reason do
-      state
-    else
-      {:ok, _} =
-        Messages.post_user_note(
-          state.channel.id,
-          Users.local().id,
-          "Agent runs are on hold: #{reason}. Release the hold in the banner, then reply to continue."
-        )
-
-      %{state | hold_noted: reason}
+  # Where the target agent's next turn goes, or nil for a target that is not
+  # an agent.
+  defp engine_route(target) do
+    case target_agent_id(target) && Agents.get(target_agent_id(target)) do
+      nil -> nil
+      agent -> Fallback.route(agent)
     end
+  end
+
+  # The agent waits for the pause: its row, its Auto nudge, and (once per
+  # row) its line: `:dropped` for a wake that arrived while paused, or
+  # `{:paused, unavailable}` for the turn that hit the limit.
+  defp note_waiting(state, agent_id, %{engine: engine}, line) do
+    case EnginePauses.active(engine) do
+      nil ->
+        state
+
+      pause ->
+        {note, row} = EnginePauses.mark(pause, agent_id, state.channel.id, "waiting")
+        row = EnginePauses.ensure_nudge(pause, row)
+
+        case line do
+          :dropped when note == :note ->
+            EnginePauses.record(state.channel.id, agent_id, "engine_wake_dropped", pause, %{})
+
+          :dropped ->
+            :ok
+
+          # the turn that hit the limit says so; the first wake dropped after
+          # it still gets its own line
+          {:paused, unavailable} ->
+            EnginePauses.record(state.channel.id, agent_id, "engine_paused", pause, %{
+              "fallback_unavailable" => unavailable
+            })
+
+            EnginePauses.unnote(row)
+        end
+
+        unless agent_busy?(state, agent_id),
+          do: broadcast(state, {:agent_status, agent_id, :idle})
+
+        state
+    end
+  end
+
+  # The agent works on its fallback while its engine is paused: its row and
+  # (once per row) the `engine_fallback` line. `hit` is true for the agent
+  # whose own turn reported the limit, false for a wake routed around a
+  # pause already in place.
+  defp note_fallback(state, agent, target, hit?, new_session?) do
+    from_engine = Agents.effective_engine(agent)
+
+    case EnginePauses.active(from_engine) do
+      nil ->
+        state
+
+      pause ->
+        case EnginePauses.mark(pause, agent.id, state.channel.id, "fallback") do
+          {:note, _row} ->
+            EnginePauses.record(state.channel.id, agent.id, "engine_fallback", pause, %{
+              "from_engine" => from_engine,
+              "from_model" => Agents.effective_model(agent).model_id |> model_ref(agent),
+              "to_engine" => target.engine,
+              "to_model" => Fallback.model_ref(target),
+              "new_session" => new_session?,
+              "hit" => hit?
+            })
+
+          {:noted, _row} ->
+            :ok
+        end
+
+        state
+    end
+  end
+
+  # An OpenCode model id as payloads carry it: provider/model.
+  defp model_ref(nil, _agent), do: nil
+
+  defp model_ref(model, agent) do
+    case Agents.effective_model(agent) do
+      %{model_provider: provider} when is_binary(provider) -> provider <> "/" <> model
+      _ -> model
+    end
+  end
+
+  # A turn reported a limit: its own session's engine pauses (a fallback
+  # turn pauses the fallback's engine). The agent then reruns the wake on its
+  # fallback, or waits with a nudge; a fallback turn never reruns, and the
+  # agent's rows on its own engine's pause flip to waiting. The generic
+  # error line is not written.
+  defp handle_limit(state, event, who, limit, reason) do
+    sid = event.session_id
+    turn = Map.fetch!(state.turns, sid)
+    engine = turn.session.engine
+    {:ok, _pause} = EnginePauses.engage(engine, limit)
+    agent = Agents.get(who.agent_id)
+    wake = Map.get(turn, :limit_wake)
+
+    {state, rerun} =
+      cond do
+        is_nil(agent) ->
+          {state, nil}
+
+        from = turn.session.fallback_of ->
+          :ok = EnginePauses.flip_to_waiting(from, agent.id)
+
+          state =
+            case EnginePauses.get(from) do
+              nil ->
+                state
+
+              entry ->
+                label = with %{} = t <- Fallback.resolve(agent), do: Fallback.label(t)
+                note_waiting(state, agent.id, entry, {:paused, label})
+            end
+
+          {state, nil}
+
+        true ->
+          case Fallback.route(agent) do
+            # an adopted turn has no wake to run again: the next wake routes
+            {:fallback, _target} when is_nil(wake) ->
+              {state, nil}
+
+            # noted once the rerun is allowed (send_limit_rerun/5), so a
+            # stopped or over-budget channel isn't told the agent carried on
+            {:fallback, target} ->
+              existing = AgentSessions.get_fallback_root(state.channel.id, agent.id)
+              new? = not match?(%{engine: e} when e == target.engine, existing)
+              {state, {:limit, engine, limit, {agent, target, new?}}}
+
+            {:wait, entry} ->
+              {note_waiting(state, agent.id, entry, {:paused, Fallback.unavailable_label(agent)}),
+               nil}
+
+            {:primary, _engine} ->
+              {state, nil}
+          end
+      end
+
+    turn = turn |> Map.put(:limit, limit) |> Map.put(:limit_rerun, rerun)
+    state = %{state | turns: Map.put(state.turns, sid, turn)}
+    finish_turn(state, sid, who, {:error, reason})
   end
 
   # An agent already working stays shown as busy; its waiting wake follows
@@ -1931,6 +2093,9 @@ defmodule Canopy.Runtime.ChannelServer do
       {:ok, session, state} ->
         prompt(state, session, agent_id, text)
 
+      {:error, {:fallback, reason}, state} ->
+        fallback_failed(state, agent_id, reason)
+
       {:error, reason, state} ->
         record_error(state, agent_id, "could not start session: #{inspect(reason)}")
     end
@@ -1968,7 +2133,7 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   defp send_prompt(state, session, agent_id, wake) do
-    case lock_grants(session, wake) do
+    case lock_grants(state, session, wake) do
       :drop ->
         Logger.info(
           "channel #{state.channel.name}: dropped a lock wake for #{agent_name(agent_id)}: the lock passed on before it could start"
@@ -1984,15 +2149,39 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  defp send_prompt(state, session, agent_id, wake, locks, claims) do
+    # Re-routed as it goes out, so a wake that queued or waited in line
+    # before a pause (or a lift) lands where the agent runs now.
+    agent = Agents.get!(agent_id)
+
+    case slot(session, agent) do
+      {:wait, entry} ->
+        note_waiting(state, agent_id, entry, :dropped)
+
+      :reroute ->
+        do_wake(state, {:root, agent_id}, wake)
+
+      {:ok, view, nil} ->
+        send_prompt(state, session, agent_id, wake, locks, claims, view, nil)
+
+      {:ok, view, target} ->
+        # a session never prompted yet is the one this wake starts
+        state = note_fallback(state, agent, target, false, is_nil(session.brief_seen_at))
+        marker = Fallback.marker_for(target, session.fallback_of)
+        send_prompt(state, session, agent_id, wake, locks, claims, view, marker)
+    end
+  end
+
   defp send_prompt(
          state,
          session,
          agent_id,
          %{text: text, trigger: trigger} = wake,
          locks,
-         claims
+         claims,
+         agent,
+         fallback
        ) do
-    agent = Agents.get!(agent_id)
     Canopy.Notes.ensure_workspace(state.repository.path)
     {mod, es, state} = engine_of(state, session)
     es = mod.prepare(ctx(state), es)
@@ -2027,11 +2216,66 @@ defmodule Canopy.Runtime.ChannelServer do
           profile: profile,
           route_rule: rule,
           kinds: kinds,
-          wake: wake
+          wake: wake,
+          fallback: fallback,
+          view: if(fallback, do: agent)
         )
 
       {:error, reason} ->
-        record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
+        if fallback,
+          do: fallback_failed(state, agent_id, reason),
+          else: record_error(state, agent_id, "prompt failed: #{inspect(reason)}")
+    end
+  end
+
+  # Whether the session is the slot the agent routes to now: `{:ok, agent,
+  # nil}` on its own engine, `{:ok, view, target}` on its fallback (the view
+  # is the agent as the fallback's adapter sees it), `{:wait, pause}` while
+  # it can only wait, `:reroute` for the other slot.
+  defp slot(session, agent) do
+    case Fallback.route(agent) do
+      {:wait, entry} ->
+        {:wait, entry}
+
+      {:fallback, %{engine: engine} = target} ->
+        if session.fallback_of && session.engine == engine,
+          do: {:ok, fallback_view(agent, target), target},
+          else: :reroute
+
+      {:primary, _engine} ->
+        if is_nil(session.fallback_of), do: {:ok, agent, nil}, else: :reroute
+    end
+  end
+
+  # The agent as the fallback's adapter sees it: a plain agent on the
+  # target's engine and model, at that engine's default effort, unrouted.
+  defp fallback_view(agent, target) do
+    %{
+      agent
+      | engine: target.engine,
+        model_provider: target.provider,
+        model_id: target.model,
+        effort: nil,
+        routing_enabled: false
+    }
+  end
+
+  # The fallback could not start (its session or its prompt failed): the
+  # agent waits as if it had none, saying which fallback couldn't be used.
+  defp fallback_failed(state, agent_id, reason) do
+    Logger.warning(
+      "channel #{state.channel.name}: #{agent_name(agent_id)}'s fallback failed: #{inspect(reason)}"
+    )
+
+    agent = Agents.get!(agent_id)
+
+    case EnginePauses.get(Agents.effective_engine(agent)) do
+      nil ->
+        record_error(state, agent_id, "fallback failed: #{inspect(reason)}")
+
+      entry ->
+        label = with %{} = t <- Fallback.resolve(agent), do: Fallback.label(t)
+        note_waiting(state, agent_id, entry, {:paused, label})
     end
   end
 
@@ -2130,7 +2374,7 @@ defmodule Canopy.Runtime.ChannelServer do
   # lease, a Force release, used and released by an earlier turn) is left
   # out, and a wake that was only the grant is dropped when nothing is left.
   # Returns the text to add and the claims the turn takes over.
-  defp lock_grants(session, wake) do
+  defp lock_grants(state, session, wake) do
     case lock_claim_ids(wake) do
       [] ->
         {"", []}
@@ -2138,12 +2382,26 @@ defmodule Canopy.Runtime.ChannelServer do
       ids ->
         lock? = Map.get(wake, :trigger) == "lock"
 
-        case Locks.pending_grants(session.id, ids) do
-          [] when lock? -> :drop
-          [] -> {"", []}
-          claims -> {Prompts.lock_granted(claims, standalone?: lock?), Enum.map(claims, & &1.id)}
+        case Locks.pending_grants(root_ids(state, session), ids) do
+          [] when lock? ->
+            :drop
+
+          [] ->
+            {"", []}
+
+          claims ->
+            # granted to the agent's other root (before a reroute): this one takes it
+            :ok = Locks.move_grants(claims, session.id)
+            {Prompts.lock_granted(claims, standalone?: lock?), Enum.map(claims, & &1.id)}
         end
     end
+  end
+
+  # The agent's root sessions in the channel, its own and its fallback: a
+  # lock claim queued on one is the agent's, whichever the wake runs on.
+  defp root_ids(state, %{agent_id: agent_id} = session) do
+    ids = state.channel.id |> AgentSessions.list_roots(agent_id) |> Enum.map(& &1.id)
+    Enum.uniq([session.id | ids])
   end
 
   # The engine accepted a prompt: the session is busy until it reports done.
@@ -2240,6 +2498,13 @@ defmodule Canopy.Runtime.ChannelServer do
       route_rule: Keyword.get(opts, :route_rule),
       kinds: Keyword.get(opts, :kinds) || [{Routing.kind_for_trigger(trigger), false}],
       wake: if(profile == :light, do: wake),
+      # the wake, kept so a turn that hits a usage limit can rerun it on the
+      # agent's fallback (handle_limit/5)
+      limit_wake: if(wake && !Map.get(wake, :limit_rerun), do: wake),
+      # on the agent's fallback: the marker its messages carry, and the agent
+      # as the fallback's adapter saw it
+      fallback: Keyword.get(opts, :fallback),
+      view: Keyword.get(opts, :view),
       wake_facts: wake && Map.take(wake, [:wake_reason, :ack]),
       fallback?: wake != nil and Map.get(wake, :fallback, false) == true,
       model_switch?:
@@ -2249,7 +2514,7 @@ defmodule Canopy.Runtime.ChannelServer do
         )
     }
 
-    {model, _source} = turn_model(agent_id, profile)
+    {model, _source} = turn_model(agent_id, profile, Keyword.get(opts, :view))
 
     card =
       Map.put(Activity.new(System.system_time(:millisecond)), :model, card_model(model, profile))
@@ -2435,7 +2700,7 @@ defmodule Canopy.Runtime.ChannelServer do
   defp stale_grant?(state, target, %{trigger: "lock"} = wake) do
     case Map.get(state.sessions, target_agent_id(target)) do
       nil -> false
-      session -> Locks.pending_grants(session.id, lock_claim_ids(wake)) == []
+      session -> Locks.pending_grants(root_ids(state, session), lock_claim_ids(wake)) == []
     end
   end
 
@@ -2469,13 +2734,41 @@ defmodule Canopy.Runtime.ChannelServer do
   # effective engine changed since (the default engine changed, or the agent
   # switched), the old session is dropped with a timeline line and a fresh
   # one starts on the new engine. Memory and the channel's history carry
-  # over, as after a reset. A session with a turn in flight is kept until the
-  # turn ends (the wake queues on it, and the queue drains through here).
+  # over, as after a reset.
+  #
+  # While its engine is paused (`Canopy.Fallback.route/1`), the agent runs
+  # in a second root session on its fallback's engine; back on its own
+  # engine, that one is dropped quietly. A session with a turn in flight
+  # always wins, whatever the route: the wake queues on it, and the queue
+  # drains through here (and `send_prompt/6` re-routes it), so an agent
+  # never runs two turns at once.
   defp ensure_root_session(state, agent_id) do
     agent = Agents.get!(agent_id)
-    engine = Agents.effective_engine(agent)
+    current = Map.get(state.sessions, agent_id)
 
-    case Map.get(state.sessions, agent_id) || AgentSessions.get_root(state.channel.id, agent_id) do
+    cond do
+      current && Map.has_key?(state.turns, current.engine_session_id) ->
+        {:ok, current, put_root(state, current)}
+
+      match?({:fallback, _}, route = Fallback.route(agent)) ->
+        ensure_fallback_root(state, agent, elem(route, 1))
+
+      true ->
+        ensure_primary_root(state, agent)
+    end
+  end
+
+  defp ensure_primary_root(state, agent) do
+    engine = Agents.effective_engine(agent)
+    state = drop_fallback_root(state, agent.id)
+
+    primary =
+      case Map.get(state.sessions, agent.id) do
+        %AgentSessions.AgentSession{fallback_of: nil} = session -> session
+        _ -> AgentSessions.get_root(state.channel.id, agent.id)
+      end
+
+    case primary do
       %AgentSessions.AgentSession{engine: ^engine} = session ->
         {:ok, session, put_root(state, session)}
 
@@ -2495,11 +2788,64 @@ defmodule Canopy.Runtime.ChannelServer do
     end
   end
 
+  # The fallback root on the target's engine; one left on another engine
+  # (the fallback changed) is replaced quietly.
+  defp ensure_fallback_root(state, agent, target) do
+    from = Agents.effective_engine(agent)
+
+    case AgentSessions.get_fallback_root(state.channel.id, agent.id) do
+      %AgentSessions.AgentSession{engine: engine} = session when engine == target.engine ->
+        {:ok, session, put_root(state, session)}
+
+      other ->
+        state = if other, do: forget_session(state, other), else: state
+
+        case create_root_session(state, fallback_view(agent, target), target.engine, nil,
+               fallback_of: from
+             ) do
+          {:ok, _session, _state} = ok -> ok
+          {:error, reason, state} -> {:error, {:fallback, reason}, state}
+        end
+    end
+  end
+
+  # Back on its own engine: the idle fallback root goes, with no line (the
+  # `engine_resumed` line already says the agent is back).
+  defp drop_fallback_root(state, agent_id) do
+    case AgentSessions.get_fallback_root(state.channel.id, agent_id) do
+      nil ->
+        state
+
+      session ->
+        if Map.has_key?(state.turns, session.engine_session_id),
+          do: state,
+          else: forget_session(state, session)
+    end
+  end
+
+  defp forget_session(state, session) do
+    {:ok, _} = AgentSessions.delete(session)
+
+    sessions =
+      case Map.get(state.sessions, session.agent_id) do
+        %{id: id} when id == session.id -> Map.delete(state.sessions, session.agent_id)
+        _ -> state.sessions
+      end
+
+    %{
+      state
+      | sessions: sessions,
+        index: Map.delete(state.index, session.engine_session_id),
+        queues: Map.delete(state.queues, session.engine_session_id)
+    }
+  end
+
   # Creates the root session on `engine`. One replacing a session of another
   # engine drops it only once the new engine made its session, so a new
   # engine that cannot start one leaves the old row (and the next wake tries
-  # again) rather than a line saying it moved.
-  defp create_root_session(state, agent, engine, replacing) do
+  # again) rather than a line saying it moved. `fallback_of:` makes it a
+  # fallback root standing in for that engine.
+  defp create_root_session(state, agent, engine, replacing, opts \\ []) do
     title = "##{state.channel.name} · @#{agent.name}"
     {mod, es, state} = engine_of(state, %{engine: engine})
 
@@ -2511,7 +2857,8 @@ defmodule Canopy.Runtime.ChannelServer do
                Map.merge(attrs, %{
                  channel_id: state.channel.id,
                  agent_id: agent.id,
-                 engine: engine
+                 engine: engine,
+                 fallback_of: Keyword.get(opts, :fallback_of)
                })
              ) do
           {:ok, session} -> {:ok, session, put_root(state, session)}
@@ -2544,11 +2891,24 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   # Drops a root session (a reset, or an engine change): its row goes, a
-  # `session_reset` line records why, and the next wake starts fresh. The
-  # engine keeps the session itself, enough to read its transcript later.
+  # `session_reset` line records why (none for a nil payload: the agent's
+  # other root, dropped by the same reset), and the next wake starts fresh.
+  # The engine keeps the session itself, enough to read its transcript later.
   defp drop_session(state, session, payload) do
     {:ok, _} = AgentSessions.delete(session)
 
+    if payload, do: record_session_reset(state, session, payload)
+
+    %{
+      state
+      | sessions: Map.delete(state.sessions, session.agent_id),
+        index: Map.delete(state.index, session.engine_session_id),
+        queues: Map.delete(state.queues, session.engine_session_id),
+        telemetry: Map.delete(state.telemetry, session.agent_id)
+    }
+  end
+
+  defp record_session_reset(state, session, payload) do
     {:ok, _} =
       Timeline.record(%{
         channel_id: state.channel.id,
@@ -2562,14 +2922,6 @@ defmodule Canopy.Runtime.ChannelServer do
             "directory" => state.repository.path
           })
       })
-
-    %{
-      state
-      | sessions: Map.delete(state.sessions, session.agent_id),
-        index: Map.delete(state.index, session.engine_session_id),
-        queues: Map.delete(state.queues, session.engine_session_id),
-        telemetry: Map.delete(state.telemetry, session.agent_id)
-    }
   end
 
   defp rename_session(state, old, new) do
@@ -2924,11 +3276,15 @@ defmodule Canopy.Runtime.ChannelServer do
         finish_turn(state, event.session_id, who, :interrupted)
 
       true ->
-        # the error's name decides for Codex (`usageLimitExceeded`), whatever its wording
-        if is_map(error) and Canopy.Hold.billing_error?(error),
-          do: Canopy.Hold.engage(error_message(error))
+        reason = error_message(error)
 
-        record_agent_error(state, event, who, error_message(error))
+        # the adapter's own reading of a limit, else the old wording check
+        # (the error's name decides for Codex, whatever its wording)
+        case Map.get(event.data, :limit) || EnginePauses.generic_limit(error) ||
+               EnginePauses.generic_limit(reason) do
+          nil -> record_agent_error(state, event, who, reason)
+          limit -> handle_limit(state, event, who, limit, reason)
+        end
     end
   end
 
@@ -2946,7 +3302,6 @@ defmodule Canopy.Runtime.ChannelServer do
   defp handle_execution(_event, _who, state), do: state
 
   defp record_agent_error(state, event, who, reason) do
-    if Canopy.Hold.billing_error?(reason), do: Canopy.Hold.engage(reason)
     thread_id = state.turns |> Map.get(event.session_id, %{}) |> Map.get(:thread_id)
 
     {:ok, _} =
@@ -2989,6 +3344,9 @@ defmodule Canopy.Runtime.ChannelServer do
         # model routing: a light turn that escalated, or failed, runs its
         # wake again on main (nil for every other turn)
         rerun = light_rerun(turn, outcome)
+        # a usage or billing limit (handle_limit/5): the engine paused, and the
+        # wake reruns on the fallback or waits for the reset
+        limit? = is_map(Map.get(turn, :limit))
 
         {:ok, _} =
           case outcome do
@@ -2996,8 +3354,9 @@ defmodule Canopy.Runtime.ChannelServer do
             ok when ok in [:ok, :stopped, :interrupted] ->
               AgentSessions.set_status(session, "idle")
 
-            # the main model takes the wake over: not an error left standing
-            {:error, _reason} when rerun != nil ->
+            # the main model takes the wake over, or the engine paused at a
+            # limit: not an error left standing
+            {:error, _reason} when rerun != nil or limit? ->
               AgentSessions.set_status(session, "idle")
 
             {:error, reason} ->
@@ -3012,11 +3371,13 @@ defmodule Canopy.Runtime.ChannelServer do
           |> Activity.drop_trailing_text()
 
         # a wake that runs again on main gets its reply from there
-        reply_id = if is_nil(rerun) and reply_text(turn), do: Canopy.ID.generate("msg")
+        reply_id =
+          if is_nil(rerun) and not limit? and reply_text(turn), do: Canopy.ID.generate("msg")
+
         message_ids = Enum.reverse(Map.get(turn, :message_ids, [])) ++ List.wrap(reply_id)
 
         profile = Map.get(turn, :profile, :main)
-        {model, model_source} = turn_model(who.agent_id, profile)
+        {model, model_source} = turn_model(who.agent_id, profile, Map.get(turn, :view))
         thread_id = Map.get(turn, :thread_id)
 
         # The rows' details go in with the summary, so a view that opens a
@@ -3071,6 +3432,7 @@ defmodule Canopy.Runtime.ChannelServer do
                 else: &1
             )
             |> Map.merge(routing_payload(turn))
+            |> Map.merge(limit_payload(turn))
         }
 
         {:ok, %{summary: summary}} =
@@ -3088,6 +3450,7 @@ defmodule Canopy.Runtime.ChannelServer do
         note_light_turn(state, turn, who, outcome)
         # checked once the turn's own cost is in
         {rerun, state} = rerun_allowed(state, rerun)
+        {limit_rerun, state} = rerun_allowed(state, Map.get(turn, :limit_rerun))
 
         # The final text is the reply only when the agent said nothing through
         # the tools; after a message_send it is a recap, kept on the card.
@@ -3098,7 +3461,13 @@ defmodule Canopy.Runtime.ChannelServer do
         Locks.release_turn(session.id, Map.get(turn, :ref))
         if awaiting?(turn), do: Locks.touch(state.repository.id, session.id)
 
-        status = if rerun, do: :busy, else: status_after_turn(state, who, outcome)
+        status =
+          cond do
+            rerun || limit_rerun -> :busy
+            limit? -> :idle
+            true -> status_after_turn(state, who, outcome)
+          end
+
         broadcast(state, {:agent_status, who.agent_id, status})
         broadcast_turn_thread(state, who.agent_id, nil)
         if Map.get(turn, :steers, []) != [], do: broadcast(state, {:steer, who.agent_id, nil})
@@ -3116,6 +3485,7 @@ defmodule Canopy.Runtime.ChannelServer do
         # the re-run goes out before the wakes this turn's posts caused, which
         # then wait for it like for a compaction
         state = send_rerun(state, session, who, turn, rerun)
+        state = send_limit_rerun(state, session, who, turn, limit_rerun)
 
         state = release_deferred(state, who.agent_id)
 
@@ -3139,7 +3509,7 @@ defmodule Canopy.Runtime.ChannelServer do
           end
 
         # a light turn's error the main model takes over is not the run's error
-        note_run_turn(state, turn, if(rerun, do: :ok, else: outcome))
+        note_run_turn(state, turn, if(rerun || limit?, do: :ok, else: outcome))
     end
   end
 
@@ -3147,8 +3517,8 @@ defmodule Canopy.Runtime.ChannelServer do
 
   # Whether a finished light turn runs its wake again on main: `{:escalated,
   # reason}` after canopy_escalate, `{:fallback, error}` after an error (not a
-  # billing error, which engages the hold), nil otherwise. Not after the
-  # user's Stop or Interrupt now, and not past the hold, the spend limit, or
+  # usage or billing limit, which pauses the engine), nil otherwise. Not after
+  # the user's Stop or Interrupt now, and not past the spend limit, or
   # a stopped channel (each says so as it would for any wake).
   defp light_rerun(turn, outcome) do
     cond do
@@ -3158,7 +3528,8 @@ defmodule Canopy.Runtime.ChannelServer do
       is_binary(Map.get(turn, :escalate)) ->
         {:escalated, turn.escalate}
 
-      match?({:error, _}, outcome) and not Canopy.Hold.billing_error?(elem(outcome, 1)) ->
+      match?({:error, _}, outcome) and is_nil(Map.get(turn, :limit)) and
+          not EnginePauses.limit_error?(elem(outcome, 1)) ->
         {:fallback, elem(outcome, 1)}
 
       true ->
@@ -3170,7 +3541,6 @@ defmodule Canopy.Runtime.ChannelServer do
     cond do
       is_nil(rerun) -> {nil, state}
       state.stopped? -> {nil, state}
-      Canopy.Hold.active?() -> {nil, note_hold(state)}
       over_spend_limit?(state) -> {nil, note_spend_limit(state)}
       true -> {rerun, state}
     end
@@ -3182,9 +3552,11 @@ defmodule Canopy.Runtime.ChannelServer do
   # head of the line.
   defp send_rerun(state, _session, _who, _turn, nil), do: state
 
-  defp send_rerun(state, session, who, turn, rerun) do
+  defp send_rerun(state, session, who, turn, rerun),
+    do: queue_rerun(state, session, who, rerun_wake(turn.wake, rerun))
+
+  defp queue_rerun(state, session, who, wake) do
     sid = session.engine_session_id
-    wake = rerun_wake(turn.wake, rerun)
 
     queue =
       case Map.get(state.queues, sid, []) do
@@ -3197,6 +3569,33 @@ defmodule Canopy.Runtime.ChannelServer do
     if Map.has_key?(state.turns, sid) or state.pending_switch?,
       do: state,
       else: drain_queue(state, session, who.agent_id)
+  end
+
+  # A turn that hit a limit runs its wake again on the agent's fallback: it
+  # goes through the same queue as a light rerun, and `ensure_root_session/2`
+  # picks the fallback session, since the agent now routes there.
+  defp send_limit_rerun(state, _session, _who, _turn, nil), do: state
+
+  defp send_limit_rerun(state, session, who, turn, {:limit, engine, limit, note}) do
+    {agent, target, new?} = note
+    state = note_fallback(state, agent, target, true, new?)
+    queue_rerun(state, session, who, limit_wake(Map.fetch!(turn, :limit_wake), engine, limit))
+  end
+
+  # Told why it moved; already counted, it neither counts again nor reruns.
+  defp limit_wake(wake, engine, limit) do
+    preface = Prompts.moved_to_fallback(Engine.label(engine), Map.get(limit, :reason))
+
+    wake
+    |> Map.update!(:text, &(preface <> &1))
+    |> then(
+      &if &1[:channel_text],
+        do: Map.update!(&1, :channel_text, fn t -> preface <> t end),
+        else: &1
+    )
+    |> Map.drop([:lock_claim_ids, :playbook_check, :steer?])
+    |> Map.put(:limit_rerun, true)
+    |> counted()
   end
 
   # The light turn's wake, told why it runs again; already counted against
@@ -3239,11 +3638,28 @@ defmodule Canopy.Runtime.ChannelServer do
       "route_rule" => Map.get(turn, :route_rule),
       "escalated" =>
         (Map.get(turn, :profile) == :light and is_binary(Map.get(turn, :escalate))) || nil,
-      "fallback" => Map.get(turn, :fallback?) || nil,
+      # a light turn that failed and reran on main
+      "light_fallback" => Map.get(turn, :fallback?) || nil,
+      # the turn ran on the agent's fallback model while its engine was paused
+      "fallback" => Map.get(turn, :fallback),
       "model_switch" => Map.get(turn, :model_switch?) || nil
     }
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
+
+  # A turn that hit a usage or billing limit says which.
+  defp limit_payload(%{limit: %{} = limit}) do
+    %{
+      "limit" => %{
+        "kind" => Map.get(limit, :kind),
+        "reason" => Map.get(limit, :reason),
+        "resets_at" =>
+          with(%DateTime{} = at <- Map.get(limit, :resets_at), do: DateTime.to_iso8601(at))
+      }
+    }
+  end
+
+  defp limit_payload(_turn), do: %{}
 
   # When the session's last main and light turns ended, the context it now
   # carries, and the profile it ran on: the cache-warmth guard and the
@@ -3386,22 +3802,31 @@ defmodule Canopy.Runtime.ChannelServer do
   # A turn working for a thread answers in that thread.
   defp post_reply(state, turn, who, id) do
     text = reply_text(turn)
+    fallback = Map.get(turn, :fallback)
 
     case Map.get(turn, :thread_id) do
       nil ->
-        {:ok, _} = Messages.post_agent_reply(state.channel.id, who.agent_id, text, id: id)
+        {:ok, _} =
+          Messages.post_agent_reply(state.channel.id, who.agent_id, text,
+            id: id,
+            fallback: fallback
+          )
 
       thread_id ->
         {:ok, _} =
-          Messages.thread_reply(thread_id, {:agent, who.agent_id}, text, kind: "reply", id: id)
+          Messages.thread_reply(thread_id, {:agent, who.agent_id}, text,
+            kind: "reply",
+            id: id,
+            fallback: fallback
+          )
     end
   end
 
   # The engine's label for the model the agent runs on for the profile, and
   # whether that is the agent's own choice, its engine's default from
   # Settings, or the engine's pick.
-  defp turn_model(agent_id, profile) do
-    case Agents.get(agent_id) do
+  defp turn_model(agent_id, profile, view) do
+    case view || Agents.get(agent_id) do
       nil ->
         {"unknown", nil}
 

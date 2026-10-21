@@ -48,7 +48,7 @@ defmodule CanopyWeb.AgentsLive do
 
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
-  alias CanopyWeb.{CodexOptions, CostFormat, Nav}
+  alias CanopyWeb.{CodexOptions, CostFormat, FallbackOptions, Nav}
 
   import CanopyWeb.TimelineComponents, only: [schedule_list: 1, message_text: 1]
 
@@ -61,6 +61,9 @@ defmodule CanopyWeb.AgentsLive do
       socket
       |> assign(:opencode_agents, @builtin_opencode_agents)
       |> assign(:providers, [])
+      |> assign(:providers_state, :loading)
+      |> assign(:claude_found, Canopy.Engine.available?("claude_code"))
+      |> assign(:codex_found, Canopy.Engine.available?("codex"))
       |> assign(:model_picker, nil)
       |> assign(:server_defaults, %{})
       |> assign(:codex_models, [])
@@ -487,10 +490,15 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   def handle_async(:providers, {:ok, {:ok, %{providers: providers, defaults: defaults}}}, socket) do
-    {:noreply, socket |> assign(:providers, providers) |> assign(:server_defaults, defaults)}
+    {:noreply,
+     socket
+     |> assign(:providers, providers)
+     |> assign(:providers_state, if(providers == [], do: :error, else: :ok))
+     |> assign(:server_defaults, defaults)}
   end
 
-  def handle_async(:providers, _other, socket), do: {:noreply, assign(socket, :providers, [])}
+  def handle_async(:providers, _other, socket),
+    do: {:noreply, socket |> assign(:providers, []) |> assign(:providers_state, :error)}
 
   def handle_async(:codex_models, {:ok, {:ok, models}}, socket),
     do: {:noreply, socket |> assign(:codex_models, models) |> assign(:codex_models_state, :ok)}
@@ -506,14 +514,16 @@ defmodule CanopyWeb.AgentsLive do
     socket |> assign(:codex_models, []) |> assign(:codex_models_state, {:error, reason})
   end
 
-  # Codex's model list, once the form is on Codex (it is cached by
+  # Codex's model list, once the form is on Codex, or Codex is found at all:
+  # the Fallback select lists its models on every engine (it is cached by
   # `Canopy.Codex.Models`, so opening the form again is cheap). A failure
   # sticks until the form is opened again or Try again is pressed (`retry:`),
   # so a broken Codex isn't started on every keystroke.
   defp maybe_load_codex_models(socket, opts \\ []) do
-    if form_engine(socket.assigns.form[:engine].value, socket.assigns.default_engine) == "codex",
-      do: load_codex_models(socket, opts),
-      else: socket
+    if socket.assigns.codex_found or
+         form_engine(socket.assigns.form[:engine].value, socket.assigns.default_engine) == "codex",
+       do: load_codex_models(socket, opts),
+       else: socket
   end
 
   defp load_codex_models(socket, opts) do
@@ -669,6 +679,10 @@ defmodule CanopyWeb.AgentsLive do
     |> assign(:default_effort, Settings.default_effort("claude_code"))
     |> assign(:default_efforts, Settings.default_efforts())
     |> assign(:light_defaults, Settings.light_profiles())
+    |> assign(
+      :fallback_defaults,
+      Map.new(Canopy.Engine.names(), &{&1, Canopy.Fallback.default_for(&1)})
+    )
   end
 
   defp load_agents(socket) do
@@ -901,6 +915,74 @@ defmodule CanopyWeb.AgentsLive do
   end
 
   # The agent page's routing line.
+  # The agent page's Fallback row: its own choice, or the Settings default.
+  defp fallback_shown(%Agent{fallback: own}, defaults, engine) do
+    case Canopy.Fallback.parse(own) do
+      :none -> {:own, "None: waits for the reset"}
+      %{} = target -> {:own, Canopy.Fallback.label(target)}
+      nil -> {:default, fallback_text(defaults[engine])}
+    end
+  end
+
+  defp fallback_text(nil), do: "None: waits for the reset"
+  defp fallback_text(target), do: Canopy.Fallback.label(target)
+
+  # The model the form's agent runs on, left out of its fallbacks: its own,
+  # else the engine's default.
+  defp form_primary_model(form, defaults, engine) do
+    provider = form[:model_provider].value
+    model = form[:model_id].value
+
+    cond do
+      model in [nil, ""] -> default_label(defaults, engine)
+      engine == "opencode" and provider not in [nil, ""] -> "#{provider}/#{model}"
+      engine == "opencode" -> nil
+      true -> model
+    end
+  end
+
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :engine, :string, required: true
+  attr :default, :map, default: nil, doc: "`Canopy.Fallback.default_for/1` of the form's engine"
+  attr :sources, :map, required: true, doc: "`CanopyWeb.FallbackOptions.sources/1`"
+  attr :primary_model, :string, default: nil
+
+  # Shared by all three engines' forms. Default ("") follows Settings; "none"
+  # waits for the reset.
+  defp fallback_field(assigns) do
+    ~H"""
+    <div class="flex flex-col gap-1">
+      <div class="grid gap-3 sm:grid-cols-3">
+        <div class="sm:col-span-2">
+          <.input
+            field={@form[:fallback]}
+            type="select"
+            id="agent-fallback"
+            label="Fallback model"
+            prompt={
+              if @default,
+                do: "Default (#{Canopy.Fallback.label(@default)})",
+                else: "Default (none: wait for the reset)"
+            }
+            options={
+              [{"None: wait for the reset", "none"}] ++
+                FallbackOptions.options(@engine, @sources, @form[:fallback].value, @primary_model)
+            }
+          />
+        </div>
+      </div>
+      <p id="agent-fallback-help" class="-mt-1 text-xs text-base-content/60">
+        The model this agent moves to when {Canopy.Engine.label(@engine)} reports a usage limit. Default follows <.link
+          navigate={settings_anchor(@engine)}
+          class="link"
+        >Settings</.link>; None waits for the reset. A {Canopy.Engine.label(@engine)} model pauses along with {Canopy.Engine.label(
+          @engine
+        )}, so it can't take over.
+      </p>
+    </div>
+    """
+  end
+
   defp routing_text(%Agent{routing_enabled: true}, nil),
     do: "Routing is on but no light model is set"
 
@@ -977,7 +1059,7 @@ defmodule CanopyWeb.AgentsLive do
       threads_unread={@threads_unread}
       attention={@attention}
       schedule_counts={@schedule_counts}
-      hold={@hold}
+      engine_pauses={@engine_pauses}
       current_path={@current_path}
       current_channel_id={@current_channel_id}
       current_repository_id={@current_repository_id}
@@ -1725,6 +1807,22 @@ defmodule CanopyWeb.AgentsLive do
                     experimental
                   </span>
                 </dd>
+                <dt class="text-base-content/60">Fallback</dt>
+                <dd id="agent-fallback-value" class="text-xs">
+                  <%= case fallback_shown(@agent, @fallback_defaults, engine_of(@agent, @default_engine)) do %>
+                    <% {:default, text} -> %>
+                      {text}
+                      <span class="text-base-content/60">
+                        (<.link
+                          navigate={settings_anchor(engine_of(@agent, @default_engine))}
+                          class="link"
+                          title="The fallback set in Settings"
+                        >default</.link>)
+                      </span>
+                    <% {:own, text} -> %>
+                      {text}
+                  <% end %>
+                </dd>
                 <dt class="text-base-content/60">Spend</dt>
                 <dd id="agent-spend" class="text-xs tabular-nums">
                   <span title={CostFormat.estimate_title(@agent_spend.today)}>
@@ -2293,6 +2391,24 @@ defmodule CanopyWeb.AgentsLive do
                 <% end %>
               </p>
           <% end %>
+          <.fallback_field
+            form={@form}
+            engine={form_engine(@form[:engine].value, @default_engine)}
+            default={@fallback_defaults[form_engine(@form[:engine].value, @default_engine)]}
+            sources={
+              FallbackOptions.sources(%{
+                claude_found: @claude_found,
+                codex_found: @codex_found,
+                codex_models: @codex_models,
+                codex_models_state: @codex_models_state,
+                providers: @providers,
+                providers_state: @providers_state
+              })
+            }
+            primary_model={
+              form_primary_model(@form, @defaults, form_engine(@form[:engine].value, @default_engine))
+            }
+          />
           <.routing_fields
             form={@form}
             engine={form_engine(@form[:engine].value, @default_engine)}

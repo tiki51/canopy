@@ -37,6 +37,9 @@ defmodule Canopy.AgentSessions.AgentSession do
     # Claude Code sessions: the running cost total the engine reported last
     # (its results are cumulative per session; see `Canopy.ClaudeCode.Cost`)
     field :cost_total, :float
+    # a fallback root session (`Canopy.Fallback`): the agent's own engine it
+    # stands in for while that engine is paused; nil on a primary session
+    field :fallback_of, :string
 
     belongs_to :channel, Canopy.Channels.Channel
     belongs_to :agent, Canopy.Agents.Agent
@@ -57,6 +60,7 @@ defmodule Canopy.AgentSessions.AgentSession do
       :engine_session_id,
       :mcp_token,
       :parent_session_id,
+      :fallback_of,
       :status,
       :last_error,
       :last_seen_at

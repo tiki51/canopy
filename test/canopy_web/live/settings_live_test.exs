@@ -644,4 +644,67 @@ defmodule CanopyWeb.SettingsLiveTest do
       assert render(view) =~ "1 OpenCode agent now uses the default model"
     end
   end
+
+  describe "fallback at a usage limit" do
+    test "each engine panel has one; Claude Code's defaults to No fallback and saves", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+      render_async(view)
+
+      for id <- ~w(claude-fallback codex-fallback opencode-fallback),
+          do: assert(has_element?(view, "select##{id}"))
+
+      assert has_element?(view, "#claude-fallback option[value='']", "No fallback")
+      refute has_element?(view, "#claude-fallback option[selected]")
+
+      assert has_element?(
+               view,
+               "#claude-fallback optgroup[label='Claude Code'] option[value='claude_code:sonnet']",
+               "sonnet (pauses with Claude Code)"
+             )
+
+      # Codex's models, once loaded; OpenCode is away, so a note
+      assert has_element?(
+               view,
+               "#claude-fallback option[value='codex:gpt-5-codex']",
+               "gpt-5-codex"
+             )
+
+      assert has_element?(
+               view,
+               "#claude-fallback option[disabled]",
+               "Not running: start opencode serve to list its models"
+             )
+
+      assert has_element?(view, "#claude-fallback-help", "Agents on Claude Code carry on here")
+
+      view
+      |> form("#claude-form", setting: %{claude_fallback: "codex:gpt-5-codex"})
+      |> render_submit()
+
+      assert Settings.get().claude_fallback == "codex:gpt-5-codex"
+      assert has_element?(view, "#claude-fallback option[value='codex:gpt-5-codex'][selected]")
+    end
+
+    test "the engine's default model is left out of its own fallbacks", %{conn: conn} do
+      {:ok, _} = Settings.update(%{claude_default_model: "opus"})
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      refute has_element?(view, "#claude-fallback option[value='claude_code:opus']")
+      assert has_element?(view, "#claude-fallback option[value='claude_code:sonnet']")
+    end
+
+    test "a saved fallback the lists don't offer stays selected", %{conn: conn} do
+      {:ok, _} = Settings.update(%{codex_fallback: "opencode:anthropic/claude-sonnet-4-5"})
+      {:ok, view, _html} = live(conn, ~p"/settings")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#codex-fallback option[value='opencode:anthropic/claude-sonnet-4-5'][selected]",
+               "anthropic/claude-sonnet-4-5 (saved)"
+             )
+    end
+  end
 end

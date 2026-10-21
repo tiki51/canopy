@@ -242,7 +242,7 @@ defmodule Canopy.Runtime.ChannelServerRoutingTest do
       assert rerun["route_rule"] == "escalation"
       assert rerun["model_switch"] == true
       assert rerun["trigger"] == "scheduled"
-      refute Map.has_key?(rerun, "fallback")
+      refute Map.has_key?(rerun, "light_fallback")
       assert_receive {:timeline, %{event_type: "message", message: %{body: "Fixed it."}}}, 2_000
     end
 
@@ -299,7 +299,7 @@ defmodule Canopy.Runtime.ChannelServerRoutingTest do
       })
 
       assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: rerun}}, 2_000
-      assert rerun["fallback"] == true
+      assert rerun["light_fallback"] == true
       refute_receive {:prompted, _, _}, 200
     end
 
@@ -319,17 +319,17 @@ defmodule Canopy.Runtime.ChannelServerRoutingTest do
       finish(ctx.sid)
     end
 
-    test "a billing error engages the hold and is not re-run", ctx do
+    test "a billing error pauses the engine and is not re-run on main", ctx do
       Runtime.wake_scheduled(ctx.channel.id, ctx.agent.id, "Check the queue.")
       assert_receive {:prompted, _sid, %{model: @small}}, 2_000
-      on_exit(fn -> Canopy.Hold.release() end)
 
       emit(ctx.sid, :agent_error, %{
         error: %{"name" => "APIError", "data" => %{"message" => "Insufficient balance"}}
       })
 
-      assert_receive {:timeline, %{event_type: "agent_turn_completed"}}, 2_000
-      assert Canopy.Hold.active?()
+      assert_receive {:timeline, %{event_type: "agent_turn_completed", payload: payload}}, 2_000
+      assert payload["limit"]["kind"] == "billing"
+      assert Canopy.EnginePauses.paused?("opencode")
       refute_receive {:prompted, _, _}, 200
     end
 

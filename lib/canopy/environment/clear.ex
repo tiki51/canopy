@@ -18,13 +18,15 @@ defmodule Canopy.Environment.Clear do
   alias Canopy.Repo
 
   # oban_jobs is kept as a table; its jobs are deleted below, apart from any
-  # still executing
-  @kept ~w(settings users repositories schema_migrations oban_jobs oban_peers)
+  # still executing. engine_pauses is account state, as the hold in settings
+  # was: a paused engine stays paused (`EnginePauses.reschedule_all/0`
+  # re-enqueues its lift afterwards).
+  @kept ~w(settings users repositories schema_migrations oban_jobs oban_peers engine_pauses)
 
   # Children before their parents (foreign keys are deferred to the commit anyway).
   @cleared ~w(message_attachments message_reactions message_reads thread_reads channel_reads
               search_entries timeline_events turn_activity_details permission_requests
-              question_requests signoff_requests lock_claims routing_pauses watch_items schedules tasks
+              question_requests signoff_requests lock_claims routing_pauses watch_items engine_pause_agents schedules tasks
               delegations handoffs playbook_steps playbook_runs playbooks documents messages
               channel_agents agent_memories global_permissions agent_sessions team_members teams
               channels channel_sections agents)

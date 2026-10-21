@@ -66,6 +66,10 @@ defmodule Canopy.Agents.Agent do
     field :light_model_provider, :string
     field :light_model_id, :string
     field :light_effort, :string
+    # the model it moves to when its engine pauses at a usage limit
+    # (`Canopy.Fallback`): nil follows Settings, "none" waits for the reset,
+    # else "<engine>:<model>"
+    field :fallback, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -90,7 +94,8 @@ defmodule Canopy.Agents.Agent do
       :routing_enabled,
       :light_model_provider,
       :light_model_id,
-      :light_effort
+      :light_effort,
+      :fallback
     ])
     |> update_change(:name, &normalize_name/1)
     |> update_change(:group, &normalize_group/1)
@@ -103,6 +108,13 @@ defmodule Canopy.Agents.Agent do
     |> update_change(:effort, &blank_to_nil/1)
     |> update_change(:light_effort, &blank_to_nil/1)
     |> update_change(:allowed_tools, &blank_to_nil/1)
+    |> update_change(:fallback, &blank_to_nil/1)
+    |> validate_change(:fallback, fn :fallback, value ->
+      case Canopy.Fallback.error(value, true) do
+        nil -> []
+        message -> [fallback: message]
+      end
+    end)
     |> drop_stale_models()
     |> validate_efforts()
     |> validate_claude_code()

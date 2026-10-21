@@ -225,12 +225,12 @@ test.describe("screenshots for the user guide", () => {
 
     // -- Settings, with the billing hold the seed engaged ---------------------
     await page.goto("/settings");
-    await expect(page.locator("#hold-banner")).toContainText("insufficient balance");
+    await expect(page.locator("#engine-pause-opencode")).toContainText("insufficient balance");
     await expect(sidebarSection(page, "Payments")).toBeAttached();
     await page.mouse.move(700, 600);
     await shot(page, "hold-banner", { clip: { x: 0, y: 0, width: 1440, height: 300 } });
-    await page.locator("#release-hold").click();
-    await expect(page.locator("#hold-banner")).toBeHidden();
+    await page.locator("#resume-engine-opencode").click();
+    await expect(page.locator("#engine-pause-opencode")).toBeHidden();
     await dismissFlash(page);
 
     // Invoicing collapsed (its channel unread, so the dot), and the
@@ -906,9 +906,9 @@ test.describe("screenshots for the user guide", () => {
     await expect(page.locator("[data-phx-main].phx-connected")).toBeAttached();
     // A hold isn't part of a reset. The Settings captures above release Acme's;
     // run on its own (-g), this capture still finds it engaged.
-    if (await page.locator("#release-hold").isVisible()) {
-      await page.locator("#release-hold").click();
-      await expect(page.locator("#hold-banner")).toBeHidden();
+    if (await page.locator("#resume-engine-opencode").isVisible()) {
+      await page.locator("#resume-engine-opencode").click();
+      await expect(page.locator("#engine-pause-opencode")).toBeHidden();
       await dismissFlash(page);
     }
     const panel = page.locator("#environment-panel");

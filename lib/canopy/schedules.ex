@@ -76,6 +76,56 @@ defmodule Canopy.Schedules do
     end
   end
 
+  @doc """
+  Creates an Auto nudge (`source: "auto"`, `source_ref`: the engine pause's
+  id) and its job: a `once` schedule at `:run_at`, made by Canopy (no
+  `created_by_agent_id`). It skips `check_capacity/2`, or an agent with its
+  full share of schedules in the channel would never be nudged.
+  """
+  def create_auto(%{run_at: %DateTime{} = at} = attrs) do
+    base =
+      attrs
+      |> Map.take([:channel_id, :agent_id, :instruction, :source_ref])
+      |> Map.merge(%{source: "auto", kind: "once", run_at: at, next_run_at: at})
+
+    with {:ok, schedule} <- %Schedule{} |> Schedule.changeset(base) |> Repo.insert(),
+         {:ok, _job} <- enqueue(schedule) do
+      # the line reads "once at 15:01" from it
+      record(schedule, "schedule_created", %{"run_at" => DateTime.to_iso8601(at)})
+      notify(schedule)
+      {:ok, get!(schedule.id)}
+    end
+  end
+
+  @doc "Moves an active once schedule (an Auto nudge) to `at`, re-timing its job."
+  def retime(%Schedule{kind: "once", status: "active"} = schedule, %DateTime{} = at) do
+    {:ok, schedule} =
+      schedule |> Schedule.changeset(%{run_at: at, next_run_at: at}) |> Repo.update()
+
+    drop_jobs(schedule)
+    {:ok, _} = enqueue(schedule)
+    notify(schedule)
+    {:ok, schedule}
+  end
+
+  def retime(%Schedule{} = schedule, _at), do: {:ok, schedule}
+
+  @doc """
+  Ends an Auto nudge whose pause lifted (the lift nudges its agent itself):
+  marks it done and drops its pending job, so it never fires on its own.
+  """
+  def finish_auto(%Schedule{} = schedule) do
+    {:ok, schedule} = set_status(schedule, "done", nil)
+    drop_jobs(schedule)
+    notify(schedule)
+    {:ok, schedule}
+  end
+
+  @doc "Records the `schedule_fired` line for an Auto nudge the lift woke its agent for."
+  def record_auto_fired(%Schedule{} = schedule),
+    do:
+      record(schedule, "schedule_fired", %{"run_at" => DateTime.to_iso8601(schedule.next_run_at)})
+
   defp parse_when(value, now) do
     case When.parse(value, now) do
       {:error, reason} -> {:error, reason}
@@ -241,14 +291,20 @@ defmodule Canopy.Schedules do
   def pause_for_channel(channel_id, reason),
     do: pause_where(dynamic([s], s.channel_id == ^channel_id), reason)
 
-  @doc "Pauses every active schedule (a global hold)."
-  def pause_all(reason), do: pause_where(dynamic([s], s.status == "active"), reason)
+  @doc "Pauses one active schedule, saying why (an engine pause, `Canopy.EnginePauses`)."
+  def pause(%Schedule{status: "active"} = schedule, reason) do
+    {:ok, schedule} = set_status(schedule, "paused", reason)
+    drop_jobs(schedule)
+    record(schedule, "schedule_paused", %{"reason" => reason})
+    notify(schedule)
+    {:ok, schedule}
+  end
 
-  @doc "Resumes schedules paused with a reason starting with `prefix` (lifting a hold)."
-  def resume_where_reason_starts(prefix) do
-    like = prefix <> "%"
+  def pause(%Schedule{} = schedule, _reason), do: {:ok, schedule}
 
-    from(s in Schedule, where: s.status == "paused" and like(s.status_reason, ^like))
+  @doc "Resumes the schedules paused with exactly `reason` (an engine pause lifting)."
+  def resume_where_reason(reason) when is_binary(reason) do
+    from(s in Schedule, where: s.status == "paused" and s.status_reason == ^reason)
     |> Repo.all()
     |> Enum.each(&resume/1)
 
@@ -341,9 +397,7 @@ defmodule Canopy.Schedules do
   # -- Firing -------------------------------------------------------------------
 
   @doc "Runs a schedule now: called by the Oban worker."
-  def fire(id) do
-    if Canopy.Hold.active?(), do: :ok, else: do_fire_if_active(get(id))
-  end
+  def fire(id), do: do_fire_if_active(get(id))
 
   defp do_fire_if_active(schedule) do
     case schedule do
@@ -357,11 +411,21 @@ defmodule Canopy.Schedules do
 
   defp do_fire(schedule, now) do
     cond do
+      # an Auto nudge lifts its pause, which nudges every agent that waited;
+      # with the pause already lifted it fires as a plain once schedule
+      schedule.source == "auto" and Canopy.EnginePauses.fire_auto(schedule) ->
+        :ok
+
       Channels.archived?(schedule.channel) ->
         skip(schedule, "the channel is archived")
 
       not schedule.agent.active ->
         skip(schedule, "@#{schedule.agent.name} is deactivated")
+
+      # its engine is paused and it has no usable fallback: paused until the lift
+      is_nil(schedule.source) and engine_pause_reason(schedule.agent) ->
+        {:ok, _} = pause(schedule, engine_pause_reason(schedule.agent))
+        :ok
 
       schedule.kind == "recurring" and overdue?(schedule, now) ->
         record(schedule, "schedule_skipped", %{
@@ -395,6 +459,19 @@ defmodule Canopy.Schedules do
           |> Repo.update()
 
         advance(schedule, now)
+    end
+  end
+
+  defp engine_pause_reason(agent) do
+    case Canopy.Fallback.route(agent) do
+      {:wait, %{engine: engine}} ->
+        case Canopy.EnginePauses.active(engine) do
+          %{schedule_reason: reason} -> reason
+          nil -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 
@@ -472,7 +549,8 @@ defmodule Canopy.Schedules do
               "cron" => schedule.cron,
               "created_by_agent_id" => schedule.created_by_agent_id
             }
-            |> put_watch(schedule),
+            |> put_watch(schedule)
+            |> put_source(schedule),
             extra
           )
       })
@@ -485,6 +563,11 @@ defmodule Canopy.Schedules do
   end
 
   defp put_watch(payload, _schedule), do: payload
+
+  defp put_source(payload, %Schedule{source: source}) when is_binary(source),
+    do: Map.put(payload, "source", source)
+
+  defp put_source(payload, _schedule), do: payload
 
   @doc "Subscribe to `{:schedules, :changed, channel_id}`."
   def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)

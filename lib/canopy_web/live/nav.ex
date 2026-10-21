@@ -8,7 +8,8 @@ defmodule CanopyWeb.Nav do
   `:thread_unread_summary` (`Canopy.Unread.thread_summary/1`), `:attention`
   (question and permission cards and playbook sign-offs waiting on the user, and runs
   in progress, per channel), `:palette` (teams and enabled playbooks, for the command
-  palette), `:current_path`,
+  palette), `:engine_pauses` (`Canopy.EnginePauses.list/0`, for the banner),
+  `:current_path`,
   `:current_channel_id` and `:current_repository_id` (nil outside a channel). Screens that create or
   change repositories, channels, or agents should call `refresh_nav/1` after
   writing so the sidebar updates without a reload.
@@ -58,8 +59,8 @@ defmodule CanopyWeb.Nav do
     Attention,
     Channels,
     Documents,
+    EnginePauses,
     Environment,
-    Hold,
     Playbooks,
     Repositories,
     Runtime,
@@ -77,7 +78,7 @@ defmodule CanopyWeb.Nav do
       Timeline.subscribe_all()
       Threads.subscribe_reads()
       Schedules.subscribe()
-      Hold.subscribe()
+      EnginePauses.subscribe()
       Canopy.Playbooks.Runs.subscribe()
       Teams.subscribe()
       Playbooks.subscribe()
@@ -174,7 +175,7 @@ defmodule CanopyWeb.Nav do
     |> assign(:dms, Channels.list_dms())
     |> assign(:agents, Agents.list_active())
     |> assign(:schedule_counts, Schedules.active_counts_by_agent())
-    |> assign(:hold, Hold.reason())
+    |> assign(:engine_pauses, EnginePauses.list())
     |> refresh_palette()
     |> refresh_unread()
     |> refresh_attention()
@@ -210,14 +211,29 @@ defmodule CanopyWeb.Nav do
     {:halt, assign(socket, :setup, socket.assigns.setup || "you")}
   end
 
-  # The hold banner's Release button lives in the shell, so every page handles it.
-  defp handle_event("release_hold", _params, socket) do
-    :ok = Hold.release()
+  # The engine pause banner's Resume now / Release lives in the shell, so every
+  # page handles it. The palette's "Resume paused engines" sends no engine:
+  # every paused engine resumes.
+  defp handle_event("resume_engine", params, socket) do
+    pauses = socket.assigns.engine_pauses
 
-    {:halt,
-     socket
-     |> assign(:hold, nil)
-     |> Phoenix.LiveView.put_flash(:info, "Hold released. Reply in a channel to wake its agents.")}
+    resumed =
+      case params["engine"] do
+        engine when is_binary(engine) and engine != "" ->
+          Enum.filter(pauses, &(&1.engine == engine))
+
+        _ ->
+          pauses
+      end
+
+    Enum.each(resumed, &(:ok = EnginePauses.resume(&1.engine)))
+
+    socket = assign(socket, :engine_pauses, EnginePauses.list())
+
+    case resumed do
+      [] -> {:halt, socket}
+      _ -> {:halt, put_flash(socket, :info, resumed_flash(resumed))}
+    end
   end
 
   # The command palette's file search: filenames only, newest first. Fewer
@@ -463,6 +479,19 @@ defmodule CanopyWeb.Nav do
   defp cmdk_stop(_params, socket),
     do: {:halt, %{ok: false}, put_flash(socket, :error, "That channel no longer exists.")}
 
+  # "Claude Code resumed. Agents that waited were nudged." The second sentence
+  # only when an agent was waiting (read before resuming).
+  defp resumed_flash(pauses) do
+    names = pauses |> Enum.map(&Canopy.Engine.label(&1.engine)) |> join_and()
+
+    if Enum.any?(pauses, &(&1.waiting > 0)),
+      do: "#{names} resumed. Agents that waited were nudged.",
+      else: "#{names} resumed."
+  end
+
+  defp join_and([one]), do: one
+  defp join_and(names), do: Enum.join(Enum.drop(names, -1), ", ") <> " and " <> List.last(names)
+
   defp stop_label(%{kind: "dm"} = channel), do: Channels.dm_label(channel)
   defp stop_label(channel), do: "#" <> channel.name
 
@@ -531,8 +560,9 @@ defmodule CanopyWeb.Nav do
   defp handle_info({:channel_quiet, _channel_id, _info} = signal, socket),
     do: {:halt, notify(socket, signal)}
 
-  # Schedule changes update the sidebar counts; the page may also want the event.
-  defp handle_info({:hold, _what}, socket), do: {:halt, assign(socket, :hold, Hold.reason())}
+  # An engine paused or resumed, or its counts changed: the banner follows.
+  defp handle_info({:engine_pauses, :changed}, socket),
+    do: {:halt, assign(socket, :engine_pauses, EnginePauses.list())}
 
   # A run started, finished, or held for a sign-off: the glyph and the badge
   # follow; the channel view may want it too.
@@ -544,6 +574,7 @@ defmodule CanopyWeb.Nav do
   defp handle_info({:teams, :changed}, socket), do: {:cont, refresh_palette(socket)}
   defp handle_info({:playbooks, :changed}, socket), do: {:cont, refresh_palette(socket)}
 
+  # Schedule changes update the sidebar counts; the page may also want the event.
   defp handle_info({:schedules, :changed, _channel_id}, socket),
     do: {:cont, assign(socket, :schedule_counts, Schedules.active_counts_by_agent())}
 

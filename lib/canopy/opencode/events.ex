@@ -42,8 +42,10 @@ defmodule Canopy.OpenCode.Events do
 
   defp do_normalize("session.idle", %{"sessionID" => sid}), do: event(:agent_completed, sid, %{})
 
-  defp do_normalize("session.error", %{"sessionID" => sid} = p),
-    do: event(:agent_error, sid, %{error: Map.get(p, "error", %{})})
+  defp do_normalize("session.error", %{"sessionID" => sid} = p) do
+    error = Map.get(p, "error", %{})
+    event(:agent_error, sid, %{error: error, limit: limit(error)})
+  end
 
   defp do_normalize(type, %{"info" => %{"id" => sid} = info})
        when type in ["session.created", "session.updated"],
@@ -267,4 +269,56 @@ defmodule Canopy.OpenCode.Events do
   defp status_atom(%{"type" => "busy"}), do: :busy
   defp status_atom(%{"type" => "retry"}), do: :retry
   defp status_atom(_), do: :busy
+
+  # -- Limits ---------------------------------------------------------------------
+
+  @doc """
+  The usage or billing limit a `session.error` stands for, or nil: the
+  provider's 429 or 402 passed through (`APIError`), when its message reads
+  as a limit (`Canopy.EnginePauses.limit_error?/1`). The reset time comes
+  from `anthropic-ratelimit-unified-reset` (epoch seconds), else
+  `retry-after` (seconds from now).
+  """
+  def limit(%{"data" => %{} = data}) do
+    status = data["statusCode"]
+    message = data["message"]
+
+    if status in [402, 429] and is_binary(message) and Canopy.EnginePauses.limit_error?(message) do
+      resets_at = reset_header(data["responseHeaders"])
+      kind = if status == 402 or is_nil(resets_at), do: "billing", else: "usage"
+      reason = if status == 402, do: "insufficient balance", else: "usage limit"
+      %{kind: kind, reason: reason, resets_at: resets_at, detail: message}
+    end
+  end
+
+  def limit(_error), do: nil
+
+  defp reset_header(headers) when is_map(headers) do
+    headers = Map.new(headers, fn {k, v} -> {String.downcase(to_string(k)), v} end)
+
+    cond do
+      at = Canopy.EnginePauses.epoch(headers["anthropic-ratelimit-unified-reset"]) ->
+        at
+
+      seconds = int(headers["retry-after"]) ->
+        DateTime.utc_now() |> DateTime.add(seconds, :second)
+
+      true ->
+        nil
+    end
+  end
+
+  # missing, or not the map OpenCode sends
+  defp reset_header(_headers), do: nil
+
+  defp int(n) when is_integer(n) and n > 0, do: n
+
+  defp int(n) when is_binary(n) do
+    case Integer.parse(n) do
+      {i, _} when i > 0 -> i
+      _ -> nil
+    end
+  end
+
+  defp int(_), do: nil
 end

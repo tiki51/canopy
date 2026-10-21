@@ -165,7 +165,7 @@ defmodule CanopyWeb.EnvironmentLiveTest do
              )
 
       assert has_element?(view, "#reset-kept li", "Everything inside your repositories")
-      refute has_element?(view, "#reset-kept li", "Spend hold")
+      refute has_element?(view, "#reset-kept li", "Engine pauses")
       assert has_element?(view, "#reset-backup-preview", preview.backup_path)
       assert has_element?(view, "#reset-dialog[role=dialog][aria-modal=true]")
       assert Channels.get(channel.id)

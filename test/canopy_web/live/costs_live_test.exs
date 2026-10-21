@@ -176,16 +176,6 @@ defmodule CanopyWeb.CostsLiveTest do
     assert message.body =~ "Focus on: scheduled tasks"
   end
 
-  test "the hold banner shows on any page and Release lifts it", %{conn: conn} do
-    :ok = Canopy.Hold.engage("Insufficient balance")
-    {:ok, view, _html} = live(conn, ~p"/costs")
-    assert has_element?(view, "#hold-banner", "Insufficient balance")
-
-    view |> element("#release-hold") |> render_click()
-    refute has_element?(view, "#hold-banner")
-    refute Canopy.Hold.active?()
-  end
-
   test "breakdowns show six rows with a toggle for the rest", %{conn: conn} do
     %{channel: channel} = Fixtures.scenario()
 

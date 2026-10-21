@@ -98,8 +98,8 @@ defmodule CanopyWeb.CommandPalette do
   end
 
   @doc """
-  Where you are: the open channel and its repository, the path, whether a
-  hold is on, and the open channel's project sections (`sections/2`), for
+  Where you are: the open channel and its repository, the path, whether an
+  engine is paused, and the open channel's project sections (`sections/2`), for
   "Move to section…".
   """
   def context(assigns) do
@@ -107,7 +107,7 @@ defmodule CanopyWeb.CommandPalette do
       channel_id: assigns[:current_channel_id],
       repo_id: assigns[:current_repository_id],
       path: assigns[:current_path] || "/",
-      hold: not is_nil(assigns[:hold]),
+      paused: assigns[:paused] == true,
       sections: assigns[:sections] || []
     }
   end

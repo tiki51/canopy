@@ -126,7 +126,7 @@ const CommandPalette = {
     const items = this.items()
     return {
       path: ctx.path,
-      hold: ctx.hold,
+      paused: ctx.paused,
       channel: this.currentChannel(),
       repoId: ctx.repo_id,
       repos: items.filter(i => i.t === "repo"),

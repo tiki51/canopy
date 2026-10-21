@@ -322,6 +322,15 @@ defmodule Canopy.Engine.OpenCode do
 
   def model_error?(_reason), do: false
 
+  # The server is never probed here: a configured URL is enough.
+  @impl true
+  def available? do
+    case Canopy.Settings.get().opencode_url do
+      url when is_binary(url) -> String.trim(url) != ""
+      _ -> false
+    end
+  end
+
   # A light profile that does not resolve (routing turned off meanwhile) runs on main.
   defp resolve_profile(agent, :light),
     do: Agents.effective_profile(agent, :light) || Agents.effective_profile(agent, :main)

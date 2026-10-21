@@ -15,6 +15,16 @@ defmodule Canopy.ElapsedTest do
     assert Elapsed.coarse(-5_000) == "<1m"
   end
 
+  test "remaining/1 says the time left, in days and hours past a day" do
+    assert Elapsed.remaining(30_000) == "<1m"
+    assert Elapsed.remaining(59 * 60_000) == "59m"
+    assert Elapsed.remaining(60 * 60_000) == "1h 0m"
+    assert Elapsed.remaining((23 * 60 + 59) * 60_000) == "23h 59m"
+    assert Elapsed.remaining(24 * 60 * 60_000) == "1d 0h"
+    assert Elapsed.remaining((51 * 60 + 20) * 60_000) == "2d 3h"
+    assert Elapsed.remaining(-5_000) == "<1m"
+  end
+
   test "since/2 counts from one time to another" do
     from = ~U[2026-10-05 09:00:00.000000Z]
     assert Elapsed.since(from, ~U[2026-10-05 09:00:59.000000Z]) == "<1m"

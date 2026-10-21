@@ -128,9 +128,8 @@ defmodule CanopyWeb.TimelineComponents do
         icon={event_icon(@event.event_type)}
         tone={event_tone(@event)}
         at={@event.inserted_at}
-      >
-        {event_text(@event, @names, @user_name)}
-      </.system_line>
+        text={event_text(@event, @names, @user_name)}
+      />
       <details
         :if={@event.payload["body"]}
         id={"brief-change-#{@event.id}"}
@@ -204,9 +203,8 @@ defmodule CanopyWeb.TimelineComponents do
         icon={line_icon(@event)}
         tone={event_tone(@event)}
         at={@event.inserted_at}
-      >
-        {event_text(@event, @names, @user_name)}
-      </.system_line>
+        text={event_text(@event, @names, @user_name)}
+      />
     </div>
     """
   end
@@ -287,6 +285,14 @@ defmodule CanopyWeb.TimelineComponents do
             title="The agent's final turn text"
           >
             reply
+          </span>
+          <span
+            :if={is_map(Map.get(@message, :fallback))}
+            id={"#{@dom_prefix}-fallback-#{@message.id}"}
+            class="rounded-full bg-base-300/70 px-1.5 text-[10px] font-medium uppercase tracking-wide text-base-content/60"
+            title={fallback_title(@message.fallback)}
+          >
+            {fallback_chip(@message.fallback)}
           </span>
           <span
             :if={@message.sent_to_channel and is_nil(@parent)}
@@ -794,23 +800,28 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
-  @doc "A centred, subtle line for collaboration events and system notes."
+  @doc """
+  A centred, subtle line for collaboration events and system notes. Plain
+  text goes in `text`: an inner block carries the template's newline and
+  indentation into the line.
+  """
   attr :id, :string, required: true
   attr :icon, :string, default: "hero-information-circle-mini"
   attr :tone, :string, default: "muted", values: ~w(muted success error warning secondary)
   attr :at, :any, default: nil
-  slot :inner_block, required: true
+  attr :text, :string, default: nil
+  slot :inner_block
 
   def system_line(assigns) do
     ~H"""
     <div
       id={@id}
-      class="flex items-center justify-center gap-2 px-3 py-1 text-xs sm:px-6"
+      class="flex items-center justify-center gap-2 px-3 py-5 text-xs sm:px-6"
       data-tone={@tone}
     >
       <span class="h-px flex-1 bg-base-300/70" />
       <span class={[
-        "flex min-w-0 items-center gap-1.5 whitespace-pre-wrap text-center",
+        "flex min-w-0 items-center gap-1.5 text-center",
         @tone == "muted" && "text-base-content/55",
         @tone == "success" && "text-success",
         @tone == "error" && "text-error",
@@ -818,7 +829,8 @@ defmodule CanopyWeb.TimelineComponents do
         @tone == "secondary" && "text-secondary"
       ]}>
         <.icon name={@icon} class="size-3.5 shrink-0 opacity-70" />
-        <span class="min-w-0 [overflow-wrap:anywhere]">{render_slot(@inner_block)}</span>
+        <span class="min-w-0 [overflow-wrap:anywhere]" data-line-text>{@text ||
+          render_slot(@inner_block)}</span>
         <time :if={@at} class="shrink-0 text-[10px] opacity-60" title={DateTime.to_iso8601(@at)}>
           {short_time(@at)}
         </time>
@@ -855,6 +867,8 @@ defmodule CanopyWeb.TimelineComponents do
 
   def activity_class(%{event_type: "agent_turn_completed", payload: p}) do
     cond do
+      # its engine_paused / engine_fallback line is the one to see
+      is_map(p["limit"]) -> "routine"
       p["outcome"] != "ok" -> nil
       p["passed"] && present?(p["note"]) -> nil
       # the light model handed the wake to the main one
@@ -1111,12 +1125,15 @@ defmodule CanopyWeb.TimelineComponents do
       ~H"""
       <.system_line
         id={"line-#{@event.id}"}
-        icon={event_icon(@event.event_type)}
+        icon={
+          if is_map(@event.payload["limit"]),
+            do: outcome_icon(@event.payload),
+            else: event_icon(@event.event_type)
+        }
         tone={event_tone(@event)}
         at={@event.inserted_at}
-      >
-        {event_text(@event, @names, @user_name)}
-      </.system_line>
+        text={event_text(@event, @names, @user_name)}
+      />
       """
     end
   end
@@ -1176,6 +1193,14 @@ defmodule CanopyWeb.TimelineComponents do
             title={"Ran on the agent's light model (model routing): #{@event.payload["model"]}"}
           >
             light model
+          </span>
+          <span
+            :if={is_map(@event.payload["fallback"])}
+            id={"turn-#{@event.id}-fallback"}
+            class="badge badge-warning badge-soft badge-xs shrink-0"
+            title={fallback_title(@event.payload["fallback"])}
+          >
+            {fallback_chip(@event.payload["fallback"])}
           </span>
           <%= case @header_note do %>
             <% {:error, quote} -> %>
@@ -2084,7 +2109,7 @@ defmodule CanopyWeb.TimelineComponents do
     failed = Enum.filter(card.entries, &(&1.kind == :tool and &1.status == :error))
 
     cond do
-      failed == [] ->
+      failed == [] or is_map(payload["limit"]) ->
         nil
 
       payload["outcome"] == "error" ->
@@ -2130,11 +2155,13 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  defp outcome_icon(%{"limit" => %{}}), do: "hero-pause-circle-mini"
   defp outcome_icon(%{"outcome" => "error"}), do: "hero-x-circle-mini"
   defp outcome_icon(%{"outcome" => "stopped"}), do: "hero-stop-circle-mini"
   defp outcome_icon(%{"outcome" => "interrupted"}), do: "hero-forward-mini"
   defp outcome_icon(_payload), do: "hero-check-circle-mini"
 
+  defp outcome_class(%{"limit" => %{}}), do: "text-warning"
   defp outcome_class(%{"outcome" => "error"}), do: "text-error"
 
   defp outcome_class(%{"outcome" => outcome}) when outcome in ["stopped", "interrupted"],
@@ -2324,6 +2351,14 @@ defmodule CanopyWeb.TimelineComponents do
         <.watch_row :if={s.kind == "watch"} schedule={s} scope={@scope} />
         <div :if={s.kind != "watch"} class="min-w-0 flex-1">
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span
+              :if={s.source == "auto"}
+              id={"#{@id}-#{s.id}-auto"}
+              class="badge badge-warning badge-soft badge-xs self-center"
+              title="Created by Canopy when the agent's engine paused, to nudge it after the reset"
+            >
+              Auto
+            </span>
             <span class="font-medium" title={DateTime.to_iso8601(s.next_run_at)}>
               {Canopy.Schedules.local_text(s.next_run_at)}
             </span>
@@ -2833,6 +2868,23 @@ defmodule CanopyWeb.TimelineComponents do
   # -- Event text --------------------------------------------------------------
 
   @doc "The one-line description of a collaboration event."
+  # The nudge Canopy schedules when an engine pauses has no agent behind it.
+  def event_text(
+        %{event_type: "schedule_created", payload: %{"source" => "auto"} = p} = event,
+        names,
+        user_name
+      ),
+      do:
+        "Canopy scheduled a nudge for #{agent_ref(names, event.agent_id, user_name)}: #{auto_timing(p)} · #{p["instruction"]}"
+
+  def event_text(
+        %{event_type: "schedule_fired", payload: %{"source" => "auto"} = p} = event,
+        names,
+        user_name
+      ),
+      do:
+        "Canopy's nudge fired for #{agent_ref(names, event.agent_id, user_name)}: #{p["instruction"]}"
+
   def event_text(%{event_type: type, payload: p} = event, names, user_name) do
     agent = agent_ref(names, event.agent_id, user_name)
     from = agent_ref(names, p["from_agent_id"], user_name)
@@ -2861,6 +2913,7 @@ defmodule CanopyWeb.TimelineComponents do
       "agent_turn_completed" ->
         verb =
           cond do
+            is_map(p["limit"]) -> limit_verb(p["limit"])
             p["outcome"] == "stopped" -> "was stopped by #{user}"
             p["outcome"] == "interrupted" -> "was interrupted by #{user}"
             p["escalated"] -> "escalated to its main model"
@@ -2960,6 +3013,26 @@ defmodule CanopyWeb.TimelineComponents do
 
         "#{by} moved this conversation to #{p["to"]}" <>
           if(p["from"], do: " (from #{p["from"]})", else: "")
+
+      "engine_fallback" ->
+        engine_fallback_text(p, agent)
+
+      "engine_paused" ->
+        engine_paused_text(p, agent)
+
+      "engine_wake_dropped" ->
+        engine = Canopy.Engine.label(p["engine"] || "?")
+
+        case iso_time(p["resets_at"]) do
+          nil ->
+            "Didn't wake #{agent}: #{engine} is paused until you release it."
+
+          resets_at ->
+            "Didn't wake #{agent}: #{engine} is paused until #{reset_text(resets_at)}. The #{reset_text(nudge_time(p))} nudge will pick this up."
+        end
+
+      "engine_resumed" ->
+        engine_resumed_text(p, names, user_name)
 
       "schedule_created" ->
         by =
@@ -3247,6 +3320,50 @@ defmodule CanopyWeb.TimelineComponents do
     """
   end
 
+  @doc """
+  The time left until `until` (wall-clock ms), ticked in the browser by the
+  `.Countdown` hook every 15 seconds: `in 2h 14m` (`Canopy.Elapsed.remaining/1`),
+  then `resuming…` once it has passed. The server renders the first value.
+  The id must change when `until` does: the hook owns the text. The script
+  comes first so no whitespace follows the span (`(in 2h 14m)`, not `(in 2h 14m )`).
+  """
+  attr :id, :string, required: true
+  attr :until, :integer, required: true
+  attr :rest, :global
+
+  def countdown(assigns) do
+    ~H"""
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".Countdown">
+      // Ticks `countdown/1` from data-until (wall-clock ms) every 15 seconds,
+      // recomputed from Date.now() so a sleeping tab is right on wake.
+      // `remaining` mirrors Canopy.Elapsed.remaining/1: change them together.
+      const remaining = ms => {
+        const m = Math.max(0, Math.floor(ms / 60000))
+        if (m >= 1440) return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`
+        return m < 1 ? "<1m" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+      }
+      export default {
+        mounted() {
+          this.tick = () => {
+            const left = Number(this.el.dataset.until) - Date.now()
+            this.el.textContent = left > 0 ? `in ${remaining(left)}` : "resuming…"
+          }
+          this.tick()
+          this.timer = setInterval(this.tick, 15000)
+        },
+        updated() { this.tick() },
+        destroyed() { clearInterval(this.timer) },
+      }
+    </script><span id={@id} phx-hook=".Countdown" phx-update="ignore" data-until={@until} {@rest}>{countdown_text(
+      @until - System.os_time(:millisecond)
+    )}</span>
+    """
+  end
+
+  @doc false
+  def countdown_text(left_ms) when left_ms > 0, do: "in " <> Canopy.Elapsed.remaining(left_ms)
+  def countdown_text(_left_ms), do: "resuming…"
+
   @doc "Who sent a message: `@agent`, a user's display name, or else `user_name` (the local user)."
   def sender_name(%{agent: %{name: name}}, _user_name) when is_binary(name), do: "@" <> name
   def sender_name(%{user: %{display_name: name}}, _user_name) when is_binary(name), do: name
@@ -3490,6 +3607,161 @@ defmodule CanopyWeb.TimelineComponents do
   defp mid_turn([_ | _] = ids), do: "took #{length(ids)} messages mid-turn"
   defp mid_turn(_), do: nil
 
+  # -- Engine pauses (Canopy.EnginePauses) ------------------------------------
+
+  # "@backend hit the Claude Code usage limit (resets 15:00) and carried on with
+  # Codex › gpt-5-codex in a new session. Back to opus at 15:01." With `hit`
+  # false the agent was woken while its engine was already paused, so it
+  # didn't hit the limit itself; a missing `hit` reads as true.
+  defp engine_fallback_text(p, agent) do
+    engine = Canopy.Engine.label(p["from_engine"] || "?")
+    resets_at = iso_time(p["resets_at"])
+    target = fallback_label(p["to_engine"], p["to_model"])
+    session = if p["new_session"] == false, do: "", else: " in a new session"
+
+    back =
+      if resets_at,
+        do: "at #{reset_text(DateTime.add(resets_at, 60))}",
+        else: "when #{engine} is resumed"
+
+    back = "Back to #{p["from_model"] || "its own model"} #{back}."
+
+    if p["hit"] == false do
+      paused =
+        Enum.join(
+          [p["reason"] || "limit"] ++ List.wrap(resets_at && "resets #{reset_text(resets_at)}"),
+          ", "
+        )
+
+      "#{engine} is paused (#{paused}), so #{agent} is working on #{target}#{session}. #{back}"
+    else
+      resets = if resets_at, do: " (resets #{reset_text(resets_at)})", else: ""
+
+      if p["kind"] == "billing",
+        do:
+          "#{engine} is paused (#{p["reason"] || "billing"}), so #{agent} carried on with #{target}#{session}. #{back}",
+        else:
+          "#{agent} hit the #{engine} #{p["reason"] || "limit"}#{resets} and carried on with #{target}#{session}. #{back}"
+    end
+  end
+
+  # "@designer hit the Claude Code usage limit and has no fallback. It waits for
+  # the reset; a nudge is scheduled for 15:01." A billing pause isn't
+  # something the agent hit, and its reason may be any of the engine's
+  # (insufficient balance, monthly spend limit): "Claude Code is paused
+  # (insufficient balance) and @payer has no fallback." `fallback_unavailable` names a fallback
+  # that couldn't be used, without saying why (paused, same plan, not ready,
+  # failed to start).
+  defp engine_paused_text(p, agent) do
+    engine = Canopy.Engine.label(p["engine"] || "?")
+    reason = p["reason"] || "limit"
+
+    head =
+      case {p["kind"], p["fallback_unavailable"]} do
+        {"billing", label} when is_binary(label) ->
+          "#{engine} is paused (#{reason}) and #{agent}'s fallback #{label} can't be used right now."
+
+        {"billing", _} ->
+          "#{engine} is paused (#{reason}) and #{agent} has no fallback."
+
+        {_, label} when is_binary(label) ->
+          "#{agent} hit the #{engine} #{reason}; its fallback #{label} can't be used right now."
+
+        _ ->
+          "#{agent} hit the #{engine} #{reason} and has no fallback."
+      end
+
+    case iso_time(p["resets_at"]) do
+      nil ->
+        "#{head} It waits until you release #{engine}."
+
+      _ ->
+        "#{head} It waits for the reset; a nudge is scheduled for #{reset_text(nudge_time(p))}."
+    end
+  end
+
+  # "Claude Code's limit reset. @backend is back on opus; @designer was nudged
+  # to continue." Empty lists drop their clause.
+  defp engine_resumed_text(p, names, user_name) do
+    engine = Canopy.Engine.label(p["engine"] || "?")
+    head = if p["by"] == "user", do: "You resumed #{engine}.", else: "#{engine}'s limit reset."
+
+    returned =
+      for %{} = r <- List.wrap(p["returned"]),
+          do:
+            "#{agent_ref(names, r["agent_id"], user_name)} is back on #{r["model"] || "its own model"}"
+
+    nudged =
+      case Enum.map(List.wrap(p["nudged"]), &agent_ref(names, &1, user_name)) do
+        [] -> []
+        [one] -> ["#{one} was nudged to continue"]
+        many -> ["#{join_and(many)} were nudged to continue"]
+      end
+
+    case returned ++ nudged do
+      [] -> head
+      clauses -> head <> " " <> Enum.join(clauses, "; ") <> "."
+    end
+  end
+
+  # The turn that hit a limit: its engine_paused / engine_fallback line says
+  # the rest, so the turn itself doesn't read as an error.
+  defp limit_verb(%{"kind" => "billing"} = limit),
+    do: "stopped: #{limit["reason"] || "billing problem"}"
+
+  defp limit_verb(limit), do: "hit the #{limit["reason"] || "usage limit"}"
+
+  defp join_and([one]), do: one
+  defp join_and(items), do: Enum.join(Enum.drop(items, -1), ", ") <> " and " <> List.last(items)
+
+  # `nudge_at`, else a minute after `resets_at`.
+  defp nudge_time(p) do
+    iso_time(p["nudge_at"]) || ((at = iso_time(p["resets_at"])) && DateTime.add(at, 60))
+  end
+
+  defp auto_timing(p) do
+    case iso_time(p["run_at"]) do
+      nil -> schedule_timing(p)
+      at -> "once at #{reset_text(at)}"
+    end
+  end
+
+  defp iso_time(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, at, _} -> at
+      _ -> nil
+    end
+  end
+
+  defp iso_time(_), do: nil
+
+  @doc """
+  When an engine's limit resets, in local time: `15:00` today, else with the
+  day (`Tue 21 Oct 09:00`), since weekly limits reset days away.
+  """
+  def reset_text(%DateTime{} = at) do
+    today =
+      DateTime.utc_now() |> Canopy.Schedules.When.to_local_naive() |> NaiveDateTime.to_date()
+
+    if at |> Canopy.Schedules.When.to_local_naive() |> NaiveDateTime.to_date() == today,
+      do: short_time(at),
+      else: Canopy.Schedules.local_text(at)
+  end
+
+  def reset_text(_), do: ""
+
+  # "Codex › gpt-5-codex"
+  defp fallback_label(engine, model),
+    do: "#{Canopy.Engine.label(engine || "?")} › #{model || "its default model"}"
+
+  # The `· fallback` chip on a message or turn written on a fallback.
+  defp fallback_chip(%{} = fallback),
+    do: "#{Canopy.Engine.label(fallback["engine"] || "?")} · fallback"
+
+  defp fallback_title(%{} = fallback) do
+    "Written on the fallback, #{fallback_label(fallback["engine"], fallback["model"])}, while #{Canopy.Engine.label(fallback["from_engine"] || "?")} was paused"
+  end
+
   defp schedule_timing(%{"kind" => "recurring", "cron" => cron}),
     do: Canopy.Schedules.describe_cron(cron)
 
@@ -3622,6 +3894,10 @@ defmodule CanopyWeb.TimelineComponents do
   defp event_icon("signoff_" <> _), do: "hero-hand-raised-mini"
   defp event_icon("playbook_stalled"), do: "hero-bell-alert-mini"
   defp event_icon("playbook_" <> _), do: "hero-book-open-mini"
+  defp event_icon("engine_fallback"), do: "hero-arrows-right-left-mini"
+  defp event_icon("engine_paused"), do: "hero-pause-mini"
+  defp event_icon("engine_wake_dropped"), do: "hero-clock-mini"
+  defp event_icon("engine_resumed"), do: "hero-arrow-path-mini"
   defp event_icon(_), do: "hero-information-circle-mini"
 
   defp event_tone(%{event_type: "agent_error"}), do: "error"
@@ -3637,15 +3913,19 @@ defmodule CanopyWeb.TimelineComponents do
        when by in ~w(lease user restart),
        do: "warning"
 
+  defp event_tone(%{event_type: "agent_turn_completed", payload: %{"limit" => %{}}}),
+    do: "muted"
+
   defp event_tone(%{event_type: "agent_turn_completed", payload: %{"outcome" => "error"}}),
     do: "error"
 
   defp event_tone(%{event_type: type})
-       when type in ~w(handoff_accepted delegation_completed playbook_completed),
+       when type in ~w(handoff_accepted delegation_completed playbook_completed engine_resumed),
        do: "success"
 
   defp event_tone(%{event_type: type})
-       when type in ~w(playbook_approval_requested playbook_stalled signoff_requested),
+       when type in ~w(playbook_approval_requested playbook_stalled signoff_requested
+                       engine_fallback engine_paused),
        do: "warning"
 
   defp event_tone(_), do: "muted"

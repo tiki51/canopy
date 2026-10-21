@@ -55,9 +55,46 @@ defmodule Canopy.Codex.Events do
       open: MapSet.new(),
       mcp: %{},
       mcp_sent?: false,
-      error: nil
+      error: nil,
+      # the account's rate-limit snapshot (`account/rateLimits/updated`),
+      # merged as it arrives: where a usage limit's reset time comes from
+      rate_limits: nil
     }
   end
+
+  @doc "Whether the snapshot so far has a rate-limit window with a reset time."
+  def rate_limit_windows?(acc), do: windows(Map.get(acc, :rate_limits)) != []
+
+  @doc "Merges a `RateLimitSnapshot` (sparse, rolling) into the accumulator."
+  def merge_rate_limits(acc, %{} = snapshot) do
+    merged =
+      Map.merge(Map.get(acc, :rate_limits) || %{}, snapshot, fn
+        _key, %{} = old, %{} = new -> Map.merge(old, new)
+        _key, _old, new -> new
+      end)
+
+    Map.put(acc, :rate_limits, merged)
+  end
+
+  def merge_rate_limits(acc, _snapshot), do: acc
+
+  @doc """
+  Whether a failed `turn/completed` is a plan usage limit or an API quota
+  (`codexErrorInfo`), the failure a reset time is looked up for. The error
+  is the turn's, else the one the `error` notification left in `acc`, as
+  `normalize/3` reads it.
+  """
+  def limit_failure?(%{"turn" => %{"status" => "failed"} = turn}, acc) do
+    case turn["error"] || Map.get(acc, :error) do
+      %{} = error ->
+        error_name(error["codexErrorInfo"]) in ["usageLimitExceeded", "insufficient_quota"]
+
+      _ ->
+        false
+    end
+  end
+
+  def limit_failure?(_params, _acc), do: false
 
   @doc "The `:session_updated` event for a `thread/start` or `thread/resume` response."
   def session_event(response, extra \\ %{}) do
@@ -217,14 +254,21 @@ defmodule Canopy.Codex.Events do
   def normalize("model/rerouted", %{"toModel" => model}, acc) when is_binary(model),
     do: {[event(:session_updated, %{session: %{"model" => model}})], %{acc | model: model}}
 
+  def normalize("account/rateLimits/updated", %{"rateLimits" => snapshot}, acc),
+    do: {[], merge_rate_limits(acc, snapshot)}
+
   def normalize("turn/completed", %{"turn" => turn}, acc) when is_map(turn) do
     status = turn["status"]
     usage = turn_usage(acc, status)
 
     outcome =
       case status do
-        "failed" -> event(:agent_error, %{error: error_map(turn["error"] || acc.error)})
-        _ -> event(:agent_completed, %{})
+        "failed" ->
+          raw = turn["error"] || acc.error
+          event(:agent_error, %{error: error_map(raw), limit: limit(raw, acc)})
+
+        _ ->
+          event(:agent_completed, %{})
       end
 
     {[usage, outcome], acc}
@@ -244,6 +288,69 @@ defmodule Canopy.Codex.Events do
       tokens: tokens,
       finish: finish
     })
+  end
+
+  # -- Limits -----------------------------------------------------------------------
+
+  @doc """
+  The usage or billing limit a failed turn's error stands for, or nil: a
+  plan usage limit (`usageLimitExceeded`) or an API quota
+  (`insufficient_quota`), with its reset time from the rate-limit snapshot:
+  the latest `resetsAt` among the windows used up (`usedPercent >= 100`),
+  else the earliest window's.
+  """
+  def limit(%{} = error, acc) do
+    name = error_name(error["codexErrorInfo"])
+
+    if name in ["usageLimitExceeded", "insufficient_quota"] do
+      snapshot = Map.get(acc, :rate_limits) || %{}
+      all = windows(snapshot)
+      full = Enum.filter(all, &(number(&1["usedPercent"]) >= 100))
+
+      window =
+        case full do
+          [] -> Enum.min_by(all, &number(&1["resetsAt"]), fn -> nil end)
+          full -> Enum.max_by(full, &number(&1["resetsAt"]))
+        end
+
+      {kind, reason} = limit_kind(name, snapshot, window)
+
+      %{
+        kind: kind,
+        reason: reason,
+        resets_at: window && Canopy.EnginePauses.epoch(window["resetsAt"]),
+        detail: error_message(error)
+      }
+    end
+  end
+
+  def limit(_error, _acc), do: nil
+
+  defp windows(%{} = snapshot) do
+    for key <- ["primary", "secondary"],
+        %{"resetsAt" => at} = window <- [snapshot[key]],
+        is_integer(at),
+        do: window
+  end
+
+  defp windows(_), do: []
+
+  defp limit_kind("insufficient_quota", _snapshot, _window),
+    do: {"billing", "insufficient balance"}
+
+  defp limit_kind(_name, snapshot, window) do
+    reached = snapshot["rateLimitReachedType"]
+
+    cond do
+      is_binary(reached) and String.ends_with?(reached, "credits_depleted") ->
+        {"billing", "insufficient balance"}
+
+      is_map(window) and number(window["windowDurationMins"]) >= 7 * 24 * 60 ->
+        {"usage", "weekly usage limit"}
+
+      true ->
+        {"usage", "usage limit"}
+    end
   end
 
   @doc "Codex's turn error as Canopy's error map (`name`, `data.message`)."

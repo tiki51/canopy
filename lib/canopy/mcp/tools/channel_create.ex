@@ -115,7 +115,9 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
   defp maybe_post(channel, ctx, text) do
     {:ok, _} = Runtime.ensure_channel(channel.id)
 
-    case Messages.post_agent_message(channel.id, ctx.agent.id, text) do
+    case Messages.post_agent_message(channel.id, ctx.agent.id, text,
+           fallback: Canopy.Fallback.marker(ctx.session)
+         ) do
       {:ok, message} -> {:ok, message.id}
       {:error, changeset} -> {:error, "could not post: " <> Tool.changeset_reason(changeset)}
     end

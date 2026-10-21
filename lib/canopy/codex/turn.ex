@@ -53,6 +53,8 @@ defmodule Canopy.Codex.Turn do
   @default_item_stall_ms :timer.minutes(60)
   @abort_grace_ms 10_000
   @abort_call_ms 1_000
+  # how long a usage-limit failure waits for `account/rateLimits/read`
+  @rate_limits_timeout_ms 5_000
   @stderr_tail 600
   @registry Canopy.Codex.TurnRegistry
 
@@ -337,6 +339,11 @@ defmodule Canopy.Codex.Turn do
     end
   end
 
+  def handle_info({:rate_limits_timeout, params}, %{done?: false} = state),
+    do: complete(params, state)
+
+  def handle_info({:rate_limits_timeout, _params}, state), do: {:noreply, state}
+
   def handle_info({:expire, rpc_id}, state) do
     case state.open[rpc_id] do
       nil -> {:noreply, state}
@@ -419,6 +426,16 @@ defmodule Canopy.Codex.Turn do
     do: fail(state, "codex could not compact the thread: " <> error_text(error))
 
   # steer, interrupt, compact ok: nothing to do (an unread steer is reported at the end)
+  defp handle_response({:rate_limits, params}, result, %{done?: false} = state) do
+    acc =
+      case result do
+        {:ok, %{"rateLimits" => snapshot}} -> Events.merge_rate_limits(state.acc, snapshot)
+        _ -> state.acc
+      end
+
+    complete(params, %{state | acc: acc})
+  end
+
   defp handle_response(_tag, _result, state), do: {:noreply, state}
 
   # Codex 0.163's only wording for a thread it has no rollout for (probed:
@@ -676,12 +693,19 @@ defmodule Canopy.Codex.Turn do
   end
 
   defp on_notification("turn/completed", %{"turn" => turn} = params, state) do
-    if state.turn_id != nil and turn["id"] != state.turn_id do
-      {:noreply, state}
-    else
-      {events, acc} = Events.normalize("turn/completed", params, state.acc)
-      events = if state.aborted?, do: Enum.map(events, &as_completed/1), else: events
-      finish(events, %{state | acc: acc})
+    cond do
+      state.turn_id != nil and turn["id"] != state.turn_id ->
+        {:noreply, state}
+
+      # a usage limit with no reset time known yet: ask for the account's
+      # rate limits once, then finish (on the answer, or after 5 s)
+      Events.limit_failure?(params, state.acc) and not Events.rate_limit_windows?(state.acc) and
+          not state.aborted? ->
+        Process.send_after(self(), {:rate_limits_timeout, params}, @rate_limits_timeout_ms)
+        {:noreply, request(state, "account/rateLimits/read", %{}, {:rate_limits, params})}
+
+      true ->
+        complete(params, state)
     end
   end
 
@@ -713,6 +737,12 @@ defmodule Canopy.Codex.Turn do
   defp clear_retry(state, _method), do: state
 
   # -- Ending ---------------------------------------------------------------------------
+
+  defp complete(params, state) do
+    {events, acc} = Events.normalize("turn/completed", params, state.acc)
+    events = if state.aborted?, do: Enum.map(events, &as_completed/1), else: events
+    finish(events, %{state | acc: acc})
+  end
 
   defp finish(events, state) do
     events |> add_unconsumed(unconsumed(state)) |> broadcast(state)

@@ -49,7 +49,9 @@ defmodule CanopyWeb.Layouts do
     default: %{},
     doc: "agent_id => active schedules, from CanopyWeb.Nav"
 
-  attr :hold, :string, default: nil, doc: "why agent activity is held, from CanopyWeb.Nav"
+  attr :engine_pauses, :list,
+    required: true,
+    doc: "paused engines (`Canopy.EnginePauses.list/0`), from CanopyWeb.Nav"
 
   attr :palette, :map,
     default: %{},
@@ -354,25 +356,7 @@ defmodule CanopyWeb.Layouts do
       </div>
 
       <main id="main" tabindex="-1" class="flex min-w-0 flex-1 flex-col overflow-hidden outline-none">
-        <div
-          :if={@hold}
-          id="hold-banner"
-          class="flex shrink-0 flex-wrap items-center gap-3 border-b border-error/40 bg-error/10 px-4 py-2 text-sm"
-        >
-          <.icon name="hero-hand-raised" class="size-5 shrink-0 text-error" />
-          <span class="min-w-0 flex-1">
-            <span class="font-semibold">Agent runs are on hold.</span>
-            {@hold}. Schedules are paused and wakes are dropped until you release it.
-          </span>
-          <button
-            type="button"
-            id="release-hold"
-            class="btn btn-xs btn-error"
-            phx-click="release_hold"
-          >
-            Release hold
-          </button>
-        </div>
+        <.engine_pause_banner pauses={@engine_pauses} />
         {render_slot(@inner_block)}
       </main>
 
@@ -407,7 +391,7 @@ defmodule CanopyWeb.Layouts do
             current_channel_id: @current_channel_id,
             current_repository_id: @current_repository_id,
             current_path: @current_path,
-            hold: @hold,
+            paused: @engine_pauses != [],
             sections: CanopyWeb.CommandPalette.sections(@repositories, @current_repository_id)
           })
         }
@@ -435,6 +419,77 @@ defmodule CanopyWeb.Layouts do
     <div id="sidebar-undo-toast" phx-hook="UndoToast" phx-update="ignore" aria-live="polite"></div>
     """
   end
+
+  # One row per paused engine, red first (no reset time), as
+  # `Canopy.EnginePauses.list/0` orders them. Nav handles `resume_engine` on
+  # every page.
+  attr :pauses, :list, required: true
+
+  defp engine_pause_banner(assigns) do
+    ~H"""
+    <div
+      :if={@pauses != []}
+      id="engine-pauses"
+      class="shrink-0 divide-y divide-base-300 border-b border-base-300"
+    >
+      <div
+        :for={p <- @pauses}
+        id={"engine-pause-#{p.engine}"}
+        data-tone={if p.resets_at, do: "warning", else: "error"}
+        role="status"
+        class={[
+          "flex flex-wrap items-center gap-3 px-4 py-2 text-sm",
+          if(p.resets_at, do: "bg-warning/10", else: "bg-error/10")
+        ]}
+      >
+        <.icon
+          name={if p.resets_at, do: "hero-pause", else: "hero-exclamation-triangle"}
+          class={["size-5 shrink-0", if(p.resets_at, do: "text-warning", else: "text-error")]}
+        />
+        <span class="min-w-0 flex-1" title={p.detail}>
+          <span class="font-semibold">{Canopy.Engine.label(p.engine)} is paused: {p.reason}.</span>
+          <%= if p.resets_at do %>
+            Resets at
+            <time datetime={DateTime.to_iso8601(p.resets_at)}>{CanopyWeb.TimelineComponents.reset_text(
+              p.resets_at
+            )}</time>
+            <span class="text-base-content/60">(<CanopyWeb.TimelineComponents.countdown
+                id={"engine-pause-#{p.engine}-countdown-#{DateTime.to_unix(p.resets_at)}"}
+                until={DateTime.to_unix(p.resets_at, :millisecond)}
+              />)</span>.
+          <% else %>
+            Agents on {Canopy.Engine.label(p.engine)} wait until you release it.
+          <% end %>
+          {pause_counts(p)}
+        </span>
+        <button
+          type="button"
+          id={"resume-engine-#{p.engine}"}
+          phx-click="resume_engine"
+          phx-value-engine={p.engine}
+          class={["btn btn-xs btn-outline", if(p.resets_at, do: "btn-warning", else: "btn-error")]}
+          aria-label={"Resume #{Canopy.Engine.label(p.engine)} now"}
+        >
+          {if p.resets_at, do: "Resume now", else: "Release"}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # "1 agent waiting, 2 on a fallback.", or "2 agents on a fallback." A zero
+  # part is left out; nothing when both are.
+  defp pause_counts(%{waiting: waiting, on_fallback: on_fallback}) do
+    case {waiting, on_fallback} do
+      {0, 0} -> nil
+      {w, 0} -> agents(w) <> " waiting."
+      {0, f} -> agents(f) <> " on a fallback."
+      {w, f} -> "#{agents(w)} waiting, #{f} on a fallback."
+    end
+  end
+
+  defp agents(1), do: "1 agent"
+  defp agents(n), do: "#{n} agents"
 
   @doc false
   def group_slug(group), do: group |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")

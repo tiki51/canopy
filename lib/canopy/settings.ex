@@ -25,7 +25,10 @@ defmodule Canopy.Settings do
     :codex_default_model,
     :codex_default_effort,
     :opencode_default_provider,
-    :opencode_default_model
+    :opencode_default_model,
+    :claude_fallback,
+    :codex_fallback,
+    :opencode_fallback
   ]
   # The same, for the light model routed agents run cheap wakes on.
   @light_model_fields %{

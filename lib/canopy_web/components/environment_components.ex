@@ -321,7 +321,10 @@ defmodule CanopyWeb.EnvironmentComponents do
   # -- Modal -------------------------------------------------------------------
 
   attr :reset, :map, required: true, doc: "the page's `@reset`"
-  attr :hold, :string, default: nil, doc: "`Canopy.Hold.reason/0` (the Kept column says it stays)"
+
+  attr :engine_pauses, :list,
+    default: [],
+    doc: "`Canopy.EnginePauses.list/0` (the Kept column says they stay)"
 
   @doc """
   The reset modal. Not a `<dialog>` (Chrome closes a modal dialog on a
@@ -356,7 +359,7 @@ defmodule CanopyWeb.EnvironmentComponents do
           phx-click-away={@closable? && close_reset()}
           class="w-full overflow-y-auto rounded-2xl bg-base-100 p-6 text-base-content shadow-2xl outline-none ring-1 ring-base-content/10"
         >
-          <.modal_body reset={@reset} hold={@hold} />
+          <.modal_body reset={@reset} engine_pauses={@engine_pauses} />
         </div>
       </.focus_wrap>
     </div>
@@ -367,7 +370,7 @@ defmodule CanopyWeb.EnvironmentComponents do
   defp close_reset, do: JS.push("close_reset") |> JS.focus(to: "#open-reset")
 
   attr :reset, :map, required: true
-  attr :hold, :string, default: nil
+  attr :engine_pauses, :list, default: []
 
   defp modal_body(%{reset: %{state: :confirm}} = assigns) do
     assigns = assign(assigns, :d, assigns.reset.preview.deleted)
@@ -410,7 +413,7 @@ defmodule CanopyWeb.EnvironmentComponents do
       <section class="rounded-lg border border-base-300 bg-base-100 p-3">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-success">Kept</h3>
         <ul id="reset-kept" class="mt-2 flex flex-col gap-1 text-sm">
-          <li :for={item <- kept(@reset.preview, @hold)} class="flex gap-1.5">
+          <li :for={item <- kept(@reset.preview, @engine_pauses)} class="flex gap-1.5">
             <.icon name="hero-check-mini" class="mt-0.5 size-4 shrink-0 text-success" />
             <span>{item}</span>
           </li>
@@ -540,14 +543,14 @@ defmodule CanopyWeb.EnvironmentComponents do
   # A failed backup has no file to point at.
   defp backup_shown?(failure), do: failure.step == :clearing and failure.backup_path != nil
 
-  defp kept(preview, hold) do
+  defp kept(preview, engine_pauses) do
     [
       "Engine, model & brake settings",
       "MCP token & collaboration prompt",
       "Your display name",
       "Registered repositories (#{preview.kept.repositories})",
       "Everything inside your repositories"
-    ] ++ if(hold, do: ["Spend hold (on)"], else: [])
+    ] ++ if(engine_pauses != [], do: ["Engine pauses (on)"], else: [])
   end
 
   defp n(count) when is_integer(count), do: CanopyWeb.FileViewer.delimit(count)

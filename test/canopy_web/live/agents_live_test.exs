@@ -1044,4 +1044,91 @@ defmodule CanopyWeb.AgentsLiveTest do
       assert has_element?(view, "#export-agent-download", "Download exportable.md")
     end
   end
+
+  describe "fallback model" do
+    test "Default follows Settings for the form's engine", %{conn: conn} do
+      {:ok, _} = Canopy.Settings.update(%{claude_fallback: "codex:gpt-5-codex"})
+      {:ok, view, _html} = live(conn, ~p"/agents/new")
+      render_async(view)
+
+      # the default engine (OpenCode) has no fallback set
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='']",
+               "Default (none: wait for the reset)"
+             )
+
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='none']",
+               "None: wait for the reset"
+             )
+
+      assert has_element?(view, "#agent-fallback-help", "when OpenCode reports a usage limit")
+
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='opencode:opencode/big-pickle']",
+               "opencode/big-pickle (pauses with OpenCode)"
+             )
+
+      view |> form("#agent-form", agent: %{engine: "claude_code"}) |> render_change()
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='']",
+               "Default (Codex › gpt-5-codex)"
+             )
+
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='claude_code:sonnet']",
+               "sonnet (pauses with Claude Code)"
+             )
+
+      assert has_element?(
+               view,
+               "#agent-fallback option[value='codex:gpt-5-codex']",
+               "gpt-5-codex"
+             )
+
+      assert has_element?(
+               view,
+               "#agent-fallback-help",
+               "A Claude Code model pauses along with Claude Code"
+             )
+    end
+
+    test "None saves, and the agent page shows each choice", %{conn: conn} do
+      agent = Fixtures.agent_fixture(%{name: "waiter", engine: "claude_code", model_id: "opus"})
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}/edit")
+      render_async(view)
+      # the agent's own model is left out
+      refute has_element?(view, "#agent-fallback option[value='claude_code:opus']")
+
+      view |> form("#agent-form", agent: %{fallback: "none"}) |> render_submit()
+      assert Agents.get!(agent.id).fallback == "none"
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#agent-fallback-value", "None: waits for the reset")
+
+      {:ok, _} = Agents.update(Agents.get!(agent.id), %{fallback: "codex:gpt-5-codex"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#agent-fallback-value", "Codex › gpt-5-codex")
+      refute has_element?(view, "#agent-fallback-value", "default")
+
+      {:ok, _} = Agents.update(Agents.get!(agent.id), %{fallback: nil})
+      {:ok, _} = Canopy.Settings.update(%{claude_fallback: "opencode:opencode/big-pickle"})
+      {:ok, view, _html} = live(conn, ~p"/agents/#{agent.id}")
+      assert has_element?(view, "#agent-fallback-value", "OpenCode › opencode/big-pickle")
+
+      assert has_element?(
+               view,
+               "#agent-fallback-value a[href='/settings#claude-panel']",
+               "default"
+             )
+    end
+  end
 end

@@ -22,6 +22,7 @@
 //   FAKE_TURN_DELAY_MS   pause per tool call (default 50; the site specs use 2500)
 //   FAKE_CLAUDE_VERSION  what --version prints and system/init reports
 //   FAKE_CLAUDE_PROMPT_LOG  a file to append every turn's prompt to (debugging a story)
+//   FAKE_RESETS_IN_S     how far ahead a `[limit]` prompt's usage limit resets (default 7200)
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -1054,6 +1055,33 @@ function readPrompt() {
   });
 }
 
+// A usage limit, for the engine-pause specs: a prompt with `[limit]` hits
+// the session limit (a rejected rate_limit_event, resetting in
+// FAKE_RESETS_IN_S, default 2 h), `[limit:billing]` a billing limit with no
+// reset time. Once per session, so the nudge and later wakes go through.
+function limitFor(text) {
+  const kind = /\[limit:billing\]/.test(text) ? "billing" : /\[limit\]/.test(text) ? "usage" : null;
+  if (!kind || loadState().limitHit) return null;
+  return kind;
+}
+
+function hitLimit(kind) {
+  saveState({ ...loadState(), limitHit: true });
+  let text = "Credit balance is too low";
+  if (kind === "usage") {
+    const resetsAt = Math.floor(Date.now() / 1000) + Number(process.env.FAKE_RESETS_IN_S || 7200);
+    out({
+      type: "rate_limit_event",
+      session_id: sid,
+      rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour", overageStatus: "rejected" },
+    });
+    text = "You've hit your session limit · resets soon";
+  }
+  out({ type: "assistant", session_id: sid, message: { id: `msg_limit_${Date.now()}`, content: [{ type: "text", text }] }, error: "rate_limit" });
+  saveCost();
+  out({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: text, session_id: sid, total_cost_usd: Number(cost.toFixed(6)), usage });
+}
+
 const line = await readPrompt();
 let prompt = "";
 try {
@@ -1078,6 +1106,8 @@ try {
   if (prompt.trim() === "/compact") {
     out({ type: "system", subtype: "compact_boundary", session_id: sid, compact_metadata: { trigger: "manual", pre_tokens: context } });
     finish("Compacted.");
+  } else if (limitFor(prompt)) {
+    hitLimit(limitFor(prompt));
   } else {
     await turn(prompt);
   }

@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"SESSION_ID","model":"claude-opus-4","mcp_servers":[]}
+{"type":"assistant","session_id":"SESSION_ID","message":{"id":"msg_limit","content":[{"type":"text","text":"Credit balance is too low"}]},"error":"billing_error"}
+{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Credit balance is too low","session_id":"SESSION_ID","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}
