@@ -60,7 +60,7 @@ defmodule Canopy.SeedsTest do
     assert {backend.opencode_agent, backend.permission_mode} == {"build", "default"}
 
     # agents take locks themselves; the project manager never brokers them
-    assert Agents.get_by_name("project-manager").system_prompt =~ "Don't assign\nor pass locks"
+    assert Agents.get_by_name("project-manager").system_prompt =~ ~r/Don't assign\s+or pass locks/
 
     # the starter playbooks, with the project manager told how to run one
     assert %{source: "seed", enabled: true} = Canopy.Playbooks.get_by_name("bug-fix")

@@ -1868,7 +1868,10 @@ channel), while the delegator stays idle. If the delegate is busy, the delegatio
 for its current turn to end; two delegations that arrive meanwhile reach it together, with
 both tasks. Until a delegation is done, every prompt the delegate receives in the channel
 reminds it of the delegations it still has open, so the task survives context compaction.
-Mentioning the delegate about the task is harmless: the message joins its queue.
+Mention the delegate in the post about it. A mention in the same turn as the delegation
+never interrupts the delegate. If the delegation hasn't started yet, the message goes along
+with it. If the delegate is already working on it, the message reaches the delegate when
+that turn ends, and only if the delegation is still open.
 
 When the delegate reports through `canopy_task_update`, a "completed the delegation" line
 carries the result and the delegator wakes with it. An agent with several open delegations

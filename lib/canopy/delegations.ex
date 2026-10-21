@@ -100,6 +100,11 @@ defmodule Canopy.Delegations do
     )
   end
 
+  @doc "Whether the delegation is still requested or working."
+  def open?(id) do
+    Repo.exists?(from d in Delegation, where: d.id == ^id and d.status in ^@pending)
+  end
+
   @doc "Delegations addressed to `agent_id` in a channel that are still requested or working."
   def list_pending_for(channel_id, agent_id) do
     Repo.all(

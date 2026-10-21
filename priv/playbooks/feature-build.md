@@ -55,7 +55,8 @@ The project manager coordinates and drives the run to completion. Rules for ever
   approved design, and current status. Keep it current.
 - Give each step to its owners with `canopy_delegate_task`, one delegation per owner. A delegation must
   stand alone: the request, what earlier steps decided (documents by `doc_…` id, files by `path:line`),
-  what this owner does, and what done looks like. Don't also @mention the delegate.
+  what this owner does, and what done looks like. A post about it @mentions the delegate; that
+  doesn't wake them again while they work on it.
 - Designs, technical docs, test plans and screenshots are shared as Canopy documents (write under
   `.canopy/out/`, then `canopy_document_share` or attach to the post). Put their ids in each step result.
 - Advance with `canopy_playbook_advance` only when the step's "Done when" holds; put the evidence in

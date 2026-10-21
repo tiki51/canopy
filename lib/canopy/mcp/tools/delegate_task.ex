@@ -4,9 +4,11 @@ defmodule Canopy.MCP.Tools.DelegateTask do
   ownership of the task; the delegate works on it in its session in the
   channel and you are woken with the result when they report completion.
 
-  The delegate is woken with the task, so a status post about it needn't
-  @mention them; a mention only adds a message to their queue. To add to the
-  task, cite the delegation id in a message.
+  The delegate is woken with the task. In a status post about it, @mention
+  them like anyone else: a mention in the same turn as the delegation doesn't
+  wake them again while they work on it; it reaches them when that turn ends,
+  if the task is still open. To add to the task later, cite the delegation id
+  in a message that @mentions them.
 
   When you coordinate the channel's playbook run, the delegation is made for
   its current step (the run's panel lists it there, and the delegate is told
@@ -45,7 +47,7 @@ defmodule Canopy.MCP.Tools.DelegateTask do
         {:ok,
          "delegation [#{delegation.id}] requested#{step_note(step)}: @#{delegate.name} will work on it in ##{channel.name}. " <>
            "You will be woken when it completes; ownership stays with #{Format.agent_ref(channel.owner)}. " <>
-           "@#{delegate.name} has the task already, so a post about it needn't @mention them."}
+           "@#{delegate.name} has the task already; @mention them in your post about it, which won't wake them again while they work on it."}
       end
     end)
   end
