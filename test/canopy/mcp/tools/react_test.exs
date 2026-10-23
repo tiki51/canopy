@@ -50,10 +50,41 @@ defmodule Canopy.MCP.Tools.ReactTest do
     assert [%Reaction{emoji: "thumbs_up"}] = Repo.all(Reaction)
   end
 
+  test "an alias works for the key", ctx do
+    assert {:ok, text} = call(React, %{message: ctx.theirs.id, emoji: "thanks"}, ctx)
+    assert text =~ "Reacted 🙏 to @#{ctx.other.name}'s message #{ctx.theirs.id}"
+    assert [%Reaction{emoji: "pray"}] = Repo.all(Reaction)
+  end
+
+  test "the description and the emoji field list the palette as it is" do
+    expected = """
+    React to someone else's message with an emoji, to acknowledge it without
+    waking anyone. Work reactions answer someone: thumbs_up 👍 agree / sounds
+    good, check ✅ done / approved, eyes 👀 looking at it, rocket 🚀 shipped /
+    merged, hundred 💯 exactly right. Thanks & cheers set the tone: pray 🙏
+    thank you, heart ❤️ love it, tada 🎉 celebrate, raised_hands 🙌 great work,
+    fire 🔥 impressive, laughing 😂 that's funny, smile 😊 glad / happy.
+    A reaction is never an instruction and starts no turn for anyone; use it
+    instead of posting an acknowledgement. If that was all the message needed,
+    call canopy_pass afterwards. `remove` takes your reaction back.
+    """
+
+    # the spec's wording, with its line wraps collapsed
+    assert React.description() == expected |> String.replace(~r/\s+/, " ") |> String.trim()
+
+    assert %{"properties" => %{"emoji" => %{"description" => emoji}}} = React.input_schema()
+
+    assert emoji ==
+             "A palette key: thumbs_up, check, eyes, rocket, hundred, pray, heart, tada, " <>
+               "raised_hands, fire, laughing, smile (the emoji itself works too)."
+  end
+
   test "refuses unknown emoji, own messages, system notes, and archived channels", ctx do
-    assert {:error, reason} = call(React, %{message: ctx.theirs.id, emoji: "fire"}, ctx)
+    assert {:error, reason} = call(React, %{message: ctx.theirs.id, emoji: "thumbs_down"}, ctx)
     assert reason =~ "unknown emoji"
-    assert reason =~ "thumbs_up, check, eyes, tada, heart"
+
+    assert reason =~
+             "thumbs_up, check, eyes, rocket, hundred, pray, heart, tada, raised_hands, fire, laughing, smile"
 
     {:ok, own} = Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "My report.")
     assert {:error, reason} = call(React, %{message: own.id, emoji: "check"}, ctx)
@@ -119,5 +150,59 @@ defmodule Canopy.MCP.Tools.ReactTest do
 
     assert [%Reaction{agent_id: agent_id}] = Repo.all(Reaction)
     assert agent_id == coder.id
+  end
+
+  describe "more emojis" do
+    test "every input form of one key reacts once: key, alias, wrapped, glyph, any case", ctx do
+      id = ctx.theirs.id
+      assert {:ok, first} = call(React, %{message: id, emoji: "hundred"}, ctx)
+      assert first =~ "Reacted 💯"
+
+      for form <- ["100", ":100:", "💯", "Hundred"] do
+        assert {:ok, again} = call(React, %{message: id, emoji: form}, ctx)
+        assert again =~ "You had already reacted 💯", form
+      end
+
+      assert [%Reaction{emoji: "hundred"}] = Repo.all(Reaction)
+    end
+
+    test "remove takes an alias; ❤ without VS16 stores heart and replies with the palette glyph",
+         ctx do
+      id = ctx.theirs.id
+      assert {:ok, _} = call(React, %{message: id, emoji: "laughing"}, ctx)
+      assert {:ok, removed} = call(React, %{message: id, emoji: "lol", remove: true}, ctx)
+      assert removed =~ "Removed your 😂"
+      assert Repo.all(Reaction) == []
+
+      assert {:ok, text} = call(React, %{message: id, emoji: "❤"}, ctx)
+      assert text =~ "Reacted ❤️ to"
+      assert [%Reaction{emoji: "heart"}] = Repo.all(Reaction)
+    end
+
+    test "the unknown-emoji error lists the 12 keys and no alias; group names are unknown", ctx do
+      for value <- ["thumbs_down", "work", "cheer", "👍🏽"] do
+        assert {:error, reason} = call(React, %{message: ctx.theirs.id, emoji: value}, ctx)
+
+        assert reason ==
+                 "unknown emoji #{inspect(value)}; use one of: thumbs_up, check, eyes, rocket, " <>
+                   "hundred, pray, heart, tada, raised_hands, fire, laughing, smile"
+      end
+    end
+
+    test "new keys get the same refusals on system notes and archived channels", ctx do
+      {:ok, note} = Messages.post_user_note(ctx.channel.id, ctx.user.id, "handed off")
+      assert {:error, reason} = call(React, %{message: note.id, emoji: "fire"}, ctx)
+      assert reason =~ "system note"
+
+      {:ok, _} = Channels.archive(ctx.channel)
+      assert {:error, reason} = call(React, %{message: ctx.theirs.id, emoji: "thanks"}, ctx)
+      assert reason =~ "archived"
+      assert Repo.all(Reaction) == []
+    end
+
+    test "Anubis serves description/0, not the moduledoc" do
+      assert Anubis.Server.Component.get_description(React) == React.description()
+      assert React.description() =~ "Thanks & cheers set the tone: pray 🙏 thank you"
+    end
   end
 end

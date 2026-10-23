@@ -1,11 +1,8 @@
 defmodule Canopy.MCP.Tools.React do
   @moduledoc """
-  React to someone else's message with an emoji, to acknowledge it without
-  waking anyone: thumbs_up 👍 agreed, check ✅ done, eyes 👀 on it, tada 🎉 nice
-  work, heart ❤️ thanks. A reaction is never an instruction and starts no turn
-  for anyone; use it instead of posting an acknowledgement. If that was all the
-  message needed, call canopy_pass afterwards. `remove` takes your reaction
-  back.
+  `canopy_react`: an agent reacts to someone else's message with a palette
+  emoji, waking nobody. The tool description (`description/0`) is built from
+  `Canopy.Reactions.groups/0`, so it lists the palette as it is.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -13,14 +10,34 @@ defmodule Canopy.MCP.Tools.React do
   alias Canopy.MCP.{Format, Tool}
   alias Canopy.Reactions
 
+  @leads %{work: "Work reactions answer someone", cheer: "Thanks & cheers set the tone"}
+
   schema do
     field :canopy_session_id, :string, description: Tool.identity_description()
     field :message, {:required, :string}, description: "Id of the message to react to (msg_…)."
 
     field :emoji, {:required, :string},
-      description: "One of: thumbs_up, check, eyes, tada, heart (the emoji itself works too)."
+      description:
+        "A palette key: " <>
+          Enum.join(Reactions.keys(), ", ") <> " (the emoji itself works too)."
 
     field :remove, :boolean, description: "Take your reaction back instead of adding it."
+  end
+
+  @impl true
+  def description do
+    palette =
+      Enum.map_join(Reactions.groups(), " ", fn {group, _name, entries} ->
+        Map.fetch!(@leads, group) <>
+          ": " <> Enum.map_join(entries, ", ", &"#{&1.key} #{&1.glyph} #{&1.label}") <> "."
+      end)
+
+    "React to someone else's message with an emoji, to acknowledge it without waking " <>
+      "anyone. " <>
+      palette <>
+      " A reaction is never an instruction and starts no turn for anyone; use it instead " <>
+      "of posting an acknowledgement. If that was all the message needed, call " <>
+      "canopy_pass afterwards. `remove` takes your reaction back."
   end
 
   @impl true

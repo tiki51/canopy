@@ -454,9 +454,20 @@ test.describe("screenshots for the user guide", () => {
     await expect(picker).toBeVisible();
     const box = (await approval.boundingBox())!;
     const pickerBox = (await picker.boundingBox())!;
-    // the article's own padding is the margin; any more shows the next row
+    // the picker hangs below the article, over the next rows: hide them for
+    // the shot, so the clip's margin under the picker shows only the feed
     const bottom = Math.max(box.y + box.height, pickerBox.y + pickerBox.height + 12);
+    const below = (hidden: boolean) =>
+      approval.evaluate((el, hidden) => {
+        // the article sits in its stream row; the rows below are that row's siblings
+        const own = el.closest("#timeline > *") ?? el;
+        for (let row = own.nextElementSibling; row; row = row.nextElementSibling) {
+          (row as HTMLElement).style.visibility = hidden ? "hidden" : "";
+        }
+      }, hidden);
+    await below(true);
     await shot(page, "reactions", { clip: { x: box.x, y: box.y, width: box.width, height: Math.ceil(bottom - box.y) } });
+    await below(false);
     await page.mouse.click(5, 5);
 
     // the start of the conversation: root cause with a code block, delegation

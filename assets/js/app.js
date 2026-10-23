@@ -145,6 +145,19 @@ window.addEventListener("canopy:copy", e => {
   }, () => {})
 })
 
+// Popovers marked [data-reveal-on-open] (the reaction picker) scroll into view
+// once JS.show/JS.toggle has shown them, so one opened on the newest message
+// isn't left below the fold. JS.toggle sets display in a later frame, so a
+// JS.dispatch chained after it would fire too early; phx:show-end comes after
+// display is set, but doesn't bubble, hence the capture listener. "nearest"
+// scrolls only by the overhang; "instant" because TimelineScroll reads smooth
+// scrolling as the reader leaving the bottom.
+document.addEventListener("phx:show-end", e => {
+  if (e.target.matches?.("[data-reveal-on-open]")) {
+    e.target.scrollIntoView({block: "nearest", behavior: "instant"})
+  }
+}, true)
+
 // The mobile drawer (rail + sidebar) closes when navigation lands somewhere.
 window.addEventListener("phx:page-loading-stop", _info => {
   const drawer = document.getElementById("app-drawer")

@@ -274,6 +274,15 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert String.length(excerpt) == 60
       assert String.ends_with?(excerpt, "…")
     end
+
+    test "a new palette key shows inline and in the since-last-read trailer", ctx do
+      {:ok, theirs} = Messages.post_agent_message(ctx.channel.id, ctx.other.id, "Shipped the fix")
+      assert {:ok, _} = call(MessagesRead, %{}, ctx)
+
+      react(theirs, {:user, ctx.user.id}, "raised_hands")
+      assert {:ok, text} = call(MessagesRead, %{}, ctx)
+      assert text =~ "🙌 raised_hands on [#{theirs.id}]"
+    end
   end
 
   describe "messages_search" do
