@@ -375,6 +375,18 @@ defmodule CanopyWeb.TeamsLive do
           phx-submit="save"
           class="flex flex-col gap-3"
         >
+          <p
+            :if={@team && Teams.reserved_name?(@team.name)}
+            id="team-reserved-name"
+            role="status"
+            class="alert alert-soft alert-warning text-sm"
+          >
+            <.icon name="hero-exclamation-triangle-mini" class="size-4 shrink-0" />
+            <span>
+              <code>@here</code>
+              now means everyone in the channel, so this team can't be mentioned by name. Rename it.
+            </span>
+          </p>
           <div class="grid gap-3 sm:grid-cols-2">
             <.input
               field={@form[:name]}

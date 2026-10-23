@@ -93,6 +93,30 @@ defmodule Canopy.TeamsTest do
     assert team.lead_agent_id == ctx.frontend.id
   end
 
+  test "here is reserved for @here", ctx do
+    assert Teams.reserved_name?("here")
+    assert Teams.reserved_name?("Here")
+    refute Teams.reserved_name?("hereafter")
+    refute Teams.reserved_name?(nil)
+
+    assert {:error, changeset} =
+             Teams.create(%{
+               name: "@Here",
+               lead_agent_id: ctx.backend.id,
+               agent_ids: [ctx.backend.id]
+             })
+
+    assert %{name: ["is reserved for @here; pick another name"]} = errors_on(changeset)
+
+    team = team_fixture([ctx.backend], name: "crew-" <> unique_suffix())
+    assert {:error, changeset} = Teams.update(team, %{name: "here"})
+    assert %{name: ["is reserved for @here; pick another name"]} = errors_on(changeset)
+
+    # one named here before the rule can still be edited
+    {1, _} = Repo.update_all(from(t in Teams.Team, where: t.id == ^team.id), set: [name: "here"])
+    assert {:ok, _} = Teams.update(Teams.get!(team.id), %{description: "still saves"})
+  end
+
   test "teams and agents share the @ namespace, checked both ways", ctx do
     assert {:error, changeset} =
              Teams.create(%{

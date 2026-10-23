@@ -33,6 +33,10 @@ defmodule CanopyWeb.Markdown do
       outside code when the name is one of them, the same names the composer
       highlights; any other `@word` is left as text. Without it nothing is
       highlighted.
+    * `here: true` highlights `@here` outside code with `here_class/0`: pass
+      it only for a message whose `@here` resolved (it has a stored entry,
+      `Canopy.Messages.here_mention/1`). Otherwise `@here` stays plain, even
+      when an agent or team is called `here`, because it woke nobody.
     * `hardbreaks: false` joins soft-wrapped lines, as a Markdown file
       means them (a playbook's text); messages keep the default, `true`.
   """
@@ -47,7 +51,9 @@ defmodule CanopyWeb.Markdown do
 
     body
     |> MDEx.to_html!(mdex_opts)
-    |> highlight_mentions(known(Keyword.get(opts, :mentions, [])))
+    |> highlight_mentions(
+      known(Keyword.get(opts, :mentions, []), Keyword.get(opts, :here, false))
+    )
     |> restrict_images()
     |> open_links_in_new_tab()
     |> link_channels(Keyword.get(opts, :channels, %{}))
@@ -220,19 +226,20 @@ defmodule CanopyWeb.Markdown do
   end
 
   @doc """
-  Splits plain text into `{:mention, "@name"}` and `{:plain, text}` parts; only
-  the `names` given (as for `to_html/2`'s `:mentions`) count as mentions.
+  Splits plain text into `{:mention, "@name"}`, `{:here, "@here"}` and
+  `{:plain, text}` parts; only the `names` given (as for `to_html/2`'s
+  `:mentions`) count as mentions, and `@here` only with `here: true` (as for
+  `to_html/2`).
   """
-  @spec mention_parts(String.t(), Enumerable.t()) :: [{:mention | :plain, String.t()}]
-  def mention_parts(text, names) when is_binary(text) do
-    known = known(names)
+  @spec mention_parts(String.t(), Enumerable.t(), keyword) ::
+          [{:mention | :here | :plain, String.t()}]
+  def mention_parts(text, names, opts \\ []) when is_binary(text) do
+    known = known(names, Keyword.get(opts, :here, false))
 
     @mention_regex
     |> Regex.split(text, include_captures: true)
     |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn part ->
-      if known?(part, known), do: {:mention, part}, else: {:plain, part}
-    end)
+    |> Enum.map(fn part -> {kind(part, known), part} end)
     |> Enum.chunk_by(&elem(&1, 0))
     |> Enum.flat_map(fn
       [{:plain, _} | _] = plains -> [{:plain, Enum.map_join(plains, &elem(&1, 1))}]
@@ -240,19 +247,33 @@ defmodule CanopyWeb.Markdown do
     end)
   end
 
-  defp known(names), do: MapSet.new(names)
+  # The keyword wins over an agent or team called `here`: with `here?` it is
+  # the @here chip, without it plain.
+  defp known(names, here?), do: {MapSet.delete(MapSet.new(names), "here"), here?}
 
-  defp known?("@" <> name, known), do: MapSet.member?(known, String.downcase(name))
-  defp known?(_part, _known), do: false
+  defp kind("@" <> name, {names, here?}) do
+    name = String.downcase(name)
+
+    cond do
+      name == "here" -> if here?, do: :here, else: :plain
+      MapSet.member?(names, name) -> :mention
+      true -> :plain
+    end
+  end
+
+  defp kind(_part, _known), do: :plain
 
   @doc false
   def mention_class, do: "rounded bg-secondary/10 px-1 font-medium text-secondary"
 
+  @doc false
+  def here_class, do: "rounded bg-accent/10 px-1 font-medium text-accent"
+
   # Walk the rendered HTML token by token; text outside <code> gets its
   # mentions wrapped. Rendered text is already entity-escaped, so the span can
   # be spliced in as-is.
-  defp highlight_mentions(html, known) do
-    if MapSet.size(known) == 0, do: html, else: wrap_outside_code(html, known)
+  defp highlight_mentions(html, {names, here?} = known) do
+    if MapSet.size(names) == 0 and not here?, do: html, else: wrap_outside_code(html, known)
   end
 
   defp wrap_outside_code(html, known) do
@@ -272,9 +293,11 @@ defmodule CanopyWeb.Markdown do
 
   defp wrap_mentions(text, known) do
     Regex.replace(@mention_regex, text, fn mention ->
-      if known?(mention, known),
-        do: ~s(<span class="#{mention_class()}">#{mention}</span>),
-        else: mention
+      case kind(mention, known) do
+        :mention -> ~s(<span class="#{mention_class()}">#{mention}</span>)
+        :here -> ~s(<span class="#{here_class()}">#{mention}</span>)
+        :plain -> mention
+      end
     end)
   end
 

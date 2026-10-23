@@ -230,15 +230,34 @@ defmodule Canopy.Teams do
     end)
   end
 
+  @reserved ~w(here)
+
+  @doc """
+  Whether `name` is reserved for a keyword mention (`@here`), case-insensitive.
+  No agent or team may take it; one that had it before still can't be
+  mentioned by it.
+  """
+  def reserved_name?(name) when is_binary(name), do: String.downcase(name) in @reserved
+  def reserved_name?(_name), do: false
+
   @doc """
   Agents and teams share the `@` namespace: a team may not take an agent's
-  name, nor an agent a team's. Called from both changesets; checked only when
-  the name changes and is otherwise valid. Resolution prefers the agent if a
+  name, nor an agent a team's, and neither may take a reserved name
+  (`reserved_name?/1`). Called from both changesets; checked only when the
+  name changes and is otherwise valid. Resolution prefers the agent if a
   collision slips through anyway.
   """
   def validate_name_free(%Ecto.Changeset{} = changeset) do
     name = Ecto.Changeset.get_change(changeset, :name)
 
+    if is_binary(name) and is_nil(changeset.errors[:name]) and reserved_name?(name) do
+      Ecto.Changeset.add_error(changeset, :name, "is reserved for @here; pick another name")
+    else
+      validate_name_untaken(changeset, name)
+    end
+  end
+
+  defp validate_name_untaken(changeset, name) do
     if is_binary(name) and is_nil(changeset.errors[:name]) do
       {taken?, message} =
         case changeset.data do

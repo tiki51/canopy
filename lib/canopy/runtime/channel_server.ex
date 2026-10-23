@@ -298,6 +298,12 @@ defmodule Canopy.Runtime.ChannelServer do
   def status(server), do: GenServer.call(server, :status)
   def paused?(server), do: GenServer.call(server, :paused?)
 
+  @doc """
+  True when the next agent-sent wake would be held: the channel is holding
+  wakes, or the chatter budget is used up. A forecast, read-only.
+  """
+  def chatter_spent?(server), do: GenServer.call(server, :chatter_spent?)
+
   def pass(server, engine_session_id, reason),
     do: GenServer.call(server, {:pass, engine_session_id, reason})
 
@@ -642,6 +648,11 @@ defmodule Canopy.Runtime.ChannelServer do
   end
 
   def handle_call(:paused?, _from, state), do: {:reply, is_list(state.paused), state}
+
+  def handle_call(:chatter_spent?, _from, state) do
+    limit = chatter_limit()
+    {:reply, is_list(state.paused) or (is_integer(limit) and state.chatter >= limit), state}
+  end
 
   def handle_call(:turn_threads, _from, state) do
     threads =
@@ -1101,10 +1112,25 @@ defmodule Canopy.Runtime.ChannelServer do
   # could keep it running unattended. Each turn started since the user's last
   # action counts; past the limit, wakeups are held and the channel says so.
 
-  defp wake_within_budget(%{paused: held} = state, target, text) when is_list(held),
-    do: %{state | paused: put_once(held, target, text)}
+  # While paused, wakes are held, except one whose team mention (or @here) is
+  # already paid for: it neither counts nor pauses, so it waits its turn as
+  # usual. Otherwise the rest of a user's @here, still in line when the
+  # members' answers spend the budget, would never start.
+  #
+  # `behind_line: true` is for wakes released when a turn ends, before the
+  # next in line starts: with turns serialized they join the end of the line
+  # rather than start ahead of it.
+  defp wake_within_budget(state, target, text, opts \\ [])
 
-  defp wake_within_budget(state, target, text) do
+  defp wake_within_budget(%{paused: held} = state, target, text, opts) when is_list(held) do
+    if charged?(state, text),
+      do: wake_unheld(state, target, text, opts),
+      else: %{state | paused: put_once(held, target, text)}
+  end
+
+  defp wake_within_budget(state, target, text, opts), do: wake_unheld(state, target, text, opts)
+
+  defp wake_unheld(state, target, text, opts) do
     limit = chatter_limit()
 
     cond do
@@ -1130,11 +1156,11 @@ defmodule Canopy.Runtime.ChannelServer do
         steer(state, target, text)
 
       true ->
-        wake_or_queue(state, target, Map.delete(text, :steer?), limit)
+        wake_or_queue(state, target, Map.delete(text, :steer?), limit, opts)
     end
   end
 
-  defp wake_or_queue(state, target, text, limit) do
+  defp wake_or_queue(state, target, text, limit, opts \\ []) do
     cond do
       is_integer(limit) and state.chatter >= limit and not counted?(text) and
           not charged?(state, text) ->
@@ -1148,7 +1174,10 @@ defmodule Canopy.Runtime.ChannelServer do
       # One turn at a time: agents woken while another works wait their turn,
       # in order. They are counted against the budget when they actually start.
       # A turn waiting on the user does not count: it is not working.
-      Canopy.Settings.serialize_turns?() and running_turns(state) > 0 ->
+      # A wake released as a turn ends waits behind those already in line, so
+      # two agents answering each other cannot keep the rest from their turn.
+      Canopy.Settings.serialize_turns?() and
+          (running_turns(state) > 0 or (opts[:behind_line] == true and state.waiting != [])) ->
         enqueue_waiting(state, target, text)
 
       true ->
@@ -1440,6 +1469,7 @@ defmodule Canopy.Runtime.ChannelServer do
     thread_id = merged_thread(old, new)
 
     merged
+    |> put_charge(Map.get(old, :charge) || Map.get(new, :charge))
     |> Map.put(:kinds, wake_kinds(old) ++ wake_kinds(new))
     |> Map.put(:escalation, escalation?(old) or escalation?(new))
     |> Map.put(:attachments, attachments)
@@ -1451,6 +1481,12 @@ defmodule Canopy.Runtime.ChannelServer do
 
   defp keeps_text?(wake),
     do: Map.get(wake, :trigger) in @automation_triggers or escalation?(wake)
+
+  # A merged wake keeps a team mention's (or @here's) charge key from either
+  # side: the turn it stands for is the one that mention woke, so it is paid
+  # for once with the rest of that mention.
+  defp put_charge(wake, nil), do: Map.delete(wake, :charge)
+  defp put_charge(wake, key), do: Map.put(wake, :charge, key)
 
   # A wake a light turn escalated (or failed on), running again on main.
   defp escalation?(wake), do: Map.get(wake, :escalation, false) == true
@@ -1538,7 +1574,7 @@ defmodule Canopy.Runtime.ChannelServer do
       Messages.post_user_note(
         state.channel.id,
         Users.local().id,
-        "Paused after #{limit} agent turns without you. Reply to keep going, or press Continue."
+        "Paused after #{limit} agent #{if limit == 1, do: "turn", else: "turns"} without you. Reply to keep going, or press Continue."
       )
 
     broadcast(state, {:chatter, :paused})
@@ -1614,7 +1650,7 @@ defmodule Canopy.Runtime.ChannelServer do
   # line pointing at the message). Once the delegate is at work, the post
   # waits for that turn to end and then wakes it only if the delegation is
   # still open (see hand_to_delegate/4).
-  defp release_deferred(state, agent_id) do
+  defp release_deferred(state, agent_id, opts \\ []) do
     # the agent's session is compacting: the wakes go out once that ends
     if agent_busy?(state, agent_id) do
       state
@@ -1633,7 +1669,7 @@ defmodule Canopy.Runtime.ChannelServer do
       |> Enum.sort_by(fn {_target, [{_, _, first} | _]} -> first.id end)
       |> Enum.reduce(state, fn {target, group}, acc ->
         case delegations_at_work(acc, target, delegated) do
-          [] -> wake_within_budget(acc, target, merge_wakes(group))
+          [] -> wake_within_budget(acc, target, merge_wakes(group), opts)
           ids -> hand_to_delegate(acc, target, merge_wakes(group), ids)
         end
       end)
@@ -3487,7 +3523,8 @@ defmodule Canopy.Runtime.ChannelServer do
         state = send_rerun(state, session, who, turn, rerun)
         state = send_limit_rerun(state, session, who, turn, limit_rerun)
 
-        state = release_deferred(state, who.agent_id)
+        # the line drains just below: these wakes join its end
+        state = release_deferred(state, who.agent_id, behind_line: true)
 
         # before the queue drains, so only a compaction or the re-run can be
         # working the session and keep them; a wake queued there takes them

@@ -483,4 +483,150 @@ defmodule Canopy.MessagesTest do
       assert quiet.mentions == []
     end
   end
+
+  describe "@here" do
+    setup ctx do
+      zed = agent_fixture(%{name: "zed-" <> unique_suffix()})
+      amy = agent_fixture(%{name: "amy-" <> unique_suffix()})
+      gone = agent_fixture(%{name: "gone-" <> unique_suffix()})
+
+      for agent <- [zed, amy, gone], do: {:ok, _} = Canopy.Channels.add_agent(ctx.channel, agent)
+      {:ok, gone} = Canopy.Agents.deactivate(gone)
+
+      %{zed: zed, amy: amy, gone: gone}
+    end
+
+    defp ids_by_name(agents), do: agents |> Enum.sort_by(& &1.name) |> Enum.map(& &1.id)
+
+    test "a user's @here reaches every active member, in roster order", ctx do
+      %{channel: channel, user: user, agent: owner, zed: zed, amy: amy, gone: gone} = ctx
+      reach = ids_by_name([owner, zed, amy])
+
+      {:ok, message} = Messages.post_user_message(channel.id, user.id, "@here standup")
+
+      assert message.mentions == reach
+
+      assert message.team_mentions == [
+               %{
+                 "name" => "here",
+                 "team_id" => nil,
+                 "agent_ids" => reach,
+                 "reach" => reach,
+                 "skipped" => [gone.id]
+               }
+             ]
+
+      assert Messages.here_mention(message) == List.last(message.team_mentions)
+      assert Messages.here_mention(Messages.get!(message.id)) == List.last(message.team_mentions)
+    end
+
+    test "an agent's @here leaves out the sender", ctx do
+      %{channel: channel, agent: owner, zed: zed, amy: amy} = ctx
+
+      {:ok, message} = Messages.post_agent_message(channel.id, zed.id, "@HERE look")
+
+      assert %{"reach" => reach, "agent_ids" => reach} = Messages.here_mention(message)
+      assert reach == ids_by_name([owner, amy])
+      assert message.mentions == reach
+    end
+
+    test "a direct name or a team claims its agents; @here only reaches them", ctx do
+      %{channel: channel, user: user, agent: owner, zed: zed, amy: amy} = ctx
+      team = team_fixture([amy], name: "crew-" <> unique_suffix())
+
+      {:ok, message} =
+        Messages.post_user_message(channel.id, user.id, "@#{zed.name} @#{team.name} and @Here")
+
+      assert [%{"team_id" => team_id}, here] = message.team_mentions
+      assert team_id == team.id
+      assert here["reach"] == ids_by_name([owner, zed, amy])
+      assert here["agent_ids"] == [owner.id]
+      assert message.mentions == [zed.id, amy.id, owner.id]
+    end
+
+    test "inside code, or in a turn's final text, @here resolves to nothing", ctx do
+      %{channel: channel, user: user, zed: zed} = ctx
+
+      for body <- ["see `@here`", "```\n@here\n```"] do
+        {:ok, message} = Messages.post_user_message(channel.id, user.id, body)
+        assert message.mentions == []
+        assert Messages.here_mention(message) == nil
+      end
+
+      {:ok, reply} = Messages.post_agent_reply(channel.id, zed.id, "I told them with @here")
+      assert reply.team_mentions == []
+      assert reply.mentions == []
+    end
+
+    test "a thread reply resolves @here against the whole channel", ctx do
+      %{channel: channel, user: user, agent: owner, zed: zed, amy: amy} = ctx
+      {:ok, root} = Messages.post_user_message(channel.id, user.id, "root")
+
+      {:ok, reply} = Messages.thread_reply(root.id, {:agent, amy.id}, "@here thoughts?")
+
+      assert Messages.here_mention(reply)["agent_ids"] == ids_by_name([owner, zed])
+    end
+
+    test "with no other agents, @here reaches nobody", ctx do
+      %{channel: channel, agent: owner} = ctx
+      {:ok, _} = Canopy.Channels.remove_agent(channel, ctx.zed)
+      {:ok, _} = Canopy.Channels.remove_agent(channel, ctx.amy)
+
+      {:ok, message} = Messages.post_agent_message(channel.id, owner.id, "@here anyone?")
+
+      assert %{"reach" => [], "agent_ids" => []} = Messages.here_mention(message)
+      assert message.mentions == []
+    end
+
+    test "an agent or team called here never wins", ctx do
+      %{channel: channel, user: user, agent: owner, zed: zed, amy: amy} = ctx
+      # the changesets reject the name; force one in the table
+      Repo.update_all(from(a in Canopy.Agents.Agent, where: a.id == ^zed.id), set: [name: "here"])
+
+      {:ok, message} = Messages.post_user_message(channel.id, user.id, "@here hi")
+
+      assert Messages.here_mention(message)["reach"] ==
+               ids_by_name([owner, %{zed | name: "here"}, amy])
+
+      assert Messages.extract_mentions("@here") == []
+    end
+
+    test "in a DM, @here reaches the DM's other agents", ctx do
+      %{repository: repository, user: user, zed: zed, amy: amy} = ctx
+      {:ok, dm} = Canopy.Channels.ensure_dm(repository.id, [zed, amy])
+
+      {:ok, message} = Messages.post_user_message(dm.id, user.id, "@here")
+      assert Messages.here_mention(message)["reach"] == ids_by_name([zed, amy])
+    end
+
+    test "resolve_mentions/1 has no channel, so @here is nothing", ctx do
+      assert Messages.resolve_mentions("@here @#{ctx.zed.name}") == {[ctx.zed.id], []}
+    end
+
+    test "here?/1 finds a live @here only" do
+      assert Messages.here?("@here")
+      assert Messages.here?("ping @Here now")
+      assert Messages.here?("(@HERE)")
+      refute Messages.here?("`@here`")
+      refute Messages.here?("```\n@here\n```")
+      refute Messages.here?("@hereafter")
+      refute Messages.here?("me@here")
+      refute Messages.here?(nil)
+    end
+
+    test "here_audience/1 splits members into active and skipped, by name", ctx do
+      %{channel: channel, agent: owner, zed: zed, amy: amy, gone: gone} = ctx
+
+      {active, skipped} = Messages.here_audience(channel.id)
+      assert Enum.map(active, & &1.id) == ids_by_name([owner, zed, amy])
+      assert Enum.map(skipped, & &1.id) == [gone.id]
+    end
+
+    test "here_mention/1 is nil without an entry", ctx do
+      {:ok, message} =
+        Messages.post_user_message(ctx.channel.id, ctx.user.id, "@#{ctx.zed.name}")
+
+      assert Messages.here_mention(message) == nil
+    end
+  end
 end

@@ -12,6 +12,12 @@
 // on (data-interrupt), a mention of an agent that is working (data-working)
 // gets a hint too: it reads the message after its current step.
 //
+// A live @here in the draft (a `here` token, as the highlighter sees it) puts
+// a line under the box (data-here-hint): who it wakes, which of them are
+// working, and which members are off (data-here, [{name, working, active}] in
+// roster order).
+// The autocomplete offers @here first, with the count.
+//
 // Alt+Enter sends the other way round from the setting (without interrupting
 // a working agent): the form's hidden `interrupt` input says "toggle" for
 // that one submit.
@@ -27,13 +33,22 @@
 // Height: one row by default, growing with its content up to AUTO_MAX. The
 // browser's resize handle is off (CSS resize-none); the manual-floor tracking
 // below is kept in case it is ever turned back on.
-import Highlighter from "../composer_highlight"
-import {maskCode} from "../composer_tokens"
+import Highlighter, {draftContext} from "../composer_highlight"
+import {maskCode, tokenize} from "../composer_tokens"
 import {pastedFiles} from "../pasted_files"
 
 const MAX_SUGGESTIONS = 8
 const DRAFT_PREFIX = "canopy:cmdk-draft:"
 const AUTO_MAX = 192
+// The @here hint names this many agents in full; past it, 5 and "and N more".
+const HERE_NAMES = 6
+
+// Shows a hint slot with these nodes, or hides it when there are none.
+function fill(slot, nodes) {
+  if (!slot) return
+  slot.replaceChildren(...nodes)
+  slot.classList.toggle("hidden", nodes.length === 0)
+}
 
 const Composer = {
   mounted() {
@@ -63,6 +78,7 @@ const Composer = {
     // form's data-scope names what the draft belongs to (the thread panel's
     // root): when it changes, the draft is another thread's and is dropped.
     this.hint = this.el.dataset.hint ? document.querySelector(this.el.dataset.hint) : null
+    this.hereHint = this.el.dataset.hereHint ? document.querySelector(this.el.dataset.hereHint) : null
     if (this.el.form) {
       this.scope = this.el.form.dataset.scope
       this.formObserver = new MutationObserver(() => {
@@ -70,9 +86,12 @@ const Composer = {
           this.scope = this.el.form.dataset.scope
           this.clear()
         }
-        this.renderAwaitingHint()
+        this.renderHint()
       })
-      this.formObserver.observe(this.el.form, {attributes: true, attributeFilter: ["data-awaiting", "data-working", "data-interrupt", "data-scope"]})
+      this.formObserver.observe(this.el.form, {
+        attributes: true,
+        attributeFilter: ["data-awaiting", "data-working", "data-interrupt", "data-scope", "data-here", "data-dm", "data-thread", "data-agents", "data-commands"],
+      })
     }
 
     const layer = this.el.dataset.highlight && document.querySelector(this.el.dataset.highlight)
@@ -91,7 +110,7 @@ const Composer = {
     this.el.addEventListener("input", () => {
       this.autosize()
       this.refresh()
-      this.renderAwaitingHint()
+      this.renderHint()
       if (this.highlighter) this.highlighter.schedule()
     })
     this.el.addEventListener("blur", () => setTimeout(() => this.hide(), 150))
@@ -151,11 +170,25 @@ const Composer = {
 
   // The agent, team, and channel lists live on the form, which LiveView keeps
   // current; the textarea itself is never patched. `@` offers agents first,
-  // then teams (data-teams), which share the @ namespace.
+  // then teams (data-teams), which share the @ namespace. The keyword `here`
+  // is offered on its own (refresh), so a legacy agent or team called `here`
+  // is left out.
   candidates(trigger) {
     if (trigger === "#") return this.list("channels")
     if (trigger === "/") return this.list("slash").map(c => c.name)
-    return this.list("agents").concat(this.list("teams"))
+    return this.list("agents").concat(this.list("teams")).filter(name => name.toLowerCase() !== "here")
+  },
+
+  // The channel's agent members for @here (data-here), in roster order.
+  here() {
+    return this.list("here")
+  },
+
+  // Where a draft's @here reaches: "#name", or "this DM".
+  herePlace() {
+    const form = this.el.form
+    if (form && form.dataset.dm === "true") return "this DM"
+    return "#" + ((form && form.dataset.channelName) || "")
   },
 
   list(key) {
@@ -225,6 +258,11 @@ const Composer = {
     this.matches = this.candidates(mention.trigger)
       .filter(name => name.toLowerCase().startsWith(mention.query))
       .slice(0, MAX_SUGGESTIONS)
+    // @here goes first while the query could still spell it, when it would
+    // wake someone
+    if (mention.trigger === "@" && "here".startsWith(mention.query) && this.hereCount() > 0) {
+      this.matches = ["here"].concat(this.matches).slice(0, MAX_SUGGESTIONS)
+    }
     this.index = Math.min(this.index, Math.max(this.matches.length - 1, 0))
 
     // a command typed in full has nothing left to complete: Enter sends it
@@ -254,12 +292,36 @@ const Composer = {
         summary.textContent = entry ? entry.summary : ""
         if (entry) button.title = entry.usage
         button.append(label, summary)
+      } else if (trigger === "@" && name === "here") {
+        this.renderHereRow(button, i === this.index)
       } else {
         button.textContent = trigger + name
       }
       this.popup.appendChild(button)
     })
     this.popup.classList.remove("hidden")
+  },
+
+  // The @here row: megaphone, @here, where it reaches, and the count.
+  renderHereRow(button, selected) {
+    const icon = document.createElement("span")
+    icon.className = "hero-megaphone size-4 shrink-0"
+    icon.setAttribute("aria-hidden", "true")
+    const label = document.createElement("span")
+    label.className = "font-medium"
+    label.textContent = "@here"
+    const place = document.createElement("span")
+    place.className = "min-w-0 truncate text-xs opacity-80"
+    place.textContent = "everyone in " + this.herePlace()
+    const count = document.createElement("span")
+    count.className =
+      "ml-auto rounded-full px-1.5 text-xs font-medium " + (selected ? "bg-white/20" : "bg-base-300/60")
+    count.textContent = String(this.hereCount())
+    button.append(icon, label, place, count)
+  },
+
+  hereCount() {
+    return this.here().filter(agent => agent.active).length
   },
 
   choose(name) {
@@ -282,7 +344,7 @@ const Composer = {
     this.el.style.height = this.manual ? this.manual + "px" : ""
     if (this.el.form) this.el.form.querySelectorAll("input[data-clear]").forEach(box => { box.checked = false })
     this.hide()
-    this.renderAwaitingHint()
+    this.renderHint()
     if (this.highlighter) this.highlighter.render()
   },
 
@@ -319,8 +381,9 @@ const Composer = {
     })
   },
 
-  renderAwaitingHint() {
-    if (!this.hint) return
+  // The hint above the composer: one line per named agent that is waiting on
+  // a card or working. The @here line goes under the box, in its own slot.
+  renderHint() {
     const interrupt = Boolean(this.el.form && this.el.form.dataset.interrupt === "true")
     const awaiting = this.mentionedFrom("awaiting")
     const working = interrupt ? this.mentionedFrom("working").filter(name => !awaiting.includes(name)) : []
@@ -331,13 +394,62 @@ const Composer = {
           : `@${name} is waiting on the card above. A message will reach it only after it's answered.`
       )
       .concat(working.map(name => `@${name} is working; it will read this after its current step (Alt+Enter: after its turn).`))
-    if (lines.length === 0) {
-      this.hint.classList.add("hidden")
-      this.hint.textContent = ""
-      return
+
+    fill(this.hint, lines.length > 0 ? [document.createTextNode(lines.join(" "))] : [])
+    fill(this.hereHint, this.draftHasHere() ? this.hereLine(interrupt, awaiting.concat(working)) : [])
+  },
+
+  // A live @here, exactly as the highlighter tokenizes the draft: not in code,
+  // not in a /delegate or /handoff note (posted with no mentions), and only in
+  // an /i note among the commands.
+  draftHasHere() {
+    const text = this.el.value
+    if (!/@here/i.test(text)) return false
+    return tokenize(text, draftContext(this.el.form)).some(token => token.kind === "here")
+  },
+
+  // "@here wakes 3 agents: @a, @b (working; reads it after its turn), @c.
+  // @d is off and won't be woken." `described`: agents a line of their own
+  // already speaks for, so their working state isn't repeated here.
+  hereLine(interrupt, described) {
+    const form = this.el.form
+    const roster = this.here()
+    const active = roster.filter(agent => agent.active)
+    const off = roster.filter(agent => !agent.active)
+    const dm = Boolean(form && form.dataset.dm === "true")
+    const thread = Boolean(form && form.dataset.thread === "true")
+    const span = (className, text) => {
+      const el = document.createElement("span")
+      el.className = className
+      el.textContent = text
+      return el
     }
-    this.hint.textContent = lines.join(" ")
-    this.hint.classList.remove("hidden")
+
+    if (active.length === 0) {
+      const where = dm ? "this DM" : "this channel"
+      return [span("font-medium text-accent", `@here wakes nobody: no other agents in ${where}.`)]
+    }
+
+    const count = active.length === 1 ? "1 agent" : `${active.length} agents`
+    const head = thread
+      ? `@here wakes all ${count} in ${this.herePlace()}, not just this thread:`
+      : `@here wakes ${count}:`
+    // In a DM, the user's post steers every working agent when interrupts
+    // are on (Canopy.Runtime.Router), @here or not.
+    const note = dm && interrupt ? "(working; reads it after its current step)" : "(working; reads it after its turn)"
+    const shown = active.length > HERE_NAMES ? active.slice(0, HERE_NAMES - 1) : active
+    const nodes = [span("font-medium text-accent", head)]
+
+    shown.forEach((agent, i) => {
+      nodes.push(document.createTextNode((i === 0 ? " @" : ", @") + agent.name))
+      if (agent.working && !described.some(name => name.toLowerCase() === agent.name.toLowerCase())) {
+        nodes.push(document.createTextNode(" "), span("text-base-content/50", note))
+      }
+    })
+    const rest = active.length - shown.length
+    nodes.push(document.createTextNode(rest > 0 ? ` and ${rest} more.` : "."))
+    off.forEach(agent => nodes.push(document.createTextNode(" "), span("text-base-content/50", `@${agent.name} is off and won't be woken.`)))
+    return nodes
   },
 
   autosize() {

@@ -33,7 +33,12 @@ defmodule Canopy.Runtime.Router do
   each agent the message mentions, or every target in a DM, where every
   message is addressed. The channel server then hands it to the agent's turn
   in flight at its next step instead of queueing it behind the turn. Owner
-  and thread fallbacks, and anything an agent sent, never steer.
+  and thread fallbacks, agents only `@here` woke, and anything an agent
+  sent, never steer.
+
+  `@here` (the message's `"here"` entry in `team_mentions`, see
+  `Canopy.Messages.resolve_mentions/2`) adds its agents to the mentions, so
+  they are woken like a team's: charged once as `{message.id, "here"}`.
   """
   def wakeups(event, ctx) do
     event
@@ -139,7 +144,8 @@ defmodule Canopy.Runtime.Router do
       members: member_names(ctx),
       teams: Map.get(ctx, :teams, []),
       body: Map.get(message, :body),
-      attachments: attachments
+      attachments: attachments,
+      here?: here_ids(message) != nil
     }
 
     text = Prompts.new_message(args)
@@ -166,6 +172,7 @@ defmodule Canopy.Runtime.Router do
 
     charges = team_charges(message)
     interrupt? = interrupt?(message)
+    here_only = here_ids(message) || []
 
     targets
     |> Enum.uniq()
@@ -176,7 +183,7 @@ defmodule Canopy.Runtime.Router do
           charge -> put_key(wake, :charge, charge)
         end
 
-      if interrupt? and (target in message.mentions or dm?(ctx)),
+      if interrupt? and ((target in message.mentions and target not in here_only) or dm?(ctx)),
         do: {{:root, target}, put_key(wake, :steer?, true)},
         else: {{:root, target}, wake}
     end)
@@ -249,13 +256,24 @@ defmodule Canopy.Runtime.Router do
   # A team mention costs one turn of the chatter budget however many members
   # it wakes: every wake it alone caused carries the same charge key, and the
   # channel server counts a key once. Agents also named directly carry none,
-  # so they are charged on their own.
+  # so they are charged on their own. `@here` is charged the same way, keyed
+  # on its name.
   defp team_charges(message) do
-    for %{"team_id" => team_id, "agent_ids" => ids} <- Map.get(message, :team_mentions) || [],
+    for %{"agent_ids" => ids} = entry <- Map.get(message, :team_mentions) || [],
         id <- ids,
         into: %{},
-        do: {id, {message.id, team_id}}
+        do: {id, {message.id, entry["team_id"] || entry["name"]}}
   end
+
+  # The agents only `@here` woke, or nil when the message has no `@here`.
+  defp here_ids(message) do
+    case Enum.find(Map.get(message, :team_mentions) || [], &here_entry?/1) do
+      %{"agent_ids" => ids} -> ids
+      nil -> nil
+    end
+  end
+
+  defp here_entry?(entry), do: entry["name"] == "here" and is_nil(entry["team_id"])
 
   defp put_key(text, key, value) when is_binary(text), do: Map.put(%{text: text}, key, value)
   defp put_key(%{} = wake, key, value), do: Map.put(wake, key, value)

@@ -21,6 +21,31 @@ const SOURCES = [
   "data-thread",
 ]
 
+// The tokenizer's ctx, read from the form's data attributes. The composer's
+// @here hint reads the draft through the same ctx, so both agree on what is a
+// live @here (for example, none inside a /delegate or /handoff note).
+export function draftContext(form) {
+  const data = (form && form.dataset) || {}
+  const read = (value, fallback) => {
+    try {
+      return value ? JSON.parse(value) : fallback
+    } catch (_e) {
+      return fallback
+    }
+  }
+  const lower = list => new Set(list.map(name => String(name).toLowerCase()))
+  const teams = read(data.teamMembers, {})
+
+  return {
+    agents: lower(read(data.agents, [])),
+    members: lower(read(data.members, [])),
+    teams: new Map(Object.entries(teams).map(([name, members]) => [name.toLowerCase(), members])),
+    channels: lower(read(data.channelRefs, [])),
+    commands: lower(read(data.commands, [])),
+    thread: data.thread === "true",
+  }
+}
+
 export default class Highlighter {
   constructor(textarea, layer) {
     this.el = textarea
@@ -87,25 +112,7 @@ export default class Highlighter {
   }
 
   context() {
-    const data = (this.el.form && this.el.form.dataset) || {}
-    const read = (value, fallback) => {
-      try {
-        return value ? JSON.parse(value) : fallback
-      } catch (_e) {
-        return fallback
-      }
-    }
-    const lower = list => new Set(list.map(name => String(name).toLowerCase()))
-    const teams = read(data.teamMembers, {})
-
-    return {
-      agents: lower(read(data.agents, [])),
-      members: lower(read(data.members, [])),
-      teams: new Map(Object.entries(teams).map(([name, members]) => [name.toLowerCase(), members])),
-      channels: lower(read(data.channelRefs, [])),
-      commands: lower(read(data.commands, [])),
-      thread: data.thread === "true",
-    }
+    return draftContext(this.el.form)
   }
 
   destroy() {

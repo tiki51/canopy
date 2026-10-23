@@ -90,6 +90,7 @@ defmodule CanopyWeb.ChannelLive do
       Schedules.subscribe()
       Documents.subscribe()
       Teams.subscribe()
+      Agents.subscribe()
       Playbooks.subscribe()
       Runs.subscribe()
     end
@@ -107,6 +108,8 @@ defmodule CanopyWeb.ChannelLive do
      |> assign(:library, nil)
      |> assign(:thread, nil)
      |> assign(:activity, nil)
+     |> assign(:here_audience, {[], []})
+     |> assign(:agents_by_id, %{})
      # the Details panel, which this browser remembers from lg up (Pref hook);
      # `details_wide?` once the browser says it is that wide
      |> assign(:details?, false)
@@ -618,7 +621,8 @@ defmodule CanopyWeb.ChannelLive do
     members = Channels.members(channel)
     user = Users.local()
     unless resetting?, do: Unread.mark_read(id, user)
-    names = Map.new(Agents.list(), &{&1.id, &1.name})
+    agents = Agents.list()
+    names = Map.new(agents, &{&1.id, &1.name})
     events = Timeline.list(id, limit: @page_size, scope: :channel)
     statuses = if resetting?, do: %{}, else: Runtime.status(id)
 
@@ -644,9 +648,11 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:archive_offer, Channels.archive_offer(channel))
     |> assign(:members, members)
     |> assign(:member_names, Enum.map(members, & &1.name))
+    |> assign_here_audience(id)
     |> assign_mention_sources(channel)
     |> assign(:user, user)
     |> assign(:names, names)
+    |> assign(:agents_by_id, Map.new(agents, &{&1.id, &1}))
     |> assign(:agent_statuses, agent_statuses)
     |> assign(:paused?, not resetting? and Runtime.paused?(id))
     |> assign(:stopped?, not resetting? and Runtime.stopped?(id))
@@ -969,8 +975,13 @@ defmodule CanopyWeb.ChannelLive do
   # The one team mention every outsider came in through, if there is one.
   defp outsider_team(%Messages.Message{team_mentions: teams}, outsider_ids)
        when outsider_ids != [] do
-    Enum.find_value(teams || [], fn %{"name" => name, "agent_ids" => ids} ->
-      if Enum.all?(outsider_ids, &(&1 in ids)), do: name
+    # @here covers only members, so it never explains an outsider
+    Enum.find_value(teams || [], fn
+      %{"name" => "here", "team_id" => nil} ->
+        nil
+
+      %{"name" => name, "agent_ids" => ids} ->
+        if Enum.all?(outsider_ids, &(&1 in ids)), do: name
     end)
   end
 
@@ -1189,6 +1200,13 @@ defmodule CanopyWeb.ChannelLive do
       %{token: ^token} -> {:noreply, assign(socket, :undo, nil)}
       _ -> {:noreply, socket}
     end
+  end
+
+  # an agent created, edited, (de)activated, or imported: the composer's
+  # @here roster, its mention sources, and the names and avatars follow. Pills
+  # already in the stream keep what they rendered until they re-render.
+  def handle_info({:agents, :changed}, socket) do
+    {:noreply, if(socket.assigns.channel, do: refresh_agents(socket), else: socket)}
   end
 
   # a team created, edited, or deleted: the composer and the Members panel follow
@@ -1625,6 +1643,33 @@ defmodule CanopyWeb.ChannelLive do
     |> assign(:member_names, Enum.map(members, & &1.name))
     |> assign(:addable_agents, Channels.addable_agents(cid(socket)))
     |> assign(:addable_teams, Teams.addable(cid(socket)))
+    |> assign_here_audience(cid(socket))
+  end
+
+  defp refresh_agents(socket) do
+    agents = Agents.list()
+
+    socket
+    |> refresh_members()
+    |> assign(:names, Map.new(agents, &{&1.id, &1.name}))
+    |> assign(:agents_by_id, Map.new(agents, &{&1.id, &1}))
+    |> assign_mention_sources(socket.assigns.channel)
+  end
+
+  # Who a draft's @here would reach, `{active, skipped}` in roster order
+  # (Messages.here_audience/1). It changes only with membership or an agent,
+  # so it is loaded then; working state joins in at render (here_roster/2).
+  defp assign_here_audience(socket, channel_id),
+    do: assign(socket, :here_audience, Messages.here_audience(channel_id))
+
+  # The composer's data-here: `[%{name, working, active}]`, active members
+  # first. The user is the sender, so nobody is left out. An agent waiting on
+  # a card also reads the message later, so it counts as working.
+  defp here_roster({active, skipped}, statuses) do
+    working? = &(Map.get(statuses, &1.id, :idle) in [:busy, :awaiting_user])
+
+    Enum.map(active, &%{name: &1.name, working: working?.(&1), active: true}) ++
+      Enum.map(skipped, &%{name: &1.name, working: false, active: false})
   end
 
   # What the composer suggests after `@` and `#`, and the map that turns
@@ -3018,6 +3063,8 @@ defmodule CanopyWeb.ChannelLive do
                 activity={turn_ui(@act, @activity, event)}
                 receipt={receipt_of(@receipts, event)}
                 queued={queued_mark(@queued, event)}
+                agents_by_id={@agents_by_id}
+                dm={Channels.dm?(@channel)}
                 reactable={!Channels.archived?(@channel)}
               />
             </div>
@@ -3140,6 +3187,8 @@ defmodule CanopyWeb.ChannelLive do
             upload={@uploads.files}
             picked={@picked}
             dm={Channels.dm?(@channel)}
+            here={here_roster(@here_audience, @agent_statuses)}
+            channel_name={@channel.name}
             placeholder="Message the channel — @mention an agent to wake it, #name a channel"
           />
           <.archived_bar :if={Channels.archived?(@channel)} channel={@channel} />
@@ -3190,6 +3239,8 @@ defmodule CanopyWeb.ChannelLive do
           steers={@steers}
           interrupt={@interrupt_on?}
           working={working_names(@interrupt_on?, @agent_statuses, @names)}
+          here={here_roster(@here_audience, @agent_statuses)}
+          agents_by_id={@agents_by_id}
         />
 
         <.activity_panel
@@ -4542,6 +4593,9 @@ defmodule CanopyWeb.ChannelLive do
     """
   end
 
+  defp paused_turns(nil), do: "several agent turns"
+  defp paused_turns(limit), do: ngettext("1 agent turn", "%{count} agent turns", limit)
+
   attr :stopped?, :boolean, default: false
 
   defp paused_bar(assigns) do
@@ -4555,7 +4609,7 @@ defmodule CanopyWeb.ChannelLive do
         Stopped. Agents stay quiet until you reply, or
       </span>
       <span :if={!@stopped?}>
-        Paused after {Canopy.Runtime.ChannelServer.chatter_limit() || "several"} agent turns without you.
+        Paused after {paused_turns(Canopy.Runtime.ChannelServer.chatter_limit())} without you.
         Reply to keep going, or
       </span>
       <button
@@ -5094,6 +5148,8 @@ defmodule CanopyWeb.ChannelLive do
   attr :steers, :map, default: %{}
   attr :interrupt, :boolean, default: false
   attr :working, :list, default: []
+  attr :here, :list, default: [], doc: "the composer's @here roster (here_roster/2)"
+  attr :agents_by_id, :map, default: %{}
 
   # A thread in the side panel: the root, its replies and the turn cards of
   # work done for it, the live card and cards of an agent working here, and a
@@ -5164,6 +5220,8 @@ defmodule CanopyWeb.ChannelLive do
             receipt={receipt_of(@receipts, event)}
             queued={queued_mark(@queued, event)}
             reactable={!Channels.archived?(@channel)}
+            agents_by_id={@agents_by_id}
+            dm={Channels.dm?(@channel)}
           />
         </div>
 
@@ -5215,6 +5273,9 @@ defmodule CanopyWeb.ChannelLive do
           channel_refs={Map.keys(@channel_links)}
           upload={@upload}
           picked={@picked}
+          dm={Channels.dm?(@channel)}
+          here={@here}
+          channel_name={@channel.name}
           placeholder="Reply in the thread — @mention an agent to wake it"
         />
       </:footer>
@@ -5502,6 +5563,12 @@ defmodule CanopyWeb.ChannelLive do
   attr :working, :list, default: [], doc: "names of the agents working now (with `interrupt`)"
   attr :dm, :boolean, default: false, doc: "a DM's composer: `/` offers only the DM commands"
 
+  attr :here, :list,
+    default: [],
+    doc: "`[%{name, working, active}]`: who a draft's @here reaches (the hint and autocomplete)"
+
+  attr :channel_name, :string, default: nil, doc: "for \"everyone in #name\""
+
   # The channel's composer and the thread panel's share this one component and
   # the one Composer hook (autocomplete, team names, the highlight layer, the
   # awaiting hint), told apart by their ids.
@@ -5547,17 +5614,21 @@ defmodule CanopyWeb.ChannelLive do
         data-slash={Jason.encode!(@slash)}
         data-thread={@thread && "true"}
         data-scope={@scope}
+        data-here={Jason.encode!(@here)}
+        data-channel-name={@channel_name}
+        data-dm={@dm && "true"}
         class="relative"
       >
         <%!-- Alt+Enter and the send menu send the other way round from the
              setting: "toggle" (see interrupt_opts/1). The hook sets it. --%>
         <input type="hidden" name="interrupt" id={"#{@id}-interrupt"} value="" />
-        <%!-- Filled by the Composer hook when the draft mentions an agent that
-             is blocked on a card (a message is never taken as the card's
+        <%!-- Filled by the Composer hook when the draft mentions an agent
+             that is blocked on a card (a message is never taken as the card's
              answer), or one that is working while mentions interrupt. --%>
         <div
           id={"#{@id}-awaiting-hint"}
           phx-update="ignore"
+          aria-live="polite"
           class="mb-1.5 hidden rounded-lg border border-info/30 bg-info/5 px-2.5 py-1.5 text-xs text-base-content/70"
         >
         </div>
@@ -5595,6 +5666,7 @@ defmodule CanopyWeb.ChannelLive do
               data-suggestions={"##{@id}-suggestions"}
               data-highlight={"##{@id}-highlight"}
               data-hint={"##{@id}-awaiting-hint"}
+              data-here-hint={"##{@id}-here-hint"}
               data-upload={@upload.name}
               rows="1"
               placeholder={@placeholder}
@@ -5686,6 +5758,15 @@ defmodule CanopyWeb.ChannelLive do
             </div>
           </div>
         </div>
+        <%!-- Who a live @here in the draft wakes, under the box (the Composer
+             hook fills it). --%>
+        <p
+          id={"#{@id}-here-hint"}
+          phx-update="ignore"
+          aria-live="polite"
+          class="mt-1.5 hidden px-1 text-xs text-base-content/80"
+        >
+        </p>
         <p
           :if={@main?}
           id={"#{@id}-hint"}

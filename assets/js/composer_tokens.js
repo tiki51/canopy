@@ -4,6 +4,8 @@
 //
 //   mention   @agent who is in the channel, or @team with a member here: wakes
 //   outsider  @agent not in the channel, or @team with nobody here: wakes nobody
+//   here      @here: every active agent in the channel (always this kind, even
+//             when nobody would be woken; the hint says so in words)
 //   channel   #name of a known channel
 //   command   the leading /command (invalid instead in a thread, where the
 //             server rejects it)
@@ -90,8 +92,11 @@ function scan(masked, base, ctx, marks) {
   }
 }
 
-// An agent wins a name collision with a team, as on the server.
+// The keyword @here comes first: a legacy agent or team called `here` never
+// takes it over. Then an agent wins a name collision with a team, as on the
+// server.
 function mentionKind(name, ctx) {
+  if (name === "here") return "here"
   if (ctx.agents.has(name)) return ctx.members.has(name) ? "mention" : "outsider"
   const team = ctx.teams.get(name)
   if (!team) return null

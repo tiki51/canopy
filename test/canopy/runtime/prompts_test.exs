@@ -276,6 +276,38 @@ defmodule Canopy.Runtime.PromptsTest do
     refute system =~ "Teams here"
   end
 
+  test "the wake says when it was an @here, and both reply variants carry the @here rule" do
+    base = %{channel: "c", sender: "Steven", message_id: "msg_42", thread?: false}
+    rule = Prompts.here_rule()
+    thread_rule = "@here in a thread reply wakes the whole channel, not just this thread."
+
+    assert rule ==
+             "@here wakes every agent in this channel. It costs one chatter turn; use it only when everyone needs to act. It works only in canopy_message_send and canopy_thread_reply, not in your turn's final text."
+
+    # the channel variant names no thread tool: a merged channel turn uses it
+    channel_rule =
+      "@here wakes every agent in this channel. It costs one chatter turn; use it only when everyone needs to act. It works in canopy_message_send, not in your turn's final text."
+
+    channel = Prompts.new_message(Map.put(base, :here?, true))
+    assert channel =~ "This was an @here to everyone in the channel.\n"
+    assert channel =~ channel_rule
+    refute channel =~ thread_rule
+
+    plain = Prompts.new_message(base)
+    refute plain =~ "This was an @here"
+    assert plain =~ channel_rule
+
+    thread =
+      Prompts.new_message(
+        %{base | thread?: true}
+        |> Map.put(:thread, %{id: "msg_1", sender: nil, excerpt: nil})
+      )
+
+    assert thread =~ rule
+    assert thread =~ thread_rule
+    assert Prompts.here_thread_rule() == thread_rule
+  end
+
   describe "playbooks" do
     defp system_text do
       Prompts.system(

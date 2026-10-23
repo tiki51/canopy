@@ -177,6 +177,15 @@ defmodule Canopy.Runtime.ChannelServerSteeringTest do
       assert_queued(ctx)
     end
 
+    test "a user's @here that reaches the working agent", ctx do
+      {:ok, _} = Canopy.Channels.remove_agent(ctx.channel, ctx.reviewer)
+      start_owner(ctx)
+      {:ok, message} = Runtime.post_user_message(ctx.channel.id, "@here status?")
+      assert message.interrupt
+      assert Messages.here_mention(message)["agent_ids"] == [ctx.agent.id]
+      assert_queued(ctx)
+    end
+
     test "a message sent without interrupting (Alt+Enter)", ctx do
       start_owner(ctx)
       mention_owner(ctx, "later is fine", interrupt: false)
