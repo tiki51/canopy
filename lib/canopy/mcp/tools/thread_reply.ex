@@ -18,7 +18,7 @@ defmodule Canopy.MCP.Tools.ThreadReply do
 
     field :text, :string,
       description:
-        "Reply body in GitHub-flavoured Markdown. May be empty when attachments are given."
+        "Reply body in GitHub-flavoured Markdown. @here wakes every agent in this channel. It costs one chatter turn; use it only when everyone needs to act. It works only in canopy_message_send and canopy_thread_reply, not in your turn's final text. @here in a thread reply wakes the whole channel, not just this thread. May be empty when attachments are given."
 
     field :attachments, :string,
       description:
@@ -42,9 +42,10 @@ defmodule Canopy.MCP.Tools.ThreadReply do
              ),
            {:ok, text} <- text(params, attachments),
            to_channel? = Map.get(params, :also_send_to_channel) == true,
+           spent? = Messages.here?(text) and Canopy.Runtime.chatter_spent?(channel.id),
            {:ok, reply} <- reply(parent, ctx, text, attachments, to_channel?) do
         {:ok,
-         "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{also(reply, channel)}#{attached(attachments)}"}
+         "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{also(reply, channel)}#{attached(attachments)}#{Tool.here_note(reply, spent?)}"}
       end
     end)
   end

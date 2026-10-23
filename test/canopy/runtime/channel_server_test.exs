@@ -2248,6 +2248,238 @@ defmodule Canopy.Runtime.ChannelServerTest do
       assert :sys.get_state(ctx.pid).chatter == 1
     end
   end
+
+  describe "@here" do
+    # The owner, the reviewer and three more agents, all in the channel with a
+    # session each.
+    setup ctx do
+      extra =
+        for n <- ~w(a b c),
+            do: Fixtures.agent_fixture(%{name: "#{n}-#{Fixtures.unique_suffix()}"})
+
+      Enum.each(extra, &({:ok, _} = Canopy.Channels.add_agent(ctx.channel, &1)))
+
+      sids =
+        Map.new([ctx.reviewer | extra], fn agent ->
+          session = Fixtures.session_fixture(%{channel: ctx.channel, agent_id: agent.id})
+          {agent.id, session.engine_session_id}
+        end)
+        |> Map.put(ctx.agent.id, ctx.session.engine_session_id)
+
+      test_pid = self()
+
+      stub(OC, :prompt_async, fn _dir, sid, _body, _opts ->
+        send(test_pid, {:prompted, sid})
+        {:ok, ""}
+      end)
+
+      %{extra: extra, sids: sids}
+    end
+
+    # Each prompted agent posts an unaddressed answer and ends its turn, until
+    # nobody else is prompted. Returns the session ids that were prompted.
+    defp answer_all(ctx, by_sid, seen) do
+      receive do
+        {:prompted, sid} ->
+          {:ok, _} = Messages.post_agent_message(ctx.channel.id, by_sid[sid], "on it")
+          emit(sid, :agent_completed, %{})
+          answer_all(ctx, by_sid, MapSet.put(seen, sid))
+      after
+        1_000 -> seen
+      end
+    end
+
+    defp assert_prompted(ctx, agents) do
+      for agent <- agents do
+        sid = ctx.sids[agent.id]
+        assert_receive {:prompted, ^sid}, 2_000
+      end
+    end
+
+    test "an agent's @here wakes everyone else and costs one turn", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 5})
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@here plan ready")
+
+      assert_prompted(ctx, [ctx.agent | ctx.extra])
+      reviewer_sid = ctx.sids[ctx.reviewer.id]
+      refute_received {:prompted, ^reviewer_sid}
+      assert :sys.get_state(ctx.pid).chatter == 1
+    end
+
+    test "chatter_spent?/1 forecasts a held wake; at the limit @here's wakes wait together",
+         ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 2})
+
+      [a | _] = ctx.extra
+      owner_sid = ctx.sids[ctx.agent.id]
+      reviewer_sid = ctx.sids[ctx.reviewer.id]
+
+      # no server, no spend; a fresh server has its whole budget
+      refute Runtime.chatter_spent?(Fixtures.channel_fixture().id)
+      refute Runtime.chatter_spent?(ctx.channel.id)
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@#{ctx.agent.name} go")
+
+      assert_receive {:prompted, ^owner_sid}, 2_000
+      emit(owner_sid, :agent_completed, %{})
+      refute Runtime.chatter_spent?(ctx.channel.id)
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.agent.id, "@#{ctx.reviewer.name} back")
+
+      assert_receive {:prompted, ^reviewer_sid}, 2_000
+      emit(reviewer_sid, :agent_completed, %{})
+      settle()
+
+      # spent, though nothing is held yet
+      assert Runtime.chatter_spent?(ctx.channel.id)
+      refute Runtime.paused?(ctx.channel.id)
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, a.id, "@here all of you")
+      assert_receive {:chatter, :paused}, 2_000
+      settle()
+      refute_receive {:prompted, _}, 20
+      assert Runtime.chatter_spent?(ctx.channel.id)
+
+      # released together, against a fresh budget, as one turn
+      :ok = Runtime.continue(ctx.channel.id)
+      assert_prompted(ctx, [ctx.agent, ctx.reviewer | ctx.extra -- [a]])
+      assert :sys.get_state(ctx.pid).chatter == 1
+      refute Runtime.chatter_spent?(ctx.channel.id)
+    end
+
+    test "a user's post resets a spent budget, and a user's @here wakes everyone", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 1})
+
+      owner_sid = ctx.sids[ctx.agent.id]
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@#{ctx.agent.name} go")
+
+      assert_receive {:prompted, ^owner_sid}, 2_000
+      emit(owner_sid, :agent_completed, %{})
+      settle()
+      assert Runtime.chatter_spent?(ctx.channel.id)
+
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@here standup")
+      assert_prompted(ctx, [ctx.agent, ctx.reviewer | ctx.extra])
+      refute_received {:chatter, :paused}
+      assert :sys.get_state(ctx.pid).chatter == 1
+    end
+
+    test "an agent's @name plus @here costs two turns: one for the name, one for @here", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 9})
+
+      [a | _] = ctx.extra
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@#{a.name} and @here")
+
+      assert_prompted(ctx, [ctx.agent | ctx.extra])
+      settle()
+      assert :sys.get_state(ctx.pid).chatter == 2
+    end
+
+    test "with everyone also named directly, @here adds no turn", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 9})
+
+      others = [ctx.agent | ctx.extra]
+      names = Enum.map_join(others, " ", &("@" <> &1.name))
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, names <> " @here")
+
+      assert_prompted(ctx, others)
+      settle()
+      assert :sys.get_state(ctx.pid).chatter == length(others)
+    end
+
+    test "a user's @here reaches everyone even when their answers spend the budget", ctx do
+      # Serialized turns, a small limit: each woken agent answers unaddressed,
+      # which wakes the owner. Those owner turns count; the @here was the
+      # user's and must still reach every member.
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: true, chatter_pause: true, chatter_limit: 2})
+
+      by_sid = Map.new(ctx.sids, fn {agent_id, sid} -> {sid, agent_id} end)
+      {:ok, _} = Runtime.post_user_message(ctx.channel.id, "@here standup")
+
+      prompted = answer_all(ctx, by_sid, MapSet.new())
+
+      everyone = MapSet.new([ctx.agent, ctx.reviewer | ctx.extra], &ctx.sids[&1.id])
+
+      assert MapSet.subset?(everyone, prompted),
+             "never woken: #{inspect(MapSet.difference(everyone, prompted) |> Enum.map(&by_sid[&1]))}"
+    end
+
+    test "a wake merged into an @here wake in line keeps @here's charge", ctx do
+      # Serialized turns. The reviewer's @here starts @a-… first (name order)
+      # and pays for itself; the owner waits in line with @here's key. When
+      # @a's turn ends, its unaddressed answer wakes the owner, which merges
+      # into that entry. The merged turn is still the one @here paid for: it
+      # costs nothing more, and a spent budget would not hold it.
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: true, chatter_pause: true, chatter_limit: 2})
+
+      [a | _] = ctx.extra
+      a_sid = ctx.sids[a.id]
+      owner_sid = ctx.sids[ctx.agent.id]
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@here plan ready")
+      assert_receive {:prompted, ^a_sid}, 2_000
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, a.id, "on it")
+      emit(a_sid, :agent_completed, %{})
+
+      assert_receive {:prompted, ^owner_sid}, 2_000
+      state = :sys.get_state(ctx.pid)
+      assert state.chatter == 1
+      refute List.keymember?(state.waiting ++ List.wrap(state.paused), {:root, ctx.agent.id}, 0)
+    end
+
+    test "with turns serialized, a wake an answer causes waits behind @here's line", ctx do
+      # The reviewer's @here lines up @a-…, the owner, @b-… and @c-… (name
+      # order). @a names the reviewer mid-turn; that wake goes out when @a's
+      # turn ends, at the end of the line, not ahead of the owner.
+      {:ok, _} = Canopy.Settings.update(%{serialize_turns: true, chatter_pause: false})
+
+      [a, b, c] = ctx.extra
+      a_sid = ctx.sids[a.id]
+
+      {:ok, _} = Messages.post_agent_message(ctx.channel.id, ctx.reviewer.id, "@here plan ready")
+      assert_receive {:prompted, ^a_sid}, 2_000
+
+      {:ok, _} =
+        Messages.post_agent_message(ctx.channel.id, a.id, "@#{ctx.reviewer.name} a question")
+
+      emit(a_sid, :agent_completed, %{})
+
+      for agent <- [ctx.agent, b, c, ctx.reviewer] do
+        sid = ctx.sids[agent.id]
+        assert_receive {:prompted, ^sid}, 2_000
+        settle()
+        refute_received {:prompted, _}
+        emit(sid, :agent_completed, %{})
+      end
+    end
+
+    test "@here in an agent's final text wakes nobody and costs nothing", ctx do
+      {:ok, _} =
+        Canopy.Settings.update(%{serialize_turns: false, chatter_pause: true, chatter_limit: 9})
+
+      {:ok, _} = Messages.post_agent_reply(ctx.channel.id, ctx.reviewer.id, "told them @here")
+
+      settle()
+      refute_receive {:prompted, _}, 100
+      assert :sys.get_state(ctx.pid).chatter == 0
+    end
+  end
 end
 
 defmodule Canopy.Runtime.ChannelServerReconcileTest do

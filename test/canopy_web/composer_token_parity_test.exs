@@ -5,7 +5,8 @@ defmodule CanopyWeb.ComposerTokenParityTest do
   is derived here from the real server pieces: `Commands.parse/1`, the
   `Messages` mention regex over `CodeMask.mask/1`, `Messages.resolve_mentions/1`
   (agents first, then teams), and `Markdown`'s channel regex. The rendered
-  message must highlight the same names. `e2e/tests/composer-tokens.spec.ts`
+  message must highlight the same names, and `@here` where `Messages.here?/1`
+  finds it live. `e2e/tests/composer-tokens.spec.ts`
   runs the tokenizer over the same file.
   """
   use Canopy.DataCase, async: false
@@ -52,10 +53,12 @@ defmodule CanopyWeb.ComposerTokenParityTest do
         Commands.parse(text) == :text do
       ctx = context(kase, names)
 
+      # as posted: a live @here resolves, so its message highlights it
       html =
         Markdown.to_html(text,
           mentions: MapSet.union(ctx.agents, MapSet.new(Map.keys(ctx.teams))),
-          channels: Map.new(ctx.channels, &{&1, "ch_1"})
+          channels: Map.new(ctx.channels, &{&1, "ch_1"}),
+          here: Messages.here?(text)
         )
 
       expected = for %{"kind" => k, "text" => t} <- expect, k != "command", do: t
@@ -125,8 +128,9 @@ defmodule CanopyWeb.ComposerTokenParityTest do
     end
   end
 
+  # /i takes an agent or a team; @here is neither
   defp target_kind(:invite, target, ctx) do
-    if mention_kind(target, ctx), do: "mention"
+    if mention_kind(target, ctx) not in [nil, "here"], do: "mention"
   end
 
   defp target_kind(_handoff_or_delegate, target, ctx) do
@@ -159,9 +163,14 @@ defmodule CanopyWeb.ComposerTokenParityTest do
 
   # An agent first, then a team, exactly as the server resolves the name; the
   # composer only knows the agents and teams it was given.
+  # @here is the keyword, ahead of any agent or team: Messages.here?/1.
   defp mention_kind(name, ctx) do
     name = String.downcase(name)
 
+    if Messages.here?("@" <> name), do: "here", else: name_kind(name, ctx)
+  end
+
+  defp name_kind(name, ctx) do
     case Messages.resolve_mentions("@" <> name) do
       {[], []} ->
         nil
@@ -188,9 +197,10 @@ defmodule CanopyWeb.ComposerTokenParityTest do
 
   defp highlighted(html) do
     mention = Regex.escape(~s(<span class="#{Markdown.mention_class()}">))
+    here = Regex.escape(~s(<span class="#{Markdown.here_class()}">))
     channel = Regex.escape(~s(class="#{Markdown.channel_class()}">))
 
-    ~r/(?:#{mention}|#{channel})([^<]*)</
+    ~r/(?:#{mention}|#{here}|#{channel})([^<]*)</
     |> Regex.scan(html, capture: :all_but_first)
     |> List.flatten()
   end

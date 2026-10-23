@@ -435,21 +435,92 @@ defmodule Canopy.Messages do
   only that mention woke: not named directly anywhere in the body, nor
   claimed by an earlier team. The channel server charges each team one turn
   of the chatter budget for those wakes.
+
+  `@here` is never an agent or a team. With no channel (this function), it
+  resolves to nothing; see `resolve_mentions/2`.
   """
-  def resolve_mentions(body) when is_binary(body) do
+  def resolve_mentions(body), do: resolve_mentions(body, %{})
+
+  @doc """
+  Like `resolve_mentions/1`, for a message posted in a channel: `context` is
+  `%{channel_id, sender_agent_id, kind}`. In a `"post"` or `"thread_reply"`,
+  `@here` adds the channel's active agent members (minus the sender) to the
+  mentions and appends a `"here"` entry, last, to `team_mentions`:
+
+      %{"name" => "here", "team_id" => nil,
+        "agent_ids" => [id],  # woken by @here alone, charged once as {message.id, "here"}
+        "reach" => [id],      # every agent @here covered, in roster order
+        "skipped" => [id]}    # inactive members, not woken
+
+  A turn's final text (`"reply"`) never resolves `@here`.
+  """
+  def resolve_mentions(body, context) when is_binary(body) and is_map(context) do
     names =
       @mention_regex
       |> Regex.scan(CodeMask.mask(body))
       |> Enum.map(fn [_, name] -> String.downcase(name) end)
       |> Enum.uniq()
 
-    case names do
-      [] -> {[], []}
-      names -> expand(names)
+    {here, names} = Enum.split_with(names, &(&1 == "here"))
+    {ids, team_mentions} = if names == [], do: {[], []}, else: expand(names)
+
+    case here != [] and here_entry(context, ids) do
+      %{"agent_ids" => here_ids} = entry ->
+        {Enum.uniq(ids ++ here_ids), team_mentions ++ [entry]}
+
+      _ ->
+        {ids, team_mentions}
     end
   end
 
-  def resolve_mentions(_), do: {[], []}
+  def resolve_mentions(_body, _context), do: {[], []}
+
+  # `ids` are every agent named directly or through a team: @here reaches
+  # them too but doesn't wake (or charge) them.
+  defp here_entry(%{channel_id: channel_id, kind: kind} = context, ids)
+       when is_binary(channel_id) and kind in ["post", "thread_reply"] do
+    sender = Map.get(context, :sender_agent_id)
+    {active, skipped} = here_audience(channel_id)
+    reach = for agent <- active, agent.id != sender, do: agent.id
+    claimed = MapSet.new(ids)
+
+    %{
+      "name" => "here",
+      "team_id" => nil,
+      "agent_ids" => Enum.reject(reach, &MapSet.member?(claimed, &1)),
+      "reach" => reach,
+      "skipped" => Enum.map(skipped, & &1.id)
+    }
+  end
+
+  defp here_entry(_context, _ids), do: nil
+
+  @doc """
+  Whether `body` has a live `@here`: outside inline code and fenced blocks,
+  in any case. It doesn't say whether it reached anyone; see `here_mention/1`.
+  """
+  def here?(body) when is_binary(body) do
+    @mention_regex
+    |> Regex.scan(CodeMask.mask(body))
+    |> Enum.any?(fn [_, name] -> String.downcase(name) == "here" end)
+  end
+
+  def here?(_body), do: false
+
+  @doc """
+  The agents an `@here` in the channel would reach, as `{active, skipped}`:
+  its agent members, active and inactive, each in name order. The sender is
+  not removed here; resolution drops it at post time.
+  """
+  def here_audience(channel_id) when is_binary(channel_id) do
+    channel_id |> Canopy.Channels.members() |> Enum.split_with(& &1.active)
+  end
+
+  @doc "The message's `\"here\"` entry in `team_mentions` (see `resolve_mentions/2`), or nil."
+  def here_mention(%Message{team_mentions: entries}) when is_list(entries),
+    do: Enum.find(entries, &(&1["name"] == "here" and is_nil(&1["team_id"])))
+
+  def here_mention(_message), do: nil
 
   defp expand(names) do
     agents = Agents.ids_by_names(names)
@@ -560,7 +631,11 @@ defmodule Canopy.Messages do
           {mentions, Keyword.get(opts, :team_mentions, [])}
 
         _ ->
-          resolve_mentions(attrs.body)
+          resolve_mentions(attrs.body, %{
+            channel_id: Map.get(attrs, :channel_id),
+            sender_agent_id: Map.get(attrs, :agent_id),
+            kind: Map.get(attrs, :kind)
+          })
       end
 
     attrs

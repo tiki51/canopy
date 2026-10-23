@@ -541,6 +541,93 @@ defmodule Canopy.Runtime.RouterTest do
     end
   end
 
+  describe "@here" do
+    defp here(agent_ids, reach \\ nil) do
+      %{
+        "name" => "here",
+        "team_id" => nil,
+        "agent_ids" => agent_ids,
+        "reach" => reach || agent_ids,
+        "skipped" => []
+      }
+    end
+
+    test "its wakes share one charge keyed on here; a direct name carries none" do
+      event =
+        message_event(%{
+          id: "msg_h",
+          agent_id: @outsider,
+          body: "@backend and @here",
+          mentions: [@backend, @reviewer],
+          team_mentions: [here([@reviewer], [@backend, @reviewer])]
+        })
+
+      assert [{{:root, @backend}, backend}, {{:root, @reviewer}, %{charge: charge}}] =
+               Router.wakeups(event, ctx())
+
+      assert is_binary(backend)
+      assert charge == {"msg_h", "here"}
+    end
+
+    test "the wake prompt says it was an @here" do
+      event =
+        message_event(%{
+          mentions: [@backend, @reviewer],
+          team_mentions: [here([@backend, @reviewer])]
+        })
+
+      for {_target, wake} <- Router.wakeups(event, ctx()) do
+        assert wake.text =~ "This was an @here to everyone in the channel."
+      end
+
+      [{_, plain}] = Router.wakeups(message_event(%{mentions: [@backend]}), ctx())
+      refute plain =~ "@here to everyone"
+    end
+
+    test "agents only @here woke never steer; a direct name does" do
+      event =
+        message_event(%{
+          mentions: [@backend, @reviewer],
+          team_mentions: [here([@reviewer], [@backend, @reviewer])],
+          interrupt: true
+        })
+
+      assert [{{:root, @backend}, backend}, {{:root, @reviewer}, reviewer}] =
+               Router.wakeups(event, ctx())
+
+      assert steer?(backend)
+      refute steer?(reviewer)
+    end
+
+    test "in a DM the user's @here still steers everyone" do
+      event =
+        message_event(%{
+          mentions: [@backend, @reviewer],
+          team_mentions: [here([@backend, @reviewer])],
+          interrupt: true
+        })
+
+      wakes = Router.wakeups(event, ctx(%{channel: %{name: "dm", kind: "dm"}}))
+      assert length(wakes) == 2
+      assert Enum.all?(wakes, fn {_target, wake} -> steer?(wake) end)
+    end
+
+    test "a thread reply with @here wakes everyone it reached, not the thread's other side" do
+      thread = ctx(%{thread_root: fn "msg_root" -> %{agent_id: @reviewer} end})
+
+      event =
+        message_event(%{
+          thread_id: "msg_root",
+          kind: "thread_reply",
+          agent_id: @outsider,
+          mentions: [@backend, @reviewer],
+          team_mentions: [here([@backend, @reviewer])]
+        })
+
+      assert [{{:root, @backend}, _}, {{:root, @reviewer}, _}] = Router.wakeups(event, thread)
+    end
+  end
+
   test "playbook and watch events wake nobody" do
     for type <-
           ~w(playbook_started playbook_step_started playbook_step_completed playbook_step_skipped

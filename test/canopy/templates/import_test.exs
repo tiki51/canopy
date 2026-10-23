@@ -70,6 +70,13 @@ defmodule Canopy.Templates.ImportTest do
       assert counts() == before
     end
 
+    test "a template named here is invalid, with the reserved-name error" do
+      assert %Item{status: :invalid, choice: %{action: :skip}, errors: errors} =
+               item(plan(template("here")))
+
+      assert Enum.any?(errors, &(&1 =~ "reserved for @here")), inspect(errors)
+    end
+
     test "statuses: new, conflict, identical, invalid" do
       same = Fixtures.agent_fixture(%{name: "same", system_prompt: "You are the agent."})
       Fixtures.agent_fixture(%{name: "differs", role: nil, system_prompt: "Something else."})
@@ -323,6 +330,35 @@ defmodule Canopy.Templates.ImportTest do
       Fixtures.agent_fixture(%{name: "racer"})
       assert {:error, :stale} = Import.apply(plan)
       assert [%{name: "racer"}] = Enum.filter(Agents.list(), &(&1.name == "racer"))
+    end
+
+    test "tells subscribers once after writing agents, created or replaced" do
+      existing = Fixtures.agent_fixture(%{name: "replaced"})
+
+      plan =
+        Import.plan(
+          [{:file, "a.md", template("brand-new")}, {:file, "b.md", template(existing.name)}],
+          machine: machine()
+        )
+
+      choices = %{item(plan, existing.name).id => %{"action" => "replace"}}
+      Agents.subscribe()
+
+      assert {:ok, _} = Import.apply(plan, choices)
+      assert_receive {:agents, :changed}
+      refute_receive {:agents, :changed}
+    end
+
+    test "tells nobody about agents when the bundle has none, or the import fails" do
+      text = String.replace(Playbooks.bug_fix_text(), "name: bug-fix", "name: no-agents")
+      plan = Import.plan([{:file, "no-agents.md", text}], machine: machine())
+      stale = plan(template("late"))
+      Fixtures.agent_fixture(%{name: "late"})
+      Agents.subscribe()
+
+      assert {:ok, _} = Import.apply(plan)
+      assert {:error, :stale} = Import.apply(stale)
+      refute_receive {:agents, :changed}
     end
   end
 

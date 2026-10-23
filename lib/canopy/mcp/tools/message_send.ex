@@ -19,7 +19,7 @@ defmodule Canopy.MCP.Tools.MessageSend do
 
     field :text, :string,
       description:
-        "Message body in GitHub-flavoured Markdown. @name mentions wake that agent; inside `code` they wake nobody. May be empty when attachments are given."
+        "Message body in GitHub-flavoured Markdown. @name mentions wake that agent; inside `code` they wake nobody. @here wakes every agent in this channel. It costs one chatter turn; use it only when everyone needs to act. It works only in canopy_message_send and canopy_thread_reply, not in your turn's final text. May be empty when attachments are given."
 
     field :attachments, :string,
       description:
@@ -37,9 +37,10 @@ defmodule Canopy.MCP.Tools.MessageSend do
                Tool.blank_to_nil(Map.get(params, :attachments))
              ),
            {:ok, text} <- text(params, attachments),
+           spent? = Messages.here?(text) and Canopy.Runtime.chatter_spent?(channel.id),
            {:ok, message} <- post(channel, ctx, text, attachments) do
         {:ok,
-         "posted [#{message.id}] to ##{channel.name}#{attached(attachments)}#{mentions(message)}#{audience(ctx, channel, message)}"}
+         "posted [#{message.id}] to ##{channel.name}#{attached(attachments)}#{mentions(message)}#{audience(ctx, channel, message)}#{Tool.here_note(message, spent?)}"}
       end
     end)
   end
@@ -69,11 +70,14 @@ defmodule Canopy.MCP.Tools.MessageSend do
   end
 
   # Says who this post reaches when nobody was mentioned, so an agent does not
-  # wait for an answer that cannot come.
+  # wait for an answer that cannot come. An @here says that itself.
   defp audience(_ctx, _channel, %{mentions: [_ | _]}), do: ""
 
-  defp audience(ctx, channel, _message) do
+  defp audience(ctx, channel, message) do
     cond do
+      Messages.here_mention(message) ->
+        ""
+
       is_nil(channel.owner_agent_id) or channel.owner_agent_id == ctx.agent.id ->
         "; no @mention, so this wakes nobody: mention @name if you want a reply"
 
@@ -86,9 +90,15 @@ defmodule Canopy.MCP.Tools.MessageSend do
   defp attached([]), do: ""
   defp attached(ids), do: " with #{length(ids)} attachment(s): #{Enum.join(ids, ", ")}"
 
-  defp mentions(%{mentions: []}), do: ""
+  # The agents named directly or through a team; `here_note` lists @here's.
+  defp mentions(message) do
+    here_only = (Messages.here_mention(message) || %{})["agent_ids"] || []
+    mentions(message.mentions -- here_only, :names)
+  end
 
-  defp mentions(%{mentions: ids}) do
+  defp mentions([], :names), do: ""
+
+  defp mentions(ids, :names) do
     names =
       ids
       |> Enum.map(&Agents.get/1)

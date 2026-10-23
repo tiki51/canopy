@@ -1133,6 +1133,7 @@ defmodule Canopy.Templates.Import do
     end
 
     kinds = plan |> Plan.writing() |> MapSet.new(& &1.kind)
+    if MapSet.member?(kinds, :agent), do: Agents.broadcast_changed()
     if MapSet.member?(kinds, :team), do: Teams.broadcast_changed()
     if MapSet.member?(kinds, :playbook), do: Playbooks.broadcast_changed()
     :ok

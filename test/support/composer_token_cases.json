@@ -590,6 +590,150 @@
           "text": "@backend"
         }
       ]
+    },
+    {
+      "name": "@here, everyone in the channel",
+      "text": "heads up @here, deploy at 5",
+      "expect": [
+        {
+          "kind": "here",
+          "text": "@here"
+        }
+      ]
+    },
+    {
+      "name": "@here is case-insensitive",
+      "text": "@HERE look",
+      "expect": [
+        {
+          "kind": "here",
+          "text": "@HERE"
+        }
+      ]
+    },
+    {
+      "name": "@here in inline code wakes nobody",
+      "text": "type `@here` to wake everyone",
+      "expect": []
+    },
+    {
+      "name": "@here in a fence wakes nobody",
+      "text": "```\n@here\n```",
+      "expect": []
+    },
+    {
+      "name": "@here after a word or a second @ is not a mention",
+      "text": "mail x@here or @@here",
+      "expect": []
+    },
+    {
+      "name": "@heres and @here-x are other names",
+      "text": "@heres @here-x",
+      "expect": []
+    },
+    {
+      "name": "@here's, bold, and brackets still count",
+      "text": "@here's plan, **@here**, (@here)",
+      "expect": [
+        {
+          "kind": "here",
+          "text": "@here"
+        },
+        {
+          "kind": "here",
+          "text": "@here"
+        },
+        {
+          "kind": "here",
+          "text": "@here"
+        }
+      ]
+    },
+    {
+      "name": "_@here_ and an address are not @here",
+      "text": "_@here_ foo@here.com",
+      "expect": []
+    },
+    {
+      "name": "@here next to a name",
+      "text": "@here @backend please",
+      "expect": [
+        {
+          "kind": "here",
+          "text": "@here"
+        },
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "/i takes an agent, not @here",
+      "text": "/i @here",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        }
+      ]
+    },
+    {
+      "name": "a /delegate note posts with no mentions, so @here in it wakes nobody",
+      "text": "/delegate @backend fix it @here",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/delegate"
+        },
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "a /handoff note posts with no mentions, so @here in it wakes nobody",
+      "text": "/handoff @backend over to you @here",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/handoff"
+        },
+        {
+          "kind": "mention",
+          "text": "@backend"
+        }
+      ]
+    },
+    {
+      "name": "an /i note posts as a message, so @here in it wakes everyone",
+      "text": "/i @backend heads up @here",
+      "expect": [
+        {
+          "kind": "command",
+          "text": "/i"
+        },
+        {
+          "kind": "mention",
+          "text": "@backend"
+        },
+        {
+          "kind": "here",
+          "text": "@here"
+        }
+      ]
+    },
+    {
+      "name": "a command in a thread, @here and all, is refused",
+      "text": "/i @backend @here",
+      "expect": [
+        {
+          "kind": "invalid",
+          "text": "/i"
+        }
+      ],
+      "thread": true
     }
   ]
 }

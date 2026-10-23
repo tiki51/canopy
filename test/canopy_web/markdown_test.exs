@@ -41,6 +41,27 @@ defmodule CanopyWeb.MarkdownTest do
              [{:plain, "to "}, {:mention, "@backend"}, {:plain, " and @nobody: ok"}]
   end
 
+  test "@here gets the accent chip only for a message whose @here resolved" do
+    here = ~s(<span class="#{Markdown.here_class()}">)
+
+    html = Markdown.to_html("@here and @Here, not `@here`", here: true)
+    assert html =~ here <> "@here</span>"
+    assert html =~ here <> "@Here</span>"
+    assert html =~ "<code>@here</code>"
+
+    html = Markdown.to_html("```\n@here\n```", here: true)
+    refute html =~ "<span"
+
+    # no stored entry: plain, even when an agent is called `here`
+    refute Markdown.to_html("@here", mentions: ["here", "backend"]) =~ "<span"
+    refute Markdown.to_html("@here @backend", mentions: ["backend"]) =~ here
+
+    assert Markdown.mention_parts("@here @backend", ["backend"], here: true) ==
+             [{:here, "@here"}, {:plain, " "}, {:mention, "@backend"}]
+
+    assert Markdown.mention_parts("@here ok", ["here"]) == [{:plain, "@here ok"}]
+  end
+
   test "a typed & before #name is not an entity, so the name is left alone" do
     html = Markdown.to_html("&#payments, but #payments", channels: %{"payments" => "ch_1"})
     assert html =~ "&amp;#payments, but <a "

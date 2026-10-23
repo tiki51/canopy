@@ -254,6 +254,7 @@
 .composer-highlight [data-kind="mention"] { --chip: color-mix(in oklab, var(--color-secondary) 18%, transparent); }
 .composer-highlight [data-kind="channel"] { --chip: color-mix(in oklab, var(--color-primary) 15%, transparent); }
 .composer-highlight [data-kind="command"] { --chip: color-mix(in oklab, var(--color-accent) 15%, transparent); }
+.composer-highlight [data-kind="here"] { --chip: color-mix(in oklab, var(--color-accent) 18%, transparent); }
 .composer-highlight [data-kind="outsider"],
 .composer-highlight [data-kind="invalid"] {
   text-decoration-line: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px;

@@ -29,6 +29,48 @@ defmodule Canopy.AgentsTest do
     assert {:ok, _} = Agents.update(agent, %{role: "unrelated edits still save"})
   end
 
+  test "here is reserved for @here" do
+    agent = agent_fixture()
+
+    for name <- ["here", "@Here", "HERE"] do
+      assert {:error, changeset} = Agents.create(%{name: name})
+      assert %{name: ["is reserved for @here; pick another name"]} = errors_on(changeset)
+    end
+
+    assert {:error, changeset} = Agents.update(agent, %{name: "here"})
+    assert %{name: ["is reserved for @here; pick another name"]} = errors_on(changeset)
+
+    # one named here before the rule can still be edited, and renamed away
+    {1, _} =
+      Repo.update_all(from(a in Agents.Agent, where: a.id == ^agent.id), set: [name: "here"])
+
+    old = Agents.get!(agent.id)
+    assert {:ok, _} = Agents.update(old, %{role: "still saves"})
+    assert {:ok, %{name: "there"}} = Agents.update(Agents.get!(agent.id), %{name: "there"})
+  end
+
+  test "create, update and deactivate broadcast {:agents, :changed}" do
+    Agents.subscribe()
+
+    {:ok, agent} = Agents.create(%{name: "watcher-" <> unique_suffix()})
+    assert_receive {:agents, :changed}
+
+    {:ok, agent} = Agents.update(agent, %{role: "Watches"})
+    assert_receive {:agents, :changed}
+
+    {:ok, agent} = Agents.deactivate(agent)
+    assert_receive {:agents, :changed}
+
+    {:ok, _} = Agents.update(agent, %{active: true})
+    assert_receive {:agents, :changed}
+
+    assert {:error, _} = Agents.create(%{name: "has space"})
+    refute_receive {:agents, :changed}
+
+    Agents.broadcast_changed()
+    assert_receive {:agents, :changed}
+  end
+
   test "get_by_name/1, list_active/0, update/2, deactivate/1" do
     agent = agent_fixture(%{name: "reviewer"})
     assert Agents.get_by_name("@reviewer").id == agent.id

@@ -459,4 +459,102 @@ defmodule Canopy.MCP.Tools.MessagesTest do
       assert message == "not a member of ##{ctx.outsider_channel.name}"
     end
   end
+
+  describe "@here in the result line" do
+    setup ctx do
+      amy = agent_fixture(name: "amy-" <> unique_suffix())
+      {:ok, _} = Canopy.Channels.add_agent(ctx.channel, amy)
+      root = post(ctx, "root")
+      %{amy: amy, root: root, both: "@#{amy.name}, @#{ctx.other.name}"}
+    end
+
+    # message_send, and thread_reply on a thread in the same channel
+    defp send_both(ctx, text) do
+      {:ok, sent} = call(MessageSend, %{text: text}, ctx)
+      {:ok, replied} = call(ThreadReply, %{message_id: ctx.root.id, text: text}, ctx)
+      [sent, replied]
+    end
+
+    test "names who @here woke and its one chatter turn, without repeating them", ctx do
+      for line <- send_both(ctx, "@here plan is up") do
+        assert line =~ "; @here woke #{ctx.both} (1 chatter turn)"
+        refute line =~ "mentioned"
+        refute line =~ "no @mention"
+      end
+    end
+
+    test "with everyone also named, @here costs nothing extra", ctx do
+      text = "@#{ctx.amy.name} @#{ctx.other.name} and @here"
+
+      for line <- send_both(ctx, text) do
+        assert line =~ "; @here woke #{ctx.both}"
+        refute line =~ "chatter turn"
+      end
+
+      {:ok, sent} = call(MessageSend, %{text: text}, ctx)
+      assert sent =~ "; mentioned @#{ctx.amy.name}, @#{ctx.other.name}"
+    end
+
+    test "with no other agents, @here woke nobody, and no other audience text", ctx do
+      {:ok, _} = Canopy.Channels.remove_agent(ctx.channel, ctx.amy)
+      {:ok, _} = Canopy.Channels.remove_agent(ctx.channel, ctx.other)
+
+      for line <- send_both(ctx, "@here anyone?") do
+        assert line =~ "; @here woke nobody (no other agents here)"
+        refute line =~ "no @mention"
+      end
+    end
+
+    test "@here in code says nothing about @here", ctx do
+      for line <- send_both(ctx, "the `@here` keyword") do
+        refute line =~ "@here woke"
+      end
+    end
+
+    test "with the chatter budget spent, the line says the wakes are held, and they are", ctx do
+      Mox.set_mox_global(%{})
+
+      Mox.stub(Canopy.OpenCode.ClientMock, :mcp_status, fn _dir, _opts ->
+        {:ok, %{"canopy" => %{"status" => "connected"}}}
+      end)
+
+      Canopy.MCP.mark_registered(ctx.repository.id)
+      {:ok, _} = Canopy.Settings.update(%{chatter_pause: true, chatter_limit: 1})
+      {:ok, pid} = Canopy.Runtime.ensure_channel(ctx.channel.id, start_stream: false)
+      on_exit(fn -> Canopy.Runtime.stop_channel(ctx.channel.id) end)
+      :sys.replace_state(pid, &%{&1 | chatter: 1})
+
+      {:ok, sent} = call(MessageSend, %{text: "@here all hands"}, ctx)
+
+      assert sent =~
+               "; the chatter budget is spent, so @here's wakes (#{ctx.both}) are held until the user replies"
+
+      Canopy.RuntimeHelpers.settle()
+      assert Canopy.Runtime.paused?(ctx.channel.id)
+
+      # held already: the same forecast in a thread
+      {:ok, replied} = call(ThreadReply, %{message_id: ctx.root.id, text: "@here again"}, ctx)
+      assert replied =~ "are held until the user replies"
+    end
+
+    test "both descriptions carry the @here rule; thread_reply's says it reaches the channel" do
+      rule = Canopy.Runtime.Prompts.here_rule()
+      thread_rule = Canopy.Runtime.Prompts.here_thread_rule()
+
+      send_text = text_description("message_send")
+      reply_text = text_description("thread_reply")
+
+      assert send_text =~ rule
+      refute send_text =~ thread_rule
+      assert reply_text =~ rule
+      assert reply_text =~ thread_rule
+    end
+
+    defp text_description(name) do
+      Canopy.MCP.Server.__components__(:tool)
+      |> Enum.find(&(&1.name == name))
+      |> Map.fetch!(:input_schema)
+      |> get_in(["properties", "text", "description"])
+    end
+  end
 end

@@ -64,21 +64,42 @@ defmodule Canopy.Agents do
     %Agent{}
     |> Agent.changeset(attrs)
     |> Repo.insert()
+    |> tap_changed()
   end
 
   def update(%Agent{} = agent, attrs) do
     agent
     |> Agent.changeset(attrs)
     |> Repo.update()
+    |> tap_changed()
   end
 
   def deactivate(%Agent{} = agent) do
     with {:ok, agent} <- agent |> Ecto.Changeset.change(active: false) |> Repo.update() do
       Canopy.Schedules.pause_for_agent(agent.id, "@#{agent.name} was deactivated")
       Canopy.Locks.release_agent(agent.id, "@#{agent.name} was deactivated")
+      broadcast_changed()
       {:ok, agent}
     end
   end
+
+  @topic "agents"
+
+  @doc """
+  Subscribe to `{:agents, :changed}`, sent after an agent is created, edited
+  (which covers reactivation) or deactivated.
+  """
+  def subscribe, do: Phoenix.PubSub.subscribe(Canopy.PubSub, @topic)
+
+  @doc "Tells subscribers the agents changed, after a transaction that wrote agents itself."
+  def broadcast_changed, do: Phoenix.PubSub.broadcast(Canopy.PubSub, @topic, {:agents, :changed})
+
+  defp tap_changed({:ok, _agent} = result) do
+    broadcast_changed()
+    result
+  end
+
+  defp tap_changed(result), do: result
 
   def change(%Agent{} = agent, attrs \\ %{}), do: Agent.changeset(agent, attrs)
 

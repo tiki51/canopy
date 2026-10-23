@@ -278,10 +278,15 @@ defmodule Canopy.Runtime.Prompts do
         names -> "Teams here: " <> Enum.map_join(names, ", ", &("@" <> &1)) <> ".\n"
       end
 
+    here_line =
+      if Map.get(args, :here?) == true,
+        do: "This was an @here to everyone in the channel.\n",
+        else: ""
+
     """
     You have a new Canopy message in ##{channel} from #{sender}.
     Message ID: #{message_id}
-    #{thread_lines(thread)}#{members_line}#{teams_line}
+    #{thread_lines(thread)}#{members_line}#{teams_line}#{here_line}
     #{inline_body(args)}#{attachments_block(Map.get(args, :attachments, []))}
     #{reply_lines(thread)}
     If this message needs nothing from you (an acknowledgement, a confirmation, a closing note, something already handled), call canopy_pass and stop; if the sender is waiting to know you saw it, canopy_react first (✅ done, 👍 agreed, 👀 on it). Never post an acknowledgement.
@@ -314,7 +319,7 @@ defmodule Canopy.Runtime.Prompts do
   defp reply_lines(nil) do
     """
     canopy_messages_read returns what is new since you last read this channel; canopy_message_get returns one message in full; canopy_messages_search finds older messages and turn summaries. Do the work, then post your findings with canopy_message_send.
-    Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them.\
+    Your post wakes only the agents you @mention, plus the channel owner. If you need an answer from someone, mention them. #{here_rule(:channel)}\
     """
   end
 
@@ -326,9 +331,28 @@ defmodule Canopy.Runtime.Prompts do
 
     """
     The message is part of a thread. #{read}; canopy_message_get returns one message in full. Answer with canopy_thread_reply on the thread, not canopy_message_send; the conversation stays in the thread.
-    Your reply wakes the agents you @mention. Unaddressed, it wakes the agent that replied last in the thread before you, or else the agent that started it; never the channel owner. Set also_send_to_channel only for a conclusion the whole channel needs.\
+    Your reply wakes the agents you @mention. Unaddressed, it wakes the agent that replied last in the thread before you, or else the agent that started it; never the channel owner. Set also_send_to_channel only for a conclusion the whole channel needs. #{here_rule()} #{here_thread_rule()}\
     """
   end
+
+  @here_cost "@here wakes every agent in this channel. It costs one chatter turn; use it only when everyone needs to act."
+
+  @doc """
+  How agents may use `@here`. The thread reply instructions and the `text`
+  descriptions of canopy_message_send and canopy_thread_reply share it.
+  """
+  def here_rule,
+    do:
+      @here_cost <>
+        " It works only in canopy_message_send and canopy_thread_reply, not in your turn's final text."
+
+  # A channel wake names no thread tool: a merged channel turn uses it.
+  defp here_rule(:channel),
+    do: @here_cost <> " It works in canopy_message_send, not in your turn's final text."
+
+  @doc "What `@here` does in a thread reply, added to `here_rule/0` where an agent replies in a thread."
+  def here_thread_rule,
+    do: "@here in a thread reply wakes the whole channel, not just this thread."
 
   @doc """
   Appended to a channel turn's wake that stands for messages from different

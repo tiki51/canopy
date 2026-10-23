@@ -525,6 +525,18 @@ defmodule Canopy.Runtime do
     end
   end
 
+  @doc """
+  True when an agent's wake in the channel would be held now: the channel is
+  paused, or its chatter budget is used up. False when no channel server
+  runs (a fresh server starts with a full budget); it never starts one.
+  """
+  def chatter_spent?(channel_id) do
+    case Supervisor.whereis(channel_id) do
+      nil -> false
+      pid -> ChannelServer.chatter_spent?(pid)
+    end
+  end
+
   @doc "Lets a paused channel run its held wakeups against a fresh budget."
   def continue(channel_id) do
     {:ok, pid} = ensure_channel(channel_id)

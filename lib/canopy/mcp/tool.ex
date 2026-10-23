@@ -311,4 +311,36 @@ defmodule Canopy.MCP.Tool do
   end
 
   def changeset_reason(other), do: inspect(other)
+
+  @doc """
+  What a posted message's `@here` did, for a tool's result line ("" without
+  one). `spent?` is `Canopy.Runtime.chatter_spent?/1`, read before posting:
+  the router routes after the commit, so this reports what it will do with
+  the budget as it stood.
+  """
+  def here_note(message, spent?) do
+    case Canopy.Messages.here_mention(message) do
+      nil ->
+        ""
+
+      %{"reach" => []} ->
+        "; @here woke nobody (no other agents here)"
+
+      %{"reach" => reach, "agent_ids" => [_ | _]} when spent? ->
+        "; the chatter budget is spent, so @here's wakes (#{names(reach)}) are held until the user replies"
+
+      %{"reach" => reach, "agent_ids" => [_ | _]} ->
+        "; @here woke #{names(reach)} (1 chatter turn)"
+
+      %{"reach" => reach} ->
+        "; @here woke #{names(reach)}"
+    end
+  end
+
+  defp names(agent_ids) do
+    agent_ids
+    |> Enum.map(&Agents.get/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(", ", &("@" <> &1.name))
+  end
 end

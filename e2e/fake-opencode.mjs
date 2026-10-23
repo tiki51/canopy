@@ -791,7 +791,14 @@ async function runTurn(sessionID, text, cwd) {
   } else if (/new Canopy message/i.test(text)) {
     const msg = text.match(/Message ID: (msg_\S+)/);
     const body = msg ? await mcpCall("messages_read", { canopy_session_id: sessionID, around: msg[1], limit: 1 }) : "";
-    if (/publish a report/i.test(body)) {
+    // "tell everyone" from the user (never from an agent, so it can't cascade):
+    // the agent posts an @here, or two with "twice", for e2e/tests/here-mention.spec.ts.
+    const fromUser = !/new Canopy message in #\S+ from @/.test(text);
+    if (fromUser && /tell everyone/i.test(body)) {
+      await post({ text: "@here heads up: the release notes draft is ready; flag anything missing." });
+      if (/twice/i.test(body)) await post({ text: "@here and one more: the tag goes out at five." });
+      reply = "Told everyone.";
+    } else if (/publish a report/i.test(body)) {
       const shared = await mcpCall("document_share", { canopy_session_id: sessionID, filename: "retry-report.md", content: "# Retry report\n\nTwo callers race on `enqueue_charge`.\n", caption: "the report" });
       const id = (shared.match(/\[(doc_\w+)\]/) || [])[1];
       await mcpCall("message_send", { canopy_session_id: sessionID, text: "Report attached.", attachments: id });

@@ -12,6 +12,7 @@ defmodule CanopyWeb.TimelineComponents do
 
   use CanopyWeb, :html
 
+  alias Canopy.Messages
   alias Canopy.Runtime.Activity
   alias CanopyWeb.{FileViewer, Markdown}
 
@@ -65,6 +66,14 @@ defmodule CanopyWeb.TimelineComponents do
     default: false,
     doc: "the user may react (not in an archived channel)"
 
+  attr :agents_by_id, :map,
+    default: %{},
+    doc: "agent id => %Agent{}, for the avatars in an @here message's reach pill"
+
+  attr :dm, :boolean,
+    default: false,
+    doc: "the timeline is a DM's (an @here note says \"this DM\")"
+
   def timeline_item(%{event: %{event_type: "message"}} = assigns) do
     ~H"""
     <div id={@id} data-scroll-target={@thread[:target] && "true"}>
@@ -84,6 +93,8 @@ defmodule CanopyWeb.TimelineComponents do
         receipt={@receipt}
         queued={@queued}
         reactable={@reactable}
+        agents_by_id={@agents_by_id}
+        dm={@dm}
       />
       <div
         :if={is_integer(@thread[:divider])}
@@ -228,6 +239,8 @@ defmodule CanopyWeb.TimelineComponents do
 
   attr :reactable, :boolean, default: false, doc: "show React and make the chips toggle"
   attr :queued, :atom, default: nil, doc: "`:next_step` or `:held` while it waits to be read"
+  attr :agents_by_id, :map, default: %{}, doc: "agent id => %Agent{}, for the @here reach pill"
+  attr :dm, :boolean, default: false, doc: "the message is in a DM"
 
   def message_item(%{message: %{kind: "system"}} = assigns) do
     ~H"""
@@ -360,6 +373,7 @@ defmodule CanopyWeb.TimelineComponents do
             body={@message.body}
             channels={@channels}
             mentions={@mentions}
+            here={Messages.here_mention(@message) != nil}
           />
           <.attachments message={@message} dom_prefix={attachment_prefix(@dom_prefix)} />
         </div>
@@ -379,6 +393,13 @@ defmodule CanopyWeb.TimelineComponents do
           prefix={attachment_prefix(@dom_prefix)}
           names={@names}
           reactable={@reactable}
+        />
+
+        <.here_pill
+          message={@message}
+          agents_by_id={@agents_by_id}
+          dom_prefix={@dom_prefix}
+          dm={@dm}
         />
 
         <.thread_summary :if={@summary} href={@thread_href} summary={@summary} user_name={@user_name} />
@@ -493,6 +514,123 @@ defmodule CanopyWeb.TimelineComponents do
   defp attachment_prefix("message"), do: ""
   defp attachment_prefix(prefix), do: prefix <> "-"
 
+  attr :message, :map, required: true
+  attr :agents_by_id, :map, required: true
+  attr :dom_prefix, :string, required: true
+  attr :dm, :boolean, default: false
+
+  # Who an @here woke, from the entry stored when it was posted (not the
+  # current roster): up to five avatars and "woke N agents", plus the chatter
+  # turn when an agent's @here was charged one. The <details> opens the full
+  # list, with the members it skipped because they were off. An id whose agent
+  # is gone draws a neutral "?", never the user's avatar.
+  defp here_pill(assigns) do
+    case Messages.here_mention(assigns.message) do
+      nil ->
+        ~H""
+
+      entry ->
+        reached = Enum.map(entry["reach"] || [], &Map.get(assigns.agents_by_id, &1))
+        skipped = Enum.map(entry["skipped"] || [], &Map.get(assigns.agents_by_id, &1))
+
+        assigns
+        |> assign(:reached, reached)
+        |> assign(:skipped, skipped)
+        |> assign(:shown, Enum.take(reached, 5))
+        |> assign(:more, max(length(reached) - 5, 0))
+        |> assign(:charged?, not is_nil(assigns.message.agent_id) and entry["agent_ids"] != [])
+        |> assign(:id, "#{assigns.dom_prefix}-here-#{assigns.message.id}")
+        |> here_pill_html()
+    end
+  end
+
+  defp here_pill_html(%{reached: []} = assigns) do
+    ~H"""
+    <p id={@id} class="mt-1.5 text-xs text-base-content/55">
+      @here woke nobody: no other agents in {if @dm, do: "this DM", else: "this channel"}.
+    </p>
+    """
+  end
+
+  defp here_pill_html(assigns) do
+    assigns =
+      assign(assigns, :sentence, [
+        ngettext("@here woke 1 agent", "@here woke %{count} agents", length(assigns.reached)),
+        if(assigns.charged?, do: " · 1 turn of chatter budget", else: ""),
+        ": ",
+        Enum.map_join(assigns.reached, ", ", &here_name/1)
+      ])
+
+    ~H"""
+    <details id={@id} class="group/here mt-1.5" phx-mounted={JS.ignore_attributes("open")}>
+      <summary
+        class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-full border border-base-300 bg-base-200 py-0.5 pl-1 pr-2.5 text-xs text-base-content/70 transition hover:border-accent/40 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        title={Enum.map_join(@reached, ", ", &here_name/1)}
+        aria-label={IO.iodata_to_binary(@sentence)}
+      >
+        <span class="flex shrink-0 -space-x-1" aria-hidden="true">
+          <.here_avatar :for={agent <- @shown} agent={agent} />
+          <span
+            :if={@more > 0}
+            class="flex size-5 items-center justify-center rounded-md bg-base-300 text-[9px] font-bold ring-2 ring-base-200"
+          >
+            +{@more}
+          </span>
+        </span>
+        <span>
+          {ngettext("woke 1 agent", "woke %{count} agents", length(@reached))}<span :if={@charged?}> · 1 turn of chatter budget</span>
+        </span>
+        <.icon
+          name="hero-chevron-down-mini"
+          class="size-3.5 opacity-60 transition group-open/here:rotate-180"
+        />
+      </summary>
+      <ul
+        id={"#{@id}-list"}
+        class="mt-1 w-fit min-w-48 space-y-0.5 rounded-lg border border-base-300 bg-base-100 px-2 py-1.5 text-xs shadow-sm"
+      >
+        <li :for={agent <- @reached} class="flex items-center gap-1.5">
+          <.here_avatar agent={agent} ring="ring-base-100" />
+          <span class="font-medium">{here_name(agent)}</span>
+        </li>
+        <li :for={agent <- @skipped} class="flex items-center gap-1.5 text-base-content/50">
+          <%!-- off: the avatar is muted with the text --%>
+          <span class="flex opacity-50 grayscale">
+            <.here_avatar agent={agent} ring="ring-base-100" />
+          </span>
+          <span>{here_name(agent)}: off, not woken</span>
+        </li>
+      </ul>
+    </details>
+    """
+  end
+
+  attr :agent, :any, required: true
+  attr :ring, :string, default: "ring-base-200"
+
+  defp here_avatar(%{agent: %{}} = assigns) do
+    ~H"""
+    <.mini_avatar participant={%{agent: @agent}} user_name="" ring={@ring} />
+    """
+  end
+
+  defp here_avatar(assigns) do
+    ~H"""
+    <span
+      class={[
+        "flex size-5 select-none items-center justify-center rounded-md bg-base-300 text-[9px] font-bold text-base-content/60 ring-2",
+        @ring
+      ]}
+      title="unknown agent"
+    >
+      ?
+    </span>
+    """
+  end
+
+  defp here_name(%{name: name}), do: "@" <> name
+  defp here_name(_agent), do: "unknown agent"
+
   attr :href, :string, required: true
   attr :summary, :map, required: true
   attr :user_name, :string, required: true
@@ -567,13 +705,17 @@ defmodule CanopyWeb.TimelineComponents do
   @doc "A small avatar for a thread participant (`%{agent}`, nil for the user)."
   attr :participant, :map, required: true
   attr :user_name, :string, required: true
+  attr :ring, :string, default: "ring-base-100", doc: "the ring colour, the background behind it"
 
   def mini_avatar(%{participant: %{agent: %{} = agent}} = assigns) do
     assigns = assign(assigns, :agent, agent)
 
     ~H"""
     <span
-      class="flex size-5 select-none items-center justify-center rounded-md bg-primary/15 text-[9px] font-bold text-primary ring-2 ring-base-100"
+      class={[
+        "flex size-5 select-none items-center justify-center rounded-md bg-primary/15 text-[9px] font-bold text-primary ring-2",
+        @ring
+      ]}
       style={
         @agent.color && "background-color: #{@agent.color}; color: #{initial_color(@agent.color)}"
       }
@@ -587,7 +729,10 @@ defmodule CanopyWeb.TimelineComponents do
   def mini_avatar(assigns) do
     ~H"""
     <span
-      class="flex size-5 select-none items-center justify-center rounded-md bg-secondary text-[9px] font-bold text-secondary-content ring-2 ring-base-100"
+      class={[
+        "flex size-5 select-none items-center justify-center rounded-md bg-secondary text-[9px] font-bold text-secondary-content ring-2",
+        @ring
+      ]}
       title={@user_name}
     >
       {initial(@user_name)}
@@ -663,12 +808,20 @@ defmodule CanopyWeb.TimelineComponents do
   attr :channels, :map, default: %{}
   attr :mentions, :any, default: MapSet.new()
 
+  attr :here, :boolean,
+    default: false,
+    doc: "highlight @here: only for a message whose @here resolved (Messages.here_mention/1)"
+
   def message_text(%{inline: true} = assigns) do
     assigns =
-      assign(assigns, :parts, Markdown.mention_parts(assigns.body || "", assigns.mentions))
+      assign(
+        assigns,
+        :parts,
+        Markdown.mention_parts(assigns.body || "", assigns.mentions, here: assigns.here)
+      )
 
     ~H"""
-    <span class="whitespace-pre-wrap break-words" phx-no-format><%= for part <- @parts do %><%= case part do %><% {:mention, name} -> %><span class={Markdown.mention_class()}>{name}</span><% {:plain, text} -> %>{text}<% end %><% end %></span>
+    <span class="whitespace-pre-wrap break-words" phx-no-format><%= for part <- @parts do %><%= case part do %><% {:mention, name} -> %><span class={Markdown.mention_class()}>{name}</span><% {:here, name} -> %><span class={Markdown.here_class()}>{name}</span><% {:plain, text} -> %>{text}<% end %><% end %></span>
     """
   end
 
@@ -677,7 +830,11 @@ defmodule CanopyWeb.TimelineComponents do
       assign(
         assigns,
         :html,
-        Markdown.to_html(assigns.body, channels: assigns.channels, mentions: assigns.mentions)
+        Markdown.to_html(assigns.body,
+          channels: assigns.channels,
+          mentions: assigns.mentions,
+          here: assigns.here
+        )
       )
 
     ~H"""
