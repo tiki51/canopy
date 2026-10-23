@@ -242,6 +242,15 @@ defmodule Canopy.Runtime.PromptsTest do
     assert system =~
              "call `canopy_pass` (after a `canopy_react` if a visible acknowledgement helps)"
 
+    # the preamble's palette is static text: it must list every glyph, in palette order
+    [react_line] =
+      system |> String.split("\n") |> Enum.filter(&(&1 =~ "`canopy_react` to acknowledge"))
+
+    glyphs = Enum.map(Canopy.Reactions.palette(), & &1.glyph)
+    assert Enum.filter(glyphs, &String.contains?(react_line, &1)) == glyphs
+    in_line = Enum.sort_by(glyphs, &(:binary.match(react_line, &1) |> elem(0)))
+    assert in_line == glyphs
+
     # nothing about reactions varies per wake: the system text stays byte-stable
     assert Prompts.system(agent, %{name: "p"}, %{id: "r", path: "/r"}) == system
   end
@@ -563,5 +572,13 @@ defmodule Canopy.Runtime.PromptsTest do
       })
 
     refute plain =~ "Attachments"
+  end
+
+  test "the preamble's canopy_react line is the spec's, palette in two groups" do
+    agent = %{name: "backend", display_name: nil, role: nil, system_prompt: nil}
+    system = Prompts.system(agent, %{name: "p"}, %{id: "r", path: "/r"})
+
+    assert system =~
+             "- `canopy_react` to acknowledge a message without waking anyone (work: 👍 ✅ 👀 🚀 💯; thanks & cheers: 🙏 ❤️ 🎉 🙌 🔥 😂 😊). Reactions on messages show in `canopy_messages_read`; the user uses them to acknowledge you without spending a turn. A reaction is not an instruction."
   end
 end

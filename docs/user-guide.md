@@ -1164,10 +1164,13 @@ are shown in your local time zone.
 
 #### Reactions
 
-Hover a message and press the smiley (**React**) to put one of five reactions on it:
-👍 agree, ✅ done or approved, 👀 looking at it, 🎉 nice work, ❤️ thanks. The chips under
-the message show each emoji with its count; yours is highlighted, hovering a chip names who
-reacted, and clicking it takes your reaction back (or adds it). A reaction is a quiet
+Hover a message and press the smiley (**React**) to put a reaction on it. **Work**
+reactions answer: 👍 agree, ✅ done or approved, 👀 looking at it, 🚀 shipped or merged,
+💯 exactly right. **Thanks & cheers** set the tone: 🙏 thank you, ❤️ love it, 🎉 celebrate,
+🙌 great work, 🔥 impressive, 😂 that's funny, 😊 glad. Hover an emoji in the picker to see
+what it means. The chips under the message show each emoji with its count, work reactions
+first; yours is highlighted, hovering a chip names who reacted, and clicking it takes your
+reaction back (or adds it). A reaction is a quiet
 signal: it wakes nobody, it does not lift a chatter pause, and it never counts as unread,
 in either direction. Agents see reactions when they next read the channel, so a ✅ on
 "Ship it after CI?" answers without spending a turn. Agents may react too, to acknowledge

@@ -13,9 +13,11 @@ defmodule Canopy.Reactions do
   A `reactor` is `{:user, user_id}` or `{:agent, agent_id}`, always set by the
   caller's code, never from a form or a tool's params.
 
-  The palette is small and fixed: agents get a closed vocabulary, keys avoid
-  glyph normalisation (❤ vs ❤️), and there is no negative reaction on purpose
-  (disagreement should be a message, which does wake).
+  The palette is fixed and closed: 12 entries in two groups, work signals
+  first, then thanks & cheers. Agents get a closed vocabulary, keys avoid glyph
+  normalisation (❤ vs ❤️), and there is no negative reaction on purpose
+  (disagreement should be a message, which does wake). Aliases (`+1`,
+  `thanks`) are input only: what is stored is always a key.
   """
 
   import Ecto.Query, warn: false
@@ -26,37 +28,90 @@ defmodule Canopy.Reactions do
   alias Canopy.Timeline
 
   @palette [
-    %{key: "thumbs_up", glyph: "👍", label: "agree / sounds good"},
-    %{key: "check", glyph: "✅", label: "done / approved"},
-    %{key: "eyes", glyph: "👀", label: "looking at it"},
-    %{key: "tada", glyph: "🎉", label: "nice work"},
-    %{key: "heart", glyph: "❤️", label: "thanks"}
+    %{key: "thumbs_up", glyph: "👍", label: "agree / sounds good", group: :work},
+    %{key: "check", glyph: "✅", label: "done / approved", group: :work},
+    %{key: "eyes", glyph: "👀", label: "looking at it", group: :work},
+    %{key: "rocket", glyph: "🚀", label: "shipped / merged", group: :work},
+    %{key: "hundred", glyph: "💯", label: "exactly right", group: :work},
+    %{key: "pray", glyph: "🙏", label: "thank you", group: :cheer},
+    %{key: "heart", glyph: "❤️", label: "love it", group: :cheer},
+    %{key: "tada", glyph: "🎉", label: "celebrate", group: :cheer},
+    %{key: "raised_hands", glyph: "🙌", label: "great work", group: :cheer},
+    %{key: "fire", glyph: "🔥", label: "impressive", group: :cheer},
+    %{key: "laughing", glyph: "😂", label: "that's funny", group: :cheer},
+    %{key: "smile", glyph: "😊", label: "glad / happy", group: :cheer}
   ]
+  @group_names [work: "Work", cheer: "Thanks & cheers"]
+  @groups for {group, name} <- @group_names,
+              do: {group, name, Enum.filter(@palette, &(&1.group == group))}
   @keys Enum.map(@palette, & &1.key)
+  @aliases %{
+    "+1" => "thumbs_up",
+    "thumbsup" => "thumbs_up",
+    "like" => "thumbs_up",
+    "white_check_mark" => "check",
+    "done" => "check",
+    "ship" => "rocket",
+    "shipped" => "rocket",
+    "100" => "hundred",
+    "thanks" => "pray",
+    "thank_you" => "pray",
+    "folded_hands" => "pray",
+    "prayer" => "pray",
+    "love" => "heart",
+    "celebrate" => "tada",
+    "party" => "tada",
+    "joy" => "laughing",
+    "laugh" => "laughing",
+    "lol" => "laughing",
+    "blush" => "smile",
+    "smiley" => "smile"
+  }
   @by_key Map.new(@palette, &{&1.key, &1})
   @default_since_limit 10
 
   @type reactor :: {:user, String.t()} | {:agent, String.t()}
+  @type entry :: %{key: String.t(), glyph: String.t(), label: String.t(), group: :work | :cheer}
 
-  @doc "The palette, in display order: `[%{key, glyph, label}]`."
+  @doc """
+  The palette, in display order: `[%{key, glyph, label, group}]`, `group`
+  being `:work` or `:cheer`.
+  """
+  @spec palette() :: [entry]
   def palette, do: @palette
+
+  @doc """
+  The palette by group, in display order:
+  `[{:work, "Work", entries}, {:cheer, "Thanks & cheers", entries}]`.
+  """
+  @spec groups() :: [{:work | :cheer, String.t(), [entry]}]
+  def groups, do: @groups
 
   @doc "The palette keys, in display order."
   def keys, do: @keys
+
+  @doc """
+  Extra input names for keys (`%{"+1" => "thumbs_up", …}`), accepted by
+  `resolve_key/1`; never stored.
+  """
+  def aliases, do: @aliases
 
   @doc "The palette entry for `key`, or nil."
   def entry(key), do: Map.get(@by_key, key)
 
   @doc """
-  The palette key for a key or a glyph (with or without the emoji variation
-  selector), or nil.
+  The palette key for a key, an alias (see `aliases/0`), or a glyph (with or
+  without the emoji variation selector), or nil. Surrounding whitespace and
+  colons are ignored, and keys and aliases match in any case.
   """
   def resolve_key(value) when is_binary(value) do
     value = value |> String.trim() |> String.trim(":")
+    name = String.downcase(value)
     bare = String.replace(value, "️", "")
 
     cond do
-      Map.has_key?(@by_key, value) -> value
+      Map.has_key?(@by_key, name) -> name
+      key = Map.get(@aliases, name) -> key
       entry = Enum.find(@palette, &(String.replace(&1.glyph, "️", "") == bare)) -> entry.key
       true -> nil
     end
@@ -169,8 +224,9 @@ defmodule Canopy.Reactions do
   end
 
   @doc """
-  A message's reactions grouped by emoji, in palette order:
-  `[%{key, glyph, label, count, user?, agent_ids, reactions}]`. `user?` is
+  A message's reactions grouped by emoji, in palette order (so work reactions
+  come first): `[%{key, glyph, label, group, count, user?, agent_ids,
+  reactions}]`. `user?` is
   true when the user is among the reactors; `reactions` keeps the rows (with
   whatever reactors were preloaded) in the order they were added.
   """

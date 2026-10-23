@@ -1080,7 +1080,7 @@ defmodule CanopyWeb.ChannelLiveTest do
   end
 
   describe "reactions" do
-    test "the picker offers five emoji; a pick adds the user's chip and a click removes it",
+    test "the picker offers twelve emoji in two groups; a pick adds the user's chip and a click removes it",
          ctx do
       %{channel: channel, agent: agent} = ctx
       {:ok, post} = Messages.post_agent_message(channel.id, agent.id, "Merged the fix.")
@@ -1089,9 +1089,22 @@ defmodule CanopyWeb.ChannelLiveTest do
       assert has_element?(view, "#react-#{post.id}")
       refute has_element?(view, "#reactions-#{post.id}")
 
-      for key <- ~w(thumbs_up check eyes tada heart) do
-        assert has_element?(view, "#react-picker-#{post.id} #react-picker-#{post.id}-#{key}")
+      picker = "#react-picker-#{post.id}"
+
+      for {group, name, keys} <- [
+            {"work", "Work", ~w(thumbs_up check eyes rocket hundred)},
+            {"cheer", "Thanks & cheers", ~w(pray heart tada raised_hands fire laughing smile)}
+          ] do
+        in_group = "#{picker} [role=group][aria-labelledby=react-picker-#{post.id}-#{group}]"
+        assert has_element?(view, "#{in_group} #{picker}-#{group}", name)
+
+        for key <- keys do
+          assert has_element?(view, "#{in_group} #{picker}-#{key}[role=menuitem]")
+        end
       end
+
+      assert has_element?(view, "#{picker} [data-picker-footer]", "Pick a reaction")
+      assert has_element?(view, "#{picker}-hundred [data-picker-label]", "exactly right")
 
       view |> element("#react-picker-#{post.id}-check") |> render_click()
       chip = "#reaction-#{post.id}-check"
@@ -1103,6 +1116,16 @@ defmodule CanopyWeb.ChannelLiveTest do
       refute has_element?(view, chip)
       refute has_element?(view, "#reactions-#{post.id}")
       assert Messages.get!(post.id).reactions == []
+
+      # chips follow the palette, work first: 🔥 picked before ✅ still sits after it
+      view |> element("#{picker}-fire") |> render_click()
+      view |> element("#{picker}-check") |> render_click()
+
+      chips = view |> element("#reactions-#{post.id}") |> render()
+
+      {check_at, _} = :binary.match(chips, "reaction-#{post.id}-check")
+      {fire_at, _} = :binary.match(chips, "reaction-#{post.id}-fire")
+      assert check_at < fire_at
     end
 
     test "an agent's reaction appears live, named in the chip's title, and marks nothing", ctx do
@@ -1187,6 +1210,156 @@ defmodule CanopyWeb.ChannelLiveTest do
       refute has_element?(view, "#message-#{hidden.id}")
       refute has_element?(view, "#thread-msg-#{hidden.id}")
       assert has_element?(view, "#message-#{root.id}")
+    end
+
+    test "more emojis: order, names, legacy labels, twelve chips", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer, user: user} = ctx
+      {:ok, post} = Messages.post_agent_message(channel.id, agent.id, "Merged the fix.")
+
+      # stored before the change: ❤️ (the user) and 🎉 (an agent)
+      for {who, key} <- [{%{user_id: user.id}, "heart"}, {%{agent_id: reviewer.id}, "tada"}] do
+        Canopy.Repo.insert!(
+          struct(
+            Canopy.Messages.Reaction,
+            Map.merge(who, %{message_id: post.id, channel_id: channel.id, emoji: key})
+          )
+        )
+      end
+
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      picker = "#react-picker-#{post.id}"
+      html = render(view)
+
+      keys =
+        ~w(thumbs_up check eyes rocket hundred pray heart tada raised_hands fire laughing smile)
+
+      positions =
+        for key <- keys,
+            do: html |> :binary.match(~s(id="react-picker-#{post.id}-#{key}")) |> elem(0)
+
+      assert positions == Enum.sort(positions)
+
+      assert has_element?(view, "#{picker}[role=menu][data-reveal-on-open]")
+
+      assert has_element?(
+               view,
+               "#{picker} [data-picker-footer][aria-hidden=true]",
+               "Pick a reaction"
+             )
+
+      assert has_element?(
+               view,
+               "#{picker}-pray[aria-label='React 🙏 thank you'][title='thank you']"
+             )
+
+      assert has_element?(view, "#{picker}-heart[aria-label='React ❤️ love it']")
+      assert has_element?(view, "#{picker}-pray [data-picker-label][aria-hidden=true]")
+
+      refute has_element?(
+               view,
+               "#{picker} [aria-labelledby=react-picker-#{post.id}-work] #{picker}-pray"
+             )
+
+      assert has_element?(view, "#reaction-#{post.id}-heart[title='You: love it']")
+      assert has_element?(view, "#reaction-#{post.id}-tada[title='@#{reviewer.name}: celebrate']")
+
+      view |> element("#{picker}-fire") |> render_click()
+
+      assert has_element?(
+               view,
+               "#reaction-#{post.id}-fire[data-mine=true][title='You: impressive']"
+             )
+
+      for key <- keys -- ~w(heart fire), do: view |> element("#{picker}-#{key}") |> render_click()
+      chips = view |> element("#reactions-#{post.id}") |> render()
+
+      at =
+        for key <- keys,
+            do: chips |> :binary.match(~s(id="reaction-#{post.id}-#{key}")) |> elem(0)
+
+      assert at == Enum.sort(at)
+    end
+
+    test "more emojis: the thread panel's picker has its own ids; nothing is duplicated", ctx do
+      %{channel: channel, agent: agent, reviewer: reviewer} = ctx
+      {:ok, root} = Messages.post_agent_message(channel.id, agent.id, "Which width?")
+      {:ok, reply} = Messages.thread_reply(root.id, {:agent, reviewer.id}, "390px")
+
+      {:ok, view, _html} = live(conn_of(ctx), ChannelLive.thread_path(channel.id, root.id))
+      picker = "#thread-msg-react-picker-#{reply.id}"
+
+      for {group, name} <- [{"work", "Work"}, {"cheer", "Thanks & cheers"}] do
+        assert has_element?(
+                 view,
+                 "#{picker} [role=group][aria-labelledby=thread-msg-react-picker-#{reply.id}-#{group}] #{picker}-#{group}",
+                 name
+               )
+      end
+
+      html = render(view)
+      # the root shows in the feed and in the thread: each copy's ids are its own
+      for suffix <- ~w(work cheer thumbs_up smile),
+          id <- [
+            "react-picker-#{root.id}-#{suffix}",
+            "thread-msg-react-picker-#{root.id}-#{suffix}"
+          ] do
+        assert length(String.split(html, ~s(id="#{id}"))) == 2, id
+      end
+
+      view |> element("#{picker}-pray") |> render_click()
+      assert has_element?(view, "#thread-replies #thread-msg-reaction-#{reply.id}-pray", "1")
+    end
+
+    test "more emojis: the UI takes keys only; archived chips with new keys are disabled", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, post} = Messages.post_agent_message(channel.id, agent.id, "Done.")
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      for value <- ["thanks", "🙏", "work", "thumbs_down"] do
+        html = render_hook(view, "toggle_reaction", %{"id" => post.id, "emoji" => value})
+        assert html =~ "That reaction is not one Canopy offers.", value
+      end
+
+      assert Messages.get!(post.id).reactions == []
+
+      for key <- ~w(fire pray),
+          do: {:ok, :added} = Canopy.Reactions.add(post.id, {:user, user.id}, key)
+
+      {:ok, _} = Canopy.Channels.archive(channel)
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+      refute has_element?(view, "#react-#{post.id}")
+      assert has_element?(view, "#reaction-#{post.id}-fire[disabled]")
+      assert has_element?(view, "#reaction-#{post.id}-pray[disabled]")
+
+      html = render_hook(view, "toggle_reaction", %{"id" => post.id, "emoji" => "fire"})
+      assert html =~ "archived; it takes no reactions"
+      assert length(Messages.get!(post.id).reactions) == 2
+    end
+
+    test "more emojis: an agent's canopy_react with an alias shows live as its key's chip", ctx do
+      %{channel: channel, agent: agent, user: user} = ctx
+      {:ok, mine} = Messages.post_user_message(channel.id, user.id, "Thanks for the fix")
+      {:ok, view, _html} = open(conn_of(ctx), channel)
+
+      assert {:ok, _} =
+               Canopy.MCPHelpers.call(
+                 Canopy.MCP.Tools.React,
+                 %{message: mine.id, emoji: "thanks"},
+                 ctx
+               )
+
+      assert has_element?(
+               view,
+               "#reaction-#{mine.id}-pray[title='@#{agent.name}: thank you']",
+               "1"
+             )
+
+      {:ok, :added} = Canopy.Reactions.add(mine.id, {:agent, ctx.reviewer.id}, "raised_hands")
+
+      assert has_element?(
+               view,
+               "#reaction-#{mine.id}-raised_hands[title='@#{ctx.reviewer.name}: great work']"
+             )
     end
   end
 

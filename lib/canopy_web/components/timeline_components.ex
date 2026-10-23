@@ -390,8 +390,13 @@ defmodule CanopyWeb.TimelineComponents do
   attr :message, :map, required: true
   attr :prefix, :string, required: true
 
-  # The React button and its five-emoji picker. Opening and closing are
-  # client-side only; a pick sends `toggle_reaction` and closes the picker.
+  # The React button and its picker: the palette in its two groups, with a
+  # footer that names the hovered or focused emoji (CSS only: each button's
+  # label span is positioned against the popover, so nothing between them may
+  # become a containing block: no position or transform on the button, grid,
+  # or group). Opening and closing are client-side only; a pick sends
+  # `toggle_reaction` and closes the picker. `data-reveal-on-open` scrolls the
+  # opened picker into view (app.js), so the newest message's isn't cut off.
   defp react_button(assigns) do
     assigns = assign(assigns, :picker, "#{assigns.prefix}react-picker-#{assigns.message.id}")
 
@@ -400,7 +405,7 @@ defmodule CanopyWeb.TimelineComponents do
       <button
         type="button"
         id={"#{@prefix}react-#{@message.id}"}
-        phx-click={JS.toggle(to: "##{@picker}", display: "flex")}
+        phx-click={JS.toggle(to: "##{@picker}", display: "block")}
         class="flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-base-content/60 transition hover:bg-base-300/60 hover:text-base-content"
         title="React"
         aria-label="Add a reaction"
@@ -410,25 +415,60 @@ defmodule CanopyWeb.TimelineComponents do
       </button>
       <div
         id={@picker}
-        class="absolute right-0 top-full z-20 mt-1 hidden items-center gap-0.5 rounded-lg border border-base-300 bg-base-100 p-1 shadow-lg"
+        class="absolute right-0 top-full z-20 mt-1 hidden w-56 rounded-lg border border-base-300 bg-base-100 p-1 shadow-lg"
         phx-click-away={JS.hide(to: "##{@picker}")}
         role="menu"
+        data-reveal-on-open
       >
-        <button
-          :for={entry <- Canopy.Reactions.palette()}
-          type="button"
-          id={"#{@picker}-#{entry.key}"}
-          phx-click={
-            JS.push("toggle_reaction", value: %{id: @message.id, emoji: entry.key})
-            |> JS.hide(to: "##{@picker}")
-          }
-          class="flex size-7 items-center justify-center rounded-md text-base transition hover:scale-110 hover:bg-base-200"
-          title={entry.label}
-          aria-label={"React #{entry.glyph} #{entry.label}"}
-          role="menuitem"
+        <div
+          :for={{group, name, entries} <- Canopy.Reactions.groups()}
+          role="group"
+          aria-labelledby={"#{@picker}-#{group}"}
         >
-          {entry.glyph}
-        </button>
+          <p
+            id={"#{@picker}-#{group}"}
+            class="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-base-content/50"
+          >
+            {name}
+          </p>
+          <div class="grid grid-cols-7 justify-items-center gap-0.5">
+            <button
+              :for={entry <- entries}
+              type="button"
+              id={"#{@picker}-#{entry.key}"}
+              phx-click={
+                JS.push("toggle_reaction", value: %{id: @message.id, emoji: entry.key})
+                |> JS.hide(to: "##{@picker}")
+              }
+              class="group/emoji flex size-7 items-center justify-center rounded-md text-base transition hover:bg-base-200 focus-visible:bg-base-200 focus-visible:outline-none"
+              title={entry.label}
+              aria-label={"React #{entry.glyph} #{entry.label}"}
+              role="menuitem"
+            >
+              <span class="transition group-hover/emoji:scale-110 group-focus-visible/emoji:scale-110">
+                {entry.glyph}
+              </span>
+              <span
+                class="pointer-events-none absolute inset-x-1 bottom-1 hidden h-[27px] items-center gap-1.5 bg-base-100 px-1.5 text-[11.5px] group-hover/emoji:flex group-focus-visible/emoji:flex"
+                aria-hidden="true"
+                data-picker-label
+              >
+                <span class="text-sm">{entry.glyph}</span>
+                <span class="truncate font-medium text-base-content">{entry.label}</span>
+                <span class="ml-auto shrink-0 font-mono text-[10.5px] text-base-content/45">
+                  {entry.key}
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
+        <div
+          class="mt-1 flex h-7 items-center border-t border-base-300/70 px-1.5 text-[11.5px] text-base-content/50"
+          aria-hidden="true"
+          data-picker-footer
+        >
+          Pick a reaction
+        </div>
       </div>
     </div>
     """
