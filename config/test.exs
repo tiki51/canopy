@@ -90,6 +90,12 @@ config :canopy, :github,
   client: Canopy.GitHub.Mock,
   binary: Path.expand("../test/support/fake_gh.sh", __DIR__)
 
+# Playbook sharing reads an in-memory repository
+# (test/support/fake_remote.ex), never gh; the Refresher doesn't tick.
+config :canopy, :playbook_sharing,
+  remote: Canopy.Playbooks.Sharing.FakeRemote,
+  tick: false
+
 # A channel that goes quiet says so at once (Canopy.Runtime.ChannelServer's
 # quiet check), so tests assert on the signal without waiting.
 config :canopy, :quiet_ms, 0

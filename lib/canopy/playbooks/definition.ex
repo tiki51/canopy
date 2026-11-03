@@ -9,8 +9,10 @@ defmodule Canopy.Playbooks.Definition do
   optionally `approval: user`, `optional: true`, `on_reject: <earlier id>`),
   and optionally `roles` (role => default agent name), `team`, `coordinator`,
   `inputs`, `stall_after` (`30m`, `2h`, a number of minutes, or `off`;
-  default 30 minutes), and `section` (the sidebar section a run's new channel
-  goes in by default, found in any case or created; at most 40 characters).
+  default 30 minutes), `section` (the sidebar section a run's new channel
+  goes in by default, found in any case or created; at most 40 characters),
+  and `version` (a whole number a shared copy carries; only
+  `Canopy.Playbooks.Sharing` reads it, and the stored text never has it).
   Where a run happens is chosen when it starts; an old `channel:` field is
   accepted and ignored.
 
@@ -26,7 +28,7 @@ defmodule Canopy.Playbooks.Definition do
   @name_regex ~r/^[a-z0-9]+(-[a-z0-9]+)*$/
   # `channel` is accepted and ignored, whatever its value: runs started
   # before it went keep it in their stored text, and so do older files
-  @top_keys ~w(name description steps roles team coordinator channel inputs stall_after section)
+  @top_keys ~w(name description version steps roles team coordinator channel inputs stall_after section)
   @step_keys ~w(id title owner approval optional on_reject)
   @max_steps 20
   # read before the YAML parser sees anything, so it never works on more
@@ -37,6 +39,7 @@ defmodule Canopy.Playbooks.Definition do
 
   defstruct name: nil,
             description: nil,
+            version: nil,
             steps: [],
             roles: %{},
             team: nil,
@@ -59,6 +62,7 @@ defmodule Canopy.Playbooks.Definition do
   @type t :: %__MODULE__{
           name: String.t(),
           description: String.t(),
+          version: pos_integer() | nil,
           steps: [step()],
           roles: %{String.t() => String.t()},
           team: String.t() | nil,
@@ -132,6 +136,7 @@ defmodule Canopy.Playbooks.Definition do
       |> Kernel.++(check_optional_string(data, "coordinator"))
       |> Kernel.++(check_optional_string(data, "inputs"))
       |> Kernel.++(check_section(data["section"]))
+      |> Kernel.++(check_version(data["version"]))
 
     {roles, role_errors} = roles(data["roles"])
     {stall, stall_errors} = stall_after(Map.get(data, "stall_after", :default))
@@ -143,6 +148,7 @@ defmodule Canopy.Playbooks.Definition do
       definition = %__MODULE__{
         name: data["name"],
         description: String.trim(data["description"]),
+        version: data["version"],
         steps: steps,
         roles: roles,
         team: team && String.trim_leading(team, "@"),
@@ -194,6 +200,10 @@ defmodule Canopy.Playbooks.Definition do
   end
 
   defp check_description(_), do: ["description must be text"]
+
+  defp check_version(nil), do: []
+  defp check_version(n) when is_integer(n) and n >= 1 and n <= 1_000_000, do: []
+  defp check_version(_), do: ["version must be a whole number (1, 2, 3…)"]
 
   defp check_section(nil), do: []
 

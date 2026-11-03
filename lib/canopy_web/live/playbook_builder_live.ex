@@ -18,8 +18,8 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
   alias Canopy.{Agents, Playbooks, Teams}
   alias Canopy.Playbooks.{Definition, Playbook}
-  alias CanopyWeb.{PlaybookAsk, PlaybookBuilder}
-  import CanopyWeb.PlaybookComponents, only: [avatar: 1]
+  alias CanopyWeb.{PlaybookAsk, PlaybookBuilder, PlaybookSharing}
+  import CanopyWeb.PlaybookComponents, only: [avatar: 1, step_badges: 1]
 
   @nudges [{15, "15 min"}, {30, "30 min"}, {60, "1 h"}, {120, "2 h"}, {240, "4 h"}]
 
@@ -1080,6 +1080,13 @@ defmodule CanopyWeb.PlaybookBuilderLive do
           ]}
         >
           {source_label(@playbook)}
+        </span>
+        <span
+          :if={@playbook}
+          id="builder-version"
+          class="hidden shrink-0 truncate text-xs text-base-content/50 md:inline"
+        >
+          {PlaybookSharing.version_line(@playbook, PlaybookSharing.edited_since?(@playbook))}
         </span>
         <label
           :if={@playbook && is_nil(@unreadable) && !@deleted}
@@ -2241,51 +2248,6 @@ defmodule CanopyWeb.PlaybookBuilderLive do
 
       <.step_editor :if={@open} {assigns} />
     </li>
-    """
-  end
-
-  attr :step, :map, required: true
-  attr :target, :any, required: true
-  attr :send_back_problem, :any, required: true
-  attr :saved, :boolean, required: true
-
-  defp step_badges(assigns) do
-    ~H"""
-    <span
-      :if={length(@step.owner) > 1}
-      class="rounded-full bg-base-100 px-2 py-0.5 text-[11px] text-base-content/60"
-    >
-      in parallel
-    </span>
-    <span
-      :if={@step.on_reject}
-      class={[
-        "rounded-full px-2 py-0.5 text-[11px] font-medium",
-        @send_back_problem && "bg-error/10 text-error",
-        !@send_back_problem && "bg-secondary/10 text-secondary"
-      ]}
-    >
-      ↩︎ can send back to {(@target && PlaybookBuilder.title(@target)) || @step.on_reject}{if @send_back_problem,
-        do: " ⚠"}
-    </span>
-    <span
-      :if={@step.approval}
-      class="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning"
-    >
-      waits for you
-    </span>
-    <span
-      :if={@step.optional}
-      class="rounded-full border border-dashed border-base-300 px-2 py-0.5 text-[11px] text-base-content/60"
-    >
-      can be skipped
-    </span>
-    <span
-      :if={@step.fresh && @saved}
-      class="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
-    >
-      new
-    </span>
     """
   end
 

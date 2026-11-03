@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Boots Canopy for the Playwright suite on its own SQLite database and port,
 # pointed at the fake OpenCode server, with the fake Claude Code
-# (e2e/fake-claude/claude) and the fake Codex (e2e/fake-codex/codex) first on
-# PATH. Invoked by playwright.config.ts.
+# (e2e/fake-claude/claude), the fake Codex (e2e/fake-codex/codex) and the fake
+# gh (e2e/fake-gh/gh) first on PATH. Invoked by playwright.config.ts.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-export PATH="$PWD/e2e/fake-claude:$PWD/e2e/fake-codex:$PATH"
+export PATH="$PWD/e2e/fake-claude:$PWD/e2e/fake-codex:$PWD/e2e/fake-gh:$PATH"
+# The fake gh's GitHub repository (see e2e/fake-gh/gh.mjs): empty on each boot;
+# playbook-sharing specs fill it from Node.
+DEFAULT_GH_REPO="$PWD/tmp/e2e-gh-repo"
+export FAKE_GH_REPO_DIR="${FAKE_GH_REPO_DIR:-$DEFAULT_GH_REPO}"
+if [ "$FAKE_GH_REPO_DIR" = "$DEFAULT_GH_REPO" ]; then rm -rf "$FAKE_GH_REPO_DIR"; fi
+mkdir -p "$FAKE_GH_REPO_DIR"
 # Run from inside Canopy (an agent's shell) this would be the real library;
 # e2e documents belong next to the e2e database.
 unset CANOPY_FILES_DIR

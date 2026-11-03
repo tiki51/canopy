@@ -31,6 +31,10 @@ defmodule Canopy.Application do
       Canopy.Runtime.Supervisor,
       # Runs a reset from Settings, one at a time (after the runtime it stops)
       Canopy.Environment.Resetter,
+      # Playbook sharing: GitHub reads run as tasks under the supervisor, and
+      # the Refresher caches the last one and notices merged pull requests
+      {Task.Supervisor, name: Canopy.Playbooks.Sharing.TaskSupervisor},
+      Canopy.Playbooks.Sharing.Refresher,
       # MCP server for agents (Streamable HTTP, mounted at /mcp; transport starts only when the endpoint serves)
       {Canopy.MCP.Server, transport: :streamable_http},
       # Start a worker by calling: Canopy.Worker.start_link(arg)

@@ -18,6 +18,13 @@ defmodule CanopyWeb.PlaybooksLive do
   Playbooks are global to Canopy. An enabled playbook is listed in every
   agent's system prompt, so a draft an agent saved stays disabled until the
   user enables it.
+
+  Sharing through GitHub lives on the index too (`Canopy.Playbooks.Sharing`,
+  `CanopyWeb.PlaybookSharingComponents`): the GitHub ▾ menu, a chip on rows
+  GitHub has news for, and the Import and Export dialogs, opened by
+  `?github=import|export` with Compare stacked by `&compare=<key>`. Every
+  GitHub call runs in a `start_async`; the page's first paint uses the
+  cached status, with no gh call.
   """
 
   use CanopyWeb, :live_view
@@ -25,10 +32,29 @@ defmodule CanopyWeb.PlaybooksLive do
   import CanopyWeb.PlaybookComponents, only: [avatar: 1, playbook_row: 1]
   import CanopyWeb.AttachmentComponents, only: [file_chips: 1, library_picker: 1]
 
+  import CanopyWeb.PlaybookSharingComponents,
+    only: [
+      compare_dialog: 1,
+      export_modal: 1,
+      github_menu: 1,
+      import_modal: 1,
+      pr_toast: 1,
+      updates_notice: 1
+    ]
+
   alias Canopy.{Agents, Documents, Messages, Playbooks, Repositories, Users}
   alias Canopy.Channels.Sections
-  alias Canopy.Playbooks.{Definition, Playbook, Runs, Writer}
-  alias CanopyWeb.{Attachments, PlaybookAsk, PlaybookBuilder, PlaybookStart, SectionPicker}
+  alias Canopy.Playbooks.{Definition, Playbook, Runs, Sharing, Writer}
+
+  alias CanopyWeb.{
+    Attachments,
+    PlaybookAsk,
+    PlaybookBuilder,
+    PlaybookSharing,
+    PlaybookSharingComponents,
+    PlaybookStart,
+    SectionPicker
+  }
 
   @new_section SectionPicker.new()
 
@@ -37,6 +63,7 @@ defmodule CanopyWeb.PlaybooksLive do
     if connected?(socket) do
       Playbooks.subscribe()
       Runs.subscribe()
+      Sharing.subscribe()
     end
 
     active = Agents.list_active()
@@ -50,9 +77,11 @@ defmodule CanopyWeb.PlaybooksLive do
      |> assign(:open_id, nil)
      |> assign(:moved_id, nil)
      |> assign(:drafts_open?, false)
+     |> assign(:index_base, nil)
      |> assign(:brief_picked, [])
      |> assign(:consumed_refs, [])
      |> assign(:library, nil)
+     |> assign_sharing()
      |> allow_upload(:brief_files,
        accept: :any,
        max_entries: Messages.max_attachments(),
@@ -64,19 +93,31 @@ defmodule CanopyWeb.PlaybooksLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    # back on the list from another page: Drafts opens or closes afresh
+    socket =
+      if socket.assigns.live_action == :index, do: socket, else: assign(socket, :index_base, nil)
+
     case {socket.assigns.live_action, params} do
       {:index, _} ->
         # an agent's draft waiting for review opens Drafts; so does an old
-        # `?show=drafts` link
+        # `?show=drafts` link. Opening or closing a GitHub dialog leaves
+        # Drafts as the user left it.
+        base = Map.drop(params, ["github", "compare", "row"])
+
         drafts_open? =
-          params["show"] == "drafts" or
-            Enum.any?(socket.assigns.playbooks, &agent_draft?/1)
+          if socket.assigns.index_base == base,
+            do: socket.assigns.drafts_open?,
+            else:
+              params["show"] == "drafts" or
+                Enum.any?(socket.assigns.playbooks, &agent_draft?/1)
 
         {:noreply,
          socket
          |> assign(:playbook, nil)
+         |> assign(:index_base, base)
          |> assign(:drafts_open?, drafts_open?)
-         |> assign(:page_title, "Playbooks")}
+         |> assign(:page_title, "Playbooks")
+         |> sharing_params(params)}
 
       {:new, _} ->
         agents = socket.assigns.active_agents
@@ -112,7 +153,43 @@ defmodule CanopyWeb.PlaybooksLive do
   end
 
   @impl true
-  def handle_info({:playbooks, :changed}, socket), do: {:noreply, load_list(socket)}
+  def handle_info({:playbooks, :changed}, socket) do
+    socket = load_list(socket)
+
+    # a local edit moves a row (Up to date → Edited) without asking GitHub
+    case Sharing.cached_status() do
+      {:ok, status} -> {:noreply, put_status(socket, status)}
+      nil -> {:noreply, socket}
+    end
+  end
+
+  # another tab, the refresher's tick, an export elsewhere; a busy dialog
+  # keeps what it acts on
+  def handle_info({:playbook_sharing, :status, status}, socket),
+    do: {:noreply, put_status(socket, status)}
+
+  def handle_info({:playbook_sharing, :config_changed}, socket) do
+    socket =
+      socket
+      |> update(:sharing, &%{&1 | config: sharing_config(), status: nil, error: nil})
+      |> assign(:seeded?, false)
+
+    {:noreply, if(socket.assigns.github, do: read_status(socket, 0), else: socket)}
+  end
+
+  def handle_info({:clear_undo, token}, socket) do
+    case socket.assigns.undo do
+      %{token: ^token} -> {:noreply, assign(socket, :undo, nil)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_info({:clear_pr_toast, number}, socket) do
+    case socket.assigns.pr_toast do
+      %{number: ^number} -> {:noreply, assign(socket, :pr_toast, nil)}
+      _ -> {:noreply, socket}
+    end
+  end
 
   # only the changed channel's runs can have moved a playbook's last run
   def handle_info({:playbook_runs, :changed, channel_id}, socket) do
@@ -236,6 +313,202 @@ defmodule CanopyWeb.PlaybooksLive do
         end
     end
   end
+
+  # -- Sharing -----------------------------------------------------------------------
+
+  # A row's checkbox in either dialog. Ticking a Needs-a-look row needs a
+  # choice from Compare first (its box is disabled until then).
+  def handle_event("tick", %{"key" => key}, socket) do
+    mode = socket.assigns.github
+    entry = entry(socket, key)
+
+    if entry && mode && is_nil(socket.assigns.busy) && PlaybookSharing.tickable?(entry, mode) do
+      picks = socket.assigns.picks
+
+      picks =
+        if MapSet.member?(picks, key), do: MapSet.delete(picks, key), else: MapSet.put(picks, key)
+
+      {:noreply, socket |> assign(:picks, picks) |> follow_pr_title()}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Compare's footer: a choice for a Needs-a-look row, Skip, Import this or
+  # Export mine. Each ticks (or unticks) the row and returns to the dialog.
+  def handle_event("compare_pick", %{"key" => key, "choice" => choice}, socket) do
+    mode = socket.assigns.github
+
+    case entry(socket, key) do
+      nil ->
+        {:noreply, push_patch(socket, to: PlaybookSharingComponents.row_path(mode, key))}
+
+      entry ->
+        socket =
+          case choice do
+            "skip" ->
+              socket
+              |> update(:choices, &Map.delete(&1, key))
+              |> update(:picks, &MapSet.delete(&1, key))
+
+            pick when pick in ["take", "keep_both"] ->
+              pick = String.to_existing_atom(pick)
+
+              socket
+              |> update(
+                :choices,
+                &Map.put(&1, key, %{choice: pick, state: entry.state, sha: entry.sha})
+              )
+              |> update(:picks, &MapSet.put(&1, key))
+
+            _tick_or_export ->
+              update(socket, :picks, &MapSet.put(&1, key))
+          end
+
+        {:noreply,
+         socket
+         |> follow_pr_title()
+         |> push_patch(to: PlaybookSharingComponents.row_path(mode, key))}
+    end
+  end
+
+  def handle_event("sharing_retry", _params, socket),
+    do: {:noreply, socket |> update(:sharing, &%{&1 | error: nil}) |> read_status(0)}
+
+  def handle_event("import", _params, socket) do
+    %{sharing: %{status: status}, picks: picks, choices: choices, busy: busy} = socket.assigns
+
+    list =
+      if status && is_nil(busy) do
+        groups = PlaybookSharing.import_groups(status.entries)
+
+        Enum.map(Enum.filter(groups.ready, &MapSet.member?(picks, &1.key)), &{&1, :take}) ++
+          for entry <- groups.look,
+              MapSet.member?(picks, entry.key),
+              choice = choices[entry.key],
+              do: {entry, choice.choice}
+      else
+        []
+      end
+
+    if list == [] do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:busy, :import)
+       |> update(:sharing, &%{&1 | error: nil})
+       |> start_async(:sharing_import, fn -> Sharing.import(list) end)}
+    end
+  end
+
+  # the title follows the ticks until it's typed in; kept on the server, as
+  # a JS flag on the form is lost while a change is in flight (NOTES)
+  def handle_event("export_change", %{"pr" => params} = event, socket) do
+    typed? = socket.assigns.pr_typed? or event["_target"] == ["pr", "title"]
+
+    {:noreply,
+     socket
+     |> assign(:pr_typed?, typed?)
+     |> assign(:pr_form, pr_form(params["title"] || "", params["note"] || ""))}
+  end
+
+  def handle_event("export", %{"pr" => params}, socket) do
+    %{sharing: %{status: status}, picks: picks, busy: busy} = socket.assigns
+    title = String.trim(params["title"] || "")
+    note = params["note"] |> to_string() |> String.trim()
+
+    entries =
+      if status && status.can_push? && is_nil(busy),
+        do:
+          Enum.filter(PlaybookSharing.export_groups(status.entries).changed, &(&1.key in picks)),
+        else: []
+
+    if entries == [] or title == "" do
+      {:noreply, socket}
+    else
+      # the branch the footer shows
+      attrs = %{
+        title: title,
+        note: if(note == "", do: nil, else: note),
+        branch: socket.assigns.pr_branch
+      }
+
+      {:noreply,
+       socket
+       |> assign(:busy, :export)
+       |> assign(:pr_form, pr_form(params["title"] || "", params["note"] || ""))
+       |> update(:sharing, &%{&1 | error: nil})
+       |> start_async(:sharing_export, fn ->
+         {Sharing.export(entries, attrs), length(entries)}
+       end)}
+    end
+  end
+
+  def handle_event("setup_change", %{"sharing" => params}, socket) do
+    params = PlaybookSharing.fill_from_url(params)
+
+    {:noreply,
+     socket
+     |> assign(:setup_form, setup_form(params, :validate))
+     |> cancel_async(:sharing_check)
+     |> assign(:sharing_check, nil)}
+  end
+
+  # Repository lost focus: check the form's values (a pasted URL is parsed by now)
+  def handle_event("setup_check", _params, socket) do
+    form = socket.assigns.setup_form
+    params = Map.new([:repo, :branch, :folder], &{to_string(&1), form[&1].value || ""})
+
+    if Canopy.GitHub.valid_repo?(String.trim(params["repo"])),
+      do: {:noreply, start_check(socket, params)},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("setup_save", %{"sharing" => params}, socket) do
+    # a URL still in Repository (submitted before its change event) is parsed too
+    params = PlaybookSharing.fill_from_url(params)
+
+    case Sharing.save_config(Map.take(params, ["repo", "branch", "folder"])) do
+      {:ok, config} ->
+        {:noreply,
+         socket
+         |> update(:sharing, &%{&1 | config: config, status: nil, error: nil})
+         |> assign(:seeded?, false)
+         |> assign(:sharing_check, nil)
+         |> read_status(0)}
+
+      # Repository blanked and submitted inside the change debounce: nothing to
+      # save; the form shows it blank again, with Continue disabled
+      :not_set_up ->
+        {:noreply, assign(socket, :setup_form, setup_form(params, :validate))}
+
+      {:error, changeset} ->
+        {:noreply,
+         assign(socket, :setup_form, to_form(changeset, as: :sharing, id: "sharing-setup-form"))}
+    end
+  end
+
+  def handle_event("undo", _params, socket) do
+    case socket.assigns.undo do
+      %{text: "Undoing…"} ->
+        {:noreply, socket}
+
+      %{data: data} = undo ->
+        {:noreply,
+         socket
+         |> assign(:undo, %{undo | text: "Undoing…"})
+         |> start_async(:sharing_undo, fn -> Sharing.undo_import(data) end)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("dismiss_undo", _params, socket), do: {:noreply, assign(socket, :undo, nil)}
+
+  def handle_event("dismiss_pr_toast", _params, socket),
+    do: {:noreply, assign(socket, :pr_toast, nil)}
 
   # -- New ---------------------------------------------------------------------------
 
@@ -403,6 +676,412 @@ defmodule CanopyWeb.PlaybooksLive do
 
   def handle_event("unpick_document", %{"id" => id}, socket),
     do: {:noreply, update(socket, :brief_picked, &Enum.reject(&1, fn doc -> doc.id == id end))}
+
+  # -- Sharing: async results -------------------------------------------------------
+
+  @impl true
+  def handle_async(:sharing_status, {:ok, {:ok, status}}, socket) do
+    # a stale import or export says so over the list it read again
+    {:noreply,
+     socket
+     |> update(:sharing, &%{&1 | loading?: false, error: stale_only(&1.error)})
+     |> put_status(status)
+     |> start_pending_compare()}
+  end
+
+  def handle_async(:sharing_status, {:ok, {:error, {:not_set_up, _}}}, socket),
+    do:
+      {:noreply,
+       update(socket, :sharing, &%{&1 | config: :not_set_up, status: nil, loading?: false})}
+
+  def handle_async(:sharing_status, {:ok, {:error, error}}, socket) do
+    {:noreply,
+     socket
+     |> update(:sharing, &%{&1 | loading?: false, error: error})
+     |> fail_pending_compare(error)}
+  end
+
+  def handle_async(:sharing_status, {:exit, {:shutdown, :cancel}}, socket),
+    do: {:noreply, socket}
+
+  def handle_async(:sharing_status, {:exit, reason}, socket),
+    do: handle_async(:sharing_status, {:ok, {:error, {:gh_failed, inspect(reason)}}}, socket)
+
+  def handle_async(:sharing_check, {:ok, result}, socket),
+    do: {:noreply, assign(socket, :sharing_check, result)}
+
+  def handle_async(:sharing_check, {:exit, {:shutdown, :cancel}}, socket),
+    do: {:noreply, socket}
+
+  def handle_async(:sharing_check, {:exit, reason}, socket),
+    do: {:noreply, assign(socket, :sharing_check, {:error, {:gh_failed, inspect(reason)}})}
+
+  def handle_async(:sharing_compare, {:ok, result}, socket) do
+    case {socket.assigns.compare, result} do
+      {nil, _} ->
+        {:noreply, socket}
+
+      {compare, {:ok, comparison}} ->
+        {:noreply, assign(socket, :compare, %{compare | loading?: false, comparison: comparison})}
+
+      {compare, {:error, error}} ->
+        {:noreply, assign(socket, :compare, %{compare | loading?: false, error: error})}
+    end
+  end
+
+  def handle_async(:sharing_compare, {:exit, {:shutdown, :cancel}}, socket),
+    do: {:noreply, socket}
+
+  def handle_async(:sharing_compare, {:exit, reason}, socket),
+    do: handle_async(:sharing_compare, {:ok, {:error, {:gh_failed, inspect(reason)}}}, socket)
+
+  def handle_async(:sharing_import, {:ok, {:ok, %{playbooks: playbooks, undo: undo}}}, socket) do
+    n = length(playbooks)
+    token = make_ref()
+    Process.send_after(self(), {:clear_undo, token}, 6_000)
+
+    {:noreply,
+     socket
+     |> assign(:busy, nil)
+     |> assign(:undo, %{
+       text: if(n == 1, do: "Imported 1 playbook", else: "Imported #{n} playbooks"),
+       token: token,
+       data: undo
+     })
+     |> load_list()
+     |> refresh_from_cache()
+     |> push_patch(to: ~p"/playbooks")}
+  end
+
+  def handle_async(:sharing_export, {:ok, {{:ok, pr}, count}}, socket) do
+    Process.send_after(self(), {:clear_pr_toast, pr.number}, 10_000)
+    repo = socket.assigns.sharing.config.repo
+
+    {:noreply,
+     socket
+     |> assign(:busy, nil)
+     |> assign(:pr_toast, %{
+       number: pr.number,
+       url: pr.url,
+       repo: repo,
+       count: count,
+       # the branch GitHub took: a name already taken there gets a -N suffix
+       branch: pr[:branch]
+     })
+     |> load_list()
+     |> refresh_from_cache()
+     |> push_patch(to: ~p"/playbooks")}
+  end
+
+  def handle_async(name, {:ok, {{:error, error}, _count}}, socket) when name == :sharing_export,
+    do: handle_async(name, {:ok, {:error, error}}, socket)
+
+  # a failure keeps the dialog and its ticks; a stale one reads GitHub again
+  def handle_async(name, {:ok, {:error, error}}, socket)
+      when name in [:sharing_import, :sharing_export] do
+    socket =
+      socket
+      |> assign(:busy, nil)
+      |> update(:sharing, &%{&1 | error: error})
+
+    # a retry shows a fresh name; open_pr deletes a branch it left behind, and
+    # a name GitHub already has gets a -N suffix there (the toast shows which)
+    socket =
+      if name == :sharing_export,
+        do: assign(socket, :pr_branch, Sharing.branch_name(DateTime.utc_now())),
+        else: socket
+
+    case error do
+      {:stale, _} -> {:noreply, read_status(socket, 0, keep_error: true)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_async(name, {:exit, reason}, socket) when name in [:sharing_import, :sharing_export],
+    do: handle_async(name, {:ok, {:error, {:gh_failed, inspect(reason)}}}, socket)
+
+  def handle_async(:sharing_undo, {:ok, :ok}, socket) do
+    {:noreply,
+     socket
+     |> assign(:undo, nil)
+     |> load_list()
+     |> refresh_from_cache()
+     |> put_flash(:info, "Undid the import.")}
+  end
+
+  def handle_async(:sharing_undo, {:ok, {:error, {_kind, raw}}}, socket),
+    do:
+      {:noreply,
+       socket |> assign(:undo, nil) |> put_flash(:error, "Couldn't undo the import: #{raw}.")}
+
+  def handle_async(:sharing_undo, {:exit, reason}, socket),
+    do:
+      {:noreply,
+       socket
+       |> assign(:undo, nil)
+       |> put_flash(:error, "Couldn't undo the import: #{inspect(reason)}.")}
+
+  # -- Sharing: state ------------------------------------------------------------------
+
+  defp assign_sharing(socket) do
+    status =
+      case Sharing.cached_status() do
+        {:ok, status} -> status
+        nil -> nil
+      end
+
+    socket
+    |> assign(:sharing, %{config: sharing_config(), status: status, loading?: false, error: nil})
+    |> assign(:github, nil)
+    |> assign(:compare, nil)
+    |> assign(:row, nil)
+    |> assign(:picks, MapSet.new())
+    |> assign(:choices, %{})
+    |> assign(:busy, nil)
+    |> assign(:seeded?, false)
+    |> assign(:sharing_refreshed?, false)
+    |> assign(:sharing_check, nil)
+    |> assign(:setup_form, setup_form(%{}, nil))
+    |> assign(:pr_form, pr_form("", ""))
+    |> assign(:pr_typed?, false)
+    |> assign(:pr_branch, nil)
+    |> assign(:undo, nil)
+    |> assign(:pr_toast, nil)
+  end
+
+  defp stale_only({:stale, _} = error), do: error
+  defp stale_only(_error), do: nil
+
+  defp sharing_config do
+    case Sharing.config() do
+      {:ok, config} -> config
+      :not_set_up -> :not_set_up
+    end
+  end
+
+  # `?github=…&compare=…&row=…`: opening a dialog reads GitHub fresh; the
+  # page itself reads at most every 10 minutes (the cache answers sooner).
+  defp sharing_params(socket, params) do
+    github =
+      case params["github"] do
+        "import" -> :import
+        "export" -> :export
+        _ -> nil
+      end
+
+    before = socket.assigns.github
+    socket = assign(socket, github: github, row: params["row"])
+
+    socket =
+      cond do
+        github == before -> socket
+        is_nil(github) -> close_sharing(socket)
+        true -> open_sharing(socket, github)
+      end
+
+    socket
+    |> page_refresh()
+    |> set_compare(github, params["compare"])
+  end
+
+  defp open_sharing(socket, mode) do
+    socket =
+      socket
+      |> assign(choices: %{}, busy: nil, seeded?: false, pr_typed?: false, sharing_check: nil)
+      |> assign(:pr_branch, Sharing.branch_name(DateTime.utc_now()))
+      |> assign(:pr_form, pr_form("", ""))
+      |> assign(:setup_form, setup_form(%{}, nil))
+      |> update(:sharing, &%{&1 | error: nil})
+      |> seed_picks(mode)
+      # from the page's last read, so a failed read still leaves a title
+      |> follow_pr_title()
+
+    if socket.assigns.sharing.config == :not_set_up,
+      do: socket,
+      else: read_status(socket, 0)
+  end
+
+  defp close_sharing(socket) do
+    socket
+    |> cancel_async(:sharing_status)
+    |> cancel_async(:sharing_compare)
+    |> cancel_async(:sharing_check)
+    |> update(:sharing, &%{&1 | loading?: false, error: nil})
+    |> assign(compare: nil, busy: nil, picks: MapSet.new(), choices: %{}, seeded?: false)
+  end
+
+  defp page_refresh(%{assigns: %{sharing_refreshed?: true}} = socket), do: socket
+
+  defp page_refresh(socket) do
+    cond do
+      !connected?(socket) or socket.assigns.sharing.config == :not_set_up ->
+        socket
+
+      socket.assigns.github ->
+        assign(socket, :sharing_refreshed?, true)
+
+      true ->
+        socket
+        |> assign(:sharing_refreshed?, true)
+        |> start_async(:sharing_status, fn -> Sharing.status(max_age: 600) end)
+    end
+  end
+
+  defp read_status(socket, max_age, opts \\ []) do
+    if connected?(socket) do
+      socket
+      |> update(:sharing, fn sharing ->
+        %{sharing | loading?: true, error: if(opts[:keep_error], do: sharing.error)}
+      end)
+      |> start_async(:sharing_status, fn -> Sharing.status(max_age: max_age) end)
+    else
+      socket
+    end
+  end
+
+  defp refresh_from_cache(socket) do
+    case Sharing.cached_status() do
+      {:ok, status} -> put_status(socket, status)
+      nil -> socket
+    end
+  end
+
+  # A new status: the page's chips follow it; an open dialog keeps the
+  # user's ticks where the row is still in the same group, and a choice
+  # only while its entry is the one it was made against.
+  defp put_status(%{assigns: %{busy: busy}} = socket, _status) when busy in [:import, :export],
+    do: socket
+
+  defp put_status(socket, status) do
+    %{github: mode, sharing: %{status: old}} = socket.assigns
+    socket = update(socket, :sharing, &%{&1 | status: status})
+
+    cond do
+      is_nil(mode) -> socket
+      not socket.assigns.seeded? -> socket |> seed_picks(mode) |> follow_pr_title()
+      true -> socket |> keep_picks(old, status, mode) |> follow_pr_title()
+    end
+  end
+
+  defp seed_picks(socket, mode) do
+    case socket.assigns.sharing.status do
+      nil ->
+        assign(socket, picks: MapSet.new(), seeded?: false)
+
+      status ->
+        assign(socket, picks: PlaybookSharing.default_ticks(status.entries, mode), seeded?: true)
+    end
+  end
+
+  defp keep_picks(socket, old, new, mode) do
+    old_by_key = Map.new((old && old.entries) || [], &{&1.key, &1})
+    defaults = PlaybookSharing.default_ticks(new.entries, mode)
+    %{picks: picks, choices: choices} = socket.assigns
+
+    picks =
+      for entry <- new.entries,
+          PlaybookSharing.tickable?(entry, mode),
+          ticked?(entry, old_by_key[entry.key], picks, defaults, mode),
+          into: MapSet.new(),
+          do: entry.key
+
+    choices =
+      for {key, choice} <- choices,
+          entry = Enum.find(new.entries, &(&1.key == key)),
+          entry.state == choice.state and entry.sha == choice.sha,
+          into: %{},
+          do: {key, choice}
+
+    assign(socket, picks: picks, choices: choices)
+  end
+
+  # same group as before: as the user left it; unseen or moved groups: its
+  # default (a row moving into Needs a look is unticked, so the user looks
+  # again; one that was up to date and now has an update is ticked, as on open)
+  defp ticked?(entry, old, picks, defaults, mode) do
+    if old && group(entry, mode) == group(old, mode),
+      do: MapSet.member?(picks, entry.key),
+      else: MapSet.member?(defaults, entry.key)
+  end
+
+  defp group(entry, :import),
+    do: if(entry.state in [:new, :update], do: :ready, else: entry.state)
+
+  defp group(entry, :export), do: {entry.state in [:edited, :not_on_github], entry.state}
+
+  defp set_compare(socket, nil, _key), do: assign(socket, :compare, nil)
+
+  defp set_compare(socket, _mode, nil) do
+    if socket.assigns.compare,
+      do: socket |> cancel_async(:sharing_compare) |> assign(:compare, nil),
+      else: socket
+  end
+
+  defp set_compare(socket, mode, key) do
+    case socket.assigns.compare do
+      %{key: ^key} ->
+        socket
+
+      _ ->
+        compare = %{key: key, from: mode, loading?: true, comparison: nil, error: nil}
+        socket = assign(socket, :compare, compare)
+
+        # compare/1 reads the latest status: wait for the dialog's read
+        if socket.assigns.sharing.loading? or !connected?(socket),
+          do: socket,
+          else: start_async(socket, :sharing_compare, fn -> Sharing.compare(key) end)
+    end
+  end
+
+  defp start_pending_compare(%{assigns: %{compare: %{loading?: true, key: key}}} = socket),
+    do: start_async(socket, :sharing_compare, fn -> Sharing.compare(key) end)
+
+  defp start_pending_compare(socket), do: socket
+
+  defp fail_pending_compare(%{assigns: %{compare: %{loading?: true} = compare}} = socket, error),
+    do: assign(socket, :compare, %{compare | loading?: false, error: error})
+
+  defp fail_pending_compare(socket, _error), do: socket
+
+  defp entry(socket, key) do
+    case socket.assigns.sharing.status do
+      %{entries: entries} -> Enum.find(entries, &(&1.key == key))
+      _ -> nil
+    end
+  end
+
+  defp follow_pr_title(%{assigns: %{github: :export, pr_typed?: false}} = socket) do
+    %{sharing: %{status: status}, picks: picks, pr_form: form} = socket.assigns
+
+    ticked =
+      if status,
+        do:
+          Enum.filter(PlaybookSharing.export_groups(status.entries).changed, &(&1.key in picks)),
+        else: []
+
+    assign(socket, :pr_form, pr_form(PlaybookSharing.pr_title(ticked), form[:note].value || ""))
+  end
+
+  defp follow_pr_title(socket), do: socket
+
+  defp pr_form(title, note),
+    do: to_form(%{"title" => title, "note" => note}, as: :pr, id: "export-pr-form")
+
+  defp setup_form(params, action) do
+    params
+    |> Map.take(["repo", "branch", "folder"])
+    |> Sharing.change_config()
+    |> Map.put(:action, action)
+    |> to_form(as: :sharing, id: "sharing-setup-form")
+  end
+
+  defp start_check(socket, params) do
+    config = PlaybookSharing.check_config(params)
+
+    socket
+    |> assign(:sharing_check, :checking)
+    |> start_async(:sharing_check, fn -> Sharing.check(config) end)
+  end
 
   # -- Helpers -------------------------------------------------------------------------
 
@@ -865,6 +1544,8 @@ defmodule CanopyWeb.PlaybooksLive do
       |> assign(:shown_count, shown)
       |> assign(:agent_drafts, Enum.filter(assigns.playbooks, &agent_draft?/1))
       |> assign(:any_starred?, sections.starred.all != [])
+      |> assign(:update_count, PlaybookSharing.update_count(assigns.sharing.status))
+      |> assign(:rows_sync, rows_sync(assigns.sharing.status))
 
     ~H"""
     <Layouts.page
@@ -873,9 +1554,7 @@ defmodule CanopyWeb.PlaybooksLive do
       max_width="max-w-6xl"
     >
       <:actions>
-        <.link navigate={~p"/agents/import"} id="import-playbook" class="btn btn-ghost btn-sm">
-          Import file
-        </.link>
+        <.github_menu config={@sharing.config} status={@sharing.status} />
         <.link navigate={~p"/playbooks/new"} id="new-playbook" class="btn btn-sm btn-primary">
           <.icon name="hero-plus" class="size-4" /> New playbook
         </.link>
@@ -939,36 +1618,45 @@ defmodule CanopyWeb.PlaybooksLive do
           </span>
         </p>
         <div
-          :if={@agent_drafts != []}
-          id="playbook-draft-notice"
-          class="ml-auto flex items-center gap-2 rounded-box border border-warning/40 bg-warning/5 px-3 py-1.5 text-sm"
+          :if={@agent_drafts != [] or (@update_count > 0 and !(@filtering? and @shown_count == 0))}
+          class="ml-auto flex flex-col items-end gap-2"
         >
-          <span class="text-warning" aria-hidden="true">●</span>
-          <%= case @agent_drafts do %>
-            <% [draft] -> %>
-              <span>
-                {if draft.created_by, do: "@#{draft.created_by.name}", else: "An agent"} drafted
-                <strong>{title_of(@titles, draft)}</strong>
-                for you to review
-              </span>
-              <.link
-                navigate={~p"/playbooks/#{draft.id}/edit"}
-                id="playbook-draft-notice-review"
-                class="link link-primary font-medium"
-              >
-                Review
-              </.link>
-            <% several -> %>
-              <span>{length(several)} drafts from agents to review</span>
-              <button
-                type="button"
-                id="playbook-draft-notice-review"
-                class="link link-primary font-medium"
-                phx-click={JS.push("open_drafts") |> JS.focus(to: "#toggle-drafts")}
-              >
-                Review
-              </button>
-          <% end %>
+          <.updates_notice
+            :if={@update_count > 0 and !(@filtering? and @shown_count == 0)}
+            count={@update_count}
+          />
+          <div
+            :if={@agent_drafts != []}
+            id="playbook-draft-notice"
+            class="flex items-center gap-2 rounded-box border border-warning/40 bg-warning/5 px-3 py-1.5 text-sm"
+          >
+            <span class="text-warning" aria-hidden="true">●</span>
+            <%= case @agent_drafts do %>
+              <% [draft] -> %>
+                <span>
+                  {if draft.created_by, do: "@#{draft.created_by.name}", else: "An agent"} drafted
+                  <strong>{title_of(@titles, draft)}</strong>
+                  for you to review
+                </span>
+                <.link
+                  navigate={~p"/playbooks/#{draft.id}/edit"}
+                  id="playbook-draft-notice-review"
+                  class="link link-primary font-medium"
+                >
+                  Review
+                </.link>
+              <% several -> %>
+                <span>{length(several)} drafts from agents to review</span>
+                <button
+                  type="button"
+                  id="playbook-draft-notice-review"
+                  class="link link-primary font-medium"
+                  phx-click={JS.push("open_drafts") |> JS.focus(to: "#toggle-drafts")}
+                >
+                  Review
+                </button>
+            <% end %>
+          </div>
         </div>
       </div>
 
@@ -1046,9 +1734,65 @@ defmodule CanopyWeb.PlaybooksLive do
           </ul>
         </section>
       </div>
+
+      <.import_modal
+        :if={@github == :import}
+        sharing={@sharing}
+        picks={@picks}
+        choices={@choices}
+        busy={@busy}
+        row={@row}
+        stacked={@compare != nil}
+        setup_form={@setup_form}
+        check={@sharing_check}
+        taken={library_names(@playbooks)}
+      />
+      <.export_modal
+        :if={@github == :export}
+        sharing={@sharing}
+        picks={@picks}
+        busy={@busy}
+        row={@row}
+        stacked={@compare != nil}
+        pr_form={@pr_form}
+        pr_branch={@pr_branch}
+        setup_form={@setup_form}
+        check={@sharing_check}
+      />
+      <.compare_dialog
+        :if={@github && @compare}
+        compare={@compare}
+        entry={sharing_entry(@sharing.status, @compare.key)}
+        copy_as={if @github == :import, do: keep_both_name(assigns, @compare.key)}
+      />
+      <.undo_toast :if={@undo} undo={@undo} />
+      <.pr_toast :if={@pr_toast} toast={@pr_toast} />
     </Layouts.page>
     """
   end
+
+  # each library row's GitHub entry (remote-only entries have no row)
+  defp rows_sync(nil), do: %{}
+
+  defp rows_sync(%{entries: entries}),
+    do: for(%{playbook: %{id: id}} = entry <- entries, into: %{}, do: {id, entry})
+
+  defp sharing_entry(nil, _key), do: nil
+  defp sharing_entry(%{entries: entries}, key), do: Enum.find(entries, &(&1.key == key))
+
+  defp library_names(playbooks), do: MapSet.new(playbooks, & &1.name)
+
+  # what Keep both on this row would name GitHub's copy, given the other picks
+  defp keep_both_name(%{sharing: %{status: %{entries: entries}}} = assigns, key) do
+    PlaybookSharing.import_names(
+      PlaybookSharing.import_groups(entries),
+      MapSet.put(assigns.picks, key),
+      Map.put(assigns.choices, key, %{choice: :keep_both}),
+      library_names(assigns.playbooks)
+    )[key]
+  end
+
+  defp keep_both_name(_assigns, _key), do: nil
 
   defp section_heading,
     do:
@@ -1075,7 +1819,8 @@ defmodule CanopyWeb.PlaybooksLive do
       by_name: assigns.by_name,
       filter: assigns.filter,
       open: assigns.open_id == playbook.id,
-      moved: assigns.moved_id == playbook.id
+      moved: assigns.moved_id == playbook.id,
+      sync: assigns.rows_sync[playbook.id]
     }
   end
 

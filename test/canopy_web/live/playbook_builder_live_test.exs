@@ -633,4 +633,31 @@ defmodule CanopyWeb.PlaybookBuilderLiveTest do
     assert has_element?(view, "#steps-heading", "20")
     assert has_element?(view, "#undo-toast")
   end
+
+  test "the header shows the version, and where it came from once linked", %{conn: conn} do
+    playbook = seed!()
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    assert has_element?(view, "#builder-version", "v1")
+    refute has_element?(view, "#builder-version", "from")
+
+    Canopy.PlaybookSharingHelpers.link_playbook(
+      playbook,
+      "playbooks/bug-fix.md",
+      5,
+      playbook.body
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    assert has_element?(view, "#builder-version", "v1 · from acme/playbooks (v5)")
+    refute has_element?(view, "#builder-version", "edited since")
+
+    {:ok, _} =
+      Playbooks.update(Playbooks.get!(playbook.id), %{
+        body:
+          Playbooks.feature_build_text() |> String.replace("name: feature-build", "name: bug-fix")
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/playbooks/#{playbook.id}/edit")
+    assert has_element?(view, "#builder-version", "edited since")
+  end
 end

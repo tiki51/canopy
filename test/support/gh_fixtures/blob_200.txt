@@ -1,0 +1,5 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+Etag: W/"blob"
+
+{"sha":"5b27c126dda0e785eb048852ed4f14c8ce388b09","size":133,"encoding":"base64","content":"LS0tCm5hbWU6IGJ1Zy1maXgKdmVyc2lvbjogMwpkZXNjcmlwdGlvbjogRml4\nIGEgYnVnLgpzdGVwczoKICAtIGlkOiB3b3JrCiAgICB0aXRsZTogV29yawog\nICAgb3duZXI6IGNvb3JkaW5hdG9yCi0tLQoKV29yayBjYXJlZnVsbHkuCg==\n"}

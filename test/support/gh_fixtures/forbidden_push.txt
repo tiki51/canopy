@@ -1,0 +1,5 @@
+HTTP/2.0 403 Forbidden
+Content-Type: application/json; charset=utf-8
+
+{"message":"Resource not accessible by integration","status":"403"}
+gh: Resource not accessible by integration (HTTP 403)

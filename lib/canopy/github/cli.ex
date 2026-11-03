@@ -166,6 +166,108 @@ defmodule Canopy.GitHub.CLI do
     end
   end
 
+  # -- Any API call ----------------------------------------------------------------
+
+  @type api_error ::
+          :gh_missing
+          | :gh_too_old
+          | :gh_signed_out
+          | {:http, pos_integer(), String.t()}
+          | {:gh, integer() | nil, String.t()}
+
+  @doc """
+  One GitHub API request through `gh api -i`, for callers other than the
+  watches (playbook sharing). `path` is relative (`repos/o/r/contents/x`).
+
+  Options: `query:` a keyword list or map, encoded onto the path; `input:` a
+  map sent as the JSON body (through a temp file and `--input`); `etag:` sent
+  as `If-None-Match`.
+
+  2xx and 304 are `{:ok, status, headers, body}`. Errors are structured, not
+  the watches' text: `:gh_missing`, `:gh_too_old`, `:gh_signed_out`,
+  `{:http, status, message}` for any other status, or `{:gh, exit, line}`
+  when gh failed before GitHub answered.
+  """
+  @spec api(String.t(), String.t(), keyword()) ::
+          {:ok, pos_integer(), %{String.t() => String.t()}, String.t()}
+          | {:error, api_error()}
+  def api(method, path, opts \\ []) do
+    path =
+      case opts[:query] do
+        q when q in [nil, [], %{}] -> path
+        q -> path <> "?" <> URI.encode_query(q, :www_form)
+      end
+
+    etag = opts[:etag]
+    header = if is_binary(etag) and etag != "", do: ["-H", "If-None-Match: " <> etag], else: []
+
+    with_input(opts[:input], fn input ->
+      args = ["api", "-i", "-X", method] ++ header ++ input ++ [path]
+
+      if executable(binary_name()) == nil do
+        {:error, :gh_missing}
+      else
+        case run(args) do
+          {:ok, output, code} -> api_result(output, code)
+          {:error, reason} -> {:error, {:gh, nil, reason}}
+        end
+      end
+    end)
+  end
+
+  defp with_input(nil, fun), do: fun.([])
+
+  defp with_input(input, fun) do
+    file = Path.join(System.tmp_dir!(), "canopy-gh-#{System.unique_integer([:positive])}.json")
+    File.write!(file, Jason.encode!(input))
+
+    try do
+      fun.(["--input", file])
+    after
+      File.rm(file)
+    end
+  end
+
+  defp api_result(output, code) do
+    case response(output) do
+      {:ok, status, headers, body} when status in 200..299 or status == 304 ->
+        {:ok, status, headers, body}
+
+      {:ok, status, _headers, body} ->
+        {:error, {:http, status, api_message(status, body)}}
+
+      :none ->
+        text = String.downcase(output)
+        first = output |> String.split("\n", trim: true) |> List.first("no output")
+
+        cond do
+          text =~ "auth login" or text =~ "not logged" or text =~ "authentication required" ->
+            {:error, :gh_signed_out}
+
+          text =~ "unknown flag" or text =~ "unknown command" or text =~ "unknown shorthand" ->
+            {:error, :gh_too_old}
+
+          true ->
+            {:error, {:gh, code, String.slice(first, 0, 300)}}
+        end
+    end
+  end
+
+  # GitHub's message, with a 422's detail ("Validation Failed: A pull request
+  # already exists …"), else the status
+  defp api_message(status, body) do
+    case Jason.decode(body) do
+      {:ok, %{"message" => m} = json} when is_binary(m) ->
+        details =
+          for %{"message" => d} <- List.wrap(json["errors"]), is_binary(d), do: d
+
+        Enum.join([m | details], ": ")
+
+      _ ->
+        "HTTP #{status}"
+    end
+  end
+
   # -- Running gh ---------------------------------------------------------------
 
   defp run(args, opts \\ []) do

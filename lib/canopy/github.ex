@@ -76,6 +76,17 @@ defmodule Canopy.GitHub do
   def valid_repo?(repo), do: is_binary(repo) and Regex.match?(@repo_regex, repo)
 
   @doc """
+  Whether `ref` is a branch name safe to put in a REST path: letters,
+  digits, `_`, `.`, `/` and `-`, at most 200, with no `..` or `//`, no
+  leading `/` or `-`, and no trailing `/` or `.lock`.
+  """
+  def valid_ref?(ref) do
+    is_binary(ref) and Regex.match?(@ref_regex, ref) and not String.contains?(ref, "..") and
+      not String.contains?(ref, "//") and not String.starts_with?(ref, ["/", "-"]) and
+      not String.ends_with?(ref, ["/", ".lock"])
+  end
+
+  @doc """
   Checks the parts of a check an agent supplies; they are passed to `gh` as
   one argv element each, URL-encoded into the path, never through a shell.
   """
@@ -87,7 +98,7 @@ defmodule Canopy.GitHub do
       not valid_repo?(check["repo"]) ->
         {:error, "repo must be owner/name"}
 
-      check["branch"] && not Regex.match?(@ref_regex, check["branch"]) ->
+      check["branch"] && not valid_ref?(check["branch"]) ->
         {:error, "branch has characters a branch name cannot"}
 
       check["label"] && String.length(check["label"]) > 100 ->

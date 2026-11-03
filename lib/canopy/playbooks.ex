@@ -12,7 +12,7 @@ defmodule Canopy.Playbooks do
 
   import Ecto.Query, warn: false
 
-  alias Canopy.Playbooks.{Definition, Playbook, Run, Step}
+  alias Canopy.Playbooks.{Definition, Playbook, Run, Sharing, Step}
   alias Canopy.Repo
 
   @topic "playbooks"
@@ -132,8 +132,28 @@ defmodule Canopy.Playbooks do
         do: Ecto.Changeset.put_change(changeset, :source, "user"),
         else: changeset
 
-    changeset |> locked_update() |> notify()
+    fn -> changeset |> bump_version() |> locked_update() |> unwrap() end
+    |> Repo.transaction(mode: :immediate)
+    |> notify()
   end
+
+  # A changed content raises `version` past both the stored row and the
+  # caller's copy: an export may have raised the row's number with
+  # `update_all` since the caller read it (`Canopy.Playbooks.Sharing`).
+  # Read inside the caller's immediate transaction.
+  defp bump_version(%Ecto.Changeset{data: %Playbook{id: id} = data} = changeset) do
+    with {:ok, body} <- Ecto.Changeset.fetch_change(changeset, :body),
+         {row_version, row_body} <-
+           Repo.one(from p in Playbook, where: p.id == ^id, select: {p.version, p.body}),
+         true <- Sharing.Text.content_hash(body) != Sharing.Text.content_hash(row_body) do
+      Ecto.Changeset.force_change(changeset, :version, max(row_version, data.version || 1) + 1)
+    else
+      _ -> changeset
+    end
+  end
+
+  defp unwrap({:ok, value}), do: value
+  defp unwrap({:error, reason}), do: Repo.rollback(reason)
 
   @doc """
   Enables or disables a playbook. Enabling approves the text the user saw:
@@ -294,7 +314,10 @@ defmodule Canopy.Playbooks do
 
           %Playbook{source: "agent", enabled: false, created_by_agent_id: id} = draft
           when id == agent.id ->
-            case draft |> Playbook.changeset(%{body: body}) |> locked_update() do
+            case draft
+                 |> Playbook.changeset(%{body: body})
+                 |> bump_version()
+                 |> locked_update() do
               {:ok, playbook} -> playbook
               {:error, changeset} -> Repo.rollback(changeset)
             end

@@ -25,6 +25,7 @@ defmodule CanopyWeb.SettingsLive do
   alias Canopy.Agents.Agent
   alias Canopy.OpenCode.{Client, Providers}
   alias Canopy.Runtime.Prompts
+  alias Canopy.Playbooks.Sharing
   alias Canopy.Settings
   alias Canopy.Settings.Presets
 
@@ -35,6 +36,8 @@ defmodule CanopyWeb.SettingsLive do
     EnvironmentComponents,
     FallbackOptions,
     NotifyComponents,
+    PlaybookSharing,
+    PlaybookSharingComponents,
     PresetComponents
   }
 
@@ -66,6 +69,9 @@ defmodule CanopyWeb.SettingsLive do
      |> then(&if(connected?(&1), do: load_codex_models(&1), else: &1))
      |> assign(:gh_form, to_form(Settings.change(setting), id: "gh-form"))
      |> assign(:gh_check, nil)
+     |> assign(:sharing_form, sharing_form(%{}, nil))
+     |> assign(:sharing_on?, Sharing.config() != :not_set_up)
+     |> assign(:sharing_check, nil)
      |> assign(:profile_form, to_form(Settings.change(setting), id: "profile-form"))
      |> assign(:chatter_form, to_form(Settings.change(setting), id: "chatter-form"))
      |> assign(:prompt_form, prompt_form(setting))
@@ -352,6 +358,65 @@ defmodule CanopyWeb.SettingsLive do
       {:error, changeset} ->
         {:noreply, assign(socket, :gh_form, to_form(changeset, id: "gh-form"))}
     end
+  end
+
+  # Playbook sharing: the repository, branch and folder playbooks are
+  # shared through (`Canopy.Playbooks.Sharing`). A pasted github.com address
+  # fills all three; editing clears the last check.
+  def handle_event("validate_sharing", %{"sharing" => params}, socket) do
+    params = PlaybookSharing.fill_from_url(params)
+
+    {:noreply,
+     socket
+     |> assign(:sharing_form, sharing_form(params, :validate))
+     |> cancel_async(:sharing_check)
+     |> assign(:sharing_check, nil)}
+  end
+
+  def handle_event("save_sharing", %{"sharing" => params}, socket) do
+    # a URL still in Repository (submitted before its change event) is parsed too
+    params = PlaybookSharing.fill_from_url(params)
+
+    case Sharing.save_config(Map.take(params, ["repo", "branch", "folder"])) do
+      {:ok, _config} ->
+        {:noreply,
+         socket
+         |> assign(:setting, Settings.get())
+         |> assign(:sharing_form, sharing_form(%{}, nil))
+         |> assign(:sharing_on?, true)
+         |> put_flash(:info, "Saved playbook sharing.")}
+
+      # a blank repository turns sharing off
+      :not_set_up ->
+        {:noreply,
+         socket
+         |> assign(:setting, Settings.get())
+         |> assign(:sharing_form, sharing_form(%{}, nil))
+         |> assign(:sharing_on?, false)
+         |> assign(:sharing_check, nil)
+         |> put_flash(:info, "Stopped sharing playbooks through GitHub.")}
+
+      {:error, changeset} ->
+        {:noreply,
+         assign(socket, :sharing_form, to_form(changeset, as: :sharing, id: "sharing-form"))}
+    end
+  end
+
+  # the form's unsaved values, so a repo can be checked before it's saved
+  def handle_event("check_sharing", _params, socket) do
+    form = socket.assigns.sharing_form
+
+    config =
+      PlaybookSharing.check_config(%{
+        "repo" => form[:repo].value,
+        "branch" => form[:branch].value,
+        "folder" => form[:folder].value
+      })
+
+    {:noreply,
+     socket
+     |> assign(:sharing_check, :checking)
+     |> start_async(:sharing_check, fn -> Sharing.check(config) end)}
   end
 
   # Runs the saved binary: version and login state.
@@ -720,6 +785,15 @@ defmodule CanopyWeb.SettingsLive do
 
   def handle_async(:gh_check, {:ok, result}, socket),
     do: {:noreply, assign(socket, :gh_check, result)}
+
+  def handle_async(:sharing_check, {:ok, result}, socket),
+    do: {:noreply, assign(socket, :sharing_check, result)}
+
+  def handle_async(:sharing_check, {:exit, {:shutdown, :cancel}}, socket),
+    do: {:noreply, socket}
+
+  def handle_async(:sharing_check, {:exit, reason}, socket),
+    do: {:noreply, assign(socket, :sharing_check, {:error, {:gh_failed, inspect(reason)}})}
 
   def handle_async(:gh_check, {:exit, reason}, socket),
     do: {:noreply, assign(socket, :gh_check, {:error, "check crashed: #{inspect(reason)}"})}
@@ -1554,6 +1628,65 @@ defmodule CanopyWeb.SettingsLive do
           </.form>
         </Layouts.panel>
 
+        <Layouts.panel id="playbook-sharing-panel" title="Playbook sharing">
+          <:subtitle>
+            Share playbooks through a GitHub repository. Canopy uses your <code>gh</code>
+            login; exports open a pull request.
+          </:subtitle>
+          <.form
+            for={@sharing_form}
+            id="sharing-form"
+            phx-change="validate_sharing"
+            phx-submit="save_sharing"
+            class="flex flex-col gap-3"
+          >
+            <PlaybookSharingComponents.setup_fields
+              form={@sharing_form}
+              repo_help={
+                if @sharing_on?,
+                  do: "owner/name, or paste the repo URL. Leave blank to stop sharing.",
+                  else: "owner/name, or paste the repo URL"
+              }
+            />
+            <div class="flex flex-wrap items-center gap-2">
+              <.button
+                type="submit"
+                variant="primary"
+                id="save-sharing"
+                disabled={blank?(@sharing_form[:repo].value) and !@sharing_on?}
+              >
+                Save
+              </.button>
+              <button
+                type="button"
+                id="check-sharing"
+                class="btn btn-soft"
+                phx-click="check_sharing"
+                disabled={
+                  @sharing_check == :checking or
+                    !PlaybookSharingComponents.valid_repo?(@sharing_form)
+                }
+              >
+                <.icon
+                  :if={@sharing_check == :checking}
+                  name="hero-arrow-path"
+                  class="size-4 motion-safe:animate-spin"
+                />
+                <.icon :if={@sharing_check != :checking} name="hero-signal" class="size-4" />
+                Check connection
+              </button>
+            </div>
+            <div id="sharing-check-result" role="status">
+              <PlaybookSharingComponents.check_result
+                :if={@sharing_check != :checking}
+                check={@sharing_check}
+                repo={@sharing_form[:repo].value}
+                check_label="Check connection"
+              />
+            </div>
+          </.form>
+        </Layouts.panel>
+
         <Layouts.panel
           id="profile-panel"
           title="You"
@@ -2012,6 +2145,13 @@ defmodule CanopyWeb.SettingsLive do
   defp opencode_default_price(_setting, _providers), do: nil
 
   defp blank?(value), do: value in [nil, ""]
+
+  defp sharing_form(params, action) do
+    params
+    |> Sharing.change_config()
+    |> Map.put(:action, action)
+    |> to_form(as: :sharing, id: "sharing-form")
+  end
 
   attr :health, :any, required: true
 

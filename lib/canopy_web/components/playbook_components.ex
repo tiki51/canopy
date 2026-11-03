@@ -7,7 +7,8 @@ defmodule CanopyWeb.PlaybookComponents do
 
   use CanopyWeb, :html
 
-  alias Canopy.Playbooks.{Run, Runs}
+  alias Canopy.Playbooks.{Definition, Run, Runs}
+  alias CanopyWeb.{PlaybookBuilder, PlaybookSharing}
 
   @doc "`bug-fix · 3/6 Fix · @backend @frontend`: the header chip's text for a run."
   def chip_text(%Run{} = run, names) do
@@ -354,6 +355,7 @@ defmodule CanopyWeb.PlaybookComponents do
   attr :filter, :string, default: ""
   attr :open, :boolean, default: false
   attr :moved, :boolean, default: false
+  attr :sync, :any, default: nil, doc: "its GitHub entry from the sharing status, if any"
 
   def playbook_row(assigns) do
     playbook = assigns.playbook
@@ -401,32 +403,40 @@ defmodule CanopyWeb.PlaybookComponents do
           <.icon name={if @starred?, do: "hero-star-solid", else: "hero-star"} class="size-4" />
         </button>
         <span :if={@draft?} aria-hidden="true"></span>
-        <button
-          type="button"
-          id={"expand-playbook-#{@id}"}
-          phx-click="expand"
-          phx-value-id={@id}
-          aria-expanded={to_string(@open)}
-          aria-controls={"playbook-detail-#{@id}"}
-          class="flex h-full min-w-0 cursor-pointer items-center gap-2 text-left"
-        >
-          <.icon
-            name={if @open, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
-            class="size-4 shrink-0 text-base-content/40"
+        <%!-- a link can't sit inside the button, so the chip is its sibling --%>
+        <div class="flex h-full min-w-0 items-center gap-2">
+          <button
+            type="button"
+            id={"expand-playbook-#{@id}"}
+            phx-click="expand"
+            phx-value-id={@id}
+            aria-expanded={to_string(@open)}
+            aria-controls={"playbook-detail-#{@id}"}
+            class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+          >
+            <.icon
+              name={if @open, do: "hero-chevron-down-mini", else: "hero-chevron-right-mini"}
+              class="size-4 shrink-0 text-base-content/40"
+            />
+            <span class={[
+              "max-w-[calc(100%-1.5rem)] shrink-0 truncate font-medium",
+              @draft? && "text-base-content/80"
+            ]}>
+              <.marked text={@title} q={@filter} />
+            </span>
+            <span :if={@definition} class="truncate text-sm text-base-content/55">
+              <.marked text={@playbook.description} q={@filter} />
+            </span>
+            <span :if={!@definition} class="truncate text-sm text-error">
+              This playbook has problems; open it to see them.
+            </span>
+          </button>
+          <CanopyWeb.PlaybookSharingComponents.sync_chip
+            :if={@sync}
+            id={"sync-chip-#{@id}"}
+            entry={@sync}
           />
-          <span class={[
-            "max-w-[calc(100%-1.5rem)] shrink-0 truncate font-medium",
-            @draft? && "text-base-content/80"
-          ]}>
-            <.marked text={@title} q={@filter} />
-          </span>
-          <span :if={@definition} class="truncate text-sm text-base-content/55">
-            <.marked text={@playbook.description} q={@filter} />
-          </span>
-          <span :if={!@definition} class="truncate text-sm text-error">
-            This playbook has problems; open it to see them.
-          </span>
-        </button>
+        </div>
         <span
           class="flex items-center gap-0.5"
           title={Enum.map_join(@people, ", ", &("@" <> &1.name))}
@@ -524,6 +534,9 @@ defmodule CanopyWeb.PlaybookComponents do
                 else: "Led by whoever starts it"}{if @definition.team,
                 do: " · @#{@definition.team}"}
             </span>
+            <span id={"playbook-version-#{@id}"}>
+              {PlaybookSharing.version_line(@playbook, PlaybookSharing.edited_since?(@playbook))}
+            </span>
             <span :for={run <- @runs} id={"playbook-run-#{run.run_id}"}>
               <span class="text-success">●</span>
               Running in
@@ -591,6 +604,127 @@ defmodule CanopyWeb.PlaybookComponents do
     </ol>
     """
   end
+
+  @doc """
+  A step's marks after its title: in parallel, can send back, waits for
+  you, can be skipped, and (in the builder, once saved) new. `step` is a
+  builder step or a `Definition` step; `target` the step it sends back to.
+  """
+  attr :step, :map, required: true
+  attr :target, :any, default: nil
+  attr :send_back_problem, :any, default: nil
+  attr :saved, :boolean, default: false
+
+  def step_badges(assigns) do
+    ~H"""
+    <span
+      :if={length(@step.owner) > 1}
+      class="rounded-full bg-base-100 px-2 py-0.5 text-[11px] text-base-content/60"
+    >
+      in parallel
+    </span>
+    <span
+      :if={@step.on_reject}
+      class={[
+        "rounded-full px-2 py-0.5 text-[11px] font-medium",
+        @send_back_problem && "bg-error/10 text-error",
+        !@send_back_problem && "bg-secondary/10 text-secondary"
+      ]}
+    >
+      ↩︎ can send back to {(@target && PlaybookBuilder.title(@target)) || @step.on_reject}{if @send_back_problem,
+        do: " ⚠"}
+    </span>
+    <span
+      :if={@step.approval}
+      class="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning"
+    >
+      waits for you
+    </span>
+    <span
+      :if={@step.optional}
+      class="rounded-full border border-dashed border-base-300 px-2 py-0.5 text-[11px] text-base-content/60"
+    >
+      can be skipped
+    </span>
+    <span
+      :if={Map.get(@step, :fresh) && @saved}
+      class="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+    >
+      new
+    </span>
+    """
+  end
+
+  @doc """
+  One step in Compare and View, read-only: number, title, who does it and
+  its marks. `mark` is the row's kind from `Sharing.compare/1` (nil in
+  View). With no step, an empty spacer the same height, so two columns
+  stay aligned.
+  """
+  attr :id, :string, default: nil
+  attr :step, :any, default: nil
+  attr :n, :integer, default: nil
+  attr :mark, :atom, default: nil
+  attr :definition, :any, default: nil, doc: "for the send-back step's title"
+
+  attr :side, :string,
+    default: nil,
+    doc: "Yours or GitHub, shown when the columns stack (below md) and the header row can't say"
+
+  # the gap keeps the two columns aligned; stacked there's nothing to align
+  def compare_step(%{step: nil} = assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class="min-h-10 rounded-lg border border-dashed border-transparent max-md:hidden"
+      aria-hidden="true"
+    >
+    </div>
+    """
+  end
+
+  def compare_step(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      data-mark={@mark}
+      class={[
+        "flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 text-[13px]",
+        compare_mark_class(@mark)
+      ]}
+    >
+      <span
+        :if={@side}
+        class="w-full text-[11px] font-semibold text-base-content/55 md:hidden"
+      >
+        {@side}
+      </span>
+      <span class="flex size-5 shrink-0 items-center justify-center rounded-full bg-base-200 text-[10px] text-base-content/60">
+        {@n}
+      </span>
+      <span :if={@mark == :added} class="font-semibold text-success" aria-label="added">+</span>
+      <span :if={@mark == :changed} class="text-warning" aria-label="changed">●</span>
+      <span :if={@mark == :moved} class="text-info" aria-label="moved">↕</span>
+      <span class={["font-medium", @mark == :removed && "line-through text-base-content/60"]}>
+        {@step.title}
+      </span>
+      <span class="text-xs text-base-content/55">
+        {Enum.map_join(@step.owner, " + ", &PlaybookBuilder.humanize/1)}
+      </span>
+      <.step_badges
+        step={@step}
+        target={@step.on_reject && @definition && Definition.step(@definition, @step.on_reject)}
+      />
+      <span :if={@mark == :moved} class="text-[11px] text-info">moved</span>
+    </div>
+    """
+  end
+
+  defp compare_mark_class(:changed), do: "border-warning/50 bg-warning/5"
+  defp compare_mark_class(:added), do: "border-success/50 bg-success/5"
+  defp compare_mark_class(:removed), do: "border-error/40 bg-error/5"
+  defp compare_mark_class(:moved), do: "border-info/40 bg-info/5"
+  defp compare_mark_class(_), do: "border-base-300 bg-base-100"
 
   # Text with each case-insensitive match of `q` in a <mark>; split, never
   # injected, so the text stays escaped.
