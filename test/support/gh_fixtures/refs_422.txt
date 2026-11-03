@@ -1,0 +1,5 @@
+HTTP/2.0 422 Unprocessable Entity
+Content-Type: application/json; charset=utf-8
+
+{"message":"Reference already exists","documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference","status":"422"}
+gh: Reference already exists (HTTP 422)

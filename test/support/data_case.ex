@@ -29,6 +29,8 @@ defmodule Canopy.DataCase do
 
   setup tags do
     Canopy.DataCase.setup_sandbox(tags)
+    # the Refresher is global: no test sees a previous one's sharing status
+    unless tags[:async], do: Canopy.Playbooks.Sharing.Refresher.reset()
     :ok
   end
 

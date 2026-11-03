@@ -1,0 +1,5 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+Etag: W/"etag-contents-1"
+
+[{"name":"README.md","path":"playbooks/README.md","sha":"1111111111111111111111111111111111111111","size":20,"type":"file"},{"name":"bug-fix.md","path":"playbooks/bug-fix.md","sha":"5b27c126dda0e785eb048852ed4f14c8ce388b09","size":133,"type":"file"},{"name":"notes.txt","path":"playbooks/notes.txt","sha":"2222222222222222222222222222222222222222","size":5,"type":"file"},{"name":"old","path":"playbooks/old","sha":"3333333333333333333333333333333333333333","size":0,"type":"dir"}]

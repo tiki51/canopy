@@ -39,6 +39,9 @@ defmodule CanopyWeb.ConnCase do
     # (a fresh test database has no settings row, so it would be first run).
     unless tags[:async], do: {:ok, _} = Canopy.Settings.mark_onboarded()
 
+    # the Refresher is global: no test sees a previous one's sharing status
+    unless tags[:async], do: Canopy.Playbooks.Sharing.Refresher.reset()
+
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

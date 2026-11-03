@@ -1,0 +1,5 @@
+HTTP/2.0 403 Forbidden
+Content-Type: application/json; charset=utf-8
+
+{"message":"API rate limit exceeded for user ID 1.","status":"403"}
+gh: API rate limit exceeded for user ID 1. (HTTP 403)

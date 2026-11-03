@@ -43,6 +43,12 @@ defmodule Canopy.Settings.Setting do
     field :codex_config_dir, :string
     # GitHub watches run the user's `gh` CLI (a name on PATH or a path)
     field :gh_binary, :string, default: "gh"
+    # playbook sharing (`Canopy.Playbooks.Sharing`): the repository (owner/name;
+    # nil = not set up), its branch (nil = the default branch) and the folder
+    # of playbook files (nil or "" = the repository root)
+    field :playbook_repo, :string
+    field :playbook_branch, :string
+    field :playbook_folder, :string, default: "playbooks"
     # the engine an agent with none of its own runs on (`Canopy.Settings.default_engine/1`);
     # nil: OpenCode, as before there was a default
     field :default_engine, :string
@@ -123,8 +129,12 @@ defmodule Canopy.Settings.Setting do
       :codex_light_effort,
       :claude_fallback,
       :codex_fallback,
-      :opencode_fallback
+      :opencode_fallback,
+      :playbook_repo,
+      :playbook_branch
     ])
+    # "" is the repository root, so it mustn't become the "playbooks" default
+    |> cast(attrs, [:playbook_folder], empty_values: [])
     |> update_change(:claude_binary, &trim_or_nil/1)
     |> update_change(:codex_binary, &trim_or_nil/1)
     |> update_change(:gh_binary, &trim_or_nil/1)
@@ -144,6 +154,9 @@ defmodule Canopy.Settings.Setting do
     |> update_change(:claude_fallback, &trim_or_nil/1)
     |> update_change(:codex_fallback, &trim_or_nil/1)
     |> update_change(:opencode_fallback, &trim_or_nil/1)
+    |> update_change(:playbook_repo, &trim_or_nil/1)
+    |> update_change(:playbook_branch, &trim_or_nil/1)
+    |> update_change(:playbook_folder, &normalize_folder/1)
     |> update_change(:claude_config_dir, &normalize_config_dir/1)
     |> update_change(:codex_config_dir, &normalize_config_dir/1)
     |> validate_required([
@@ -184,7 +197,50 @@ defmodule Canopy.Settings.Setting do
     |> validate_fallback(:claude_fallback)
     |> validate_fallback(:codex_fallback)
     |> validate_fallback(:opencode_fallback)
+    |> validate_playbook_sharing()
   end
+
+  defp validate_playbook_sharing(changeset) do
+    changeset
+    |> validate_change(:playbook_repo, fn :playbook_repo, repo ->
+      if Canopy.GitHub.valid_repo?(repo), do: [], else: [playbook_repo: "must be owner/name"]
+    end)
+    |> validate_change(:playbook_branch, fn :playbook_branch, branch ->
+      if Canopy.GitHub.valid_ref?(branch),
+        do: [],
+        else: [playbook_branch: "isn't a branch name GitHub accepts"]
+    end)
+    |> validate_change(:playbook_folder, fn :playbook_folder, folder ->
+      if valid_folder?(folder),
+        do: [],
+        else: [playbook_folder: "must be a folder path like playbooks or team/playbooks"]
+    end)
+  end
+
+  @doc """
+  Whether `folder` is a folder path for shared playbooks: `/`-separated
+  segments of letters, digits, `_`, `.` and `-`, with no `.` or `..` segment
+  and no leading `/`, at most 200 characters. "" (or nil) is the root.
+  """
+  def valid_folder?(nil), do: true
+  def valid_folder?(""), do: true
+
+  def valid_folder?(folder) when is_binary(folder) do
+    String.length(folder) <= 200 and
+      folder
+      |> String.split("/")
+      |> Enum.all?(&(Regex.match?(~r/\A[A-Za-z0-9_.-]+\z/, &1) and &1 not in [".", ".."]))
+  end
+
+  def valid_folder?(_), do: false
+
+  # surrounding space and a trailing "/" are dropped; "" stays "" (the root)
+  defp normalize_folder(nil), do: nil
+
+  defp normalize_folder(folder) when is_binary(folder),
+    do: folder |> String.trim() |> String.trim_trailing("/")
+
+  defp normalize_folder(other), do: other
 
   defp validate_fallback(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->
