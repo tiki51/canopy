@@ -294,6 +294,15 @@ defmodule Canopy.Runtime.Prompts do
     """
   end
 
+  @doc "The wake for an agent another agent has just brought into a channel."
+  def added_to_channel(%{channel: channel, by: by}) do
+    """
+    @#{by} added you to ##{channel}.
+    First read the channel with canopy_messages_read (channel: "#{channel}") to see what it is for and what has been said, then act on what you find. If it needs nothing from you yet, call canopy_pass and stop: a mention wakes you when someone needs you.
+    #{time_line()}
+    """
+  end
+
   # `thread` is `%{id, sender, excerpt}` from the router; a bare `thread?: true`
   # (no root known) still says the message is in a thread.
   defp thread_context(%{thread: %{id: id} = thread}) when is_binary(id), do: thread

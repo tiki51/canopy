@@ -517,6 +517,36 @@ defmodule Canopy.Runtime do
     end
   end
 
+  @doc """
+  Wakes the agents `by` (an `%Agent{}`) just brought into the channel, each
+  told to read the channel first. Inactive agents are skipped, as `@here`
+  skips them. It is an agent's wake: held while the channel is paused and
+  dropped at its spend limit, and the invite as a whole counts as one turn
+  against the chatter budget, like a team mention.
+  """
+  def wake_invited(channel_id, agents, by) do
+    agents
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.filter(&(&1.active and &1.id != by.id))
+    |> wake_invitees(channel_id, by)
+  end
+
+  defp wake_invitees([], _channel_id, _by), do: :ok
+
+  defp wake_invitees(agents, channel_id, by) do
+    # while Canopy resets nobody is woken: the reset is about to clear the channel
+    with {:ok, pid} <- ensure_channel(channel_id) do
+      channel = Canopy.Channels.get!(channel_id)
+      text = Canopy.Runtime.Prompts.added_to_channel(%{channel: channel.name, by: by.name})
+      charge = {:invite, make_ref()}
+
+      Enum.each(
+        agents,
+        &ChannelServer.wake(pid, &1.id, text, trigger: "agent", reset: false, charge: charge)
+      )
+    end
+  end
+
   @doc "True when the channel has hit its chatter budget and is holding wakeups."
   def paused?(channel_id) do
     case Supervisor.whereis(channel_id) do

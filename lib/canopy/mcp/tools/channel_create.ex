@@ -2,8 +2,11 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
   @moduledoc """
   Create a channel in your repository. You become its owner and first member,
   and you may add other agents at creation or later with
-  `canopy_channel_add_members`. Use a channel for a piece of work that
-  deserves its own history; use a DM for a conversation.
+  `canopy_channel_add_members`. Each agent you add is woken to read the
+  channel (one the first message mentions is woken with it). Put the kickoff
+  in `text`: posting it afterwards wakes each agent you added twice. Use a
+  channel for a piece of work that deserves its own history; use a DM for a
+  conversation.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -37,7 +40,8 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
         "Repository name or id to create the channel in. Defaults to your current one; use this to work in another registered repository."
 
     field :text, :string,
-      description: "A first message to post, in Markdown. @name mentions wake those agents."
+      description:
+        "A first message to post, in Markdown. @name mentions wake those agents. Put the kickoff here rather than in a separate canopy_message_send, which wakes each added agent a second time."
 
     field :section, :string,
       description:
@@ -55,8 +59,10 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
            {:ok, repository} <- Tool.resolve_repository(ctx, Map.get(params, :repository)),
            {:ok, others} <- Tool.resolve_agents(Map.get(params, :agents), except: ctx.agent.id),
            {:ok, channel} <- create(ctx, repository, name, params, others),
-           {:ok, message_id} <-
+           {:ok, message} <-
              maybe_post(channel, ctx, Tool.blank_to_nil(Map.get(params, :text))) do
+        wake_invited(channel, ctx, others, message)
+        message_id = message && message.id
         members = Enum.map_join(channel.agents, ", ", &("@" <> &1.name))
         posted = if message_id, do: "; posted [#{message_id}]", else: ""
 
@@ -113,14 +119,21 @@ defmodule Canopy.MCP.Tools.ChannelCreate do
   defp maybe_post(_channel, _ctx, nil), do: {:ok, nil}
 
   defp maybe_post(channel, ctx, text) do
-    {:ok, _} = Runtime.ensure_channel(channel.id)
-
-    case Messages.post_agent_message(channel.id, ctx.agent.id, text,
-           fallback: Canopy.Fallback.marker(ctx.session)
-         ) do
-      {:ok, message} -> {:ok, message.id}
-      {:error, changeset} -> {:error, "could not post: " <> Tool.changeset_reason(changeset)}
+    with :ok <- Tool.ensure_runtime(channel) do
+      case Messages.post_agent_message(channel.id, ctx.agent.id, text,
+             fallback: Canopy.Fallback.marker(ctx.session)
+           ) do
+        {:ok, message} -> {:ok, message}
+        {:error, changeset} -> {:error, "could not post: " <> Tool.changeset_reason(changeset)}
+      end
     end
+  end
+
+  # The first message already wakes whoever it mentions, with that message;
+  # every other invitee is woken to read the channel.
+  defp wake_invited(channel, ctx, others, message) do
+    mentioned = if message, do: List.wrap(message.mentions), else: []
+    Runtime.wake_invited(channel.id, Enum.reject(others, &(&1.id in mentioned)), ctx.agent)
   end
 
   @doc false
