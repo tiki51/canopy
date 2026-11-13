@@ -43,6 +43,7 @@ defmodule Canopy.MCP.Tools.DelegateTask do
              Tool.resolve_counterpart(ctx, channel, Map.get(params, :to), "delegate"),
            {:ok, description} <- description(params),
            {:ok, step} <- playbook_step(ctx, channel, Tool.blank_to_nil(Map.get(params, :step))),
+           :ok <- Tool.ensure_runtime(channel),
            {:ok, delegation} <- create(ctx, channel, delegate, description, step) do
         {:ok,
          "delegation [#{delegation.id}] requested#{step_note(step)}: @#{delegate.name} will work on it in ##{channel.name}. " <>

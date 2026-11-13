@@ -24,10 +24,30 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
     end)
 
     stub(OC, :dispose_instance, fn _dir, _opts -> {:ok, true} end)
+    test_pid = self()
+
+    stub(OC, :create_session, fn _dir, _body, _opts ->
+      {:ok, %{"id" => "ses_admin_" <> unique_suffix()}}
+    end)
+
+    stub(OC, :prompt_async, fn _dir, sid, body, _opts ->
+      send(test_pid, {:prompted, sid, body})
+      {:ok, ""}
+    end)
 
     on_exit(fn -> Enum.each(Channels.list(), &Runtime.stop_channel(&1.id)) end)
     Map.merge(ctx, %{reviewer: reviewer, reviewer_session: reviewer_session, tester: tester})
   end
+
+  defp prompted_sids(n) do
+    for _ <- 1..n//1 do
+      assert_receive {:prompted, sid, %{parts: [%{text: text} | _]}}, 2_000
+      {sid, text}
+    end
+  end
+
+  defp root_sid(channel_id, agent),
+    do: Canopy.AgentSessions.get_root(channel_id, agent.id).engine_session_id
 
   describe "channel_create" do
     test "section files the channel under an existing section or a new one", ctx do
@@ -102,6 +122,12 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
 
       assert [%{body: "Kicking this off. Findings to follow."}] = Messages.list(id)
       assert_receive {:channels, :changed}
+
+      # the first message mentions nobody, so the reviewer is woken to read the channel
+      assert [{sid, prompt}] = prompted_sids(1)
+      assert sid == root_sid(id, ctx.reviewer)
+      assert prompt =~ "added you to #retry-backoff"
+      refute_receive {:prompted, _, _}, 200
     end
 
     test "a brief given at creation is stored and credited to the creating agent", ctx do
@@ -223,6 +249,8 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
     end
 
     test "add_members brings a team in with one team_added credited to the caller", ctx do
+      # so both newcomers' wakes start at once instead of in line
+      {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
       Timeline.subscribe(ctx.channel.id)
 
       assert {:ok, text} = call(ChannelAddMembers, %{agents: "@#{ctx.team.name}"}, ctx)
@@ -242,7 +270,20 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
 
       refute_received {:timeline, %{event_type: "member_added"}}
       assert Channels.member?(ctx.channel, ctx.helper)
-      # adding wakes nobody: no message was posted
+
+      # each newcomer is woken once, straight from the runtime: no message is
+      # posted, and the member already there is not woken
+      woken = prompted_sids(length(newcomers))
+
+      for {_sid, prompt} <- woken do
+        assert prompt =~ "added you to ##{ctx.channel.name}"
+        assert prompt =~ "canopy_messages_read"
+      end
+
+      assert woken |> Enum.map(&elem(&1, 0)) |> Enum.sort() ==
+               newcomers |> Enum.map(&root_sid(ctx.channel.id, &1)) |> Enum.sort()
+
+      refute_receive {:prompted, _, _}, 200
       refute_received {:timeline, %{event_type: "message"}}
     end
 
@@ -269,6 +310,7 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
     end
 
     test "channel_create with a team adds its active members; the caller owns it", ctx do
+      {:ok, _} = Canopy.Settings.update(%{serialize_turns: false})
       {:ok, _} = Canopy.Agents.deactivate(ctx.helper)
 
       assert {:ok, _} =
@@ -279,6 +321,13 @@ defmodule Canopy.MCP.Tools.ChannelAdminTest do
 
       assert Enum.map(channel.agents, & &1.id) |> Enum.sort() ==
                Enum.sort([ctx.agent.id, ctx.reviewer.id, ctx.tester.id])
+
+      # the team's active members are woken to read it, the caller is not
+      woken = prompted_sids(2)
+      assert Enum.all?(woken, fn {_sid, prompt} -> prompt =~ "added you to #crew-room" end)
+
+      assert woken |> Enum.map(&elem(&1, 0)) |> Enum.sort() ==
+               Enum.sort([root_sid(channel.id, ctx.reviewer), root_sid(channel.id, ctx.tester)])
     end
 
     test "remove_members with a team skips the owner", ctx do

@@ -8,6 +8,9 @@ defmodule Canopy.MCP.Tools.MessagesTest do
   alias Canopy.MCP.Format
   alias Canopy.MCP.Tools.{MessageGet, MessageSend, MessagesRead, MessagesSearch, ThreadReply}
 
+  # posting tools start the channel's server, which wakes whoever a post is for
+  setup [{Mox, :set_mox_global}, :stub_runtime]
+
   setup do
     other = agent_fixture(name: "reviewer-" <> unique_suffix())
     ctx = scenario(members: [other])

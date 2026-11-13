@@ -299,6 +299,23 @@ defmodule Canopy.MCP.Tool do
     end
   end
 
+  @doc """
+  Starts the channel's runtime before a post or event that may wake agents
+  there (a message, a thread reply, a delegation, a handoff). The channel
+  server routes those only while it runs, and an agent posting into a
+  channel nobody has opened (a new one, or any after a restart) would
+  otherwise wake nobody. Takes a channel or its id.
+  """
+  def ensure_runtime(%{id: channel_id}), do: ensure_runtime(channel_id)
+
+  def ensure_runtime(channel_id) when is_binary(channel_id) do
+    case Canopy.Runtime.ensure_channel(channel_id) do
+      {:ok, _pid} -> :ok
+      {:error, :resetting} -> {:error, "Canopy is resetting. Try again when it finishes."}
+      {:error, reason} -> {:error, "could not start the channel's runtime: #{inspect(reason)}"}
+    end
+  end
+
   @doc "Turns a changeset error into a one-line reason."
   def changeset_reason(%Ecto.Changeset{} = changeset) do
     changeset

@@ -38,6 +38,7 @@ defmodule Canopy.MCP.Tools.MessageSend do
              ),
            {:ok, text} <- text(params, attachments),
            spent? = Messages.here?(text) and Canopy.Runtime.chatter_spent?(channel.id),
+           :ok <- Tool.ensure_runtime(channel),
            {:ok, message} <- post(channel, ctx, text, attachments) do
         {:ok,
          "posted [#{message.id}] to ##{channel.name}#{attached(attachments)}#{mentions(message)}#{audience(ctx, channel, message)}#{Tool.here_note(message, spent?)}"}

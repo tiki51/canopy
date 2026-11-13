@@ -21,6 +21,7 @@ defmodule Canopy.MCP.Tools.HandoffAccept do
     Tool.run(params, frame, fn ctx, params ->
       with {:ok, handoff} <- HandoffGet.fetch(Map.get(params, :handoff_id)),
            :ok <- check_target(ctx, handoff),
+           :ok <- Tool.ensure_runtime(handoff.channel_id),
            {:ok, handoff} <- accept(handoff) do
         channel = Channels.get(handoff.channel_id)
 

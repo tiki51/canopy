@@ -8,6 +8,9 @@ defmodule Canopy.MCP.Tools.TasksTest do
   alias Canopy.{Delegations, Tasks, Timeline}
   alias Canopy.MCP.Tools.{TaskGet, TaskUpdate}
 
+  # posting tools start the channel's server, which wakes whoever an event is for
+  setup [{Mox, :set_mox_global}, :stub_runtime]
+
   setup do
     delegate = agent_fixture(name: "database-" <> unique_suffix())
     ctx = scenario(members: [delegate])

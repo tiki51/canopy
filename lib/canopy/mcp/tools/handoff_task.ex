@@ -31,6 +31,7 @@ defmodule Canopy.MCP.Tools.HandoffTask do
            {:ok, target} <-
              Tool.resolve_counterpart(ctx, channel, Map.get(params, :to), "hand off"),
            {:ok, summary} <- summary(params),
+           :ok <- Tool.ensure_runtime(channel),
            {:ok, handoff} <- request(ctx, channel, target, summary, params) do
         packet = handoff.packet || %{}
 

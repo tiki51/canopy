@@ -43,6 +43,7 @@ defmodule Canopy.MCP.Tools.ThreadReply do
            {:ok, text} <- text(params, attachments),
            to_channel? = Map.get(params, :also_send_to_channel) == true,
            spent? = Messages.here?(text) and Canopy.Runtime.chatter_spent?(channel.id),
+           :ok <- Tool.ensure_runtime(channel),
            {:ok, reply} <- reply(parent, ctx, text, attachments, to_channel?) do
         {:ok,
          "replied [#{reply.id}] in thread [#{reply.thread_id}] in ##{channel.name}#{also(reply, channel)}#{attached(attachments)}#{Tool.here_note(reply, spent?)}"}

@@ -2,13 +2,14 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
   @moduledoc """
   Add agents or teams to a channel you are in. Any member may bring others
   in; only the owner can remove them. A team brings its active members, as
-  they are now. Adding wakes nobody. A DM's members are fixed (open another
-  with `canopy_dm_start` instead).
+  they are now. Each agent added is woken once, told to read the channel
+  first. A DM's members are fixed (open another with `canopy_dm_start`
+  instead).
   """
 
   use Anubis.Server.Component, type: :tool
 
-  alias Canopy.Channels
+  alias Canopy.{Channels, Runtime}
   alias Canopy.MCP.Tool
 
   schema do
@@ -38,6 +39,9 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
           Enum.split_with(agents, fn agent ->
             match?({:ok, %Channels.ChannelAgent{}}, Channels.add_agent(channel, agent))
           end)
+
+        newcomers = Enum.flat_map(team_results, fn {_team, r} -> r.added end) ++ added
+        Runtime.wake_invited(channel.id, newcomers, ctx.agent)
 
         {:ok, describe(channel, team_results, added, already)}
       end
@@ -73,6 +77,8 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
         parts -> "added #{Enum.join(parts, ", ")} to ##{channel.name}"
       end
 
+    woken? = added != [] or Enum.any?(team_results, fn {_team, r} -> r.added != [] end)
+
     mention =
       case team_results do
         [] ->
@@ -81,6 +87,9 @@ defmodule Canopy.MCP.Tools.ChannelAddMembers do
         teams ->
           "Mention #{Enum.map_join(teams, " or ", fn {t, _} -> "@" <> t.name end)} when you need them."
       end
+
+    mention =
+      if woken?, do: "Each one added is woken to read the channel. " <> mention, else: mention
 
     [added_part, already != [] && "#{names.(already)} already there"]
     |> Enum.filter(& &1)

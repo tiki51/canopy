@@ -127,15 +127,20 @@ defmodule Canopy.MCP.Tools.TaskUpdate do
 
   defp finish(delegation, action, result, delegator) do
     outcome =
-      case action do
-        :complete -> Delegations.complete(delegation, result)
-        :fail -> Delegations.fail(delegation, result)
+      with :ok <- Tool.ensure_runtime(delegation.channel_id) do
+        case action do
+          :complete -> Delegations.complete(delegation, result)
+          :fail -> Delegations.fail(delegation, result)
+        end
       end
 
     case outcome do
       {:ok, delegation} ->
         verb = if action == :complete, do: "completed", else: "marked blocked"
         {:ok, "delegation [#{delegation.id}] #{verb}; #{delegator} will be notified."}
+
+      {:error, reason} when is_binary(reason) ->
+        {:error, reason}
 
       {:error, changeset} ->
         {:error, "could not update delegation: " <> Tool.changeset_reason(changeset)}

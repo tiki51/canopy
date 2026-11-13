@@ -7,6 +7,9 @@ defmodule Canopy.MCP.Tools.CollaborationTest do
   alias Canopy.{Channels, Delegations, Handoffs, Messages, Tasks, Timeline}
   alias Canopy.MCP.Tools.{DelegateTask, HandoffAccept, HandoffGet, HandoffReject, HandoffTask}
 
+  # posting tools start the channel's server, which wakes whoever an event is for
+  setup [{Mox, :set_mox_global}, :stub_runtime]
+
   setup do
     target = agent_fixture(name: "database-" <> unique_suffix())
     bystander = agent_fixture(name: "reviewer-" <> unique_suffix())
@@ -36,17 +39,18 @@ defmodule Canopy.MCP.Tools.CollaborationTest do
 
       assert text =~ "ownership stays with @#{ctx.agent.name}"
 
+      # created as requested; the channel's runtime then woke the delegate on it
+      assert_receive {:timeline, %Timeline.Event{event_type: "delegation_created", ref_id: ^id}}
+
       delegation = Delegations.get!(id)
-      assert delegation.status == "requested"
+      assert delegation.status == "working"
       assert delegation.from_agent_id == ctx.agent.id
       assert delegation.to_agent_id == ctx.target.id
       assert delegation.task_id == ctx.task.id
       assert delegation.parent_session_id == ctx.session.id
-      assert is_nil(delegation.child_session_id)
+      assert delegation.child_session_id == ctx.target_session.id
       assert delegation.description == "Check the index"
       assert Channels.get!(ctx.channel.id).owner_agent_id == ctx.agent.id
-
-      assert_receive {:timeline, %Timeline.Event{event_type: "delegation_created", ref_id: ^id}}
       assert [%{id: ^id}] = Delegations.list_pending_for(ctx.channel.id, ctx.target.id)
     end
 

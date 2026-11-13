@@ -21,7 +21,7 @@ defmodule Canopy.MCP.Tools.PlaybooksTest do
     PlaybooksList
   }
 
-  setup :set_mox_global
+  setup [:set_mox_global, :stub_runtime]
 
   setup do
     dev = agent_fixture(name: "dev-" <> unique_suffix())
