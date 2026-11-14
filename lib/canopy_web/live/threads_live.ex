@@ -15,7 +15,7 @@ defmodule CanopyWeb.ThreadsLive do
 
   use CanopyWeb, :live_view
 
-  import CanopyWeb.TimelineComponents, only: [mini_avatar: 1, short_time: 1]
+  import CanopyWeb.TimelineComponents, only: [mini_avatar: 1, stamp: 1]
 
   alias Canopy.{Agents, Channels, Runtime, Threads, Users}
   alias Canopy.MCP.Format
@@ -212,12 +212,7 @@ defmodule CanopyWeb.ThreadsLive do
           <.mini_avatar participant={%{agent: reply.agent}} user_name={@user_name} />
           <span class="shrink-0 font-medium">{sender(reply, @user_name)}:</span>
           <span class="min-w-0 truncate text-base-content/70">{excerpt(reply.body)}</span>
-          <time
-            class="ml-auto shrink-0 text-[11px] text-base-content/50"
-            title={DateTime.to_iso8601(reply.inserted_at)}
-          >
-            {short_time(reply.inserted_at)}
-          </time>
+          <.stamp at={reply.inserted_at} class="ml-auto shrink-0 text-[11px] text-base-content/50" />
         </li>
       </ul>
 

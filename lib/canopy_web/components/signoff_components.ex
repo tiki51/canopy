@@ -16,7 +16,7 @@ defmodule CanopyWeb.SignoffComponents do
 
   use CanopyWeb, :html
 
-  import CanopyWeb.TimelineComponents, only: [attachments: 1, message_text: 1, short_time: 1]
+  import CanopyWeb.TimelineComponents, only: [attachments: 1, message_text: 1, stamp: 1]
 
   alias Canopy.Signoffs
 
@@ -361,12 +361,7 @@ defmodule CanopyWeb.SignoffComponents do
           {resolved_parts(@p)}
           <span :if={note = present(@p["note"])} class="text-base-content/60">— “{note}”</span>
         </span>
-        <time
-          class="shrink-0 text-xs text-base-content/50"
-          title={DateTime.to_iso8601(@event.inserted_at)}
-        >
-          {short_time(@event.inserted_at)}
-        </time>
+        <.stamp at={@event.inserted_at} class="shrink-0 text-xs text-base-content/50" />
       </div>
     </div>
     """

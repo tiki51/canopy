@@ -14,6 +14,7 @@ defmodule CanopyWeb.TimelineComponents do
 
   alias Canopy.Messages
   alias Canopy.Runtime.Activity
+  alias Canopy.Schedules.When
   alias CanopyWeb.{FileViewer, Markdown}
 
   # -- Timeline items ----------------------------------------------------------
@@ -285,7 +286,7 @@ defmodule CanopyWeb.TimelineComponents do
           <span class="shrink-0">replied to a thread:</span>
           <span class="min-w-0 truncate">“{@parent.excerpt}”</span>
         </.link>
-        <div class="flex items-baseline gap-2">
+        <div class="flex flex-wrap items-baseline gap-x-2">
           <span class={[
             "text-sm font-semibold",
             @message.kind == "reply" && "text-base-content/60"
@@ -315,17 +316,12 @@ defmodule CanopyWeb.TimelineComponents do
           >
             <.icon name="hero-arrow-uturn-right-mini" class="size-3 rotate-180" /> also in channel
           </span>
-          <time
-            class="text-[11px] text-base-content/60"
-            title={DateTime.to_iso8601(@message.inserted_at)}
-          >
-            {short_time(@message.inserted_at)}
-          </time>
+          <.stamp at={@message.inserted_at} class="text-[11px] text-base-content/60" />
           <.link
             :if={@receipt}
             patch={~p"/channels/#{@message.channel_id}?#{[activity: @receipt.event_id]}"}
             id={"#{@dom_prefix}-receipt-#{@message.id}"}
-            class="receipt-chip items-center gap-1 rounded-full border border-base-300 px-1.5 text-[10px] text-base-content/60 transition hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            class="receipt-chip items-center gap-1 whitespace-nowrap rounded-full border border-base-300 px-1.5 text-[10px] text-base-content/60 transition hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             title="See what the agent ran for this"
           >
             <.icon name="hero-cog-6-tooth-mini" class="size-3" />
@@ -1028,9 +1024,7 @@ defmodule CanopyWeb.TimelineComponents do
         <.icon name={@icon} class="size-3.5 shrink-0 opacity-70" />
         <span class="min-w-0 [overflow-wrap:anywhere]" data-line-text>{@text ||
           render_slot(@inner_block)}</span>
-        <time :if={@at} class="shrink-0 text-[10px] opacity-60" title={DateTime.to_iso8601(@at)}>
-          {short_time(@at)}
-        </time>
+        <.stamp :if={@at} at={@at} class="shrink-0 text-[10px] opacity-60" />
       </span>
       <span class="h-px flex-1 bg-base-300/70" />
     </div>
@@ -1426,9 +1420,7 @@ defmodule CanopyWeb.TimelineComponents do
             <% nil -> %>
           <% end %>
           <span class="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-base-content/55">
-            <time title={DateTime.to_iso8601(@event.inserted_at)}>
-              {short_time(@event.inserted_at)}
-            </time>
+            <.stamp at={@event.inserted_at} />
             <.chevron open?={@open?} />
           </span>
         </button>
@@ -3491,6 +3483,65 @@ defmodule CanopyWeb.TimelineComponents do
     do: at |> Canopy.Schedules.When.to_local_naive() |> Calendar.strftime("%H:%M")
 
   def short_time(_), do: ""
+
+  @doc """
+  A message's stamp in local time, worded by how many local calendar days ago
+  it was: `21:48` today, `Yesterday 21:48`, `Thu 17:22` for 2–6 days ago, then
+  `Oct 21, 16:40`, with the year for earlier years (`Nov 14, 2025, 09:12`).
+  """
+  @spec stamp_text(DateTime.t() | nil, DateTime.t()) :: String.t()
+  def stamp_text(at, now \\ DateTime.utc_now())
+
+  def stamp_text(%DateTime{} = at, %DateTime{} = now) do
+    # one offset for both, so a stamp and "today" can't straddle a change
+    offset = When.local_offset_seconds()
+    local = at |> DateTime.to_naive() |> NaiveDateTime.add(offset, :second)
+
+    today =
+      now |> DateTime.to_naive() |> NaiveDateTime.add(offset, :second) |> NaiveDateTime.to_date()
+
+    date = NaiveDateTime.to_date(local)
+
+    format =
+      case Date.diff(today, date) do
+        0 -> "%H:%M"
+        1 -> "Yesterday %H:%M"
+        days when days in 2..6 -> "%a %H:%M"
+        _ when date.year == today.year -> "%b %-d, %H:%M"
+        _ -> "%b %-d, %Y, %H:%M"
+      end
+
+    Calendar.strftime(local, format)
+  end
+
+  def stamp_text(_, _), do: ""
+
+  @doc "The full local date of a stamp, for its tooltip: `Friday, Nov 6, 2026 at 21:48`."
+  def stamp_title(%DateTime{} = at),
+    do: at |> When.to_local_naive() |> Calendar.strftime("%A, %b %-d, %Y at %H:%M")
+
+  def stamp_title(_), do: nil
+
+  @doc """
+  A message's `<time>`: the `stamp_text/2` wording, the full local date on
+  hover, and the ISO instant in `datetime`.
+  """
+  attr :at, DateTime, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def stamp(assigns) do
+    ~H"""
+    <time
+      datetime={DateTime.to_iso8601(@at)}
+      title={stamp_title(@at)}
+      class={["whitespace-nowrap", @class]}
+      {@rest}
+    >
+      {stamp_text(@at)}
+    </time>
+    """
+  end
 
   @doc """
   A duration that ticks in the browser from `started_at` (wall-clock ms), by
