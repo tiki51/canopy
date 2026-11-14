@@ -253,6 +253,64 @@ defmodule Canopy.ClaudeCode.TurnTest do
     assert_received {:cost_bases, :new}
   end
 
+  # What Claude Code 2.1 prints for a transcript it has deleted (cleanupPeriodDays):
+  # an empty error result on stdout, the reason on stderr, exit 0.
+  test "an unknown session's empty error result is retried with --session-id, not resent",
+       ctx do
+    script =
+      script!(ctx.dir, [
+        result_line("SESSION_ID", %{
+          subtype: "error_during_execution",
+          is_error: true,
+          num_turns: 0,
+          result: nil,
+          total_cost_usd: 0
+        })
+      ])
+
+    pid =
+      start(
+        ctx,
+        [
+          {"FAKE_CLAUDE_SCRIPT", script},
+          {"FAKE_CLAUDE_STDERR", "No conversation found with session ID: x"}
+        ],
+        flag: :resume
+      )
+
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+    # the fake replays the empty result to the retry too, which is then resent
+    assert [first | retries] = argv_lines(ctx.log)
+    assert first =~ "--resume"
+    assert [_ | _] = retries
+    assert Enum.all?(retries, &(&1 =~ "--session-id #{ctx.sid}"))
+  end
+
+  test "stderr left by an earlier turn of the session does not change the flag", ctx do
+    File.write!(
+      Path.join(ctx.dir, "stderr.log"),
+      "No conversation found with session ID: x\n"
+    )
+
+    script =
+      script!(ctx.dir, [
+        result_line("SESSION_ID", %{
+          subtype: "error_during_execution",
+          is_error: true,
+          num_turns: 0,
+          result: ""
+        })
+      ])
+
+    pid = start(ctx, [{"FAKE_CLAUDE_SCRIPT", script}], flag: :resume)
+
+    assert_receive {:DOWN, _, :process, ^pid, :normal}, 5_000
+    assert [first, second] = argv_lines(ctx.log)
+    # resent as a dropped prompt, with the same flag
+    assert first =~ "--resume"
+    assert second =~ "--resume"
+  end
+
   test "an empty zero-turn result is resent once, then accepted", ctx do
     script =
       script!(ctx.dir, [
