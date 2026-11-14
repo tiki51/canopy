@@ -297,6 +297,17 @@
 /* Message actions (Reply in thread, Copy link) show on hover; a touch screen
    has no hover, so they are always there. */
 @media (hover: none) { .message-actions { opacity: 1; } }
+/* With a pointer they float at the header row's top right, out of its flow, so
+   a header that wraps (a long stamp and a chip) leaves no blank row. Anchored
+   to the header, not the article, so they never cover a reply's thread link. */
+@media (hover: hover) {
+  .message-actions {
+    position: absolute; top: -.125rem; right: 0;
+    border-radius: var(--radius-md); background: var(--color-base-200);
+  }
+  /* min-height: the height the actions gave the row when they were in it */
+  :has(> .message-actions) { position: relative; min-height: 1.375rem; }
+}
 
 /* The reply a link pointed at flashes once in the thread panel. */
 @keyframes message-target { from { background: color-mix(in oklab, var(--color-primary) 18%, transparent); } }

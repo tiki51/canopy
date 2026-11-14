@@ -1,10 +1,11 @@
 defmodule CanopyWeb.ThreadsLiveTest do
   use CanopyWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Mox
   import Phoenix.LiveViewTest
 
-  alias Canopy.{Fixtures, Messages, Runtime}
+  alias Canopy.{Fixtures, Messages, Repo, Runtime}
   alias Canopy.OpenCode.ClientMock, as: OC
   alias CanopyWeb.ChannelLive
 
@@ -107,6 +108,30 @@ defmodule CanopyWeb.ThreadsLiveTest do
     assert render(row) =~ "Root cause. see the PR"
     refute render(row) =~ "**"
     refute render(row) =~ "](https"
+  end
+
+  test "a reply from three days ago is stamped with its weekday, the full date on hover", ctx do
+    %{channel: channel, agent: agent, user: user} = ctx
+    {:ok, root} = Messages.post_user_message(channel.id, user.id, "Why is checkout slow?")
+
+    {:ok, reply} =
+      Messages.thread_reply(root.id, {:agent, agent.id}, "The pricing call runs twice.")
+
+    at = DateTime.add(DateTime.utc_now(), -3 * 86_400, :second)
+    Repo.update_all(where(Messages.Message, id: ^reply.id), set: [inserted_at: at])
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/threads")
+
+    time =
+      view
+      |> element("#thread-row-#{root.id} time[datetime='#{DateTime.to_iso8601(at)}']")
+      |> render()
+      |> LazyHTML.from_fragment()
+
+    assert time |> LazyHTML.text() |> String.trim() =~ ~r/^[A-Z][a-z]{2} \d{2}:\d{2}$/
+
+    assert [title] = LazyHTML.attribute(time, "title")
+    assert title =~ ~r/^[A-Z][a-z]+day, [A-Z][a-z]{2} \d{1,2}, \d{4} at \d{2}:\d{2}$/
   end
 
   test "All active lists every thread with a recent reply; an empty tab says so", ctx do
