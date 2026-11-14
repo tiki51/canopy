@@ -25,7 +25,9 @@ defmodule Canopy.ClaudeCode.Turn do
 
     * `--session-id` for a session Claude Code already knows ("already in
       use"), or `--resume` for one it does not ("No conversation found"): the
-      command is rebuilt with the other flag.
+      command is rebuilt with the other flag. Claude Code may say so with an
+      empty `error_during_execution` result before it exits; that result is
+      retried with the other flag, not resent.
     * A `result` with zero turns and no assistant output on an ordinary turn:
       Claude Code consumed the process on housekeeping and never sent the
       prompt (seen after an auto-backgrounded task); the turn is resent.
@@ -113,6 +115,8 @@ defmodule Canopy.ClaudeCode.Turn do
       results: 0,
       port: nil,
       os_pid: nil,
+      # where this process's stderr starts in the session's (appended) file
+      stderr_from: 0,
       buffer: "",
       acc: Events.new(Keyword.get(opts, :cwd)),
       saw_assistant?: false,
@@ -131,6 +135,7 @@ defmodule Canopy.ClaudeCode.Turn do
   @impl true
   def handle_continue(:spawn, state) do
     command = state.command.(state.flag)
+    stderr_from = stderr_size(state)
 
     port =
       Port.open({:spawn_executable, command.executable}, [
@@ -157,6 +162,7 @@ defmodule Canopy.ClaudeCode.Turn do
        state
        | port: port,
          os_pid: os_pid,
+         stderr_from: stderr_from,
          lost_refs: state.lost_refs ++ state.written_refs,
          written_refs: [],
          buffer: "",
@@ -285,6 +291,11 @@ defmodule Canopy.ClaudeCode.Turn do
     state = state |> Map.put(:acc, acc) |> note_consumed(json)
 
     cond do
+      (other = result_flag_mismatch(json, state)) != nil ->
+        Logger.info("claude turn #{state.session_id}: retrying with --#{other}")
+        close(state.port)
+        {:noreply, %{state | port: nil, flag: other, flag_retried?: true}, {:continue, :spawn}}
+
       dropped_prompt?(json, state) ->
         Logger.info("claude turn #{state.session_id}: empty result before any output, resending")
         close(state.port)
@@ -387,6 +398,18 @@ defmodule Canopy.ClaudeCode.Turn do
       json["num_turns"] == 0 and (json["result"] || "") == ""
   end
 
+  # An empty error result whose stderr names the wrong flag: the session was
+  # never started (`--resume`) or already exists (`--session-id`).
+  defp result_flag_mismatch(json, state) do
+    if not state.flag_retried? and not state.aborted? and not state.saw_assistant? and
+         json["is_error"] == true and json["num_turns"] == 0 do
+      case flag_mismatch(stderr_tail(state)) do
+        other when other != nil and other != state.flag -> other
+        _ -> nil
+      end
+    end
+  end
+
   defp as_completed(%Event{type: :agent_error}), do: %Event{type: :agent_completed, data: %{}}
   defp as_completed(event), do: event
 
@@ -433,14 +456,32 @@ defmodule Canopy.ClaudeCode.Turn do
   defp schedule_stall_check(state),
     do: Process.send_after(self(), :stall_check, max(div(state.stall_ms, 4), 250))
 
-  defp stderr_tail(%{stderr_file: file}) when is_binary(file) do
+  # Only what this process wrote: the file holds the session's earlier turns too.
+  defp stderr_tail(%{stderr_file: file, stderr_from: from}) when is_binary(file) do
     case File.read(file) do
-      {:ok, text} -> text |> String.trim() |> String.slice(-@stderr_tail, @stderr_tail)
-      _ -> ""
+      {:ok, text} ->
+        from = min(from, byte_size(text))
+
+        text
+        |> binary_part(from, byte_size(text) - from)
+        |> String.trim()
+        |> String.slice(-@stderr_tail, @stderr_tail)
+
+      _ ->
+        ""
     end
   end
 
   defp stderr_tail(_state), do: ""
+
+  defp stderr_size(%{stderr_file: file}) when is_binary(file) do
+    case File.stat(file) do
+      {:ok, %File.Stat{size: size}} -> size
+      _ -> 0
+    end
+  end
+
+  defp stderr_size(_state), do: 0
 
   defp stderr_suffix(state) do
     case stderr_tail(state) do
